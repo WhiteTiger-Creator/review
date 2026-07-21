@@ -1,0 +1,18 @@
+New Terminal Output:
+
+root@00130fd7ffef:/app# which go || find / -name 'go' -type f 2>/dev/null | head -5
+/usr/local/go/bin/go
+root@00130fd7ffef:/app# ls /usr/local/go/bin/ 2>/dev/null || ls /usr/lib/go*/bin/ 2>/dev/null
+go  gofmt
+root@00130fd7ffef:/app# cat /app/Makefile
+.PHONY: build run clean
+
+build:
+        CGO_ENABLED=1 go build -o jobqueue .
+
+run: build
+        DB_PATH=/opt/jobqueue/jobs.db PORT=8080 ./jobqueue
+
+clean:
+        rm -f jobqueue
+root@00130fd7ffef:/app#

@@ -1,0 +1,30 @@
+{
+  "analysis": "Build succeeded. Now I need to stop any existing server, remove the old database (so it gets re-created fresh with seed data), and start the new binary.",
+  "plan": "Kill any existing server process, remove the old database, and start the new server. Then test the endpoints.",
+  "commands": [
+    {
+      "keystrokes": "pkill -f jobqueue 2>/dev/null; sleep 0.5\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "rm -f /opt/jobqueue/jobs.db\n",
+      "duration": 0.3
+    },
+    {
+      "keystrokes": "DB_PATH=/opt/jobqueue/jobs.db PORT=8080 ./jobqueue &\n",
+      "duration": 2.0
+    },
+    {
+      "keystrokes": "curl -s http://localhost:8080/stats | python3 -m json.tool\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s -w '\\nHTTP_CODE:%{http_code}\\n' -X POST -H 'Content-Type: application/json' -d '{\"type\":\"test\",\"payload\":\"hello\",\"priority\":1}' http://localhost:8080/jobs\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s http://localhost:8080/jobs/1 | python3 -m json.tool\n",
+      "duration": 1.0
+    }
+  ]
+}

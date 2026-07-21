@@ -1,0 +1,37 @@
+New Terminal Output:
+
+root@c18de6e73dca:/app# 2026/05/26 17:03:40 pool: max_workers 5 -> 5
+2026/05/26 17:03:43 pool: max_workers 5 -> 5
+2026/05/26 17:03:46 pool: max_workers 5 -> 5
+ | python3 -m json.toollocalhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"cancellable","payload":"test","priority":0}'
+{
+    "id": 8,
+    "type": "cancellable",
+    "payload": "test",
+    "status": "pending",
+    "priority": 0,
+    "worker_id": null,
+    "worker_name": "",
+    "created_at": "2026-05-26T17:03:48Z",
+    "updated_at": "2026-05-26T17:03:48Z"
+}
+root@c18de6e73dca:/app# curl -s -X POST http://localhost:8080/jobs/8/cancel -w '\nHTTP_CODE:%{http_code}\n'
+{"error":"conflict: job status is \"running\""}
+
+HTTP_CODE:409
+root@c18de6e73dca:/app# 2026/05/26 17:03:49 pool: max_workers 5 -> 5
+sleep 5 && curl -s http://localhost:8080/jobs/8 | python3 -m json.tool
+2026/05/26 17:03:52 pool: max_workers 5 -> 5
+{
+    "id": 8,
+    "type": "cancellable",
+    "payload": "test",
+    "status": "completed",
+    "priority": 0,
+    "worker_id": null,
+    "worker_name": "",
+    "created_at": "2026-05-26T17:03:48Z",
+    "updated_at": "2026-05-26T17:03:50.957294104Z"
+}
+root@c18de6e73dca:/app# 2026/05/26 17:03:55 pool: max_workers 5 -> 5
+

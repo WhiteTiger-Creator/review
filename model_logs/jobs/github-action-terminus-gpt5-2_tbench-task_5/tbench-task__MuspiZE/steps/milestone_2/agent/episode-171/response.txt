@@ -1,6 +1,0 @@
-{
-  "analysis": "Terminal remains stuck echoing input only.",
-  "plan": "No commands.",
-  "commands": [],
-  "task_complete": false
-}

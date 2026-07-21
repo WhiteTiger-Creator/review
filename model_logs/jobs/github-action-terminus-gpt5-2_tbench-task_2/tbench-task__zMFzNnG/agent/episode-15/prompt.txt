@@ -1,0 +1,41 @@
+Current Terminal Screen:
+   141  func (h *Handler) registerWorker(w http.ResponseWriter, r *http.Request) {
+   142          var req RegisterWorkerRequest
+   143          if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+   144                  writeError(w, http.StatusBadRequest, "invalid JSON body")
+   145                  return
+   146          }
+   147          if req.Name == "" {
+   148                  writeError(w, http.StatusBadRequest, "name is required")
+   149                  return
+   150          }
+   151          worker, err := h.svc.RegisterWorker(req.Name)
+   152          if err != nil {
+   153                  writeError(w, http.StatusInternalServerError, err.Error())
+   154                  return
+   155          }
+   156          writeJSON(w, http.StatusCreated, worker)
+   157  }
+   158
+   159  func (h *Handler) listWorkers(w http.ResponseWriter, r *http.Request) {
+   160          workers, err := h.svc.ListWorkers()
+   161          if err != nil {
+   162                  writeError(w, http.StatusInternalServerError, err.Error())
+   163                  return
+   164          }
+   165          if workers == nil {
+   166                  workers = []Worker{}
+   167          }
+   168          writeJSON(w, http.StatusOK, workers)
+   169  }
+   170
+   171  func (h *Handler) getStats(w http.ResponseWriter, r *http.Request) {
+   172          stats, err := h.svc.GetStats()
+   173          if err != nil {
+   174                  writeError(w, http.StatusInternalServerError, err.Error())
+   175                  return
+   176          }
+   177          writeJSON(w, http.StatusOK, stats)
+   178  }
+root@ea8f2e4b9576:/app# nl -ba handlers.go | sed -n '260,620p'
+root@ea8f2e4b9576:/app#

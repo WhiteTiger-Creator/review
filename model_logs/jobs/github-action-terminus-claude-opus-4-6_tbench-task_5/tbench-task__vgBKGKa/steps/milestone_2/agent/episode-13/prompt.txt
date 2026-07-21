@@ -1,4 +1,0 @@
-New Terminal Output:
-ount
-curl -s http://localhost:8080/api/notes?limit=100 | grep -o '"id"' | wc -l
-

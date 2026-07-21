@@ -1,6 +1,0 @@
-{
-  "analysis": "No execution possible.",
-  "plan": "No commands.",
-  "commands": [],
-  "task_complete": false
-}

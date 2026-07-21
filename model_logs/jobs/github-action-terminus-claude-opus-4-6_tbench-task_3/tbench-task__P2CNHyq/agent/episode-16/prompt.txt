@@ -1,0 +1,41 @@
+Current Terminal Screen:
+                j.WorkerName = workerName
+                jobs = append(jobs, j)
+root@9da4c3556dba:/app# grep 'INSERT INTO jobs' /app/service.go
+                "INSERT INTO jobs (type, payload, priority) VALUES (?, ?, ?)",
+root@9da4c3556dba:/app# grep 'AutoRetryCancelled' /app/main.go
+        AutoRetryCancelled bool `json:"auto_retry_cancelled"`
+                if false && cfg.AutoRetryCancelled {
+root@9da4c3556dba:/app# cd /app && /usr/local/go/bin/go build -o jobqueue . 2>&1
+root@9da4c3556dba:/app# pkill -f jobqueue 2>/dev/null; sleep 0.5
+root@9da4c3556dba:/app# rm -f /opt/jobqueue/jobs.db
+root@9da4c3556dba:/app# cd /app && ./jobqueue &
+[1] 791
+root@9da4c3556dba:/app# job queue listening on :8080
+sleep 1 && curl -s http://localhost:8080/stats | python3 -m json.tool
+{
+    "pending": 0,
+    "running": 4,
+    "completed": 1,
+    "failed": 1,
+    "cancelled": 0
+}
+root@9da4c3556dba:/app# 2026/05/26 17:04:33 pool: max_workers 5 -> 5
+ad":"hello","priority":1}'http_code}\n' -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"test","payloa
+{"id":7,"type":"test","payload":"hello","status":"pending","priority":1,"worker_id":null,"worker_name":"","created_at":"2026-05-26T17:04:33Z","updated_at":"2026
+-05-26T17:04:33Z"}
+
+HTTP_CODE:201
+root@9da4c3556dba:/app# curl -s http://localhost:8080/jobs/1 | python3 -m json.tool
+{
+    "id": 1,
+    "type": "email",
+    "payload": "{\"to\":\"alice@corp.io\",\"subject\":\"Welcome aboard\"}",
+    "status": "completed",
+    "priority": 5,
+    "worker_id": 1,
+    "worker_name": "worker-alpha",
+    "created_at": "2026-05-26T17:04:30Z",
+    "updated_at": "2026-05-26T17:04:30Z"
+}
+root@9da4c3556dba:/app#

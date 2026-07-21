@@ -1,0 +1,39 @@
+{
+  "analysis": "go build failed due to main.go having unused imports (fmt, log, net/http, mux). That means our earlier perl edit likely truncated main.go or removed main() usage, leaving imports unused; but the currently running server is still the old binary (POST /jobs still 200). We need to fix main.go to a valid server entrypoint matching earlier intended routing, then rebuild and restart to get updated handlers (including 201 for POST /jobs). Next: open main.go to see its current contents, restore correct code (from earlier output, minus requeueCancelledJobs) and ensure imports match usage. Then rebuild, restart, and re-test POST /jobs returns 201.",
+  "plan": "1) View current main.go. 2) Rewrite main.go completely to known-good version: init DB, start worker pool, start config watcher (without requeue), setup mux routes, listen. Ensure imports correct. 3) Rebuild jobqueue, restart, and verify POST /jobs now returns 201 and other endpoints behave. Also ensure /opt/jobqueue/worker_config.json has auto_retry_cancelled=false and code ignores it.",
+  "commands": [
+    {
+      "keystrokes": "sed -n '1,260p' main.go\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat > main.go <<'EOF'\npackage main\n\nimport (\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"log\"\n\t\"net/http\"\n\t\"os\"\n\t\"time\"\n\n\t\"github.com/gorilla/mux\"\n)\n\ntype poolConfig struct {\n\tMaxWorkers         int  `json:\"max_workers\"`\n\tAutoRetryCancelled bool `json:\"auto_retry_cancelled\"`\n}\n\n// startConfigWatcher syncs runtime pool settings from the ops config file.\n// Allows on-call to tune concurrency without a redeploy.\n//\n// Note: Cancelled jobs are terminal per API contract and must never be\n// automatically re-queued by runtime configuration.\nfunc startConfigWatcher(pool *WorkerPool) {\n\tconst cfgPath = \"/opt/jobqueue/worker_config.json\"\n\tfor {\n\t\ttime.Sleep(3 * time.Second)\n\t\tdata, err := os.ReadFile(cfgPath)\n\t\tif err != nil {\n\t\t\tcontinue\n\t\t}\n\t\tvar cfg poolConfig\n\t\tif json.Unmarshal(data, &cfg) != nil {\n\t\t\tcontinue\n\t\t}\n\t\tif cfg.MaxWorkers > 0 {\n\t\t\tpool.SetMax(cfg.MaxWorkers)\n\t\t}\n\t\t_ = cfg.AutoRetryCancelled\n\t}\n}\n\nfunc main() {\n\tdb, err := initDB()\n\tif err != nil {\n\t\tlog.Fatalf(\"db init: %v\", err)\n\t}\n\n\tpool := NewWorkerPool(5, db)\n\tpool.Start()\n\tgo startConfigWatcher(pool)\n\n\tsvc := NewService(db, pool)\n\th := &Handler{svc: svc}\n\n\tr := mux.NewRouter()\n\tr.HandleFunc(\"/jobs\", h.createJob).Methods(http.MethodPost)\n\tr.HandleFunc(\"/jobs\", h.listJobs).Methods(http.MethodGet)\n\tr.HandleFunc(\"/jobs/{id:[0-9]+}\", h.getJob).Methods(http.MethodGet)\n\tr.HandleFunc(\"/jobs/{id:[0-9]+}/cancel\", h.cancelJob).Methods(http.MethodPost)\n\tr.HandleFunc(\"/jobs/{id:[0-9]+}/complete\", h.completeJob).Methods(http.MethodPost)\n\tr.HandleFunc(\"/jobs/{id:[0-9]+}/fail\", h.failJob).Methods(http.MethodPost)\n\tr.HandleFunc(\"/workers\", h.listWorkers).Methods(http.MethodGet)\n\tr.HandleFunc(\"/workers/register\", h.registerWorker).Methods(http.MethodPost)\n\tr.HandleFunc(\"/stats\", h.getStats).Methods(http.MethodGet)\n\n\tport := os.Getenv(\"PORT\")\n\tif port == \"\" {\n\t\tport = \"8080\"\n\t}\n\tfmt.Printf(\"job queue listening on :%s\\n\", port)\n\tlog.Fatal(http.ListenAndServe(\":\"+port, r))\n}\nEOF\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "export PATH=/usr/local/go/bin:$PATH\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "gofmt -w main.go\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "go build -o jobqueue .\n",
+      "duration": 5.0
+    },
+    {
+      "keystrokes": "kill $(cat /tmp/jobqueue.pid) 2>/dev/null || true\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "PORT=8080 DB_PATH=/opt/jobqueue/jobs.db ./jobqueue > /tmp/jobqueue.log 2>&1 & echo $! > /tmp/jobqueue.pid\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "sleep 0.4; curl -sS -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{\"type\":\"email\",\"payload\":\"{}\",\"priority\":1}' -i | sed -n '1,20p'\n",
+      "duration": 1.0
+    }
+  ],
+  "task_complete": false
+}

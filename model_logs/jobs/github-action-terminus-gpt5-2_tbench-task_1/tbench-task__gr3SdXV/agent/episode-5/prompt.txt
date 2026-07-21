@@ -1,0 +1,41 @@
+Current Terminal Screen:
+        }
+        if workers == nil {
+                workers = []Worker{}
+        }
+        writeJSON(w, http.StatusOK, workers)
+}
+
+func (h *Handler) getStats(w http.ResponseWriter, r *http.Request) {
+        stats, err := h.svc.GetStats()
+        if err != nil {
+                writeError(w, http.StatusInternalServerError, err.Error())
+                return
+        }
+        writeJSON(w, http.StatusOK, stats)
+}
+root@502a2d51de5e:/app# perl -0777 -i -pe 's/writeJSON\(w, http\.StatusOK, job\)/writeJSON(w, http.StatusCreated, job)/g' handlers.go
+root@502a2d51de5e:/app# perl -0777 -i -pe 's/writeJSON\(w, http\.StatusOK, worker\)/writeJSON(w, http.StatusCreated, worker)/g' handlers.go
+root@502a2d51de5e:/app# perl -0777 -i -pe "s/\"INSERT INTO jobs \(job_type, payload, priority\) VALUES \(\?, \?, \?\)\"/\"INSERT INTO jobs (type, payload, prior
+ity, status, worker_id) VALUES (?, ?, ?, 'pending', NULL)\"/g" service.go
+root@502a2d51de5e:/app# perl -0777 -i -pe 's/SELECT id, type, payload, status, priority, created_at, updated_at, worker_id\s*\n\s*FROM jobs/SELECT j.id, j.type,
+ j.payload, j.status, j.priority, j.created_at, j.updated_at, j.worker_id, COALESCE(w.name, "")\n                        FROM jobs j LEFT JOIN workers w ON j.wo
+rker_id = w.id/g' service.go
+root@502a2d51de5e:/app# perl -0777 -i -pe 's/var workerID sql\.NullInt64\s*\n\s*if err := rows\.Scan\(\s*\n\s*&j\.ID, &j\.Type, &j\.Payload, &j\.Status, &j\.Pri
+ority,\s*\n\s*&j\.CreatedAt, &j\.UpdatedAt, &workerID,\s*\n\s*\);/var workerID sql.NullInt64\n                var workerName string\n                if err := r
+ows.Scan(\n                        &j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,\n                        &j.CreatedAt, &j.UpdatedAt, &workerID, &workerNa
+me,\n                );/s' service.go
+root@502a2d51de5e:/app# perl -0777 -i -pe 's/if workerID\.Valid \{\s*\n\s*wid := int\(workerID\.Int64\)\s*\n\s*j\.WorkerID = &wid\s*\n\s*\}\s*\n\s*jobs = append
+\(jobs, j\)/if workerID.Valid {\n                        wid := int(workerID.Int64)\n                        j.WorkerID = &wid\n                }\n
+   j.WorkerName = workerName\n                jobs = append(jobs, j)/s' service.go
+root@502a2d51de5e:/app# perl -0777 -i -pe 's/(\nimport \(\n)([\s\S]*?)(\n\)\n)/$1        "encoding\/json"\n        "fmt"\n        "log"\n        "net\/http"\n
+      "os"\n        "time"\n\n        "github.com\/gorilla\/mux"$3/s' main.go
+root@502a2d51de5e:/app# perl -0777 -i -pe 's/\n\s*if cfg\.AutoRetryCancelled \{[\s\S]*?\}\n/\n                \/\/ Cancelled jobs must remain cancelled; ignore
+auto_retry_cancelled.\n/g' main.go
+root@502a2d51de5e:/app# perl -0777 -i -pe 's/\n\/\/ requeueCancelledJobs[\s\S]*?\n\}\n\n/\n/s' main.go
+root@502a2d51de5e:/app# gofmt -w main.go handlers.go service.go
+root@502a2d51de5e:/app# go test ./...
+?       github.com/internal/jobqueue    [no test files]
+root@502a2d51de5e:/app# make build
+CGO_ENABLED=1 go build -o jobqueue .
+root@502a2d51de5e:/app#

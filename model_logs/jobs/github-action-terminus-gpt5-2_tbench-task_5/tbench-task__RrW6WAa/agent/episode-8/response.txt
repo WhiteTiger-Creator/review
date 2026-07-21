@@ -1,0 +1,51 @@
+{
+  "analysis": "Build succeeded. Next we need to sanity-check runtime behavior vs contract: POST /jobs returns 201 and created job has status pending and worker_id null; POST /workers/register returns 201; cancel only pending -> cancelled; cancelled remains cancelled (config watcher ignores); worker pool processes pending jobs without setting worker_id; GET /jobs/:id includes worker_name empty string when unassigned and populated when assigned; GET /stats includes all five fields. Also ensure DB seeds correctly on first run. We'll run server in background with DB_PATH=/opt/jobqueue/jobs.db after resetting DB file, then curl endpoints.",
+  "plan": "1) Reset DB to ensure schema/seed are applied and DB is non-empty. 2) Start service in background on :8080. 3) Use curl to hit /stats, /jobs/1, POST /jobs, cancel it, verify status. 4) Verify worker_name for seeded assigned jobs (id 1 has worker_id=1, should show worker_name worker-alpha). 5) Kill server.",
+  "commands": [
+    {
+      "keystrokes": "rm -f /opt/jobqueue/jobs.db\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "DB_PATH=/opt/jobqueue/jobs.db PORT=8080 ./jobqueue > /tmp/jobqueue.log 2>&1 & echo $! > /tmp/jobqueue.pid\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "sleep 0.5; curl -sS http://localhost:8080/stats; echo\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -sS http://localhost:8080/jobs/1; echo\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -sS -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{\"type\":\"email\",\"payload\":\"hi\",\"priority\":9}' -i | sed -n '1,20p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -sS http://localhost:8080/jobs | head -c 500; echo\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "NEWID=$(curl -sS -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{\"type\":\"report\"}' | python3 -c 'import sys, json; print(json.load(sys.stdin)[\"id\"])'); echo $NEWID\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -sS -X POST http://localhost:8080/jobs/$NEWID/cancel -i | sed -n '1,20p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -sS http://localhost:8080/jobs/$NEWID; echo\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "kill $(cat /tmp/jobqueue.pid)\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "tail -n 50 /tmp/jobqueue.log\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

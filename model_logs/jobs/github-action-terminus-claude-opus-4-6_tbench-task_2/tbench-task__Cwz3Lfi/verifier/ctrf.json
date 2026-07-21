@@ -1,0 +1,304 @@
+{
+    "results": {
+        "tool": {
+            "name": "pytest",
+            "version": "8.4.1"
+        },
+        "summary": {
+            "tests": 31,
+            "passed": 31,
+            "failed": 0,
+            "skipped": 0,
+            "pending": 0,
+            "other": 0,
+            "start": 1779815411327,
+            "stop": 1779815417023
+        },
+        "environment": {
+            "buildName": "Pytest JSON CTRF Report",
+            "buildNumber": "000",
+            "buildUrl": "https://ctrf.io"
+        },
+        "tests": [
+            {
+                "name": "test_outputs.py::TestJobCreation::test_create_job_returns_201",
+                "status": "passed",
+                "duration": 3,
+                "start": 1779815411454,
+                "stop": 1779815411457,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestJobCreation::test_create_job_stores_payload_correctly",
+                "status": "passed",
+                "duration": 2,
+                "start": 1779815411458,
+                "stop": 1779815411460,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestJobCreation::test_create_job_missing_type_returns_400",
+                "status": "passed",
+                "duration": 2,
+                "start": 1779815411460,
+                "stop": 1779815411462,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestJobCreation::test_create_job_default_priority_is_zero",
+                "status": "passed",
+                "duration": 2,
+                "start": 1779815411462,
+                "stop": 1779815411464,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestJobCreation::test_create_job_worker_id_is_null_on_creation",
+                "status": "passed",
+                "duration": 2,
+                "start": 1779815411464,
+                "stop": 1779815411466,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestListJobs::test_list_all_jobs_returns_at_least_six_seeded",
+                "status": "passed",
+                "duration": 2,
+                "start": 1779815411466,
+                "stop": 1779815411468,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestListJobs::test_list_jobs_filtered_by_status_pending",
+                "status": "passed",
+                "duration": 2,
+                "start": 1779815411468,
+                "stop": 1779815411470,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestListJobs::test_list_jobs_filtered_by_status_completed",
+                "status": "passed",
+                "duration": 2,
+                "start": 1779815411470,
+                "stop": 1779815411472,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestListJobs::test_list_jobs_filtered_by_status_failed",
+                "status": "passed",
+                "duration": 2,
+                "start": 1779815411472,
+                "stop": 1779815411474,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestListJobs::test_get_job_by_id",
+                "status": "passed",
+                "duration": 2,
+                "start": 1779815411474,
+                "stop": 1779815411476,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestListJobs::test_get_job_not_found_returns_404",
+                "status": "passed",
+                "duration": 1,
+                "start": 1779815411476,
+                "stop": 1779815411477,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestJobWorkerName::test_running_job_has_worker_name_populated",
+                "status": "passed",
+                "duration": 1,
+                "start": 1779815411478,
+                "stop": 1779815411479,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestJobWorkerName::test_completed_job_has_worker_name_populated",
+                "status": "passed",
+                "duration": 2,
+                "start": 1779815411479,
+                "stop": 1779815411481,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestJobWorkerName::test_pending_job_has_empty_worker_name",
+                "status": "passed",
+                "duration": 2,
+                "start": 1779815411481,
+                "stop": 1779815411483,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestCancelJob::test_cancel_pending_job_returns_200",
+                "status": "passed",
+                "duration": 3,
+                "start": 1779815411483,
+                "stop": 1779815411486,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestCancelJob::test_cancel_running_job_returns_409",
+                "status": "passed",
+                "duration": 1,
+                "start": 1779815411486,
+                "stop": 1779815411487,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestCancelJob::test_cancel_completed_job_returns_409",
+                "status": "passed",
+                "duration": 1,
+                "start": 1779815411488,
+                "stop": 1779815411489,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestCancelJob::test_cancel_failed_job_returns_409",
+                "status": "passed",
+                "duration": 2,
+                "start": 1779815411489,
+                "stop": 1779815411491,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestCancelJob::test_cancel_nonexistent_job_returns_404",
+                "status": "passed",
+                "duration": 2,
+                "start": 1779815411491,
+                "stop": 1779815411493,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestCancelJob::test_cancelled_job_stays_cancelled",
+                "status": "passed",
+                "duration": 5006,
+                "start": 1779815411493,
+                "stop": 1779815416499,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestJobLifecycle::test_complete_running_job",
+                "status": "passed",
+                "duration": 2,
+                "start": 1779815416499,
+                "stop": 1779815416501,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestJobLifecycle::test_complete_pending_job_returns_409",
+                "status": "passed",
+                "duration": 3,
+                "start": 1779815416501,
+                "stop": 1779815416504,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestJobLifecycle::test_fail_nonexistent_job_returns_404",
+                "status": "passed",
+                "duration": 2,
+                "start": 1779815416504,
+                "stop": 1779815416506,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestWorkers::test_list_workers_returns_three_seeded",
+                "status": "passed",
+                "duration": 2,
+                "start": 1779815416506,
+                "stop": 1779815416508,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestWorkers::test_register_worker_returns_201",
+                "status": "passed",
+                "duration": 2,
+                "start": 1779815416508,
+                "stop": 1779815416510,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestWorkers::test_register_worker_missing_name_returns_400",
+                "status": "passed",
+                "duration": 1,
+                "start": 1779815416510,
+                "stop": 1779815416511,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestStats::test_get_stats_returns_expected_shape",
+                "status": "passed",
+                "duration": 1,
+                "start": 1779815416512,
+                "stop": 1779815416513,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestStats::test_stats_completed_count_is_at_least_one",
+                "status": "passed",
+                "duration": 1,
+                "start": 1779815416514,
+                "stop": 1779815416515,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestWorkerPool::test_pending_job_gets_processed_automatically",
+                "status": "passed",
+                "duration": 506,
+                "start": 1779815416515,
+                "stop": 1779815417021,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestFileIntegrity::test_api_contract_not_modified",
+                "status": "passed",
+                "duration": 1,
+                "start": 1779815417021,
+                "stop": 1779815417022,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::TestFileIntegrity::test_no_bypass_scripts_added",
+                "status": "passed",
+                "duration": 1,
+                "start": 1779815417022,
+                "stop": 1779815417023,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            }
+        ]
+    }
+}

@@ -1,0 +1,16 @@
+New Terminal Output:
+
+root@9da4c3556dba:/app# python3 << 'PYEOF'
+> with open('/app/service.go', 'r') as f:
+>     lines = f.readlines()
+>
+> # Print lines 73-76 (0-indexed) with repr to see exact content
+> for i in range(73, 78):
+>     print(f"{i+1}: {repr(lines[i])}")
+> PYEOF
+74: '\t\trows, err = s.db.Query(`\n'
+75: '\t\t\tSELECT id, type, payload, status, priority, created_at, updated_at, worker_id\n'
+76: '\t\t\tFROM jobs ORDER BY priority DESC, created_at ASC\n'
+77: '\t\t`)\n'
+78: '\t} else {\n'
+root@9da4c3556dba:/app#

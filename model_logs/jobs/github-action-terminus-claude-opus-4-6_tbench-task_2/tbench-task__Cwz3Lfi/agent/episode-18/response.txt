@@ -1,0 +1,14 @@
+{
+  "analysis": "The transaction in claimNextPending should be atomic in SQLite (since MaxOpenConns=1), but I should add a RowsAffected check to handle the case where the job was cancelled between the SELECT and UPDATE within the transaction (or when the API cancels during the same transaction window).",
+  "plan": "Update claimNextPending to check RowsAffected and return nil if 0 rows affected. Then rebuild and test comprehensively.",
+  "commands": [
+    {
+      "keystrokes": "cat > /tmp/fix_worker.py << 'EOF'\nwith open('/app/worker.go', 'r') as f:\n    content = f.read()\n\nold = '''\\tif _, err = tx.Exec(\n\\t\\t\"UPDATE jobs SET status='running', updated_at=? WHERE id=? AND status='pending'\",\n\\t\\ttime.Now(), j.id,\n\\t); err != nil {\n\\t\\treturn nil, err\n\\t}\n\\treturn &j, tx.Commit()'''\n\nnew = '''\\tres, err := tx.Exec(\n\\t\\t\"UPDATE jobs SET status='running', updated_at=? WHERE id=? AND status='pending'\",\n\\t\\ttime.Now(), j.id,\n\\t)\n\\tif err != nil {\n\\t\\treturn nil, err\n\\t}\n\\tn, _ := res.RowsAffected()\n\\tif n == 0 {\n\\t\\treturn nil, nil\n\\t}\n\\treturn &j, tx.Commit()'''\n\ncontent = content.replace(old, new)\n\nwith open('/app/worker.go', 'w') as f:\n    f.write(content)\n\nprint(\"Done fixing worker.go\")\nEOF\npython3 /tmp/fix_worker.py\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "sed -n '84,120p' /app/worker.go\n",
+      "duration": 0.5
+    }
+  ]
+}

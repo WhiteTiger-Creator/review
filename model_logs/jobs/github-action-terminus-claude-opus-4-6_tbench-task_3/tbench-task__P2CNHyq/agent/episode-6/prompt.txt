@@ -1,0 +1,19 @@
+New Terminal Output:
+
+root@9da4c3556dba:/app# grep -n 'StatusCreated\|StatusOK' /app/handlers.go
+41:     writeJSON(w, http.StatusCreated, job)
+59:     writeJSON(w, http.StatusCreated, job)
+72:     writeJSON(w, http.StatusOK, jobs)
+94:     writeJSON(w, http.StatusCreated, job)
+116:    writeJSON(w, http.StatusCreated, job)
+138:    writeJSON(w, http.StatusCreated, job)
+156:    writeJSON(w, http.StatusCreated, worker)
+168:    writeJSON(w, http.StatusOK, workers)
+177:    writeJSON(w, http.StatusOK, stats)
+root@9da4c3556dba:/app# grep -n 'COALESCE\|worker_name\|workerName' /app/service.go
+42:     var workerName sql.NullString
+52:             &j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+64:     j.WorkerName = workerName.String
+root@9da4c3556dba:/app# cd /app && go build -o jobqueue . 2>&1
+bash: go: command not found
+root@9da4c3556dba:/app#

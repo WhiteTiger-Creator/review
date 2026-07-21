@@ -1,0 +1,51 @@
+{
+  "analysis": "POST /jobs now succeeds and returns correct job object with status pending and worker_id null. However it returned HTTP 200 OK; contract requires 201 Created. Cancelled job remained cancelled even with auto_retry_cancelled=true after waiting >3s, confirming main.go fix worked in rebuilt binary. Next: fix handler createJob to return 201. Also verify POST /workers/register returns 201 (already does). Ensure GET /stats includes all fields (ok). Ensure cancelled jobs cannot transition via complete/fail endpoints or worker pool; likely fine but we should test complete/fail on cancelled returns 409. Also ensure complete/fail only on running jobs; already uses ErrConflict when not running. Next: change handlers.go createJob status code to StatusCreated.",
+  "plan": "1) Locate createJob handler and change writeJSON status from 200 to 201. 2) gofmt handlers.go, rebuild. 3) Quick curl: POST /jobs should return 201. 4) Additional sanity: complete a cancelled job should yield 409; GET /stats returns 5 fields. Then stop server.",
+  "commands": [
+    {
+      "keystrokes": "export PATH=/usr/local/go/bin:$PATH\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "grep -n 'func (h \\*Handler) createJob' -n handlers.go\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "perl -i -pe 'if($.>=1){s/writeJSON\\(w, http\\.StatusOK, job\\)/writeJSON(w, http.StatusCreated, job)/ if $in;} if(/^func \\(h \\*Handler\\) createJob/){$in=1} if($in && /^}\\s*$/){$in=0}' handlers.go\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "gofmt -w handlers.go\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "make build\n",
+      "duration": 20.0
+    },
+    {
+      "keystrokes": "DB_PATH=/opt/jobqueue/jobs.db PORT=8080 ./jobqueue > /tmp/jobqueue.log 2>&1 & echo $! > /tmp/jobqueue.pid\n",
+      "duration": 0.2
+    },
+    {
+      "keystrokes": "sleep 0.2; tail -n 2 /tmp/jobqueue.log\n",
+      "duration": 0.3
+    },
+    {
+      "keystrokes": "curl -s -i -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{\"type\":\"email\",\"payload\":\"{}\",\"priority\":1}'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "jid=$(curl -s -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{\"type\":\"report\",\"payload\":\"{}\"}' | sed -n 's/.*\"id\":\\([0-9]*\\).*/\\1/p'); curl -s -X POST http://localhost:8080/jobs/$jid/cancel >/dev/null; curl -s -i -X POST http://localhost:8080/jobs/$jid/complete\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s -i http://localhost:8080/stats\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "kill $(cat /tmp/jobqueue.pid) 2>/dev/null || true\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": true
+}

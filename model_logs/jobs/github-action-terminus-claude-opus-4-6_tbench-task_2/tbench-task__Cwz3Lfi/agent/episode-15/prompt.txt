@@ -1,0 +1,10 @@
+New Terminal Output:
+
+root@c18de6e73dca:/app# rm -f /opt/jobqueue/jobs.db /opt/jobqueue/jobs.db-wal /opt/jobqueue/jobs.db-shm
+root@c18de6e73dca:/app# cd /app && go build -o jobqueue . 2>&1
+root@c18de6e73dca:/app# ./jobqueue &
+[1] 826
+root@c18de6e73dca:/app# job queue listening on :8080
+sleep 1 && curl -s http://localhost:8080/stats
+{"pending":0,"running":4,"completed":1,"failed":1,"cancelled":0}
+root@c18de6e73dca:/app#

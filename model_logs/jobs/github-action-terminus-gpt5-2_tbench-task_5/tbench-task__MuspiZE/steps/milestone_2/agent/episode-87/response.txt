@@ -1,6 +1,0 @@
-{
-  "analysis": "Terminal is still not executing commands; only echoing.",
-  "plan": "Stop; require a fresh terminal/session to continue.",
-  "commands": [],
-  "task_complete": false
-}

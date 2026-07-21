@@ -1,0 +1,19 @@
+{
+  "analysis": "We located the key service methods and their line numbers. Next we must inspect service.go lines 1-160 to see current implementations of CreateJob/GetJob/ListJobs/Cancel/Complete/Fail for spec deviations: CreateJob must force status pending and worker_id null; GetJob must include worker_name from workers when assigned else empty; CancelJob only when pending else 409; Complete/Fail only when running else 409; Cancelled jobs must never transition. Also need to inspect handlers.go lines for HTTP status codes and error mapping. We'll print those ranges now, then patch accordingly.",
+  "plan": "1) Display service.go 1-170 and handlers.go 1-140. 2) Based on code, modify service methods: ensure CreateJob inserts pending and NULL worker_id; ensure GetJob/ListJobs use LEFT JOIN workers and COALESCE(worker.name,'') as worker_name; enforce transition guards including cancelled immutability. 3) Modify handlers to map ErrConflict to 409, ErrNotFound to 404, and ensure createJob returns 201. 4) Ensure worker pool claim update only affects pending rows to avoid racing with cancel. 5) gofmt, rebuild with make build, run, and curl-check critical endpoints.",
+  "commands": [
+    {
+      "keystrokes": "export PATH=/usr/local/go/bin:$PATH\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "nl -ba service.go | sed -n '1,180p'\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "nl -ba handlers.go | sed -n '1,160p'\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

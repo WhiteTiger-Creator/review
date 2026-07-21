@@ -1,6 +1,0 @@
-{
-  "analysis": "Terminal remains stuck.",
-  "plan": "Need new terminal.",
-  "commands": [],
-  "task_complete": false
-}

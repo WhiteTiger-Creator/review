@@ -1,6 +1,0 @@
-{
-  "analysis": "Terminal remains stuck at '+'. Command execution blocked.",
-  "plan": "No commands; requires reset/new session.",
-  "commands": [],
-  "task_complete": false
-}

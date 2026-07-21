@@ -1,5 +1,0 @@
-With the server building and static files in place, wire up a real notes API backed by SQLite. The full contract lives in /app/docs/api_contract.md; follow that document for status codes, headers, JSON shapes, pagination, body size limits, and error bodies.
-
-Persist data in /app/data/notes.db. Load the API secret from /app/config/api.key, trim whitespace, and require it in X-API-Key on POST, PUT, and DELETE. Reads must work without the key; wrong or missing keys on writes are unauthorized. Apply the same title validation rules on PUT as on POST, including rejecting empty titles on updates. Collection GET must support limit and offset paging and expose the pre-page total in the X-Total-Count header as spelled out in the contract file.
-
-Keep JSON content type and CORS headers on API responses, honor OPTIONS preflight as described in the contract, and make sure concurrent writes do not drop rows when verifiers hammer the service in parallel. Leave static serving intact so /app.js and the rest of /app/www still come through notes_server on port 8080 when you are done, and tell me when the API work is complete before you start the browser script.

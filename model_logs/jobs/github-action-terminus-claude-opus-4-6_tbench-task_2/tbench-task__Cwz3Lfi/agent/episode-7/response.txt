@@ -1,0 +1,14 @@
+{
+  "analysis": "Go is not in PATH. I need to find where Go is installed on this system.",
+  "plan": "Find the Go binary and use its full path to build the application.",
+  "commands": [
+    {
+      "keystrokes": "which go || find / -name 'go' -type f 2>/dev/null | head -20\n",
+      "duration": 5.0
+    },
+    {
+      "keystrokes": "ls /usr/local/go/bin/ 2>/dev/null || ls /usr/lib/go/bin/ 2>/dev/null\n",
+      "duration": 0.5
+    }
+  ]
+}

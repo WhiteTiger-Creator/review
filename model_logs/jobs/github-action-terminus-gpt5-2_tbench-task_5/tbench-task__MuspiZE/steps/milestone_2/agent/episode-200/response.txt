@@ -1,6 +1,0 @@
-{
-  "analysis": "Terminal echo-only persists; cannot proceed.",
-  "plan": "New session required.",
-  "commands": [],
-  "task_complete": false
-}

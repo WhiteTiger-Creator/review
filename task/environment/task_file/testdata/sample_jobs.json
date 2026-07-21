@@ -1,0 +1,6 @@
+[
+  {"type": "email",        "payload": "{\"to\":\"user@example.com\",\"subject\":\"Hello\"}", "priority": 3},
+  {"type": "report",       "payload": "{\"report_id\":\"rpt-001\",\"format\":\"csv\"}",      "priority": 1},
+  {"type": "image_resize", "payload": "{\"src\":\"/uploads/img.png\",\"width\":800}",        "priority": 0},
+  {"type": "notification", "payload": "{\"user_id\":42,\"channel\":\"email\"}",              "priority": 2}
+]

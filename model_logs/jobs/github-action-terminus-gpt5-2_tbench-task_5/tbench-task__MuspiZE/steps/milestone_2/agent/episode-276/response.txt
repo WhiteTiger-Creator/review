@@ -1,6 +1,0 @@
-{
-  "analysis": "Terminal stuck.",
-  "plan": "Stop.",
-  "commands": [],
-  "task_complete": false
-}

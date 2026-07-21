@@ -1,0 +1,71 @@
+{
+  "analysis": "Running the server shows POST /jobs fails with 500: \"table jobs has no column named job_type\". So Service.CreateJob is inserting into a non-existent column (should be `type`). Also GET /jobs/1 response includes worker_name correctly (so GetJob already joins workers), but stats output looks wrong vs seeded DB (pending should be 3 initially). Possibly worker pool claimed and marked jobs running quickly before stats call, or stats query is buggy. We also still must ensure CreateJob returns 201 and sets status pending and worker_id null, and registerWorker returns 201 and maps duplicate name to 400. We need to inspect and fix CreateJob insert statement, and ensure worker pool completion update is guarded with status='running' (it currently updates by id only). We also need to ensure worker pool cannot transition cancelled jobs; completion update should be WHERE id=? AND status='running'.",
+  "plan": "1) Inspect service.go CreateJob to fix wrong column name and enforce status/worker_id. 2) Patch worker.go process() completion/failure updates to include status='running' in WHERE, preventing any non-running (including cancelled) transitions. 3) Inspect/patch handlers.go registerWorker to return 400 on uniqueness violation. For sqlite, detect error string containing 'UNIQUE constraint failed' and map to 400. Similarly for CreateJob errors from validation should be 400, but current handler already validates type. 4) Restart server and re-test POST /jobs returns 201 with pending, worker_id null, worker_name empty. Also test cancelling a pending job then verify it remains cancelled after some time (pool/config watcher).",
+  "commands": [
+    {
+      "keystrokes": "grep -n \"func (s \\*Service) CreateJob\" -n service.go\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "nl -ba service.go | sed -n '1,120p'\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/INSERT INTO jobs \\(job_type, payload, status, priority\\)/INSERT INTO jobs (type, payload, status, priority)/g; s/\\bjob_type\\b/type/g' service.go\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/INSERT INTO jobs \\(type, payload, status, priority\\) VALUES \\(\\?,\\?,\\?,\\?\\)/INSERT INTO jobs (type, payload, status, priority, worker_id) VALUES (?,?,?,?,NULL)/g' service.go\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/req\\.Status/\"pending\"/g' service.go\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/\"UPDATE jobs SET status=\\x27completed\\x27, updated_at=\\? WHERE id=\\?\"/\"UPDATE jobs SET status=\\x27completed\\x27, updated_at=? WHERE id=? AND status=\\x27running\\x27\"/g; s/\"UPDATE jobs SET status=\\x27failed\\x27, updated_at=\\? WHERE id=\\?\"/\"UPDATE jobs SET status=\\x27failed\\x27, updated_at=? WHERE id=? AND status=\\x27running\\x27\"/g' worker.go\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/worker, err := h\\.svc\\.RegisterWorker\\(req\\.Name\\)\\n\\s*if err != nil \\{\\n\\s*writeError\\(w, http\\.StatusInternalServerError, err\\.Error\\(\\)\\)\\n\\s*return\\n\\s*\\}/worker, err := h.svc.RegisterWorker(req.Name)\\n\\tif err != nil {\\n\\t\\t\\/\\/ sqlite uniqueness errors should be a 400 per API contract\\n\\t\\tif strings.Contains(err.Error(), \"UNIQUE constraint failed\") {\\n\\t\\t\\twriteError(w, http.StatusBadRequest, \"worker name must be unique\")\\n\\t\\t\\treturn\\n\\t\\t}\\n\\t\\twriteError(w, http.StatusInternalServerError, err.Error())\\n\\t\\treturn\\n\\t\\t}/s' handlers.go\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/import \\(\\n(\\s*\"encoding\\/json\"\\n\\s*\"errors\"\\n\\s*\"net\\/http\"\\n\\s*\"strconv\"\\n)/import (\\n$1\\t\"strings\"\\n/;' handlers.go\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "./jobqueue >/tmp/jobqueue.log 2>&1 & echo $! > /tmp/jobqueue.pid\n",
+      "duration": 0.2
+    },
+    {
+      "keystrokes": "sleep 0.3; tail -n 5 /tmp/jobqueue.log || true\n",
+      "duration": 0.3
+    },
+    {
+      "keystrokes": "curl -sS -i -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{\"type\":\"email\",\"payload\":\"{}\",\"priority\":9}' | sed -n '1,25p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -sS -i -X POST http://localhost:8080/workers/register -H 'Content-Type: application/json' -d '{\"name\":\"worker-alpha\"}' | sed -n '1,20p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "JOBID=$(curl -sS -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{\"type\":\"notification\"}' | python3 -c 'import sys, json; print(json.load(sys.stdin)[\"id\"])'); echo $JOBID\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -sS -X POST http://localhost:8080/jobs/$JOBID/cancel | cat\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "sleep 3; curl -sS http://localhost:8080/jobs/$JOBID | cat\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "kill $(cat /tmp/jobqueue.pid)\n",
+      "duration": 0.2
+    }
+  ],
+  "task_complete": false
+}

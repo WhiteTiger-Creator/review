@@ -1,0 +1,38 @@
+New Terminal Output:
+080}" ./jobqueue
+root@9da4c3556dba:/app# 2026/05/26 17:06:18 pool: max_workers 5 -> 5
+2026/05/26 17:06:21 pool: max_workers 5 -> 5
+2026/05/26 17:06:24 pool: max_workers 5 -> 5
+2026/05/26 17:06:27 pool: max_workers 5 -> 5
+2026/05/26 17:06:30 pool: max_workers 5 -> 5
+2026/05/26 17:06:33 pool: max_workers 5 -> 5
+2026/05/26 17:06:36 pool: max_workers 5 -> 5
+2026/05/26 17:06:39 pool: max_workers 5 -> 5
+2026/05/26 17:06:42 pool: max_workers 5 -> 5
+2026/05/26 17:06:45 pool: max_workers 5 -> 5
+2026/05/26 17:06:49 pool: max_workers 5 -> 5
+2026/05/26 17:06:52 pool: max_workers 5 -> 5
+kill %1 2>/dev/null; wait 2>/dev/null
+root@9da4c3556dba:/app# rm -f /opt/jobqueue/jobs.db /opt/jobqueue/jobs.db-wal /opt/jobqueue/jobs.db-shm
+root@9da4c3556dba:/app# cd /app && ./jobqueue &
+[1] 986
+root@9da4c3556dba:/app# job queue listening on :8080
+curl -s -X POST http://localhost:8080/jobs/6/cancel | python3 -m json.tool
+{
+    "error": "conflict: job status is \"running\""
+}
+root@9da4c3556dba:/app# sleep 5 && curl -s http://localhost:8080/jobs/6 | python3 -m json.tool
+2026/05/26 17:06:58 pool: max_workers 5 -> 5
+2026/05/26 17:07:01 pool: max_workers 5 -> 5
+{
+    "id": 6,
+    "type": "notification",
+    "payload": "{\"user_id\":99,\"channel\":\"slack\",\"msg\":\"Deploy done\"}",
+    "status": "completed",
+    "priority": 4,
+    "worker_id": null,
+    "worker_name": "",
+    "created_at": "2026-05-26T17:06:55Z",
+    "updated_at": "2026-05-26T17:06:57.964503703Z"
+}
+root@9da4c3556dba:/app#

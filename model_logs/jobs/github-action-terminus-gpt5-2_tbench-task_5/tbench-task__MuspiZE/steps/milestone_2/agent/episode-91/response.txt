@@ -1,6 +1,0 @@
-{
-  "analysis": "Terminal continues to echo input without executing.",
-  "plan": "Cannot proceed.",
-  "commands": [],
-  "task_complete": false
-}

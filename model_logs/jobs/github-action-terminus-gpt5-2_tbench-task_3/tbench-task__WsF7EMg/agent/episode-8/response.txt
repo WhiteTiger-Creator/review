@@ -1,0 +1,31 @@
+{
+  "analysis": "handlers.go now incorrectly returns http.StatusCreated for multiple non-create endpoints: getJob, cancelJob, completeJob, failJob (lines show StatusCreated at 60,95,117,139). Only POST /jobs and POST /workers/register should return 201; all GETs and state transitions should return 200. Our earlier global replace changed too much. Need to revert status codes for getJob/listJobs/cancel/complete/fail/listWorkers/getStats to 200, keeping createJob and registerWorker at 201. Also still need to apply main.go fix to remove requeueCancelledJobs call (not yet shown in output).",
+  "plan": "1) Edit handlers.go to set correct status codes: createJob -> 201, registerWorker -> 201, everything else -> 200. We'll use targeted perl replacements by function name blocks. 2) Verify StatusCreated occurrences reduce to only the two endpoints. 3) Apply main.go fix and verify no code changes cancelled jobs. 4) Grep for any StatusCreated remaining and for requeueCancelledJobs usage.",
+  "commands": [
+    {
+      "keystrokes": "perl -0777 -i -pe 's/(func \\(h \\*Handler\\) getJob[\\s\\S]*?)writeJSON\\(w, http\\.StatusCreated, job\\)/$1writeJSON(w, http.StatusOK, job)/s; s/(func \\(h \\*Handler\\) cancelJob[\\s\\S]*?)writeJSON\\(w, http\\.StatusCreated, job\\)/$1writeJSON(w, http.StatusOK, job)/s; s/(func \\(h \\*Handler\\) completeJob[\\s\\S]*?)writeJSON\\(w, http\\.StatusCreated, job\\)/$1writeJSON(w, http.StatusOK, job)/s; s/(func \\(h \\*Handler\\) failJob[\\s\\S]*?)writeJSON\\(w, http\\.StatusCreated, job\\)/$1writeJSON(w, http.StatusOK, job)/s' handlers.go\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/(func \\(h \\*Handler\\) listJobs[\\s\\S]*?)writeJSON\\(w, http\\.StatusCreated, jobs\\)/$1writeJSON(w, http.StatusOK, jobs)/s; s/(func \\(h \\*Handler\\) listWorkers[\\s\\S]*?)writeJSON\\(w, http\\.StatusCreated, workers\\)/$1writeJSON(w, http.StatusOK, workers)/s; s/(func \\(h \\*Handler\\) getStats[\\s\\S]*?)writeJSON\\(w, http\\.StatusCreated, stats\\)/$1writeJSON(w, http.StatusOK, stats)/s' handlers.go\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "grep -n \"StatusCreated\" handlers.go\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "nl -ba handlers.go | sed -n '1,220p'\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/\\n\\s*if cfg\\.AutoRetryCancelled \\{\\n\\s*requeueCancelledJobs\\(pool\\.db\\)\\n\\s*\\}\\n/\\n\\t\\t\\t\\/\\/ Cancelled jobs are terminal per API contract; ignore auto_retry_cancelled.\\n/sg; s/func requeueCancelledJobs\\(db \\*sql\\.DB\\) \\{[\\s\\S]*?\\n\\}/func requeueCancelledJobs(db *sql.DB) {\\n\\t\\/\\/ Cancelled jobs are terminal per API contract; do not requeue.\\n\\t_ = db\\n}\\n/s' main.go\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "grep -n \"requeueCancelledJobs\" -n main.go\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

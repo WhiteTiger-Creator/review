@@ -1,0 +1,112 @@
+You are an AI assistant tasked with solving command-line tasks in a Linux environment. You will be given a task description and the output from previously executed commands. Your goal is to solve the task by providing batches of shell commands.
+
+Format your response as JSON with the following structure:
+
+{
+  "analysis": "Analyze the current state based on the terminal output provided. What do you see? What has been accomplished? What still needs to be done?",
+  "plan": "Describe your plan for the next steps. What commands will you run and why? Be specific about what you expect each command to accomplish.",
+  "commands": [
+    {
+      "keystrokes": "ls -la\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cd project\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": true
+}
+
+Required fields:
+- "analysis": Your analysis of the current situation
+- "plan": Your plan for the next steps
+- "commands": Array of command objects to execute
+
+Optional fields:
+- "task_complete": Boolean indicating if the task is complete (defaults to false if not present)
+
+Command object structure:
+- "keystrokes": String containing the exact keystrokes to send to the terminal (required)
+- "duration": Number of seconds to wait for the command to complete before the next command will be executed (defaults to 1.0 if not present)
+
+IMPORTANT: The text inside "keystrokes" will be used completely verbatim as keystrokes. Write commands exactly as you want them sent to the terminal:
+- You must end every command with a newline (\n) or it will not execute.
+- For special key sequences, use tmux-style escape sequences:
+  - C-c for Ctrl+C
+  - C-d for Ctrl+D
+
+The "duration" attribute specifies the number of seconds to wait for the command to complete (default: 1.0) before the next command will be executed. On immediate tasks (e.g., cd, ls, echo, cat) set a duration of 0.1 seconds. On commands (e.g., gcc, find, rustc) set a duration of 1.0 seconds. On slow commands (e.g., make, python3 [long running script], wget [file]) set an appropriate duration as you determine necessary.
+
+It is better to set a smaller duration than a longer duration. It is always possible to wait again if the prior output has not finished, by running {"keystrokes": "", "duration": 10.0} on subsequent requests to wait longer. Never wait longer than 60 seconds; prefer to poll to see intermediate result status.
+
+Important notes:
+- Each command's keystrokes are sent exactly as written to the terminal
+- Do not include extra whitespace before or after the keystrokes unless it's part of the intended command
+- Extra text before or after the JSON will generate warnings but be tolerated
+- The JSON must be valid - use proper escaping for quotes and special characters within strings
+- Commands array can be empty if you want to wait without taking action
+
+Task Description:
+The Go job queue REST API at `/app` has multiple bugs causing endpoints to deviate from their specification. The authoritative spec is `/app/api_contract.json` — any endpoint behaviour that contradicts it is a bug. Fix the service so all endpoints conform to the contract.
+
+The service manages batch jobs and workers backed by a SQLite database at `/opt/jobqueue/jobs.db`. Source files: `main.go` (routing and server startup), `service.go` (business logic and database queries), `handlers.go` (request/response wiring), `worker.go` (background worker pool), `models.go` (type definitions), `database.go` (schema and seed data). The database is pre-seeded with three workers (id=1 `worker-alpha`, id=2 `worker-beta`, id=3 `worker-gamma`) and six jobs: id=1 email/completed/priority=5/worker=1, id=2 report/running/priority=3/worker=2, id=3 image_resize/pending, id=4 email/pending/priority=2, id=5 data_export/failed/priority=1/worker=1, id=6 notification/pending/priority=4.
+
+Requirements the system must satisfy:
+
+- `POST /jobs` must return HTTP 201 on success with the created job object in the response body; the new job must have `status='pending'` and `worker_id=null`
+- `POST /workers/register` must return HTTP 201 on success with the new worker object
+- Jobs follow the state progression pending → running → completed or failed
+- Only pending jobs may be cancelled; any other state must return 409
+- Cancelled jobs must remain cancelled and must not transition to any other state
+- The background worker pool must automatically pick up and process pending jobs without manual intervention; the pool must NOT write `worker_id` when claiming a job — pool-processed jobs retain `worker_id=null` throughout their lifecycle
+- Every `GET /jobs/:id` response must include a `worker_name` field populated from the workers table when a worker is assigned; jobs with no assigned worker must return an empty string for this field
+- The runtime configuration at `/opt/jobqueue/worker_config.json` must not cause cancelled jobs to change state
+- `GET /stats` must return an object with integer fields for all five statuses: `pending`, `running`, `completed`, `failed`, `cancelled`
+
+Do not modify `/app/api_contract.json` or any test files. Do not register a worker named `worker-delta` — that name is reserved by the test suite.
+
+
+Current terminal state:
+Current Terminal Screen:
+root@198e88760f8b:/app#
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,30 @@
+{
+  "analysis": "All the main fixes are working:\n1. POST /jobs returns 201 with status='pending' ✓\n2. POST /workers/register returns 201 ✓\n3. GET /jobs/1 includes worker_name='worker-alpha' ✓\n4. GET /stats shows all 5 statuses including cancelled ✓\n\nNow I need to verify:\n- Cancel works correctly (only pending jobs)\n- Pool-processed jobs retain worker_id=null\n- Cancelled jobs stay cancelled",
+  "plan": "Test cancel flow and verify worker_id is null for pool-processed jobs. Then kill the server.",
+  "commands": [
+    {
+      "keystrokes": "curl -s -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{\"type\":\"cancelme\",\"priority\":0}'\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "curl -s -w '\\n%{http_code}' -X POST http://localhost:8080/jobs/8/cancel\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "curl -s -w '\\n%{http_code}' -X POST http://localhost:8080/jobs/8/cancel\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "curl -s http://localhost:8080/jobs/7 | python3 -m json.tool\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s -w '\\n%{http_code}' -X POST http://localhost:8080/jobs/1/cancel\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "kill %1 2>/dev/null; wait 2>/dev/null\n",
+      "duration": 1.0
+    }
+  ]
+}

@@ -1,6 +1,0 @@
-{
-  "analysis": "Still echo-only; cannot execute.",
-  "plan": "New session required.",
-  "commands": [],
-  "task_complete": false
-}

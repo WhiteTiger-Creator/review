@@ -1,0 +1,41 @@
+Current Terminal Screen:
+   201                  }
+   202                  workers = append(workers, w)
+   203          }
+   204          return workers, rows.Err()
+   205  }
+   206
+   207  func (s *Service) GetStats() (*QueueStats, error) {
+   208          stats := &QueueStats{}
+   209          rows, err := s.db.Query("SELECT status, COUNT(*) FROM jobs GROUP BY status")
+   210          if err != nil {
+   211                  return nil, err
+   212          }
+   213          defer rows.Close()
+   214          for rows.Next() {
+   215                  var status string
+   216                  var count int
+   217                  if err := rows.Scan(&status, &count); err != nil {
+   218                          return nil, err
+   219                  }
+   220                  switch status {
+   221                  case "pending":
+   222                          stats.Pending = count
+   223                  case "running":
+   224                          stats.Running = count
+   225                  case "completed":
+   226                          stats.Completed = count
+   227                  case "failed":
+   228                          stats.Failed = count
+   229                  case "cancelled":
+   230                          stats.Cancelled = count
+   231                  }
+   232          }
+   233          return stats, rows.Err()
+   234  }
+root@855ef4bf14a4:/app# grep -n "LEFT JOIN workers" service.go
+49:             LEFT JOIN workers w ON j.worker_id = w.id
+root@855ef4bf14a4:/app# grep -n "COALESCE" service.go
+root@855ef4bf14a4:/app# grep -RIn "UPDATE jobs SET status='pending'.*status='cancelled'" -n *.go || true
+root@855ef4bf14a4:/app# grep -RIn "job_type" -n *.go || true
+root@855ef4bf14a4:/app#

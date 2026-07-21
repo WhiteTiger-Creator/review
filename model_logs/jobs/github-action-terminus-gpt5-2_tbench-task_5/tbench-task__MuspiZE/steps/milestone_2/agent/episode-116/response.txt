@@ -1,6 +1,0 @@
-{
-  "analysis": "Terminal session is broken (echo-only).",
-  "plan": "Need new session to proceed.",
-  "commands": [],
-  "task_complete": false
-}

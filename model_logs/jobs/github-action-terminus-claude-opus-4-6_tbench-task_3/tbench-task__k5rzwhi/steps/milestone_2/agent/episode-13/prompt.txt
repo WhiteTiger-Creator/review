@@ -1,6 +1,0 @@
-New Terminal Output:
-host:8080/ap
-i/notes | grep -o '"id"' | wc -l
-
-curl -s http://localhost:8080/api/notes | grep -o '"id"' | wc -l
-

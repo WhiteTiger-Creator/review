@@ -1,0 +1,22 @@
+{
+  "analysis": "I need to fix the race condition between CancelJob and the worker pool. The key issue is:\n1. CancelJob does a GET then UPDATE without verifying the status hasn't changed\n2. The pool's claimNextPending UPDATE doesn't include `AND status='pending'`\n\nBoth need atomic conditional updates to prevent race conditions where cancelled jobs get overwritten to running.",
+  "plan": "Fix both race conditions:\n1. In service.go CancelJob: use conditional UPDATE with `AND status='pending'` and check RowsAffected\n2. In worker.go claimNextPending: add `AND status='pending'` to the UPDATE\n\nThen rebuild and test.",
+  "commands": [
+    {
+      "keystrokes": "cat > /tmp/fix_service.py << 'EOF'\nimport re\n\nwith open('/app/service.go', 'r') as f:\n    content = f.read()\n\n# Fix CancelJob to use atomic conditional update\nold_cancel = '''func (s *Service) CancelJob(id int) (*Job, error) {\n\\tjob, err := s.GetJob(id)\n\\tif err != nil {\n\\t\\treturn nil, err\n\\t}\n\\tif job.Status != \"pending\" {\n\\t\\treturn nil, fmt.Errorf(\"%w: job status is %q\", ErrConflict, job.Status)\n\\t}\n\\tif _, err := s.db.Exec(\n\\t\\t\"UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?\",\n\\t\\ttime.Now(), id,\n\\t); err != nil {\n\\t\\treturn nil, err\n\\t}\n\\treturn s.GetJob(id)\n}'''\n\nnew_cancel = '''func (s *Service) CancelJob(id int) (*Job, error) {\n\\tjob, err := s.GetJob(id)\n\\tif err != nil {\n\\t\\treturn nil, err\n\\t}\n\\tif job.Status != \"pending\" {\n\\t\\treturn nil, fmt.Errorf(\"%w: job status is %q\", ErrConflict, job.Status)\n\\t}\n\\tres, err := s.db.Exec(\n\\t\\t\"UPDATE jobs SET status='cancelled', updated_at=? WHERE id=? AND status='pending'\",\n\\t\\ttime.Now(), id,\n\\t)\n\\tif err != nil {\n\\t\\treturn nil, err\n\\t}\n\\tn, _ := res.RowsAffected()\n\\tif n == 0 {\n\\t\\t// Job was claimed by the pool between our read and update\n\\t\\tupdatedJob, err := s.GetJob(id)\n\\t\\tif err != nil {\n\\t\\t\\treturn nil, err\n\\t\\t}\n\\t\\treturn nil, fmt.Errorf(\"%w: job status is %q\", ErrConflict, updatedJob.Status)\n\\t}\n\\treturn s.GetJob(id)\n}'''\n\ncontent = content.replace(old_cancel, new_cancel)\n\nwith open('/app/service.go', 'w') as f:\n    f.write(content)\n\nprint(\"Done fixing service.go\")\nEOF\npython3 /tmp/fix_service.py\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "sed -i \"s/\\\"UPDATE jobs SET status='running', updated_at=? WHERE id=?\\\"/\\\"UPDATE jobs SET status='running', updated_at=? WHERE id=? AND status='pending'\\\"/\" /app/worker.go\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "grep -n \"status='running'\" /app/worker.go\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "grep -n \"CancelJob\" /app/service.go\n",
+      "duration": 0.5
+    }
+  ]
+}

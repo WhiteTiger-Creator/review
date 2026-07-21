@@ -1,6 +1,0 @@
-{
-  "analysis": "Terminal echo-only persists. We cannot complete verification or further edits in this session.",
-  "plan": "A new terminal/session is required.",
-  "commands": [],
-  "task_complete": false
-}

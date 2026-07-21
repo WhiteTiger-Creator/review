@@ -1,0 +1,41 @@
+Current Terminal Screen:
+    54          }
+    55          if err != nil {
+    56                  writeError(w, http.StatusInternalServerError, err.Error())
+    57                  return
+    58          }
+    59          writeJSON(w, http.StatusOK, job)
+    60  }
+    61
+    62  func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request) {
+    63          status := r.URL.Query().Get("status")
+    64          jobs, err := h.svc.ListJobs(status)
+    65          if err != nil {
+    66                  writeError(w, http.StatusInternalServerError, err.Error())
+    67                  return
+    68          }
+    69          if jobs == nil {
+    70                  jobs = []Job{}
+    71          }
+    72          writeJSON(w, http.StatusOK, jobs)
+    73  }
+    74
+    75  func (h *Handler) cancelJob(w http.ResponseWriter, r *http.Request) {
+    76          id, err := strconv.Atoi(mux.Vars(r)["id"])
+    77          if err != nil {
+    78                  writeError(w, http.StatusBadRequest, "invalid job id")
+    79                  return
+    80          }
+root@ea8f2e4b9576:/app# perl -0777 -i -pe 's/SELECT id, type, payload, status, priority, created_at, updated_at, worker_id FROM jobs WHERE id=\?/SELECT j.id, j.
+type, j.payload, j.status, j.priority, j.created_at, j.updated_at, j.worker_id, COALESCE(w.name, "") as worker_name FROM jobs j LEFT JOIN workers w ON w.id = j.
+worker_id WHERE j.id=?/g; s/SELECT id, type, payload, status, priority, created_at, updated_at, worker_id\s+FROM jobs/SELECT j.id, j.type, j.payload, j.status,
+j.priority, j.created_at, j.updated_at, j.worker_id, COALESCE(w.name, "") as worker_name\n\t\tFROM jobs j LEFT JOIN workers w ON w.id = j.worker_id/g; s/Scan\(\
+s*&j\.ID, &j\.Type, &j\.Payload, &j\.Status, &j\.Priority,\s*&j\.CreatedAt, &j\.UpdatedAt, &workerID,\s*\)/Scan(\n\t\t\t&j.ID, &j.Type, &j.Payload, &j.Status, &
+j.Priority,\n\t\t\t&j.CreatedAt, &j.UpdatedAt, &workerID, &j.WorkerName,\n\t\t)/g' service.go
+root@ea8f2e4b9576:/app# gofmt -w service.go
+root@ea8f2e4b9576:/app# make build
+CGO_ENABLED=1 go build -o jobqueue .
+# github.com/internal/jobqueue
+./main.go:4:2: "database/sql" imported and not used
+make: *** [Makefile:4: build] Error 1
+root@ea8f2e4b9576:/app#

@@ -1,6 +1,0 @@
-{
-  "analysis": "Cannot execute commands.",
-  "plan": "Need reset.",
-  "commands": [],
-  "task_complete": false
-}

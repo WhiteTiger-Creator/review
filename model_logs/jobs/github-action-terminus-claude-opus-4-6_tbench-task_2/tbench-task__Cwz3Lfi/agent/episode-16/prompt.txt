@@ -1,0 +1,141 @@
+New Terminal Output:
+
+root@c18de6e73dca:/app# 2026/05/26 17:05:55 pool: max_workers 5 -> 5
+2026/05/26 17:05:58 pool: max_workers 5 -> 5
+2026/05/26 17:06:01 pool: max_workers 5 -> 5
+2026/05/26 17:06:04 pool: max_workers 5 -> 5
+2026/05/26 17:06:07 pool: max_workers 5 -> 5
+2026/05/26 17:06:10 pool: max_workers 5 -> 5
+kill %1 2>/dev/null; wait 2>/dev/null
+root@c18de6e73dca:/app# cat -n /app/service.go | head -130
+     1  package main
+     2
+     3  import (
+     4          "database/sql"
+     5          "errors"
+     6          "fmt"
+     7          "time"
+     8  )
+     9
+    10  var (
+    11          ErrNotFound = errors.New("not found")
+    12          ErrConflict = errors.New("conflict")
+    13  )
+    14
+    15  type Service struct {
+    16          db   *sql.DB
+    17          pool *WorkerPool
+    18  }
+    19
+    20  func NewService(db *sql.DB, pool *WorkerPool) *Service {
+    21          return &Service{db: db, pool: pool}
+    22  }
+    23
+    24  func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+    25          if req.Type == "" {
+    26                  return nil, fmt.Errorf("type is required")
+    27          }
+    28          res, err := s.db.Exec(
+    29                  "INSERT INTO jobs (type, payload, priority) VALUES (?, ?, ?)",
+    30                  req.Type, req.Payload, req.Priority,
+    31          )
+    32          if err != nil {
+    33                  return nil, fmt.Errorf("insert job: %w", err)
+    34          }
+    35          id, _ := res.LastInsertId()
+    36          return s.GetJob(int(id))
+    37  }
+    38
+    39  func (s *Service) GetJob(id int) (*Job, error) {
+    40          var j Job
+    41          var workerID sql.NullInt64
+    42          var workerName sql.NullString
+    43
+    44          err := s.db.QueryRow(`
+    45                  SELECT j.id, j.type, j.payload, j.status, j.priority,
+    46                         j.created_at, j.updated_at, j.worker_id, w.name
+    47                  FROM jobs j
+    48                  LEFT JOIN workers w ON j.worker_id = w.id
+    49                  WHERE j.id = ?
+    50          `, id).Scan(
+    51                  &j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    52                  &j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+    53          )
+    54          if errors.Is(err, sql.ErrNoRows) {
+    55                  return nil, ErrNotFound
+    56          }
+    57          if err != nil {
+    58                  return nil, err
+    59          }
+    60          if workerID.Valid {
+    61                  wid := int(workerID.Int64)
+    62                  j.WorkerID = &wid
+    63          }
+    64          j.WorkerName = workerName.String
+    65          return &j, nil
+    66  }
+    67
+    68  func (s *Service) ListJobs(status string) ([]Job, error) {
+    69          var (
+    70                  rows *sql.Rows
+    71                  err  error
+    72          )
+    73          if status == "" {
+    74                  rows, err = s.db.Query(`
+    75                          SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+    76                          FROM jobs ORDER BY priority DESC, created_at ASC
+    77                  `)
+    78          } else {
+    79                  rows, err = s.db.Query(`
+    80                          SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+    81                          FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC
+    82                  `, status)
+    83          }
+    84          if err != nil {
+    85                  return nil, err
+    86          }
+    87          defer rows.Close()
+    88
+    89          var jobs []Job
+    90          for rows.Next() {
+    91                  var j Job
+    92                  var workerID sql.NullInt64
+    93                  if err := rows.Scan(
+    94                          &j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    95                          &j.CreatedAt, &j.UpdatedAt, &workerID,
+    96                  ); err != nil {
+    97                          return nil, err
+    98                  }
+    99                  if workerID.Valid {
+   100                          wid := int(workerID.Int64)
+   101                          j.WorkerID = &wid
+   102                  }
+   103                  jobs = append(jobs, j)
+   104          }
+   105          return jobs, rows.Err()
+   106  }
+   107
+   108  func (s *Service) CancelJob(id int) (*Job, error) {
+   109          job, err := s.GetJob(id)
+   110          if err != nil {
+   111                  return nil, err
+   112          }
+   113          if job.Status != "pending" {
+   114                  return nil, fmt.Errorf("%w: job status is %q", ErrConflict, job.Status)
+   115          }
+   116          if _, err := s.db.Exec(
+   117                  "UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?",
+   118                  time.Now(), id,
+   119          ); err != nil {
+   120                  return nil, err
+   121          }
+   122          return s.GetJob(id)
+   123  }
+   124
+   125  func (s *Service) CompleteJob(id int) (*Job, error) {
+   126          job, err := s.GetJob(id)
+   127          if err != nil {
+   128                  return nil, err
+   129          }
+   130          if job.Status != "running" {
+root@c18de6e73dca:/app#

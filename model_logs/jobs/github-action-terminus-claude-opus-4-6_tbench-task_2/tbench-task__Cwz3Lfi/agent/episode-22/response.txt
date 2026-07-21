@@ -1,0 +1,18 @@
+{
+  "analysis": "Job 7 was created with priority 0. The pool picks up higher priority jobs first so it should still be pending. Let me try to cancel it.",
+  "plan": "Cancel job 7 immediately, verify it stays cancelled.",
+  "commands": [
+    {
+      "keystrokes": "curl -s -X POST http://localhost:8080/jobs/7/cancel -w '\\nHTTP:%{http_code}\\n'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s http://localhost:8080/jobs/7 | python3 -m json.tool\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "sleep 5 && curl -s http://localhost:8080/jobs/7 | python3 -m json.tool\n",
+      "duration": 7.0
+    }
+  ]
+}

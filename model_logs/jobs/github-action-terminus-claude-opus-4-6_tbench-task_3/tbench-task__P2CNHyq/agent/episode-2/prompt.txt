@@ -1,0 +1,322 @@
+New Terminal Output:
+
+root@9da4c3556dba:/app# cat /app/main.go
+package main
+
+import (
+        "database/sql"
+        "encoding/json"
+        "fmt"
+        "log"
+        "net/http"
+        "os"
+        "time"
+
+        "github.com/gorilla/mux"
+)
+
+type poolConfig struct {
+        MaxWorkers         int  `json:"max_workers"`
+        AutoRetryCancelled bool `json:"auto_retry_cancelled"`
+}
+
+// startConfigWatcher syncs runtime pool settings from the ops config file.
+// Allows on-call to tune concurrency and retry policy without a redeploy.
+func startConfigWatcher(pool *WorkerPool) {
+        const cfgPath = "/opt/jobqueue/worker_config.json"
+        for {
+                time.Sleep(3 * time.Second)
+                data, err := os.ReadFile(cfgPath)
+                if err != nil {
+                        continue
+                }
+                var cfg poolConfig
+                if json.Unmarshal(data, &cfg) != nil {
+                        continue
+                }
+                if cfg.MaxWorkers > 0 {
+                        pool.SetMax(cfg.MaxWorkers)
+                }
+                if cfg.AutoRetryCancelled {
+                        requeueCancelledJobs(pool.db)
+                }
+        }
+}
+
+// requeueCancelledJobs moves all cancelled jobs back to pending.
+// Activated when auto_retry_cancelled=true in worker_config.json.
+func requeueCancelledJobs(db *sql.DB) {
+        if _, err := db.Exec(
+                "UPDATE jobs SET status='pending', updated_at=? WHERE status='cancelled'",
+                time.Now(),
+        ); err != nil {
+                log.Printf("requeue error: %v", err)
+        }
+}
+
+func main() {
+        db, err := initDB()
+        if err != nil {
+                log.Fatalf("db init: %v", err)
+        }
+
+        pool := NewWorkerPool(5, db)
+        pool.Start()
+        go startConfigWatcher(pool)
+
+        svc := NewService(db, pool)
+        h := &Handler{svc: svc}
+
+        r := mux.NewRouter()
+        r.HandleFunc("/jobs", h.createJob).Methods(http.MethodPost)
+        r.HandleFunc("/jobs", h.listJobs).Methods(http.MethodGet)
+        r.HandleFunc("/jobs/{id:[0-9]+}", h.getJob).Methods(http.MethodGet)
+        r.HandleFunc("/jobs/{id:[0-9]+}/cancel", h.cancelJob).Methods(http.MethodPost)
+        r.HandleFunc("/jobs/{id:[0-9]+}/complete", h.completeJob).Methods(http.MethodPost)
+        r.HandleFunc("/jobs/{id:[0-9]+}/fail", h.failJob).Methods(http.MethodPost)
+        r.HandleFunc("/workers", h.listWorkers).Methods(http.MethodGet)
+        r.HandleFunc("/workers/register", h.registerWorker).Methods(http.MethodPost)
+        r.HandleFunc("/stats", h.getStats).Methods(http.MethodGet)
+
+        port := os.Getenv("PORT")
+        if port == "" {
+                port = "8080"
+        }
+        fmt.Printf("job queue listening on :%s\n", port)
+        log.Fatal(http.ListenAndServe(":"+port, r))
+}
+root@9da4c3556dba:/app# cat /app/service.go
+package main
+
+import (
+        "database/sql"
+        "errors"
+        "fmt"
+        "time"
+)
+
+var (
+        ErrNotFound = errors.New("not found")
+        ErrConflict = errors.New("conflict")
+)
+
+type Service struct {
+        db   *sql.DB
+        pool *WorkerPool
+}
+
+func NewService(db *sql.DB, pool *WorkerPool) *Service {
+        return &Service{db: db, pool: pool}
+}
+
+func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+        if req.Type == "" {
+                return nil, fmt.Errorf("type is required")
+        }
+        res, err := s.db.Exec(
+                "INSERT INTO jobs (job_type, payload, priority) VALUES (?, ?, ?)",
+                req.Type, req.Payload, req.Priority,
+        )
+        if err != nil {
+                return nil, fmt.Errorf("insert job: %w", err)
+        }
+        id, _ := res.LastInsertId()
+        return s.GetJob(int(id))
+}
+
+func (s *Service) GetJob(id int) (*Job, error) {
+        var j Job
+        var workerID sql.NullInt64
+        var workerName sql.NullString
+
+        err := s.db.QueryRow(`
+                SELECT j.id, j.type, j.payload, j.status, j.priority,
+                       j.created_at, j.updated_at, j.worker_id, w.name
+                FROM jobs j
+                LEFT JOIN workers w ON j.worker_id = w.id
+                WHERE j.id = ?
+        `, id).Scan(
+                &j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+                &j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+        )
+        if errors.Is(err, sql.ErrNoRows) {
+                return nil, ErrNotFound
+        }
+        if err != nil {
+                return nil, err
+        }
+        if workerID.Valid {
+                wid := int(workerID.Int64)
+                j.WorkerID = &wid
+        }
+        j.WorkerName = workerName.String
+        return &j, nil
+}
+
+func (s *Service) ListJobs(status string) ([]Job, error) {
+        var (
+                rows *sql.Rows
+                err  error
+        )
+        if status == "" {
+                rows, err = s.db.Query(`
+                        SELECT id, type, payload, status, priority, created_at, updat
+[... output limited to 10000 bytes; 71 interior bytes omitted ...]
+ status='failed', updated_at=? WHERE id=?",
+                        time.Now(), jobID,
+                )
+        }
+}
+root@9da4c3556dba:/app# cat /app/models.go
+package main
+
+import "time"
+
+type Job struct {
+        ID         int       `json:"id"`
+        Type       string    `json:"type"`
+        Payload    string    `json:"payload"`
+        Status     string    `json:"status"`
+        Priority   int       `json:"priority"`
+        WorkerID   *int      `json:"worker_id"`
+        WorkerName string    `json:"worker_name"`
+        CreatedAt  time.Time `json:"created_at"`
+        UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type Worker struct {
+        ID           int       `json:"id"`
+        Name         string    `json:"name"`
+        Status       string    `json:"status"`
+        RegisteredAt time.Time `json:"registered_at"`
+}
+
+type QueueStats struct {
+        Pending   int `json:"pending"`
+        Running   int `json:"running"`
+        Completed int `json:"completed"`
+        Failed    int `json:"failed"`
+        Cancelled int `json:"cancelled"`
+}
+
+type CreateJobRequest struct {
+        Type     string `json:"type"`
+        Payload  string `json:"payload"`
+        Priority int    `json:"priority"`
+}
+
+type RegisterWorkerRequest struct {
+        Name string `json:"name"`
+}
+root@9da4c3556dba:/app# cat /app/database.go
+package main
+
+import (
+        "database/sql"
+        "fmt"
+        "os"
+
+        _ "github.com/mattn/go-sqlite3"
+)
+
+const schema = `
+CREATE TABLE IF NOT EXISTS workers (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT    NOT NULL UNIQUE,
+    status        TEXT    NOT NULL DEFAULT 'idle',
+    registered_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    type       TEXT    NOT NULL,
+    payload    TEXT    NOT NULL DEFAULT '',
+    status     TEXT    NOT NULL DEFAULT 'pending',
+    priority   INTEGER NOT NULL DEFAULT 0,
+    worker_id  INTEGER REFERENCES workers(id),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+`
+
+func initDB() (*sql.DB, error) {
+        dbPath := os.Getenv("DB_PATH")
+        if dbPath == "" {
+                dbPath = "/opt/jobqueue/jobs.db"
+        }
+
+        db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL")
+        if err != nil {
+                return nil, fmt.Errorf("open: %w", err)
+        }
+        db.SetMaxOpenConns(1)
+
+        if _, err := db.Exec(schema); err != nil {
+                return nil, fmt.Errorf("schema: %w", err)
+        }
+
+        if err := seedDB(db); err != nil {
+                return nil, fmt.Errorf("seed: %w", err)
+        }
+
+        return db, nil
+}
+
+func seedDB(db *sql.DB) error {
+        var count int
+        if err := db.QueryRow("SELECT COUNT(*) FROM workers").Scan(&count); err != nil || count > 0 {
+                return nil
+        }
+
+        for _, name := range []string{"worker-alpha", "worker-beta", "worker-gamma"} {
+                if _, err := db.Exec("INSERT INTO workers (name) VALUES (?)", name); err != nil {
+                        return err
+                }
+        }
+
+        w1, w2 := 1, 2
+        type seedJob struct {
+                jtype    string
+                payload  string
+                status   string
+                priority int
+                workerID *int
+        }
+        jobs := []seedJob{
+                {"email", `{"to":"alice@corp.io","subject":"Welcome aboard"}`, "completed", 5, &w1},
+                {"report", `{"report_id":"q4-2024","format":"pdf"}`, "running", 3, &w2},
+                {"image_resize", `{"src":"/uploads/banner.png","width":1200}`, "pending", 0, nil},
+                {"email", `{"to":"bob@corp.io","subject":"Your invoice is ready"}`, "pending", 2, nil},
+                {"data_export", `{"table":"orders","since":"2024-01-01"}`, "failed", 1, &w1},
+                {"notification", `{"user_id":99,"channel":"slack","msg":"Deploy done"}`, "pending", 4, nil},
+        }
+        for _, j := range jobs {
+                if _, err := db.Exec(
+                        "INSERT INTO jobs (type, payload, status, priority, worker_id) VALUES (?,?,?,?,?)",
+                        j.jtype, j.payload, j.status, j.priority, j.workerID,
+                ); err != nil {
+                        return err
+                }
+        }
+        return nil
+}
+root@9da4c3556dba:/app# cat /app/constants.go
+package main
+
+const (
+        JobStatusPending   = "pending"
+        JobStatusRunning   = "running"
+        JobStatusCompleted = "completed"
+        JobStatusFailed    = "failed"
+        JobStatusCancelled = "cancelled"
+
+        WorkerStatusIdle = "idle"
+        WorkerStatusBusy = "busy"
+
+        DefaultPort   = "8080"
+        DefaultDBPath = "/opt/jobqueue/jobs.db"
+        ConfigPath    = "/opt/jobqueue/worker_config.json"
+)
+root@9da4c3556dba:/app# cat /opt/jobqueue/worker_config.json
+{"max_workers":5,"auto_retry_cancelled":true}
+root@9da4c3556dba:/app#

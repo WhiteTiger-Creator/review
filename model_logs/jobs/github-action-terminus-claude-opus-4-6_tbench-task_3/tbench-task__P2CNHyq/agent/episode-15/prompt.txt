@@ -1,0 +1,9 @@
+New Terminal Output:
+
+root@9da4c3556dba:/app# grep 'INSERT INTO jobs' /app/service.go
+                "INSERT INTO jobs (type, payload, priority) VALUES (?, ?, ?)",
+root@9da4c3556dba:/app# grep 'AutoRetryCancelled' /app/main.go
+        AutoRetryCancelled bool `json:"auto_retry_cancelled"`
+                if false && cfg.AutoRetryCancelled {
+root@9da4c3556dba:/app# cd /app && /usr/local/go/bin/go build -o jobqueue . 2>&1
+root@9da4c3556dba:/app#

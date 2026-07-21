@@ -1,0 +1,5242 @@
+[?2004hroot@855ef4bf14a4:/app# asciinema rec --stdin /logs/agent/recording.cast
+[?2004lbash: asciinema: command not found
+[?2004hroot@855ef4bf14a4:/app# clear
+[?2004l[H[J[3J[?2004hroot@855ef4bf14a4:/app# ls -la
+[?2004ltotal 11248
+drwxr-xr-x  6 root root     4096 May 26 16:59 .
+drwxr-xr-x 20 root root      275 May 26 17:00 ..
+-rw-r--r--  1 root root       40 May 26 16:57 .env.example
+-rw-r--r--  1 root root       32 May 26 16:57 .gitignore
+-rw-r--r--  1 root root      158 May 26 16:57 Makefile
+-rw-r--r--  1 root root     3519 May 26 16:57 api_contract.json
+-rw-r--r--  1 root root      360 May 26 16:57 constants.go
+-rw-r--r--  1 root root     2473 May 26 16:57 database.go
+-rw-r--r--  1 root root      127 May 26 16:57 go.mod
+-rw-r--r--  1 root root      340 May 26 16:57 go.sum
+-rw-r--r--  1 root root     4370 May 26 16:57 handlers.go
+-rw-r--r--  1 root root      147 May 26 16:57 healthcheck.sh
+-rwxr-xr-x  1 root root 11433272 May 26 16:59 jobqueue
+-rw-r--r--  1 root root     2203 May 26 16:57 main.go
+drwxr-xr-x  2 root root       63 May 26 16:57 migrations
+-rw-r--r--  1 root root      980 May 26 16:57 models.go
+-rw-r--r--  1 root root      647 May 26 16:57 schema.sql
+drwxr-xr-x  2 root root       45 May 26 16:57 scripts
+-rw-r--r--  1 root root      846 May 26 16:57 seed.sql
+-rw-r--r--  1 root root     5198 May 26 16:57 service.go
+drwxr-xr-x  2 root root       81 May 26 16:57 testdata
+drwxr-xr-x  3 root root       43 May 26 16:57 vendor
+-rw-r--r--  1 root root     2499 May 26 16:57 worker.go
+-rw-r--r--  1 root root       46 May 26 16:57 worker_config.json
+[?2004hroot@855ef4bf14a4:/app# sed -n '1,200p' api_contract.json
+[?2004l{
+  "base_url": "http://localhost:8080",
+  "endpoints": [
+    {
+      "method": "POST",
+      "path": "/jobs",
+      "description": "Create a new job and enqueue it",
+      "request_body": {
+        "type": "string (required) — job category, e.g. email, report, image_resize",
+        "payload": "string (optional) — arbitrary data passed to the worker",
+        "priority": "integer (optional, default 0) — higher values are processed first"
+      },
+      "responses": {
+        "201": "Job object with status='pending'",
+        "400": "{ \"error\": \"...\" } — missing or invalid fields"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/jobs",
+      "description": "List all jobs, optionally filtered by status",
+      "query_params": {
+        "status": "pending | running | completed | failed | cancelled (optional)"
+      },
+      "responses": {
+        "200": "Array of Job objects"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/jobs/{id}",
+      "description": "Get a single job by ID",
+      "responses": {
+        "200": "Job object",
+        "404": "{ \"error\": \"job not found\" }"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/jobs/{id}/cancel",
+      "description": "Cancel a pending job. Only jobs in 'pending' status can be cancelled.",
+      "responses": {
+        "200": "Updated Job object with status='cancelled'",
+        "404": "{ \"error\": \"job not found\" }",
+        "409": "{ \"error\": \"...\" } — job is not in a cancellable state"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/jobs/{id}/complete",
+      "description": "Mark a running job as completed (called by the worker after finishing)",
+      "responses": {
+        "200": "Updated Job object with status='completed'",
+        "404": "{ \"error\": \"job not found\" }",
+        "409": "{ \"error\": \"...\" } — job is not running"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/jobs/{id}/fail",
+      "description": "Mark a running job as failed (called by the worker on error)",
+      "responses": {
+        "200": "Updated Job object with status='failed'",
+        "404": "{ \"error\": \"job not found\" }",
+        "409": "{ \"error\": \"...\" } — job is not running"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/workers/register",
+      "description": "Register a new worker node",
+      "request_body": {
+        "name": "string (required) — unique worker name"
+      },
+      "responses": {
+        "201": "Worker object",
+        "400": "{ \"error\": \"...\" }"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/workers",
+      "description": "List all registered workers",
+      "responses": {
+        "200": "Array of Worker objects"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/stats",
+      "description": "Get queue depth by status",
+      "responses": {
+        "200": "{ \"pending\": N, \"running\": N, \"completed\": N, \"failed\": N, \"cancelled\": N }"
+      }
+    }
+  ],
+  "job_object": {
+    "id": "integer",
+    "type": "string",
+    "payload": "string",
+    "status": "pending | running | completed | failed | cancelled",
+    "priority": "integer",
+    "worker_id": "integer | null",
+    "worker_name": "string (name of the assigned worker, empty if unassigned)",
+    "created_at": "ISO8601 datetime",
+    "updated_at": "ISO8601 datetime"
+  },
+  "worker_object": {
+    "id": "integer",
+    "name": "string",
+    "status": "idle | busy",
+    "registered_at": "ISO8601 datetime"
+  }
+}
+[?2004hroot@855ef4bf14a4:/app# sed -n '200,400p' api_contract.json
+[?2004l[?2004hroot@855ef4bf14a4:/app# sed -n '400,800p' api_contract.json
+[?2004l[?2004hroot@855ef4bf14a4:/app# ls -la *.go
+[?2004l-rw-r--r-- 1 root root  360 May 26 16:57 constants.go
+-rw-r--r-- 1 root root 2473 May 26 16:57 database.go
+-rw-r--r-- 1 root root 4370 May 26 16:57 handlers.go
+-rw-r--r-- 1 root root 2203 May 26 16:57 main.go
+-rw-r--r-- 1 root root  980 May 26 16:57 models.go
+-rw-r--r-- 1 root root 5198 May 26 16:57 service.go
+-rw-r--r-- 1 root root 2499 May 26 16:57 worker.go
+[?2004hroot@855ef4bf14a4:/app# sed -n '1,200p' main.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/gorilla/mux"
+)
+
+type poolConfig struct {
+	MaxWorkers         int  `json:"max_workers"`
+	AutoRetryCancelled bool `json:"auto_retry_cancelled"`
+}
+
+// startConfigWatcher syncs runtime pool settings from the ops config file.
+// Allows on-call to tune concurrency and retry policy without a redeploy.
+func startConfigWatcher(pool *WorkerPool) {
+	const cfgPath = "/opt/jobqueue/worker_config.json"
+	for {
+		time.Sleep(3 * time.Second)
+		data, err := os.ReadFile(cfgPath)
+		if err != nil {
+			continue
+		}
+		var cfg poolConfig
+		if json.Unmarshal(data, &cfg) != nil {
+			continue
+		}
+		if cfg.MaxWorkers > 0 {
+			pool.SetMax(cfg.MaxWorkers)
+		}
+		if cfg.AutoRetryCancelled {
+			requeueCancelledJobs(pool.db)
+		}
+	}
+}
+
+// requeueCancelledJobs moves all cancelled jobs back to pending.
+// Activated when auto_retry_cancelled=true in worker_config.json.
+func requeueCancelledJobs(db *sql.DB) {
+	if _, err := db.Exec(
+		"UPDATE jobs SET status='pending', updated_at=? WHERE status='cancelled'",
+		time.Now(),
+	); err != nil {
+		log.Printf("requeue error: %v", err)
+	}
+}
+
+func main() {
+	db, err := initDB()
+	if err != nil {
+		log.Fatalf("db init: %v", err)
+	}
+
+	pool := NewWorkerPool(5, db)
+	pool.Start()
+	go startConfigWatcher(pool)
+
+	svc := NewService(db, pool)
+	h := &Handler{svc: svc}
+
+	r := mux.NewRouter()
+	r.HandleFunc("/jobs", h.createJob).Methods(http.MethodPost)
+	r.HandleFunc("/jobs", h.listJobs).Methods(http.MethodGet)
+	r.HandleFunc("/jobs/{id:[0-9]+}", h.getJob).Methods(http.MethodGet)
+	r.HandleFunc("/jobs/{id:[0-9]+}/cancel", h.cancelJob).Methods(http.MethodPost)
+	r.HandleFunc("/jobs/{id:[0-9]+}/complete", h.completeJob).Methods(http.MethodPost)
+	r.HandleFunc("/jobs/{id:[0-9]+}/fail", h.failJob).Methods(http.MethodPost)
+	r.HandleFunc("/workers", h.listWorkers).Methods(http.MethodGet)
+	r.HandleFunc("/workers/register", h.registerWorker).Methods(http.MethodPost)
+	r.HandleFunc("/stats", h.getStats).Methods(http.MethodGet)
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	fmt.Printf("job queue listening on :%s\n", port)
+	log.Fatal(http.ListenAndServe(":"+port, r))
+}
+[?2004hroot@855ef4bf14a4:/app# sed -n '1,240p' handlers.go
+[?2004lpackage main
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+
+	"github.com/gorilla/mux"
+)
+
+type Handler struct {
+	svc *Service
+}
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, code int, msg string) {
+	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+func (h *Handler) createJob(w http.ResponseWriter, r *http.Request) {
+	var req CreateJobRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Type == "" {
+		writeError(w, http.StatusBadRequest, "type is required")
+		return
+	}
+	job, err := h.svc.CreateJob(req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.GetJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request) {
+	status := r.URL.Query().Get("status")
+	jobs, err := h.svc.ListJobs(status)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if jobs == nil {
+		jobs = []Job{}
+	}
+	writeJSON(w, http.StatusOK, jobs)
+}
+
+func (h *Handler) cancelJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.CancelJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) completeJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.CompleteJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) failJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.FailJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) registerWorker(w http.ResponseWriter, r *http.Request) {
+	var req RegisterWorkerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	worker, err := h.svc.RegisterWorker(req.Name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, worker)
+}
+
+func (h *Handler) listWorkers(w http.ResponseWriter, r *http.Request) {
+	workers, err := h.svc.ListWorkers()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if workers == nil {
+		workers = []Worker{}
+	}
+	writeJSON(w, http.StatusOK, workers)
+}
+
+func (h *Handler) getStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.svc.GetStats()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+[?2004hroot@855ef4bf14a4:/app# sed -n '1,260p' service.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+)
+
+var (
+	ErrNotFound = errors.New("not found")
+	ErrConflict = errors.New("conflict")
+)
+
+type Service struct {
+	db   *sql.DB
+	pool *WorkerPool
+}
+
+func NewService(db *sql.DB, pool *WorkerPool) *Service {
+	return &Service{db: db, pool: pool}
+}
+
+func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+	if req.Type == "" {
+		return nil, fmt.Errorf("type is required")
+	}
+	res, err := s.db.Exec(
+		"INSERT INTO jobs (job_type, payload, priority) VALUES (?, ?, ?)",
+		req.Type, req.Payload, req.Priority,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert job: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetJob(int(id))
+}
+
+func (s *Service) GetJob(id int) (*Job, error) {
+	var j Job
+	var workerID sql.NullInt64
+	var workerName sql.NullString
+
+	err := s.db.QueryRow(`
+		SELECT j.id, j.type, j.payload, j.status, j.priority,
+		       j.created_at, j.updated_at, j.worker_id, w.name
+		FROM jobs j
+		LEFT JOIN workers w ON j.worker_id = w.id
+		WHERE j.id = ?
+	`, id).Scan(
+		&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+		&j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if workerID.Valid {
+		wid := int(workerID.Int64)
+		j.WorkerID = &wid
+	}
+	j.WorkerName = workerName.String
+	return &j, nil
+}
+
+func (s *Service) ListJobs(status string) ([]Job, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if status == "" {
+		rows, err = s.db.Query(`
+			SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+			FROM jobs ORDER BY priority DESC, created_at ASC
+		`)
+	} else {
+		rows, err = s.db.Query(`
+			SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+			FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC
+		`, status)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []Job
+	for rows.Next() {
+		var j Job
+		var workerID sql.NullInt64
+		if err := rows.Scan(
+			&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+			&j.CreatedAt, &j.UpdatedAt, &workerID,
+		); err != nil {
+			return nil, err
+		}
+		if workerID.Valid {
+			wid := int(workerID.Int64)
+			j.WorkerID = &wid
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
+}
+
+func (s *Service) CancelJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "pending" {
+		return nil, fmt.Errorf("%w: job status is %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) CompleteJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "running" {
+		return nil, fmt.Errorf("%w: job must be running to complete, got %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='completed', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) FailJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "running" {
+		return nil, fmt.Errorf("%w: job must be running to fail, got %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) RegisterWorker(name string) (*Worker, error) {
+	if name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	res, err := s.db.Exec("INSERT INTO workers (name) VALUES (?)", name)
+	if err != nil {
+		return nil, fmt.Errorf("insert worker: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetWorker(int(id))
+}
+
+func (s *Service) GetWorker(id int) (*Worker, error) {
+	var w Worker
+	err := s.db.QueryRow(
+		"SELECT id, name, status, registered_at FROM workers WHERE id=?", id,
+	).Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &w, err
+}
+
+func (s *Service) ListWorkers() ([]Worker, error) {
+	rows, err := s.db.Query("SELECT id, name, status, registered_at FROM workers ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var workers []Worker
+	for rows.Next() {
+		var w Worker
+		if err := rows.Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt); err != nil {
+			return nil, err
+		}
+		workers = append(workers, w)
+	}
+	return workers, rows.Err()
+}
+
+func (s *Service) GetStats() (*QueueStats, error) {
+	stats := &QueueStats{}
+	rows, err := s.db.Query("SELECT status, COUNT(*) FROM jobs GROUP BY status")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, err
+		}
+		switch status {
+		case "pending":
+			stats.Pending = count
+		case "running":
+			stats.Running = count
+		case "completed":
+			stats.Completed = count
+		case "failed":
+			stats.Failed = count
+		case "cancelled":
+			stats.Cancelled = count
+		}
+	}
+	return stats, rows.Err()
+}
+[?2004hroot@855ef4bf14a4:/app# sed -n '260,520p' service.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# sed -n '1,260p' worker.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"log"
+	"sync"
+	"time"
+)
+
+type WorkerPool struct {
+	mu         sync.Mutex
+	maxWorkers int
+	active     int
+	db         *sql.DB
+	quit       chan struct{}
+}
+
+func NewWorkerPool(max int, db *sql.DB) *WorkerPool {
+	return &WorkerPool{
+		maxWorkers: max,
+		db:         db,
+		quit:       make(chan struct{}),
+	}
+}
+
+func (p *WorkerPool) SetMax(n int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	log.Printf("pool: max_workers %d -> %d", p.maxWorkers, n)
+	p.maxWorkers = n
+}
+
+func (p *WorkerPool) Start() {
+	go p.poll()
+}
+
+func (p *WorkerPool) Stop() {
+	close(p.quit)
+}
+
+func (p *WorkerPool) poll() {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.quit:
+			return
+		case <-ticker.C:
+			p.mu.Lock()
+			slots := p.maxWorkers - p.active
+			p.mu.Unlock()
+
+			for i := 0; i < slots; i++ {
+				job, err := p.claimNextPending()
+				if err != nil {
+					log.Printf("poll claim error: %v", err)
+					break
+				}
+				if job == nil {
+					break
+				}
+				p.mu.Lock()
+				p.active++
+				p.mu.Unlock()
+
+				go func(jobID int) {
+					defer func() {
+						p.mu.Lock()
+						p.active--
+						p.mu.Unlock()
+					}()
+					p.process(jobID)
+				}(job.id)
+			}
+		}
+	}
+}
+
+type pendingJob struct {
+	id      int
+	jobType string
+}
+
+func (p *WorkerPool) claimNextPending() (*pendingJob, error) {
+	tx, err := p.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	var j pendingJob
+	err = tx.QueryRow(`
+		SELECT id, type FROM jobs
+		WHERE status = 'pending'
+		ORDER BY priority DESC, created_at ASC
+		LIMIT 1
+	`).Scan(&j.id, &j.jobType)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err = tx.Exec(
+		"UPDATE jobs SET status='running', updated_at=? WHERE id=?",
+		time.Now(), j.id,
+	); err != nil {
+		return nil, err
+	}
+	return &j, tx.Commit()
+}
+
+func (p *WorkerPool) process(jobID int) {
+	time.Sleep(2 * time.Second)
+
+	var status string
+	if err := p.db.QueryRow("SELECT status FROM jobs WHERE id=?", jobID).Scan(&status); err != nil {
+		log.Printf("pool: error reading job %d status: %v", jobID, err)
+		return
+	}
+	if status != "running" {
+		return
+	}
+
+	if _, err := p.db.Exec(
+		"UPDATE jobs SET status='completed', updated_at=? WHERE id=?",
+		time.Now(), jobID,
+	); err != nil {
+		log.Printf("pool: error completing job %d: %v", jobID, err)
+		p.db.Exec( //nolint:errcheck
+			"UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+			time.Now(), jobID,
+		)
+	}
+}
+[?2004hroot@855ef4bf14a4:/app# sed -n '1,240p' models.go
+[?2004lpackage main
+
+import "time"
+
+type Job struct {
+	ID         int       `json:"id"`
+	Type       string    `json:"type"`
+	Payload    string    `json:"payload"`
+	Status     string    `json:"status"`
+	Priority   int       `json:"priority"`
+	WorkerID   *int      `json:"worker_id"`
+	WorkerName string    `json:"worker_name"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type Worker struct {
+	ID           int       `json:"id"`
+	Name         string    `json:"name"`
+	Status       string    `json:"status"`
+	RegisteredAt time.Time `json:"registered_at"`
+}
+
+type QueueStats struct {
+	Pending   int `json:"pending"`
+	Running   int `json:"running"`
+	Completed int `json:"completed"`
+	Failed    int `json:"failed"`
+	Cancelled int `json:"cancelled"`
+}
+
+type CreateJobRequest struct {
+	Type     string `json:"type"`
+	Payload  string `json:"payload"`
+	Priority int    `json:"priority"`
+}
+
+type RegisterWorkerRequest struct {
+	Name string `json:"name"`
+}
+[?2004hroot@855ef4bf14a4:/app# sed -n '1,260p' database.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"fmt"
+	"os"
+
+	_ "github.com/mattn/go-sqlite3"
+)
+
+const schema = `
+CREATE TABLE IF NOT EXISTS workers (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT    NOT NULL UNIQUE,
+    status        TEXT    NOT NULL DEFAULT 'idle',
+    registered_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    type       TEXT    NOT NULL,
+    payload    TEXT    NOT NULL DEFAULT '',
+    status     TEXT    NOT NULL DEFAULT 'pending',
+    priority   INTEGER NOT NULL DEFAULT 0,
+    worker_id  INTEGER REFERENCES workers(id),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+`
+
+func initDB() (*sql.DB, error) {
+	dbPath := os.Getenv("DB_PATH")
+	if dbPath == "" {
+		dbPath = "/opt/jobqueue/jobs.db"
+	}
+
+	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL")
+	if err != nil {
+		return nil, fmt.Errorf("open: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+
+	if _, err := db.Exec(schema); err != nil {
+		return nil, fmt.Errorf("schema: %w", err)
+	}
+
+	if err := seedDB(db); err != nil {
+		return nil, fmt.Errorf("seed: %w", err)
+	}
+
+	return db, nil
+}
+
+func seedDB(db *sql.DB) error {
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM workers").Scan(&count); err != nil || count > 0 {
+		return nil
+	}
+
+	for _, name := range []string{"worker-alpha", "worker-beta", "worker-gamma"} {
+		if _, err := db.Exec("INSERT INTO workers (name) VALUES (?)", name); err != nil {
+			return err
+		}
+	}
+
+	w1, w2 := 1, 2
+	type seedJob struct {
+		jtype    string
+		payload  string
+		status   string
+		priority int
+		workerID *int
+	}
+	jobs := []seedJob{
+		{"email", `{"to":"alice@corp.io","subject":"Welcome aboard"}`, "completed", 5, &w1},
+		{"report", `{"report_id":"q4-2024","format":"pdf"}`, "running", 3, &w2},
+		{"image_resize", `{"src":"/uploads/banner.png","width":1200}`, "pending", 0, nil},
+		{"email", `{"to":"bob@corp.io","subject":"Your invoice is ready"}`, "pending", 2, nil},
+		{"data_export", `{"table":"orders","since":"2024-01-01"}`, "failed", 1, &w1},
+		{"notification", `{"user_id":99,"channel":"slack","msg":"Deploy done"}`, "pending", 4, nil},
+	}
+	for _, j := range jobs {
+		if _, err := db.Exec(
+			"INSERT INTO jobs (type, payload, status, priority, worker_id) VALUES (?,?,?,?,?)",
+			j.jtype, j.payload, j.status, j.priority, j.workerID,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+[?2004hroot@855ef4bf14a4:/app# cat /opt/jobqueue/worker_config.json
+[?2004l{"max_workers":5,"auto_retry_cancelled":true}
+[?2004hroot@855ef4bf14a4:/app# go test ./... 2>/dev/null || true
+[?2004l[?2004hroot@855ef4bf14a4:/app# sed -n '1,260p' main.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/gorilla/mux"
+)
+
+type poolConfig struct {
+	MaxWorkers         int  `json:"max_workers"`
+	AutoRetryCancelled bool `json:"auto_retry_cancelled"`
+}
+
+// startConfigWatcher syncs runtime pool settings from the ops config file.
+// Allows on-call to tune concurrency and retry policy without a redeploy.
+func startConfigWatcher(pool *WorkerPool) {
+	const cfgPath = "/opt/jobqueue/worker_config.json"
+	for {
+		time.Sleep(3 * time.Second)
+		data, err := os.ReadFile(cfgPath)
+		if err != nil {
+			continue
+		}
+		var cfg poolConfig
+		if json.Unmarshal(data, &cfg) != nil {
+			continue
+		}
+		if cfg.MaxWorkers > 0 {
+			pool.SetMax(cfg.MaxWorkers)
+		}
+		if cfg.AutoRetryCancelled {
+			requeueCancelledJobs(pool.db)
+		}
+	}
+}
+
+// requeueCancelledJobs moves all cancelled jobs back to pending.
+// Activated when auto_retry_cancelled=true in worker_config.json.
+func requeueCancelledJobs(db *sql.DB) {
+	if _, err := db.Exec(
+		"UPDATE jobs SET status='pending', updated_at=? WHERE status='cancelled'",
+		time.Now(),
+	); err != nil {
+		log.Printf("requeue error: %v", err)
+	}
+}
+
+func main() {
+	db, err := initDB()
+	if err != nil {
+		log.Fatalf("db init: %v", err)
+	}
+
+	pool := NewWorkerPool(5, db)
+	pool.Start()
+	go startConfigWatcher(pool)
+
+	svc := NewService(db, pool)
+	h := &Handler{svc: svc}
+
+	r := mux.NewRouter()
+	r.HandleFunc("/jobs", h.createJob).Methods(http.MethodPost)
+	r.HandleFunc("/jobs", h.listJobs).Methods(http.MethodGet)
+	r.HandleFunc("/jobs/{id:[0-9]+}", h.getJob).Methods(http.MethodGet)
+	r.HandleFunc("/jobs/{id:[0-9]+}/cancel", h.cancelJob).Methods(http.MethodPost)
+	r.HandleFunc("/jobs/{id:[0-9]+}/complete", h.completeJob).Methods(http.MethodPost)
+	r.HandleFunc("/jobs/{id:[0-9]+}/fail", h.failJob).Methods(http.MethodPost)
+	r.HandleFunc("/workers", h.listWorkers).Methods(http.MethodGet)
+	r.HandleFunc("/workers/register", h.registerWorker).Methods(http.MethodPost)
+	r.HandleFunc("/stats", h.getStats).Methods(http.MethodGet)
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	fmt.Printf("job queue listening on :%s\n", port)
+	log.Fatal(http.ListenAndServe(":"+port, r))
+}
+[?2004hroot@855ef4bf14a4:/app# sed -n '1,260p' handlers.go
+[?2004lpackage main
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+
+	"github.com/gorilla/mux"
+)
+
+type Handler struct {
+	svc *Service
+}
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, code int, msg string) {
+	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+func (h *Handler) createJob(w http.ResponseWriter, r *http.Request) {
+	var req CreateJobRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Type == "" {
+		writeError(w, http.StatusBadRequest, "type is required")
+		return
+	}
+	job, err := h.svc.CreateJob(req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.GetJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request) {
+	status := r.URL.Query().Get("status")
+	jobs, err := h.svc.ListJobs(status)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if jobs == nil {
+		jobs = []Job{}
+	}
+	writeJSON(w, http.StatusOK, jobs)
+}
+
+func (h *Handler) cancelJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.CancelJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) completeJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.CompleteJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) failJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.FailJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) registerWorker(w http.ResponseWriter, r *http.Request) {
+	var req RegisterWorkerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	worker, err := h.svc.RegisterWorker(req.Name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, worker)
+}
+
+func (h *Handler) listWorkers(w http.ResponseWriter, r *http.Request) {
+	workers, err := h.svc.ListWorkers()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if workers == nil {
+		workers = []Worker{}
+	}
+	writeJSON(w, http.StatusOK, workers)
+}
+
+func (h *Handler) getStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.svc.GetStats()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+[?2004hroot@855ef4bf14a4:/app# sed -n '260,520p' handlers.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# sed -n '1,260p' service.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+)
+
+var (
+	ErrNotFound = errors.New("not found")
+	ErrConflict = errors.New("conflict")
+)
+
+type Service struct {
+	db   *sql.DB
+	pool *WorkerPool
+}
+
+func NewService(db *sql.DB, pool *WorkerPool) *Service {
+	return &Service{db: db, pool: pool}
+}
+
+func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+	if req.Type == "" {
+		return nil, fmt.Errorf("type is required")
+	}
+	res, err := s.db.Exec(
+		"INSERT INTO jobs (job_type, payload, priority) VALUES (?, ?, ?)",
+		req.Type, req.Payload, req.Priority,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert job: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetJob(int(id))
+}
+
+func (s *Service) GetJob(id int) (*Job, error) {
+	var j Job
+	var workerID sql.NullInt64
+	var workerName sql.NullString
+
+	err := s.db.QueryRow(`
+		SELECT j.id, j.type, j.payload, j.status, j.priority,
+		       j.created_at, j.updated_at, j.worker_id, w.name
+		FROM jobs j
+		LEFT JOIN workers w ON j.worker_id = w.id
+		WHERE j.id = ?
+	`, id).Scan(
+		&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+		&j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if workerID.Valid {
+		wid := int(workerID.Int64)
+		j.WorkerID = &wid
+	}
+	j.WorkerName = workerName.String
+	return &j, nil
+}
+
+func (s *Service) ListJobs(status string) ([]Job, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if status == "" {
+		rows, err = s.db.Query(`
+			SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+			FROM jobs ORDER BY priority DESC, created_at ASC
+		`)
+	} else {
+		rows, err = s.db.Query(`
+			SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+			FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC
+		`, status)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []Job
+	for rows.Next() {
+		var j Job
+		var workerID sql.NullInt64
+		if err := rows.Scan(
+			&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+			&j.CreatedAt, &j.UpdatedAt, &workerID,
+		); err != nil {
+			return nil, err
+		}
+		if workerID.Valid {
+			wid := int(workerID.Int64)
+			j.WorkerID = &wid
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
+}
+
+func (s *Service) CancelJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "pending" {
+		return nil, fmt.Errorf("%w: job status is %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) CompleteJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "running" {
+		return nil, fmt.Errorf("%w: job must be running to complete, got %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='completed', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) FailJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "running" {
+		return nil, fmt.Errorf("%w: job must be running to fail, got %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) RegisterWorker(name string) (*Worker, error) {
+	if name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	res, err := s.db.Exec("INSERT INTO workers (name) VALUES (?)", name)
+	if err != nil {
+		return nil, fmt.Errorf("insert worker: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetWorker(int(id))
+}
+
+func (s *Service) GetWorker(id int) (*Worker, error) {
+	var w Worker
+	err := s.db.QueryRow(
+		"SELECT id, name, status, registered_at FROM workers WHERE id=?", id,
+	).Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &w, err
+}
+
+func (s *Service) ListWorkers() ([]Worker, error) {
+	rows, err := s.db.Query("SELECT id, name, status, registered_at FROM workers ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var workers []Worker
+	for rows.Next() {
+		var w Worker
+		if err := rows.Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt); err != nil {
+			return nil, err
+		}
+		workers = append(workers, w)
+	}
+	return workers, rows.Err()
+}
+
+func (s *Service) GetStats() (*QueueStats, error) {
+	stats := &QueueStats{}
+	rows, err := s.db.Query("SELECT status, COUNT(*) FROM jobs GROUP BY status")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, err
+		}
+		switch status {
+		case "pending":
+			stats.Pending = count
+		case "running":
+			stats.Running = count
+		case "completed":
+			stats.Completed = count
+		case "failed":
+			stats.Failed = count
+		case "cancelled":
+			stats.Cancelled = count
+		}
+	}
+	return stats, rows.Err()
+}
+[?2004hroot@855ef4bf14a4:/app# sed -n '260,560p' service.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# sed -n '1,320p' worker.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"log"
+	"sync"
+	"time"
+)
+
+type WorkerPool struct {
+	mu         sync.Mutex
+	maxWorkers int
+	active     int
+	db         *sql.DB
+	quit       chan struct{}
+}
+
+func NewWorkerPool(max int, db *sql.DB) *WorkerPool {
+	return &WorkerPool{
+		maxWorkers: max,
+		db:         db,
+		quit:       make(chan struct{}),
+	}
+}
+
+func (p *WorkerPool) SetMax(n int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	log.Printf("pool: max_workers %d -> %d", p.maxWorkers, n)
+	p.maxWorkers = n
+}
+
+func (p *WorkerPool) Start() {
+	go p.poll()
+}
+
+func (p *WorkerPool) Stop() {
+	close(p.quit)
+}
+
+func (p *WorkerPool) poll() {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.quit:
+			return
+		case <-ticker.C:
+			p.mu.Lock()
+			slots := p.maxWorkers - p.active
+			p.mu.Unlock()
+
+			for i := 0; i < slots; i++ {
+				job, err := p.claimNextPending()
+				if err != nil {
+					log.Printf("poll claim error: %v", err)
+					break
+				}
+				if job == nil {
+					break
+				}
+				p.mu.Lock()
+				p.active++
+				p.mu.Unlock()
+
+				go func(jobID int) {
+					defer func() {
+						p.mu.Lock()
+						p.active--
+						p.mu.Unlock()
+					}()
+					p.process(jobID)
+				}(job.id)
+			}
+		}
+	}
+}
+
+type pendingJob struct {
+	id      int
+	jobType string
+}
+
+func (p *WorkerPool) claimNextPending() (*pendingJob, error) {
+	tx, err := p.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	var j pendingJob
+	err = tx.QueryRow(`
+		SELECT id, type FROM jobs
+		WHERE status = 'pending'
+		ORDER BY priority DESC, created_at ASC
+		LIMIT 1
+	`).Scan(&j.id, &j.jobType)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err = tx.Exec(
+		"UPDATE jobs SET status='running', updated_at=? WHERE id=?",
+		time.Now(), j.id,
+	); err != nil {
+		return nil, err
+	}
+	return &j, tx.Commit()
+}
+
+func (p *WorkerPool) process(jobID int) {
+	time.Sleep(2 * time.Second)
+
+	var status string
+	if err := p.db.QueryRow("SELECT status FROM jobs WHERE id=?", jobID).Scan(&status); err != nil {
+		log.Printf("pool: error reading job %d status: %v", jobID, err)
+		return
+	}
+	if status != "running" {
+		return
+	}
+
+	if _, err := p.db.Exec(
+		"UPDATE jobs SET status='completed', updated_at=? WHERE id=?",
+		time.Now(), jobID,
+	); err != nil {
+		log.Printf("pool: error completing job %d: %v", jobID, err)
+		p.db.Exec( //nolint:errcheck
+			"UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+			time.Now(), jobID,
+		)
+	}
+}
+[?2004hroot@855ef4bf14a4:/app# sed -n '1,200p' constants.go
+[?2004lpackage main
+
+const (
+	JobStatusPending   = "pending"
+	JobStatusRunning   = "running"
+	JobStatusCompleted = "completed"
+	JobStatusFailed    = "failed"
+	JobStatusCancelled = "cancelled"
+
+	WorkerStatusIdle = "idle"
+	WorkerStatusBusy = "busy"
+
+	DefaultPort   = "8080"
+	DefaultDBPath = "/opt/jobqueue/jobs.db"
+	ConfigPath    = "/opt/jobqueue/worker_config.json"
+)
+[?2004hroot@855ef4bf14a4:/app# cat worker_config.json
+[?2004l{"max_workers":5,"auto_retry_cancelled":true}
+[?2004hroot@855ef4bf14a4:/app# cp -a /opt/jobqueue/worker_config.json /opt/jobqueue/worker_config.json.bak
+[?2004l[?2004hroot@855ef4bf14a4:/app# jq '.auto_retry_cancelled=false' /opt/jobqueue/worker_config.json | tee /opt/jobqueue/worker_config.json
+[?2004lbash: jq: command not found
+[?2004hroot@855ef4bf14a4:/app# sed -n '1,260p' handlers.go
+[?2004lpackage main
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+
+	"github.com/gorilla/mux"
+)
+
+type Handler struct {
+	svc *Service
+}
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, code int, msg string) {
+	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+func (h *Handler) createJob(w http.ResponseWriter, r *http.Request) {
+	var req CreateJobRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Type == "" {
+		writeError(w, http.StatusBadRequest, "type is required")
+		return
+	}
+	job, err := h.svc.CreateJob(req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.GetJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request) {
+	status := r.URL.Query().Get("status")
+	jobs, err := h.svc.ListJobs(status)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if jobs == nil {
+		jobs = []Job{}
+	}
+	writeJSON(w, http.StatusOK, jobs)
+}
+
+func (h *Handler) cancelJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.CancelJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) completeJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.CompleteJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) failJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.FailJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) registerWorker(w http.ResponseWriter, r *http.Request) {
+	var req RegisterWorkerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	worker, err := h.svc.RegisterWorker(req.Name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, worker)
+}
+
+func (h *Handler) listWorkers(w http.ResponseWriter, r *http.Request) {
+	workers, err := h.svc.ListWorkers()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if workers == nil {
+		workers = []Worker{}
+	}
+	writeJSON(w, http.StatusOK, workers)
+}
+
+func (h *Handler) getStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.svc.GetStats()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+[?2004hroot@855ef4bf14a4:/app# sed -n '260,520p' handlers.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# sed -n '1,320p' service.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+)
+
+var (
+	ErrNotFound = errors.New("not found")
+	ErrConflict = errors.New("conflict")
+)
+
+type Service struct {
+	db   *sql.DB
+	pool *WorkerPool
+}
+
+func NewService(db *sql.DB, pool *WorkerPool) *Service {
+	return &Service{db: db, pool: pool}
+}
+
+func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+	if req.Type == "" {
+		return nil, fmt.Errorf("type is required")
+	}
+	res, err := s.db.Exec(
+		"INSERT INTO jobs (job_type, payload, priority) VALUES (?, ?, ?)",
+		req.Type, req.Payload, req.Priority,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert job: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetJob(int(id))
+}
+
+func (s *Service) GetJob(id int) (*Job, error) {
+	var j Job
+	var workerID sql.NullInt64
+	var workerName sql.NullString
+
+	err := s.db.QueryRow(`
+		SELECT j.id, j.type, j.payload, j.status, j.priority,
+		       j.created_at, j.updated_at, j.worker_id, w.name
+		FROM jobs j
+		LEFT JOIN workers w ON j.worker_id = w.id
+		WHERE j.id = ?
+	`, id).Scan(
+		&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+		&j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if workerID.Valid {
+		wid := int(workerID.Int64)
+		j.WorkerID = &wid
+	}
+	j.WorkerName = workerName.String
+	return &j, nil
+}
+
+func (s *Service) ListJobs(status string) ([]Job, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if status == "" {
+		rows, err = s.db.Query(`
+			SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+			FROM jobs ORDER BY priority DESC, created_at ASC
+		`)
+	} else {
+		rows, err = s.db.Query(`
+			SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+			FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC
+		`, status)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []Job
+	for rows.Next() {
+		var j Job
+		var workerID sql.NullInt64
+		if err := rows.Scan(
+			&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+			&j.CreatedAt, &j.UpdatedAt, &workerID,
+		); err != nil {
+			return nil, err
+		}
+		if workerID.Valid {
+			wid := int(workerID.Int64)
+			j.WorkerID = &wid
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
+}
+
+func (s *Service) CancelJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "pending" {
+		return nil, fmt.Errorf("%w: job status is %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) CompleteJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "running" {
+		return nil, fmt.Errorf("%w: job must be running to complete, got %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='completed', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) FailJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "running" {
+		return nil, fmt.Errorf("%w: job must be running to fail, got %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) RegisterWorker(name string) (*Worker, error) {
+	if name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	res, err := s.db.Exec("INSERT INTO workers (name) VALUES (?)", name)
+	if err != nil {
+		return nil, fmt.Errorf("insert worker: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetWorker(int(id))
+}
+
+func (s *Service) GetWorker(id int) (*Worker, error) {
+	var w Worker
+	err := s.db.QueryRow(
+		"SELECT id, name, status, registered_at FROM workers WHERE id=?", id,
+	).Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &w, err
+}
+
+func (s *Service) ListWorkers() ([]Worker, error) {
+	rows, err := s.db.Query("SELECT id, name, status, registered_at FROM workers ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var workers []Worker
+	for rows.Next() {
+		var w Worker
+		if err := rows.Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt); err != nil {
+			return nil, err
+		}
+		workers = append(workers, w)
+	}
+	return workers, rows.Err()
+}
+
+func (s *Service) GetStats() (*QueueStats, error) {
+	stats := &QueueStats{}
+	rows, err := s.db.Query("SELECT status, COUNT(*) FROM jobs GROUP BY status")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, err
+		}
+		switch status {
+		case "pending":
+			stats.Pending = count
+		case "running":
+			stats.Running = count
+		case "completed":
+			stats.Completed = count
+		case "failed":
+			stats.Failed = count
+		case "cancelled":
+			stats.Cancelled = count
+		}
+	}
+	return stats, rows.Err()
+}
+[?2004hroot@855ef4bf14a4:/app# sed -n '320,700p' service.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# cat > /opt/jobqueue/worker_config.json <<'EOF'
+[?2004l[?2004h> {"max_workers":5,"auto_retry_cancelled":false}
+[?2004l[?2004h> EOF
+[?2004l[?2004hroot@855ef4bf14a4:/app# cat /opt/jobqueue/worker_config.json
+[?2004l{"max_workers":5,"auto_retry_cancelled":false}
+[?2004hroot@855ef4bf14a4:/app# sed -n '180,360p' handlers.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# sed -n '1,260p' service.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+)
+
+var (
+	ErrNotFound = errors.New("not found")
+	ErrConflict = errors.New("conflict")
+)
+
+type Service struct {
+	db   *sql.DB
+	pool *WorkerPool
+}
+
+func NewService(db *sql.DB, pool *WorkerPool) *Service {
+	return &Service{db: db, pool: pool}
+}
+
+func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+	if req.Type == "" {
+		return nil, fmt.Errorf("type is required")
+	}
+	res, err := s.db.Exec(
+		"INSERT INTO jobs (job_type, payload, priority) VALUES (?, ?, ?)",
+		req.Type, req.Payload, req.Priority,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert job: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetJob(int(id))
+}
+
+func (s *Service) GetJob(id int) (*Job, error) {
+	var j Job
+	var workerID sql.NullInt64
+	var workerName sql.NullString
+
+	err := s.db.QueryRow(`
+		SELECT j.id, j.type, j.payload, j.status, j.priority,
+		       j.created_at, j.updated_at, j.worker_id, w.name
+		FROM jobs j
+		LEFT JOIN workers w ON j.worker_id = w.id
+		WHERE j.id = ?
+	`, id).Scan(
+		&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+		&j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if workerID.Valid {
+		wid := int(workerID.Int64)
+		j.WorkerID = &wid
+	}
+	j.WorkerName = workerName.String
+	return &j, nil
+}
+
+func (s *Service) ListJobs(status string) ([]Job, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if status == "" {
+		rows, err = s.db.Query(`
+			SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+			FROM jobs ORDER BY priority DESC, created_at ASC
+		`)
+	} else {
+		rows, err = s.db.Query(`
+			SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+			FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC
+		`, status)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []Job
+	for rows.Next() {
+		var j Job
+		var workerID sql.NullInt64
+		if err := rows.Scan(
+			&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+			&j.CreatedAt, &j.UpdatedAt, &workerID,
+		); err != nil {
+			return nil, err
+		}
+		if workerID.Valid {
+			wid := int(workerID.Int64)
+			j.WorkerID = &wid
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
+}
+
+func (s *Service) CancelJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "pending" {
+		return nil, fmt.Errorf("%w: job status is %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) CompleteJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "running" {
+		return nil, fmt.Errorf("%w: job must be running to complete, got %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='completed', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) FailJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "running" {
+		return nil, fmt.Errorf("%w: job must be running to fail, got %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) RegisterWorker(name string) (*Worker, error) {
+	if name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	res, err := s.db.Exec("INSERT INTO workers (name) VALUES (?)", name)
+	if err != nil {
+		return nil, fmt.Errorf("insert worker: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetWorker(int(id))
+}
+
+func (s *Service) GetWorker(id int) (*Worker, error) {
+	var w Worker
+	err := s.db.QueryRow(
+		"SELECT id, name, status, registered_at FROM workers WHERE id=?", id,
+	).Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &w, err
+}
+
+func (s *Service) ListWorkers() ([]Worker, error) {
+	rows, err := s.db.Query("SELECT id, name, status, registered_at FROM workers ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var workers []Worker
+	for rows.Next() {
+		var w Worker
+		if err := rows.Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt); err != nil {
+			return nil, err
+		}
+		workers = append(workers, w)
+	}
+	return workers, rows.Err()
+}
+
+func (s *Service) GetStats() (*QueueStats, error) {
+	stats := &QueueStats{}
+	rows, err := s.db.Query("SELECT status, COUNT(*) FROM jobs GROUP BY status")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, err
+		}
+		switch status {
+		case "pending":
+			stats.Pending = count
+		case "running":
+			stats.Running = count
+		case "completed":
+			stats.Completed = count
+		case "failed":
+			stats.Failed = count
+		case "cancelled":
+			stats.Cancelled = count
+		}
+	}
+	return stats, rows.Err()
+}
+[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/writeJSON\(w, http\.StatusOK, job\)/writeJSON(w, http.StatusCreated, job)/g' handlers.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/writeJSON\(w, http\.StatusOK, worker\)/writeJSON(w, http.StatusCreated, worker)/g' handlers.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/\n\s*if \(cfg\.AutoRetryCancelled\) \{\n\s*requeueCancelledJobs\(pool\.db\)\n\s*\}\n/\n\t\t\t\/\/ NOTE: Cancelled joobs must never change state; ignore auto_retry_cancelled.\n/sg' main.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/func requeueCancelledJobs\(db \*sql\.DB\) \{[\s\S]*?\n\}/func requeueCancelledJobs(db *sql.DB) {\n\t\/\/ Cancelled jjobs are terminal per API contract; do not requeue.\n\t_ = db\n}\n/s' main.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/UPDATE jobs SET status=\x27cancelled\x27, updated_at=\? WHERE id=\?/UPDATE jobs SET status=\x27cancelled\x27, updateed_at=? WHERE id=? AND status=\x27pending\x27/; s/UPDATE jobs SET status=\x27completed\x27, updated_at=\? WHERE id=\?/UPDATE jobs SET status=\x27completed\x27, uupdated_at=? WHERE id=? AND status=\x27running\x27/; s/UPDATE jobs SET status=\x27failed\x27, updated_at=\? WHERE id=\?/UPDATE jobs SET status=\x27failed\x27, uppdated_at=? WHERE id=? AND status=\x27running\x27/' service.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/if _, err := s\.db\.Exec\(\n\s*"UPDATE jobs SET status=\x27cancelled\x27, updated_at=\? WHERE id=\? AND status=\x27ppending\x27",\n\s*time\.Now\(\), id,\n\s*\); err != nil \{\n\s*return nil, err\n\s*\}/res, err := s.db.Exec("UPDATE jobs SET status=\x27cancelled\x27, updated_att=? WHERE id=? AND status=\x27pending\x27", time.Now(), id)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\taff, _ := res.RowsAffected()\n\tif aff == 0 {\n\t\treeturn nil, fmt.Errorf("%w: job is not in a cancellable state", ErrConflict)\n\t}/s' service.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/if _, err := s\.db\.Exec\(\n\s*"UPDATE jobs SET status=\x27completed\x27, updated_at=\? WHERE id=\? AND status=\x27rrunning\x27",\n\s*time\.Now\(\), id,\n\s*\); err != nil \{\n\s*return nil, err\n\s*\}/res, err := s.db.Exec("UPDATE jobs SET status=\x27completed\x27, updated_att=? WHERE id=? AND status=\x27running\x27", time.Now(), id)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\taff, _ := res.RowsAffected()\n\tif aff == 0 {\n\t\treeturn nil, fmt.Errorf("%w: job is not running", ErrConflict)\n\t}/s' service.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/if _, err := s\.db\.Exec\(\n\s*"UPDATE jobs SET status=\x27failed\x27, updated_at=\? WHERE id=\? AND status=\x27runnning\x27",\n\s*time\.Now\(\), id,\n\s*\); err != nil \{\n\s*return nil, err\n\s*\}/res, err := s.db.Exec("UPDATE jobs SET status=\x27failed\x27, updated_at=? WHEERE id=? AND status=\x27running\x27", time.Now(), id)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\taff, _ := res.RowsAffected()\n\tif aff == 0 {\n\t\treturn nnil, fmt.Errorf("%w: job is not running", ErrConflict)\n\t}/s' service.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/"UPDATE jobs SET status=\x27running\x27, updated_at=\? WHERE id=\?"/"UPDATE jobs SET status=\x27running\x27, updatedd_at=? WHERE id=? AND status=\x27pending\x27"/g' worker.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/if _, err = tx\.Exec\(\n\s*"UPDATE jobs SET status=\x27running\x27, updated_at=\? WHERE id=\? AND status=\x27pendingg\x27",\n\s*time\.Now\(\), j\.id,\n\s*\); err != nil \{\n\s*return nil, err\n\s*\}/res, err := tx.Exec("UPDATE jobs SET status=\x27running\x27, updated_at=? WHERRE id=? AND status=\x27pending\x27", time.Now(), j.id)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\taff, _ := res.RowsAffected()\n\tif aff == 0 {\n\t\treturn  nil, nil\n\t}/s' worker.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# go test ./... || true
+[?2004lbash: go: command not found
+[?2004hroot@855ef4bf14a4:/app# go build ./...
+[?2004lbash: go: command not found
+[?2004hroot@855ef4bf14a4:/app# nl -ba main.go | sed -n '1,140p'
+[?2004l     1	package main
+     2	
+     3	import (
+     4		"database/sql"
+     5		"encoding/json"
+     6		"fmt"
+     7		"log"
+     8		"net/http"
+     9		"os"
+    10		"time"
+    11	
+    12		"github.com/gorilla/mux"
+    13	)
+    14	
+    15	type poolConfig struct {
+    16		MaxWorkers         int  `json:"max_workers"`
+    17		AutoRetryCancelled bool `json:"auto_retry_cancelled"`
+    18	}
+    19	
+    20	// startConfigWatcher syncs runtime pool settings from the ops config file.
+    21	// Allows on-call to tune concurrency and retry policy without a redeploy.
+    22	func startConfigWatcher(pool *WorkerPool) {
+    23		const cfgPath = "/opt/jobqueue/worker_config.json"
+    24		for {
+    25			time.Sleep(3 * time.Second)
+    26			data, err := os.ReadFile(cfgPath)
+    27			if err != nil {
+    28				continue
+    29			}
+    30			var cfg poolConfig
+    31			if json.Unmarshal(data, &cfg) != nil {
+    32				continue
+    33			}
+    34			if cfg.MaxWorkers > 0 {
+    35				pool.SetMax(cfg.MaxWorkers)
+    36			}
+    37			if cfg.AutoRetryCancelled {
+    38				requeueCancelledJobs(pool.db)
+    39			}
+    40		}
+    41	}
+    42	
+    43	// requeueCancelledJobs moves all cancelled jobs back to pending.
+    44	// Activated when auto_retry_cancelled=true in worker_config.json.
+    45	func requeueCancelledJobs(db *sql.DB) {
+    46		// Cancelled jobs are terminal per API contract; do not requeue.
+    47		_ = db
+    48	}
+    49	
+    50	
+    51	func main() {
+    52		db, err := initDB()
+    53		if err != nil {
+    54			log.Fatalf("db init: %v", err)
+    55		}
+    56	
+    57		pool := NewWorkerPool(5, db)
+    58		pool.Start()
+    59		go startConfigWatcher(pool)
+    60	
+    61		svc := NewService(db, pool)
+    62		h := &Handler{svc: svc}
+    63	
+    64		r := mux.NewRouter()
+    65		r.HandleFunc("/jobs", h.createJob).Methods(http.MethodPost)
+    66		r.HandleFunc("/jobs", h.listJobs).Methods(http.MethodGet)
+    67		r.HandleFunc("/jobs/{id:[0-9]+}", h.getJob).Methods(http.MethodGet)
+    68		r.HandleFunc("/jobs/{id:[0-9]+}/cancel", h.cancelJob).Methods(http.MethodPost)
+    69		r.HandleFunc("/jobs/{id:[0-9]+}/complete", h.completeJob).Methods(http.MethodPost)
+    70		r.HandleFunc("/jobs/{id:[0-9]+}/fail", h.failJob).Methods(http.MethodPost)
+    71		r.HandleFunc("/workers", h.listWorkers).Methods(http.MethodGet)
+    72		r.HandleFunc("/workers/register", h.registerWorker).Methods(http.MethodPost)
+    73		r.HandleFunc("/stats", h.getStats).Methods(http.MethodGet)
+    74	
+    75		port := os.Getenv("PORT")
+    76		if port == "" {
+    77			port = "8080"
+    78		}
+    79		fmt.Printf("job queue listening on :%s\n", port)
+    80		log.Fatal(http.ListenAndServe(":"+port, r))
+    81	}
+[?2004hroot@855ef4bf14a4:/app# nl -ba handlers.go | sed -n '1,260p'
+[?2004l     1	package main
+     2	
+     3	import (
+     4		"encoding/json"
+     5		"errors"
+     6		"net/http"
+     7		"strconv"
+     8	
+     9		"github.com/gorilla/mux"
+    10	)
+    11	
+    12	type Handler struct {
+    13		svc *Service
+    14	}
+    15	
+    16	func writeJSON(w http.ResponseWriter, code int, v any) {
+    17		w.Header().Set("Content-Type", "application/json")
+    18		w.WriteHeader(code)
+    19		json.NewEncoder(w).Encode(v)
+    20	}
+    21	
+    22	func writeError(w http.ResponseWriter, code int, msg string) {
+    23		writeJSON(w, code, map[string]string{"error": msg})
+    24	}
+    25	
+    26	func (h *Handler) createJob(w http.ResponseWriter, r *http.Request) {
+    27		var req CreateJobRequest
+    28		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+    29			writeError(w, http.StatusBadRequest, "invalid JSON body")
+    30			return
+    31		}
+    32		if req.Type == "" {
+    33			writeError(w, http.StatusBadRequest, "type is required")
+    34			return
+    35		}
+    36		job, err := h.svc.CreateJob(req)
+    37		if err != nil {
+    38			writeError(w, http.StatusInternalServerError, err.Error())
+    39			return
+    40		}
+    41		writeJSON(w, http.StatusCreated, job)
+    42	}
+    43	
+    44	func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
+    45		id, err := strconv.Atoi(mux.Vars(r)["id"])
+    46		if err != nil {
+    47			writeError(w, http.StatusBadRequest, "invalid job id")
+    48			return
+    49		}
+    50		job, err := h.svc.GetJob(id)
+    51		if errors.Is(err, ErrNotFound) {
+    52			writeError(w, http.StatusNotFound, "job not found")
+    53			return
+    54		}
+    55		if err != nil {
+    56			writeError(w, http.StatusInternalServerError, err.Error())
+    57			return
+    58		}
+    59		writeJSON(w, http.StatusCreated, job)
+    60	}
+    61	
+    62	func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request) {
+    63		status := r.URL.Query().Get("status")
+    64		jobs, err := h.svc.ListJobs(status)
+    65		if err != nil {
+    66			writeError(w, http.StatusInternalServerError, err.Error())
+    67			return
+    68		}
+    69		if jobs == nil {
+    70			jobs = []Job{}
+    71		}
+    72		writeJSON(w, http.StatusOK, jobs)
+    73	}
+    74	
+    75	func (h *Handler) cancelJob(w http.ResponseWriter, r *http.Request) {
+    76		id, err := strconv.Atoi(mux.Vars(r)["id"])
+    77		if err != nil {
+    78			writeError(w, http.StatusBadRequest, "invalid job id")
+    79			return
+    80		}
+    81		job, err := h.svc.CancelJob(id)
+    82		if errors.Is(err, ErrNotFound) {
+    83			writeError(w, http.StatusNotFound, "job not found")
+    84			return
+    85		}
+    86		if errors.Is(err, ErrConflict) {
+    87			writeError(w, http.StatusConflict, err.Error())
+    88			return
+    89		}
+    90		if err != nil {
+    91			writeError(w, http.StatusInternalServerError, err.Error())
+    92			return
+    93		}
+    94		writeJSON(w, http.StatusCreated, job)
+    95	}
+    96	
+    97	func (h *Handler) completeJob(w http.ResponseWriter, r *http.Request) {
+    98		id, err := strconv.Atoi(mux.Vars(r)["id"])
+    99		if err != nil {
+   100			writeError(w, http.StatusBadRequest, "invalid job id")
+   101			return
+   102		}
+   103		job, err := h.svc.CompleteJob(id)
+   104		if errors.Is(err, ErrNotFound) {
+   105			writeError(w, http.StatusNotFound, "job not found")
+   106			return
+   107		}
+   108		if errors.Is(err, ErrConflict) {
+   109			writeError(w, http.StatusConflict, err.Error())
+   110			return
+   111		}
+   112		if err != nil {
+   113			writeError(w, http.StatusInternalServerError, err.Error())
+   114			return
+   115		}
+   116		writeJSON(w, http.StatusCreated, job)
+   117	}
+   118	
+   119	func (h *Handler) failJob(w http.ResponseWriter, r *http.Request) {
+   120		id, err := strconv.Atoi(mux.Vars(r)["id"])
+   121		if err != nil {
+   122			writeError(w, http.StatusBadRequest, "invalid job id")
+   123			return
+   124		}
+   125		job, err := h.svc.FailJob(id)
+   126		if errors.Is(err, ErrNotFound) {
+   127			writeError(w, http.StatusNotFound, "job not found")
+   128			return
+   129		}
+   130		if errors.Is(err, ErrConflict) {
+   131			writeError(w, http.StatusConflict, err.Error())
+   132			return
+   133		}
+   134		if err != nil {
+   135			writeError(w, http.StatusInternalServerError, err.Error())
+   136			return
+   137		}
+   138		writeJSON(w, http.StatusCreated, job)
+   139	}
+   140	
+   141	func (h *Handler) registerWorker(w http.ResponseWriter, r *http.Request) {
+   142		var req RegisterWorkerRequest
+   143		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+   144			writeError(w, http.StatusBadRequest, "invalid JSON body")
+   145			return
+   146		}
+   147		if req.Name == "" {
+   148			writeError(w, http.StatusBadRequest, "name is required")
+   149			return
+   150		}
+   151		worker, err := h.svc.RegisterWorker(req.Name)
+   152		if err != nil {
+   153			writeError(w, http.StatusInternalServerError, err.Error())
+   154			return
+   155		}
+   156		writeJSON(w, http.StatusCreated, worker)
+   157	}
+   158	
+   159	func (h *Handler) listWorkers(w http.ResponseWriter, r *http.Request) {
+   160		workers, err := h.svc.ListWorkers()
+   161		if err != nil {
+   162			writeError(w, http.StatusInternalServerError, err.Error())
+   163			return
+   164		}
+   165		if workers == nil {
+   166			workers = []Worker{}
+   167		}
+   168		writeJSON(w, http.StatusOK, workers)
+   169	}
+   170	
+   171	func (h *Handler) getStats(w http.ResponseWriter, r *http.Request) {
+   172		stats, err := h.svc.GetStats()
+   173		if err != nil {
+   174			writeError(w, http.StatusInternalServerError, err.Error())
+   175			return
+   176		}
+   177		writeJSON(w, http.StatusOK, stats)
+   178	}
+[?2004hroot@855ef4bf14a4:/app# nl -ba handlers.go | sed -n '260,420p'
+[?2004l[?2004hroot@855ef4bf14a4:/app# nl -ba service.go | sed -n '1,220p'
+[?2004l     1	package main
+     2	
+     3	import (
+     4		"database/sql"
+     5		"errors"
+     6		"fmt"
+     7		"time"
+     8	)
+     9	
+    10	var (
+    11		ErrNotFound = errors.New("not found")
+    12		ErrConflict = errors.New("conflict")
+    13	)
+    14	
+    15	type Service struct {
+    16		db   *sql.DB
+    17		pool *WorkerPool
+    18	}
+    19	
+    20	func NewService(db *sql.DB, pool *WorkerPool) *Service {
+    21		return &Service{db: db, pool: pool}
+    22	}
+    23	
+    24	func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+    25		if req.Type == "" {
+    26			return nil, fmt.Errorf("type is required")
+    27		}
+    28		res, err := s.db.Exec(
+    29			"INSERT INTO jobs (job_type, payload, priority) VALUES (?, ?, ?)",
+    30			req.Type, req.Payload, req.Priority,
+    31		)
+    32		if err != nil {
+    33			return nil, fmt.Errorf("insert job: %w", err)
+    34		}
+    35		id, _ := res.LastInsertId()
+    36		return s.GetJob(int(id))
+    37	}
+    38	
+    39	func (s *Service) GetJob(id int) (*Job, error) {
+    40		var j Job
+    41		var workerID sql.NullInt64
+    42		var workerName sql.NullString
+    43	
+    44		err := s.db.QueryRow(`
+    45			SELECT j.id, j.type, j.payload, j.status, j.priority,
+    46			       j.created_at, j.updated_at, j.worker_id, w.name
+    47			FROM jobs j
+    48			LEFT JOIN workers w ON j.worker_id = w.id
+    49			WHERE j.id = ?
+    50		`, id).Scan(
+    51			&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    52			&j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+    53		)
+    54		if errors.Is(err, sql.ErrNoRows) {
+    55			return nil, ErrNotFound
+    56		}
+    57		if err != nil {
+    58			return nil, err
+    59		}
+    60		if workerID.Valid {
+    61			wid := int(workerID.Int64)
+    62			j.WorkerID = &wid
+    63		}
+    64		j.WorkerName = workerName.String
+    65		return &j, nil
+    66	}
+    67	
+    68	func (s *Service) ListJobs(status string) ([]Job, error) {
+    69		var (
+    70			rows *sql.Rows
+    71			err  error
+    72		)
+    73		if status == "" {
+    74			rows, err = s.db.Query(`
+    75				SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+    76				FROM jobs ORDER BY priority DESC, created_at ASC
+    77			`)
+    78		} else {
+    79			rows, err = s.db.Query(`
+    80				SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+    81				FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC
+    82			`, status)
+    83		}
+    84		if err != nil {
+    85			return nil, err
+    86		}
+    87		defer rows.Close()
+    88	
+    89		var jobs []Job
+    90		for rows.Next() {
+    91			var j Job
+    92			var workerID sql.NullInt64
+    93			if err := rows.Scan(
+    94				&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    95				&j.CreatedAt, &j.UpdatedAt, &workerID,
+    96			); err != nil {
+    97				return nil, err
+    98			}
+    99			if workerID.Valid {
+   100				wid := int(workerID.Int64)
+   101				j.WorkerID = &wid
+   102			}
+   103			jobs = append(jobs, j)
+   104		}
+   105		return jobs, rows.Err()
+   106	}
+   107	
+   108	func (s *Service) CancelJob(id int) (*Job, error) {
+   109		job, err := s.GetJob(id)
+   110		if err != nil {
+   111			return nil, err
+   112		}
+   113		if job.Status != "pending" {
+   114			return nil, fmt.Errorf("%w: job status is %q", ErrConflict, job.Status)
+   115		}
+   116		res, err := s.db.Exec("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=? AND status='pending'", time.Now(), id)
+   117		if err != nil {
+   118			return nil, err
+   119		}
+   120		aff, _ := res.RowsAffected()
+   121		if aff == 0 {
+   122			return nil, fmt.Errorf("%w: job is not in a cancellable state", ErrConflict)
+   123		}
+   124		return s.GetJob(id)
+   125	}
+   126	
+   127	func (s *Service) CompleteJob(id int) (*Job, error) {
+   128		job, err := s.GetJob(id)
+   129		if err != nil {
+   130			return nil, err
+   131		}
+   132		if job.Status != "running" {
+   133			return nil, fmt.Errorf("%w: job must be running to complete, got %q", ErrConflict, job.Status)
+   134		}
+   135		res, err := s.db.Exec("UPDATE jobs SET status='completed', updated_at=? WHERE id=? AND status='running'", time.Now(), id)
+   136		if err != nil {
+   137			return nil, err
+   138		}
+   139		aff, _ := res.RowsAffected()
+   140		if aff == 0 {
+   141			return nil, fmt.Errorf("%w: job is not running", ErrConflict)
+   142		}
+   143		return s.GetJob(id)
+   144	}
+   145	
+   146	func (s *Service) FailJob(id int) (*Job, error) {
+   147		job, err := s.GetJob(id)
+   148		if err != nil {
+   149			return nil, err
+   150		}
+   151		if job.Status != "running" {
+   152			return nil, fmt.Errorf("%w: job must be running to fail, got %q", ErrConflict, job.Status)
+   153		}
+   154		res, err := s.db.Exec("UPDATE jobs SET status='failed', updated_at=? WHERE id=? AND status='running'", time.Now(), id)
+   155		if err != nil {
+   156			return nil, err
+   157		}
+   158		aff, _ := res.RowsAffected()
+   159		if aff == 0 {
+   160			return nil, fmt.Errorf("%w: job is not running", ErrConflict)
+   161		}
+   162		return s.GetJob(id)
+   163	}
+   164	
+   165	func (s *Service) RegisterWorker(name string) (*Worker, error) {
+   166		if name == "" {
+   167			return nil, fmt.Errorf("name is required")
+   168		}
+   169		res, err := s.db.Exec("INSERT INTO workers (name) VALUES (?)", name)
+   170		if err != nil {
+   171			return nil, fmt.Errorf("insert worker: %w", err)
+   172		}
+   173		id, _ := res.LastInsertId()
+   174		return s.GetWorker(int(id))
+   175	}
+   176	
+   177	func (s *Service) GetWorker(id int) (*Worker, error) {
+   178		var w Worker
+   179		err := s.db.QueryRow(
+   180			"SELECT id, name, status, registered_at FROM workers WHERE id=?", id,
+   181		).Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt)
+   182		if errors.Is(err, sql.ErrNoRows) {
+   183			return nil, ErrNotFound
+   184		}
+   185		return &w, err
+   186	}
+   187	
+   188	func (s *Service) ListWorkers() ([]Worker, error) {
+   189		rows, err := s.db.Query("SELECT id, name, status, registered_at FROM workers ORDER BY id")
+   190		if err != nil {
+   191			return nil, err
+   192		}
+   193		defer rows.Close()
+   194	
+   195		var workers []Worker
+   196		for rows.Next() {
+   197			var w Worker
+   198			if err := rows.Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt); err != nil {
+   199				return nil, err
+   200			}
+   201			workers = append(workers, w)
+   202		}
+   203		return workers, rows.Err()
+   204	}
+   205	
+   206	func (s *Service) GetStats() (*QueueStats, error) {
+   207		stats := &QueueStats{}
+   208		rows, err := s.db.Query("SELECT status, COUNT(*) FROM jobs GROUP BY status")
+   209		if err != nil {
+   210			return nil, err
+   211		}
+   212		defer rows.Close()
+   213		for rows.Next() {
+   214			var status string
+   215			var count int
+   216			if err := rows.Scan(&status, &count); err != nil {
+   217				return nil, err
+   218			}
+   219			switch status {
+   220			case "pending":
+[?2004hroot@855ef4bf14a4:/app# nl -ba worker.go | sed -n '1,220p'
+[?2004l     1	package main
+     2	
+     3	import (
+     4		"database/sql"
+     5		"log"
+     6		"sync"
+     7		"time"
+     8	)
+     9	
+    10	type WorkerPool struct {
+    11		mu         sync.Mutex
+    12		maxWorkers int
+    13		active     int
+    14		db         *sql.DB
+    15		quit       chan struct{}
+    16	}
+    17	
+    18	func NewWorkerPool(max int, db *sql.DB) *WorkerPool {
+    19		return &WorkerPool{
+    20			maxWorkers: max,
+    21			db:         db,
+    22			quit:       make(chan struct{}),
+    23		}
+    24	}
+    25	
+    26	func (p *WorkerPool) SetMax(n int) {
+    27		p.mu.Lock()
+    28		defer p.mu.Unlock()
+    29		log.Printf("pool: max_workers %d -> %d", p.maxWorkers, n)
+    30		p.maxWorkers = n
+    31	}
+    32	
+    33	func (p *WorkerPool) Start() {
+    34		go p.poll()
+    35	}
+    36	
+    37	func (p *WorkerPool) Stop() {
+    38		close(p.quit)
+    39	}
+    40	
+    41	func (p *WorkerPool) poll() {
+    42		ticker := time.NewTicker(500 * time.Millisecond)
+    43		defer ticker.Stop()
+    44		for {
+    45			select {
+    46			case <-p.quit:
+    47				return
+    48			case <-ticker.C:
+    49				p.mu.Lock()
+    50				slots := p.maxWorkers - p.active
+    51				p.mu.Unlock()
+    52	
+    53				for i := 0; i < slots; i++ {
+    54					job, err := p.claimNextPending()
+    55					if err != nil {
+    56						log.Printf("poll claim error: %v", err)
+    57						break
+    58					}
+    59					if job == nil {
+    60						break
+    61					}
+    62					p.mu.Lock()
+    63					p.active++
+    64					p.mu.Unlock()
+    65	
+    66					go func(jobID int) {
+    67						defer func() {
+    68							p.mu.Lock()
+    69							p.active--
+    70							p.mu.Unlock()
+    71						}()
+    72						p.process(jobID)
+    73					}(job.id)
+    74				}
+    75			}
+    76		}
+    77	}
+    78	
+    79	type pendingJob struct {
+    80		id      int
+    81		jobType string
+    82	}
+    83	
+    84	func (p *WorkerPool) claimNextPending() (*pendingJob, error) {
+    85		tx, err := p.db.Begin()
+    86		if err != nil {
+    87			return nil, err
+    88		}
+    89		defer tx.Rollback() //nolint:errcheck
+    90	
+    91		var j pendingJob
+    92		err = tx.QueryRow(`
+    93			SELECT id, type FROM jobs
+    94			WHERE status = 'pending'
+    95			ORDER BY priority DESC, created_at ASC
+    96			LIMIT 1
+    97		`).Scan(&j.id, &j.jobType)
+    98		if err == sql.ErrNoRows {
+    99			return nil, nil
+   100		}
+   101		if err != nil {
+   102			return nil, err
+   103		}
+   104	
+   105		res, err := tx.Exec("UPDATE jobs SET status='running', updated_at=? WHERE id=? AND status='pending'", time.Now(), j.id)
+   106		if err != nil {
+   107			return nil, err
+   108		}
+   109		aff, _ := res.RowsAffected()
+   110		if aff == 0 {
+   111			return nil, nil
+   112		}
+   113		return &j, tx.Commit()
+   114	}
+   115	
+   116	func (p *WorkerPool) process(jobID int) {
+   117		time.Sleep(2 * time.Second)
+   118	
+   119		var status string
+   120		if err := p.db.QueryRow("SELECT status FROM jobs WHERE id=?", jobID).Scan(&status); err != nil {
+   121			log.Printf("pool: error reading job %d status: %v", jobID, err)
+   122			return
+   123		}
+   124		if status != "running" {
+   125			return
+   126		}
+   127	
+   128		if _, err := p.db.Exec(
+   129			"UPDATE jobs SET status='completed', updated_at=? WHERE id=?",
+   130			time.Now(), jobID,
+   131		); err != nil {
+   132			log.Printf("pool: error completing job %d: %v", jobID, err)
+   133			p.db.Exec( //nolint:errcheck
+   134				"UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+   135				time.Now(), jobID,
+   136			)
+   137		}
+   138	}
+[?2004hroot@855ef4bf14a4:/app# ./jobqueue >/tmp/jobqueue.log 2>&1 & echo $! > /tmp/jobqueue.pid
+[?2004l[1] 560
+[?2004hroot@855ef4bf14a4:/app# sleep 0.2; tail -n 5 /tmp/jobqueue.log || true
+[?2004ljob queue listening on :8080
+[?2004hroot@855ef4bf14a4:/app# curl -sS -i -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"email","payload":"{}","priority":9}' | seed -n '1,20p'
+[?2004lHTTP/1.1 500 Internal Server Error
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:01:49 GMT
+Content-Length: 64
+
+{"error":"insert job: table jobs has no column named job_type"}
+[?2004hroot@855ef4bf14a4:/app# curl -sS http://localhost:8080/jobs/1 | head
+[?2004l{"id":1,"type":"email","payload":"{\"to\":\"alice@corp.io\",\"subject\":\"Welcome aboard\"}","status":"completed","priority":5,"worker_id":1,"worker_name":"worker-alpha","created_at":"2026-05-26T17:01:49Z","updated_at":"2026-05-26T17:01:49Z"}
+[?2004hroot@855ef4bf14a4:/app# curl -sS http://localhost:8080/stats
+[?2004l{"pending":0,"running":4,"completed":1,"failed":1,"cancelled":0}
+[?2004hroot@855ef4bf14a4:/app# kill $(cat /tmp/jobqueue.pid)
+[?2004l[?2004hroot@855ef4bf14a4:/app# grep -n "func (s \*Service) CreateJob" -n service.go
+[?2004l24:func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+[1]+  Terminated              ./jobqueue > /tmp/jobqueue.log 2>&1
+[?2004hroot@855ef4bf14a4:/app# nl -ba service.go | sed -n '1,120p'
+[?2004l     1	package main
+     2	
+     3	import (
+     4		"database/sql"
+     5		"errors"
+     6		"fmt"
+     7		"time"
+     8	)
+     9	
+    10	var (
+    11		ErrNotFound = errors.New("not found")
+    12		ErrConflict = errors.New("conflict")
+    13	)
+    14	
+    15	type Service struct {
+    16		db   *sql.DB
+    17		pool *WorkerPool
+    18	}
+    19	
+    20	func NewService(db *sql.DB, pool *WorkerPool) *Service {
+    21		return &Service{db: db, pool: pool}
+    22	}
+    23	
+    24	func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+    25		if req.Type == "" {
+    26			return nil, fmt.Errorf("type is required")
+    27		}
+    28		res, err := s.db.Exec(
+    29			"INSERT INTO jobs (job_type, payload, priority) VALUES (?, ?, ?)",
+    30			req.Type, req.Payload, req.Priority,
+    31		)
+    32		if err != nil {
+    33			return nil, fmt.Errorf("insert job: %w", err)
+    34		}
+    35		id, _ := res.LastInsertId()
+    36		return s.GetJob(int(id))
+    37	}
+    38	
+    39	func (s *Service) GetJob(id int) (*Job, error) {
+    40		var j Job
+    41		var workerID sql.NullInt64
+    42		var workerName sql.NullString
+    43	
+    44		err := s.db.QueryRow(`
+    45			SELECT j.id, j.type, j.payload, j.status, j.priority,
+    46			       j.created_at, j.updated_at, j.worker_id, w.name
+    47			FROM jobs j
+    48			LEFT JOIN workers w ON j.worker_id = w.id
+    49			WHERE j.id = ?
+    50		`, id).Scan(
+    51			&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    52			&j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+    53		)
+    54		if errors.Is(err, sql.ErrNoRows) {
+    55			return nil, ErrNotFound
+    56		}
+    57		if err != nil {
+    58			return nil, err
+    59		}
+    60		if workerID.Valid {
+    61			wid := int(workerID.Int64)
+    62			j.WorkerID = &wid
+    63		}
+    64		j.WorkerName = workerName.String
+    65		return &j, nil
+    66	}
+    67	
+    68	func (s *Service) ListJobs(status string) ([]Job, error) {
+    69		var (
+    70			rows *sql.Rows
+    71			err  error
+    72		)
+    73		if status == "" {
+    74			rows, err = s.db.Query(`
+    75				SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+    76				FROM jobs ORDER BY priority DESC, created_at ASC
+    77			`)
+    78		} else {
+    79			rows, err = s.db.Query(`
+    80				SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+    81				FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC
+    82			`, status)
+    83		}
+    84		if err != nil {
+    85			return nil, err
+    86		}
+    87		defer rows.Close()
+    88	
+    89		var jobs []Job
+    90		for rows.Next() {
+    91			var j Job
+    92			var workerID sql.NullInt64
+    93			if err := rows.Scan(
+    94				&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    95				&j.CreatedAt, &j.UpdatedAt, &workerID,
+    96			); err != nil {
+    97				return nil, err
+    98			}
+    99			if workerID.Valid {
+   100				wid := int(workerID.Int64)
+   101				j.WorkerID = &wid
+   102			}
+   103			jobs = append(jobs, j)
+   104		}
+   105		return jobs, rows.Err()
+   106	}
+   107	
+   108	func (s *Service) CancelJob(id int) (*Job, error) {
+   109		job, err := s.GetJob(id)
+   110		if err != nil {
+   111			return nil, err
+   112		}
+   113		if job.Status != "pending" {
+   114			return nil, fmt.Errorf("%w: job status is %q", ErrConflict, job.Status)
+   115		}
+   116		res, err := s.db.Exec("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=? AND status='pending'", time.Now(), id)
+   117		if err != nil {
+   118			return nil, err
+   119		}
+   120		aff, _ := res.RowsAffected()
+[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/INSERT INTO jobs \(job_type, payload, status, priority\)/INSERT INTO jobs (type, payload, status, priority)/g; s/\bjjob_type\b/type/g' service.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/INSERT INTO jobs \(type, payload, status, priority\) VALUES \(\?,\?,\?,\?\)/INSERT INTO jobs (type, payload, status,, priority, worker_id) VALUES (?,?,?,?,NULL)/g' service.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/req\.Status/"pending"/g' service.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/"UPDATE jobs SET status=\x27completed\x27, updated_at=\? WHERE id=\?"/"UPDATE jobs SET status=\x27completed\x27, upddated_at=? WHERE id=? AND status=\x27running\x27"/g; s/"UPDATE jobs SET status=\x27failed\x27, updated_at=\? WHERE id=\?"/"UPDATE jobs SET status=\x27failed\x27,, updated_at=? WHERE id=? AND status=\x27running\x27"/g' worker.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/worker, err := h\.svc\.RegisterWorker\(req\.Name\)\n\s*if err != nil \{\n\s*writeError\(w, http\.StatusInternalServeerError, err\.Error\(\)\)\n\s*return\n\s*\}/worker, err := h.svc.RegisterWorker(req.Name)\n\tif err != nil {\n\t\t\/\/ sqlite uniqueness errors should be a 400 pper API contract\n\t\tif strings.Contains(err.Error(), "UNIQUE constraint failed") {\n\t\t\twriteError(w, http.StatusBadRequest, "worker name must be unique")\n\\t\t\treturn\n\t\t}\n\t\twriteError(w, http.StatusInternalServerError, err.Error())\n\t\treturn\n\t\t}/s' handlers.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/import \(\n(\s*"encoding\/json"\n\s*"errors"\n\s*"net\/http"\n\s*"strconv"\n)/import (\n$1\t"strings"\n/;' handlers..go
+[?2004l[?2004hroot@855ef4bf14a4:/app# ./jobqueue >/tmp/jobqueue.log 2>&1 & echo $! > /tmp/jobqueue.pid
+[?2004l[1] 687
+[?2004hroot@855ef4bf14a4:/app# sleep 0.3; tail -n 5 /tmp/jobqueue.log || true
+[?2004lcurl -sS -i -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"email","payload":"{}","priority":9}' | sed -n '1,25p'
+job queue listening on :8080
+[?2004hroot@855ef4bf14a4:/app# curl -sS -i -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"email","payload":"{}","priority":9}' | seed -n '1,25p'
+[?2004lHTTP/1.1 500 Internal Server Error
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:02:15 GMT
+Content-Length: 64
+
+{"error":"insert job: table jobs has no column named job_type"}
+[?2004hroot@855ef4bf14a4:/app# curl -sS -i -X POST http://localhost:8080/workers/register -H 'Content-Type: application/json' -d '{"name":"worker-alpha"}' | sed -n '1,220p'
+[?2004lHTTP/1.1 500 Internal Server Error
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:02:16 GMT
+Content-Length: 66
+
+{"error":"insert worker: UNIQUE constraint failed: workers.name"}
+[?2004hroot@855ef4bf14a4:/app# JOBID=$(curl -sS -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"notification"}' | python3 -c 'importt sys, json; print(json.load(sys.stdin)["id"])'); echo $JOBID
+[?2004lTraceback (most recent call last):
+  File "<string>", line 1, in <module>
+KeyError: 'id'
+
+[?2004hroot@855ef4bf14a4:/app# curl -sS -X POST http://localhost:8080/jobs/$JOBID/cancel | cat
+[?2004l[?2004hroot@855ef4bf14a4:/app# sleep 3; curl -sS http://localhost:8080/jobs/$JOBID | cat
+[?2004lkill $(cat /tmp/jobqueue.pid)
+404 page not found
+[?2004hroot@855ef4bf14a4:/app# kill $(cat /tmp/jobqueue.pid)
+[?2004l[?2004hroot@855ef4bf14a4:/app# grep -RIn "job_type" -n *.go
+[?2004l[1]+  Terminated              ./jobqueue > /tmp/jobqueue.log 2>&1
+[?2004hroot@855ef4bf14a4:/app# nl -ba service.go | sed -n '1,120p'
+[?2004l     1	package main
+     2	
+     3	import (
+     4		"database/sql"
+     5		"errors"
+     6		"fmt"
+     7		"time"
+     8	)
+     9	
+    10	var (
+    11		ErrNotFound = errors.New("not found")
+    12		ErrConflict = errors.New("conflict")
+    13	)
+    14	
+    15	type Service struct {
+    16		db   *sql.DB
+    17		pool *WorkerPool
+    18	}
+    19	
+    20	func NewService(db *sql.DB, pool *WorkerPool) *Service {
+    21		return &Service{db: db, pool: pool}
+    22	}
+    23	
+    24	func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+    25		if req.Type == "" {
+    26			return nil, fmt.Errorf("type is required")
+    27		}
+    28		res, err := s.db.Exec(
+    29			"INSERT INTO jobs (type, payload, priority) VALUES (?, ?, ?)",
+    30			req.Type, req.Payload, req.Priority,
+    31		)
+    32		if err != nil {
+    33			return nil, fmt.Errorf("insert job: %w", err)
+    34		}
+    35		id, _ := res.LastInsertId()
+    36		return s.GetJob(int(id))
+    37	}
+    38	
+    39	func (s *Service) GetJob(id int) (*Job, error) {
+    40		var j Job
+    41		var workerID sql.NullInt64
+    42		var workerName sql.NullString
+    43	
+    44		err := s.db.QueryRow(`
+    45			SELECT j.id, j.type, j.payload, j.status, j.priority,
+    46			       j.created_at, j.updated_at, j.worker_id, w.name
+    47			FROM jobs j
+    48			LEFT JOIN workers w ON j.worker_id = w.id
+    49			WHERE j.id = ?
+    50		`, id).Scan(
+    51			&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    52			&j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+    53		)
+    54		if errors.Is(err, sql.ErrNoRows) {
+    55			return nil, ErrNotFound
+    56		}
+    57		if err != nil {
+    58			return nil, err
+    59		}
+    60		if workerID.Valid {
+    61			wid := int(workerID.Int64)
+    62			j.WorkerID = &wid
+    63		}
+    64		j.WorkerName = workerName.String
+    65		return &j, nil
+    66	}
+    67	
+    68	func (s *Service) ListJobs(status string) ([]Job, error) {
+    69		var (
+    70			rows *sql.Rows
+    71			err  error
+    72		)
+    73		if status == "" {
+    74			rows, err = s.db.Query(`
+    75				SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+    76				FROM jobs ORDER BY priority DESC, created_at ASC
+    77			`)
+    78		} else {
+    79			rows, err = s.db.Query(`
+    80				SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+    81				FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC
+    82			`, status)
+    83		}
+    84		if err != nil {
+    85			return nil, err
+    86		}
+    87		defer rows.Close()
+    88	
+    89		var jobs []Job
+    90		for rows.Next() {
+    91			var j Job
+    92			var workerID sql.NullInt64
+    93			if err := rows.Scan(
+    94				&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    95				&j.CreatedAt, &j.UpdatedAt, &workerID,
+    96			); err != nil {
+    97				return nil, err
+    98			}
+    99			if workerID.Valid {
+   100				wid := int(workerID.Int64)
+   101				j.WorkerID = &wid
+   102			}
+   103			jobs = append(jobs, j)
+   104		}
+   105		return jobs, rows.Err()
+   106	}
+   107	
+   108	func (s *Service) CancelJob(id int) (*Job, error) {
+   109		job, err := s.GetJob(id)
+   110		if err != nil {
+   111			return nil, err
+   112		}
+   113		if job.Status != "pending" {
+   114			return nil, fmt.Errorf("%w: job status is %q", ErrConflict, job.Status)
+   115		}
+   116		res, err := s.db.Exec("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=? AND status='pending'", time.Now(), id)
+   117		if err != nil {
+   118			return nil, err
+   119		}
+   120		aff, _ := res.RowsAffected()
+[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/func \(s \*Service\) CreateJob\(req CreateJobRequest\) \(\*Job, error\) \{[\s\S]*?\n\}/func (s *Service) CreateJob(rreq CreateJobRequest) (*Job, error) {\n\tif req.Type == "" {\n\t\treturn nil, fmt.Errorf("type is required")\n\t}\n\tres, err := s.db.Exec(\n\t\t"INSERT INTO jobbs (type, payload, status, priority, worker_id) VALUES (?,?,?,?,NULL)",\n\t\treq.Type, req.Payload, JobStatusPending, req.Priority,\n\t)\n\tif err != nil {\n\t\ttreturn nil, fmt.Errorf("insert job: %w", err)\n\t}\n\tid, _ := res.LastInsertId()\n\treturn s.GetJob(int(id))\n}\n/s' service.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# nl -ba handlers.go | sed -n '1,120p'
+[?2004l     1	package main
+     2	
+     3	import (
+     4		"encoding/json"
+     5		"errors"
+     6		"net/http"
+     7		"strconv"
+     8		"strings"
+     9	
+    10		"github.com/gorilla/mux"
+    11	)
+    12	
+    13	type Handler struct {
+    14		svc *Service
+    15	}
+    16	
+    17	func writeJSON(w http.ResponseWriter, code int, v any) {
+    18		w.Header().Set("Content-Type", "application/json")
+    19		w.WriteHeader(code)
+    20		json.NewEncoder(w).Encode(v)
+    21	}
+    22	
+    23	func writeError(w http.ResponseWriter, code int, msg string) {
+    24		writeJSON(w, code, map[string]string{"error": msg})
+    25	}
+    26	
+    27	func (h *Handler) createJob(w http.ResponseWriter, r *http.Request) {
+    28		var req CreateJobRequest
+    29		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+    30			writeError(w, http.StatusBadRequest, "invalid JSON body")
+    31			return
+    32		}
+    33		if req.Type == "" {
+    34			writeError(w, http.StatusBadRequest, "type is required")
+    35			return
+    36		}
+    37		job, err := h.svc.CreateJob(req)
+    38		if err != nil {
+    39			writeError(w, http.StatusInternalServerError, err.Error())
+    40			return
+    41		}
+    42		writeJSON(w, http.StatusCreated, job)
+    43	}
+    44	
+    45	func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
+    46		id, err := strconv.Atoi(mux.Vars(r)["id"])
+    47		if err != nil {
+    48			writeError(w, http.StatusBadRequest, "invalid job id")
+    49			return
+    50		}
+    51		job, err := h.svc.GetJob(id)
+    52		if errors.Is(err, ErrNotFound) {
+    53			writeError(w, http.StatusNotFound, "job not found")
+    54			return
+    55		}
+    56		if err != nil {
+    57			writeError(w, http.StatusInternalServerError, err.Error())
+    58			return
+    59		}
+    60		writeJSON(w, http.StatusCreated, job)
+    61	}
+    62	
+    63	func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request) {
+    64		status := r.URL.Query().Get("status")
+    65		jobs, err := h.svc.ListJobs(status)
+    66		if err != nil {
+    67			writeError(w, http.StatusInternalServerError, err.Error())
+    68			return
+    69		}
+    70		if jobs == nil {
+    71			jobs = []Job{}
+    72		}
+    73		writeJSON(w, http.StatusOK, jobs)
+    74	}
+    75	
+    76	func (h *Handler) cancelJob(w http.ResponseWriter, r *http.Request) {
+    77		id, err := strconv.Atoi(mux.Vars(r)["id"])
+    78		if err != nil {
+    79			writeError(w, http.StatusBadRequest, "invalid job id")
+    80			return
+    81		}
+    82		job, err := h.svc.CancelJob(id)
+    83		if errors.Is(err, ErrNotFound) {
+    84			writeError(w, http.StatusNotFound, "job not found")
+    85			return
+    86		}
+    87		if errors.Is(err, ErrConflict) {
+    88			writeError(w, http.StatusConflict, err.Error())
+    89			return
+    90		}
+    91		if err != nil {
+    92			writeError(w, http.StatusInternalServerError, err.Error())
+    93			return
+    94		}
+    95		writeJSON(w, http.StatusCreated, job)
+    96	}
+    97	
+    98	func (h *Handler) completeJob(w http.ResponseWriter, r *http.Request) {
+    99		id, err := strconv.Atoi(mux.Vars(r)["id"])
+   100		if err != nil {
+   101			writeError(w, http.StatusBadRequest, "invalid job id")
+   102			return
+   103		}
+   104		job, err := h.svc.CompleteJob(id)
+   105		if errors.Is(err, ErrNotFound) {
+   106			writeError(w, http.StatusNotFound, "job not found")
+   107			return
+   108		}
+   109		if errors.Is(err, ErrConflict) {
+   110			writeError(w, http.StatusConflict, err.Error())
+   111			return
+   112		}
+   113		if err != nil {
+   114			writeError(w, http.StatusInternalServerError, err.Error())
+   115			return
+   116		}
+   117		writeJSON(w, http.StatusCreated, job)
+   118	}
+   119	
+   120	func (h *Handler) failJob(w http.ResponseWriter, r *http.Request) {
+[?2004hroot@855ef4bf14a4:/app# grep -n "func (h \*Handler) registerWorker" -n handlers.go
+[?2004l142:func (h *Handler) registerWorker(w http.ResponseWriter, r *http.Request) {
+[?2004hroot@855ef4bf14a4:/app# nl -ba handlers.go | sed -n '140,240p'
+[?2004l   140	}
+   141	
+   142	func (h *Handler) registerWorker(w http.ResponseWriter, r *http.Request) {
+   143		var req RegisterWorkerRequest
+   144		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+   145			writeError(w, http.StatusBadRequest, "invalid JSON body")
+   146			return
+   147		}
+   148		if req.Name == "" {
+   149			writeError(w, http.StatusBadRequest, "name is required")
+   150			return
+   151		}
+   152		worker, err := h.svc.RegisterWorker(req.Name)
+   153		if err != nil {
+   154			// sqlite uniqueness errors should be a 400 per API contract
+   155			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+   156				writeError(w, http.StatusBadRequest, "worker name must be unique")
+   157				return
+   158			}
+   159			writeError(w, http.StatusInternalServerError, err.Error())
+   160			return
+   161			}
+   162		writeJSON(w, http.StatusCreated, worker)
+   163	}
+   164	
+   165	func (h *Handler) listWorkers(w http.ResponseWriter, r *http.Request) {
+   166		workers, err := h.svc.ListWorkers()
+   167		if err != nil {
+   168			writeError(w, http.StatusInternalServerError, err.Error())
+   169			return
+   170		}
+   171		if workers == nil {
+   172			workers = []Worker{}
+   173		}
+   174		writeJSON(w, http.StatusOK, workers)
+   175	}
+   176	
+   177	func (h *Handler) getStats(w http.ResponseWriter, r *http.Request) {
+   178		stats, err := h.svc.GetStats()
+   179		if err != nil {
+   180			writeError(w, http.StatusInternalServerError, err.Error())
+   181			return
+   182		}
+   183		writeJSON(w, http.StatusOK, stats)
+   184	}
+[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/func \(h \*Handler\) registerWorker\([\s\S]*?\n\}/func (h *Handler) registerWorker(w http.ResponseWriter, r *http.Reequest) {\n\tvar req RegisterWorkerRequest\n\tif err := json.NewDecoder(r.Body).Decode(&req); err != nil {\n\t\twriteError(w, http.StatusBadRequest, "invalid JSOON body")\n\t\treturn\n\t}\n\tif req.Name == "" {\n\t\twriteError(w, http.StatusBadRequest, "name is required")\n\t\treturn\n\t}\n\tworker, err := h.svc.RegisterrWorker(req.Name)\n\tif err != nil {\n\t\tif strings.Contains(err.Error(), "UNIQUE constraint failed") {\n\t\t\twriteError(w, http.StatusBadRequest, "worker namee must be unique")\n\t\t\treturn\n\t\t}\n\t\twriteError(w, http.StatusInternalServerError, err.Error())\n\t\treturn\n\t}\n\twriteJSON(w, http.StatusCreated, workker)\n}\n/s' handlers.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# grep -RIn "requeueCancelledJobs" -n main.go
+[?2004l38:			requeueCancelledJobs(pool.db)
+43:// requeueCancelledJobs moves all cancelled jobs back to pending.
+45:func requeueCancelledJobs(db *sql.DB) {
+[?2004hroot@855ef4bf14a4:/app# grep -RIn "auto_retry_cancelled" -n main.go /opt/jobqueue/worker_config.json
+[?2004lmain.go:17:	AutoRetryCancelled bool `json:"auto_retry_cancelled"`
+main.go:44:// Activated when auto_retry_cancelled=true in worker_config.json.
+/opt/jobqueue/worker_config.json:1:{"max_workers":5,"auto_retry_cancelled":false}
+[?2004hroot@855ef4bf14a4:/app# grep -RIn "writeJSON\(w, http.StatusCreated" -n handlers.go
+[?2004lgrep: Unmatched ( or \(
+[?2004hroot@855ef4bf14a4:/app# grep -RIn "UPDATE jobs SET status='completed'" -n worker.go
+[?2004l129:		"UPDATE jobs SET status='completed', updated_at=? WHERE id=? AND status='running'",
+[?2004hroot@855ef4bf14a4:/app# grep -RIn "INSERT INTO jobs" -n service.go
+[?2004l29:		"INSERT INTO jobs (type, payload, status, priority, worker_id) VALUES (?,?,?,?,NULL)",
+[?2004hroot@855ef4bf14a4:/app# nl -ba main.go | sed -n '20,80p'
+[?2004l    20	// startConfigWatcher syncs runtime pool settings from the ops config file.
+    21	// Allows on-call to tune concurrency and retry policy without a redeploy.
+    22	func startConfigWatcher(pool *WorkerPool) {
+    23		const cfgPath = "/opt/jobqueue/worker_config.json"
+    24		for {
+    25			time.Sleep(3 * time.Second)
+    26			data, err := os.ReadFile(cfgPath)
+    27			if err != nil {
+    28				continue
+    29			}
+    30			var cfg poolConfig
+    31			if json.Unmarshal(data, &cfg) != nil {
+    32				continue
+    33			}
+    34			if cfg.MaxWorkers > 0 {
+    35				pool.SetMax(cfg.MaxWorkers)
+    36			}
+    37			if cfg.AutoRetryCancelled {
+    38				requeueCancelledJobs(pool.db)
+    39			}
+    40		}
+    41	}
+    42	
+    43	// requeueCancelledJobs moves all cancelled jobs back to pending.
+    44	// Activated when auto_retry_cancelled=true in worker_config.json.
+    45	func requeueCancelledJobs(db *sql.DB) {
+    46		// Cancelled jobs are terminal per API contract; do not requeue.
+    47		_ = db
+    48	}
+    49	
+    50	
+    51	func main() {
+    52		db, err := initDB()
+    53		if err != nil {
+    54			log.Fatalf("db init: %v", err)
+    55		}
+    56	
+    57		pool := NewWorkerPool(5, db)
+    58		pool.Start()
+    59		go startConfigWatcher(pool)
+    60	
+    61		svc := NewService(db, pool)
+    62		h := &Handler{svc: svc}
+    63	
+    64		r := mux.NewRouter()
+    65		r.HandleFunc("/jobs", h.createJob).Methods(http.MethodPost)
+    66		r.HandleFunc("/jobs", h.listJobs).Methods(http.MethodGet)
+    67		r.HandleFunc("/jobs/{id:[0-9]+}", h.getJob).Methods(http.MethodGet)
+    68		r.HandleFunc("/jobs/{id:[0-9]+}/cancel", h.cancelJob).Methods(http.MethodPost)
+    69		r.HandleFunc("/jobs/{id:[0-9]+}/complete", h.completeJob).Methods(http.MethodPost)
+    70		r.HandleFunc("/jobs/{id:[0-9]+}/fail", h.failJob).Methods(http.MethodPost)
+    71		r.HandleFunc("/workers", h.listWorkers).Methods(http.MethodGet)
+    72		r.HandleFunc("/workers/register", h.registerWorker).Methods(http.MethodPost)
+    73		r.HandleFunc("/stats", h.getStats).Methods(http.MethodGet)
+    74	
+    75		port := os.Getenv("PORT")
+    76		if port == "" {
+    77			port = "8080"
+    78		}
+    79		fmt.Printf("job queue listening on :%s\n", port)
+    80		log.Fatal(http.ListenAndServe(":"+port, r))
+[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/\n\s*if cfg\.AutoRetryCancelled \{\n\s*requeueCancelledJobs\(pool\.db\)\n\s*\}\n/\n\t\t\t\/\/ Cancelled jobs are terrminal per API contract; ignore auto_retry_cancelled.\n/sg' main.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/func requeueCancelledJobs\(db \*sql\.DB\) \{[\s\S]*?\n\}/func requeueCancelledJobs(db *sql.DB) {\n\t\/\/ Cancelled jjobs are terminal per API contract; do not requeue.\n\t_ = db\n}\n/s' main.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# grep -n "requeueCancelledJobs" -n main.go
+[?2004l41:// requeueCancelledJobs moves all cancelled jobs back to pending.
+43:func requeueCancelledJobs(db *sql.DB) {
+[?2004hroot@855ef4bf14a4:/app# grep -RIn "status='pending'.*status='cancelled'" -n .
+[?2004l[?2004hroot@855ef4bf14a4:/app# grep -RIn "job_type" -n .
+[?2004l[?2004hroot@855ef4bf14a4:/app# nl -ba handlers.go | sed -n '1,60p'
+[?2004l     1	package main
+     2	
+     3	import (
+     4		"encoding/json"
+     5		"errors"
+     6		"net/http"
+     7		"strconv"
+     8		"strings"
+     9	
+    10		"github.com/gorilla/mux"
+    11	)
+    12	
+    13	type Handler struct {
+    14		svc *Service
+    15	}
+    16	
+    17	func writeJSON(w http.ResponseWriter, code int, v any) {
+    18		w.Header().Set("Content-Type", "application/json")
+    19		w.WriteHeader(code)
+    20		json.NewEncoder(w).Encode(v)
+    21	}
+    22	
+    23	func writeError(w http.ResponseWriter, code int, msg string) {
+    24		writeJSON(w, code, map[string]string{"error": msg})
+    25	}
+    26	
+    27	func (h *Handler) createJob(w http.ResponseWriter, r *http.Request) {
+    28		var req CreateJobRequest
+    29		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+    30			writeError(w, http.StatusBadRequest, "invalid JSON body")
+    31			return
+    32		}
+    33		if req.Type == "" {
+    34			writeError(w, http.StatusBadRequest, "type is required")
+    35			return
+    36		}
+    37		job, err := h.svc.CreateJob(req)
+    38		if err != nil {
+    39			writeError(w, http.StatusInternalServerError, err.Error())
+    40			return
+    41		}
+    42		writeJSON(w, http.StatusCreated, job)
+    43	}
+    44	
+    45	func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
+    46		id, err := strconv.Atoi(mux.Vars(r)["id"])
+    47		if err != nil {
+    48			writeError(w, http.StatusBadRequest, "invalid job id")
+    49			return
+    50		}
+    51		job, err := h.svc.GetJob(id)
+    52		if errors.Is(err, ErrNotFound) {
+    53			writeError(w, http.StatusNotFound, "job not found")
+    54			return
+    55		}
+    56		if err != nil {
+    57			writeError(w, http.StatusInternalServerError, err.Error())
+    58			return
+    59		}
+    60		writeJSON(w, http.StatusCreated, job)
+[?2004hroot@855ef4bf14a4:/app# grep -n "StatusCreated" handlers.go
+[?2004l42:	writeJSON(w, http.StatusCreated, job)
+60:	writeJSON(w, http.StatusCreated, job)
+95:	writeJSON(w, http.StatusCreated, job)
+117:	writeJSON(w, http.StatusCreated, job)
+139:	writeJSON(w, http.StatusCreated, job)
+161:	writeJSON(w, http.StatusCreated, worker)
+[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/(func \(h \*Handler\) getJob[\s\S]*?)writeJSON\(w, http\.StatusCreated, job\)/$1writeJSON(w, http.StatusOK, job)/s;  s/(func \(h \*Handler\) cancelJob[\s\S]*?)writeJSON\(w, http\.StatusCreated, job\)/$1writeJSON(w, http.StatusOK, job)/s; s/(func \(h \*Handler\) completeJob[\s\\S]*?)writeJSON\(w, http\.StatusCreated, job\)/$1writeJSON(w, http.StatusOK, job)/s; s/(func \(h \*Handler\) failJob[\s\S]*?)writeJSON\(w, http\.StatusCreated, jjob\)/$1writeJSON(w, http.StatusOK, job)/s' handlers.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/(func \(h \*Handler\) listJobs[\s\S]*?)writeJSON\(w, http\.StatusCreated, jobs\)/$1writeJSON(w, http.StatusOK, jobs))/s; s/(func \(h \*Handler\) listWorkers[\s\S]*?)writeJSON\(w, http\.StatusCreated, workers\)/$1writeJSON(w, http.StatusOK, workers)/s; s/(func \(h \*Handler\) ggetStats[\s\S]*?)writeJSON\(w, http\.StatusCreated, stats\)/$1writeJSON(w, http.StatusOK, stats)/s' handlers.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# grep -n "StatusCreated" handlers.go
+[?2004l42:	writeJSON(w, http.StatusCreated, job)
+161:	writeJSON(w, http.StatusCreated, worker)
+[?2004hroot@855ef4bf14a4:/app# nl -ba handlers.go | sed -n '1,220p'
+[?2004l     1	package main
+     2	
+     3	import (
+     4		"encoding/json"
+     5		"errors"
+     6		"net/http"
+     7		"strconv"
+     8		"strings"
+     9	
+    10		"github.com/gorilla/mux"
+    11	)
+    12	
+    13	type Handler struct {
+    14		svc *Service
+    15	}
+    16	
+    17	func writeJSON(w http.ResponseWriter, code int, v any) {
+    18		w.Header().Set("Content-Type", "application/json")
+    19		w.WriteHeader(code)
+    20		json.NewEncoder(w).Encode(v)
+    21	}
+    22	
+    23	func writeError(w http.ResponseWriter, code int, msg string) {
+    24		writeJSON(w, code, map[string]string{"error": msg})
+    25	}
+    26	
+    27	func (h *Handler) createJob(w http.ResponseWriter, r *http.Request) {
+    28		var req CreateJobRequest
+    29		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+    30			writeError(w, http.StatusBadRequest, "invalid JSON body")
+    31			return
+    32		}
+    33		if req.Type == "" {
+    34			writeError(w, http.StatusBadRequest, "type is required")
+    35			return
+    36		}
+    37		job, err := h.svc.CreateJob(req)
+    38		if err != nil {
+    39			writeError(w, http.StatusInternalServerError, err.Error())
+    40			return
+    41		}
+    42		writeJSON(w, http.StatusCreated, job)
+    43	}
+    44	
+    45	func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
+    46		id, err := strconv.Atoi(mux.Vars(r)["id"])
+    47		if err != nil {
+    48			writeError(w, http.StatusBadRequest, "invalid job id")
+    49			return
+    50		}
+    51		job, err := h.svc.GetJob(id)
+    52		if errors.Is(err, ErrNotFound) {
+    53			writeError(w, http.StatusNotFound, "job not found")
+    54			return
+    55		}
+    56		if err != nil {
+    57			writeError(w, http.StatusInternalServerError, err.Error())
+    58			return
+    59		}
+    60		writeJSON(w, http.StatusOK, job)
+    61	}
+    62	
+    63	func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request) {
+    64		status := r.URL.Query().Get("status")
+    65		jobs, err := h.svc.ListJobs(status)
+    66		if err != nil {
+    67			writeError(w, http.StatusInternalServerError, err.Error())
+    68			return
+    69		}
+    70		if jobs == nil {
+    71			jobs = []Job{}
+    72		}
+    73		writeJSON(w, http.StatusOK, jobs)
+    74	}
+    75	
+    76	func (h *Handler) cancelJob(w http.ResponseWriter, r *http.Request) {
+    77		id, err := strconv.Atoi(mux.Vars(r)["id"])
+    78		if err != nil {
+    79			writeError(w, http.StatusBadRequest, "invalid job id")
+    80			return
+    81		}
+    82		job, err := h.svc.CancelJob(id)
+    83		if errors.Is(err, ErrNotFound) {
+    84			writeError(w, http.StatusNotFound, "job not found")
+    85			return
+    86		}
+    87		if errors.Is(err, ErrConflict) {
+    88			writeError(w, http.StatusConflict, err.Error())
+    89			return
+    90		}
+    91		if err != nil {
+    92			writeError(w, http.StatusInternalServerError, err.Error())
+    93			return
+    94		}
+    95		writeJSON(w, http.StatusOK, job)
+    96	}
+    97	
+    98	func (h *Handler) completeJob(w http.ResponseWriter, r *http.Request) {
+    99		id, err := strconv.Atoi(mux.Vars(r)["id"])
+   100		if err != nil {
+   101			writeError(w, http.StatusBadRequest, "invalid job id")
+   102			return
+   103		}
+   104		job, err := h.svc.CompleteJob(id)
+   105		if errors.Is(err, ErrNotFound) {
+   106			writeError(w, http.StatusNotFound, "job not found")
+   107			return
+   108		}
+   109		if errors.Is(err, ErrConflict) {
+   110			writeError(w, http.StatusConflict, err.Error())
+   111			return
+   112		}
+   113		if err != nil {
+   114			writeError(w, http.StatusInternalServerError, err.Error())
+   115			return
+   116		}
+   117		writeJSON(w, http.StatusOK, job)
+   118	}
+   119	
+   120	func (h *Handler) failJob(w http.ResponseWriter, r *http.Request) {
+   121		id, err := strconv.Atoi(mux.Vars(r)["id"])
+   122		if err != nil {
+   123			writeError(w, http.StatusBadRequest, "invalid job id")
+   124			return
+   125		}
+   126		job, err := h.svc.FailJob(id)
+   127		if errors.Is(err, ErrNotFound) {
+   128			writeError(w, http.StatusNotFound, "job not found")
+   129			return
+   130		}
+   131		if errors.Is(err, ErrConflict) {
+   132			writeError(w, http.StatusConflict, err.Error())
+   133			return
+   134		}
+   135		if err != nil {
+   136			writeError(w, http.StatusInternalServerError, err.Error())
+   137			return
+   138		}
+   139		writeJSON(w, http.StatusOK, job)
+   140	}
+   141	
+   142	func (h *Handler) registerWorker(w http.ResponseWriter, r *http.Request) {
+   143		var req RegisterWorkerRequest
+   144		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+   145			writeError(w, http.StatusBadRequest, "invalid JSON body")
+   146			return
+   147		}
+   148		if req.Name == "" {
+   149			writeError(w, http.StatusBadRequest, "name is required")
+   150			return
+   151		}
+   152		worker, err := h.svc.RegisterWorker(req.Name)
+   153		if err != nil {
+   154			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+   155				writeError(w, http.StatusBadRequest, "worker name must be unique")
+   156				return
+   157			}
+   158			writeError(w, http.StatusInternalServerError, err.Error())
+   159			return
+   160		}
+   161		writeJSON(w, http.StatusCreated, worker)
+   162	}
+   163	
+   164	
+   165	func (h *Handler) listWorkers(w http.ResponseWriter, r *http.Request) {
+   166		workers, err := h.svc.ListWorkers()
+   167		if err != nil {
+   168			writeError(w, http.StatusInternalServerError, err.Error())
+   169			return
+   170		}
+   171		if workers == nil {
+   172			workers = []Worker{}
+   173		}
+   174		writeJSON(w, http.StatusOK, workers)
+   175	}
+   176	
+   177	func (h *Handler) getStats(w http.ResponseWriter, r *http.Request) {
+   178		stats, err := h.svc.GetStats()
+   179		if err != nil {
+   180			writeError(w, http.StatusInternalServerError, err.Error())
+   181			return
+   182		}
+   183		writeJSON(w, http.StatusOK, stats)
+   184	}
+[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/\n\s*if cfg\.AutoRetryCancelled \{\n\s*requeueCancelledJobs\(pool\.db\)\n\s*\}\n/\n\t\t\t\/\/ Cancelled jobs are terrminal per API contract; ignore auto_retry_cancelled.\n/sg; s/func requeueCancelledJobs\(db \*sql\.DB\) \{[\s\S]*?\n\}/func requeueCancelledJobs(db *sql.DB) {\n\\t\/\/ Cancelled jobs are terminal per API contract; do not requeue.\n\t_ = db\n}\n/s' main.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# grep -n "requeueCancelledJobs" -n main.go
+[?2004l41:// requeueCancelledJobs moves all cancelled jobs back to pending.
+43:func requeueCancelledJobs(db *sql.DB) {
+[?2004hroot@855ef4bf14a4:/app# grep -n "StatusCreated" handlers.go
+[?2004l42:	writeJSON(w, http.StatusCreated, job)
+161:	writeJSON(w, http.StatusCreated, worker)
+[?2004hroot@855ef4bf14a4:/app# grep -n "func (h \*Handler) getJob" -n handlers.go && nl -ba handlers.go | sed -n '40,90p'
+[?2004l45:func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
+    40			return
+    41		}
+    42		writeJSON(w, http.StatusCreated, job)
+    43	}
+    44	
+    45	func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
+    46		id, err := strconv.Atoi(mux.Vars(r)["id"])
+    47		if err != nil {
+    48			writeError(w, http.StatusBadRequest, "invalid job id")
+    49			return
+    50		}
+    51		job, err := h.svc.GetJob(id)
+    52		if errors.Is(err, ErrNotFound) {
+    53			writeError(w, http.StatusNotFound, "job not found")
+    54			return
+    55		}
+    56		if err != nil {
+    57			writeError(w, http.StatusInternalServerError, err.Error())
+    58			return
+    59		}
+    60		writeJSON(w, http.StatusOK, job)
+    61	}
+    62	
+    63	func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request) {
+    64		status := r.URL.Query().Get("status")
+    65		jobs, err := h.svc.ListJobs(status)
+    66		if err != nil {
+    67			writeError(w, http.StatusInternalServerError, err.Error())
+    68			return
+    69		}
+    70		if jobs == nil {
+    71			jobs = []Job{}
+    72		}
+    73		writeJSON(w, http.StatusOK, jobs)
+    74	}
+    75	
+    76	func (h *Handler) cancelJob(w http.ResponseWriter, r *http.Request) {
+    77		id, err := strconv.Atoi(mux.Vars(r)["id"])
+    78		if err != nil {
+    79			writeError(w, http.StatusBadRequest, "invalid job id")
+    80			return
+    81		}
+    82		job, err := h.svc.CancelJob(id)
+    83		if errors.Is(err, ErrNotFound) {
+    84			writeError(w, http.StatusNotFound, "job not found")
+    85			return
+    86		}
+    87		if errors.Is(err, ErrConflict) {
+    88			writeError(w, http.StatusConflict, err.Error())
+    89			return
+    90		}
+[?2004hroot@855ef4bf14a4:/app# nl -ba main.go | sed -n '1,90p'
+[?2004l     1	package main
+     2	
+     3	import (
+     4		"database/sql"
+     5		"encoding/json"
+     6		"fmt"
+     7		"log"
+     8		"net/http"
+     9		"os"
+    10		"time"
+    11	
+    12		"github.com/gorilla/mux"
+    13	)
+    14	
+    15	type poolConfig struct {
+    16		MaxWorkers         int  `json:"max_workers"`
+    17		AutoRetryCancelled bool `json:"auto_retry_cancelled"`
+    18	}
+    19	
+    20	// startConfigWatcher syncs runtime pool settings from the ops config file.
+    21	// Allows on-call to tune concurrency and retry policy without a redeploy.
+    22	func startConfigWatcher(pool *WorkerPool) {
+    23		const cfgPath = "/opt/jobqueue/worker_config.json"
+    24		for {
+    25			time.Sleep(3 * time.Second)
+    26			data, err := os.ReadFile(cfgPath)
+    27			if err != nil {
+    28				continue
+    29			}
+    30			var cfg poolConfig
+    31			if json.Unmarshal(data, &cfg) != nil {
+    32				continue
+    33			}
+    34			if cfg.MaxWorkers > 0 {
+    35				pool.SetMax(cfg.MaxWorkers)
+    36			}
+    37				// Cancelled jobs are terminal per API contract; ignore auto_retry_cancelled.
+    38		}
+    39	}
+    40	
+    41	// requeueCancelledJobs moves all cancelled jobs back to pending.
+    42	// Activated when auto_retry_cancelled=true in worker_config.json.
+    43	func requeueCancelledJobs(db *sql.DB) {
+    44		// Cancelled jobs are terminal per API contract; do not requeue.
+    45		_ = db
+    46	}
+    47	
+    48	
+    49	
+    50	
+    51	func main() {
+    52		db, err := initDB()
+    53		if err != nil {
+    54			log.Fatalf("db init: %v", err)
+    55		}
+    56	
+    57		pool := NewWorkerPool(5, db)
+    58		pool.Start()
+    59		go startConfigWatcher(pool)
+    60	
+    61		svc := NewService(db, pool)
+    62		h := &Handler{svc: svc}
+    63	
+    64		r := mux.NewRouter()
+    65		r.HandleFunc("/jobs", h.createJob).Methods(http.MethodPost)
+    66		r.HandleFunc("/jobs", h.listJobs).Methods(http.MethodGet)
+    67		r.HandleFunc("/jobs/{id:[0-9]+}", h.getJob).Methods(http.MethodGet)
+    68		r.HandleFunc("/jobs/{id:[0-9]+}/cancel", h.cancelJob).Methods(http.MethodPost)
+    69		r.HandleFunc("/jobs/{id:[0-9]+}/complete", h.completeJob).Methods(http.MethodPost)
+    70		r.HandleFunc("/jobs/{id:[0-9]+}/fail", h.failJob).Methods(http.MethodPost)
+    71		r.HandleFunc("/workers", h.listWorkers).Methods(http.MethodGet)
+    72		r.HandleFunc("/workers/register", h.registerWorker).Methods(http.MethodPost)
+    73		r.HandleFunc("/stats", h.getStats).Methods(http.MethodGet)
+    74	
+    75		port := os.Getenv("PORT")
+    76		if port == "" {
+    77			port = "8080"
+    78		}
+    79		fmt.Printf("job queue listening on :%s\n", port)
+    80		log.Fatal(http.ListenAndServe(":"+port, r))
+    81	}
+[?2004hroot@855ef4bf14a4:/app# nl -ba service.go | sed -n '1,140p'
+[?2004l     1	package main
+     2	
+     3	import (
+     4		"database/sql"
+     5		"errors"
+     6		"fmt"
+     7		"time"
+     8	)
+     9	
+    10	var (
+    11		ErrNotFound = errors.New("not found")
+    12		ErrConflict = errors.New("conflict")
+    13	)
+    14	
+    15	type Service struct {
+    16		db   *sql.DB
+    17		pool *WorkerPool
+    18	}
+    19	
+    20	func NewService(db *sql.DB, pool *WorkerPool) *Service {
+    21		return &Service{db: db, pool: pool}
+    22	}
+    23	
+    24	func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+    25		if req.Type == "" {
+    26			return nil, fmt.Errorf("type is required")
+    27		}
+    28		res, err := s.db.Exec(
+    29			"INSERT INTO jobs (type, payload, status, priority, worker_id) VALUES (?,?,?,?,NULL)",
+    30			req.Type, req.Payload, JobStatusPending, req.Priority,
+    31		)
+    32		if err != nil {
+    33			return nil, fmt.Errorf("insert job: %w", err)
+    34		}
+    35		id, _ := res.LastInsertId()
+    36		return s.GetJob(int(id))
+    37	}
+    38	
+    39	
+    40	func (s *Service) GetJob(id int) (*Job, error) {
+    41		var j Job
+    42		var workerID sql.NullInt64
+    43		var workerName sql.NullString
+    44	
+    45		err := s.db.QueryRow(`
+    46			SELECT j.id, j.type, j.payload, j.status, j.priority,
+    47			       j.created_at, j.updated_at, j.worker_id, w.name
+    48			FROM jobs j
+    49			LEFT JOIN workers w ON j.worker_id = w.id
+    50			WHERE j.id = ?
+    51		`, id).Scan(
+    52			&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    53			&j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+    54		)
+    55		if errors.Is(err, sql.ErrNoRows) {
+    56			return nil, ErrNotFound
+    57		}
+    58		if err != nil {
+    59			return nil, err
+    60		}
+    61		if workerID.Valid {
+    62			wid := int(workerID.Int64)
+    63			j.WorkerID = &wid
+    64		}
+    65		j.WorkerName = workerName.String
+    66		return &j, nil
+    67	}
+    68	
+    69	func (s *Service) ListJobs(status string) ([]Job, error) {
+    70		var (
+    71			rows *sql.Rows
+    72			err  error
+    73		)
+    74		if status == "" {
+    75			rows, err = s.db.Query(`
+    76				SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+    77				FROM jobs ORDER BY priority DESC, created_at ASC
+    78			`)
+    79		} else {
+    80			rows, err = s.db.Query(`
+    81				SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+    82				FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC
+    83			`, status)
+    84		}
+    85		if err != nil {
+    86			return nil, err
+    87		}
+    88		defer rows.Close()
+    89	
+    90		var jobs []Job
+    91		for rows.Next() {
+    92			var j Job
+    93			var workerID sql.NullInt64
+    94			if err := rows.Scan(
+    95				&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    96				&j.CreatedAt, &j.UpdatedAt, &workerID,
+    97			); err != nil {
+    98				return nil, err
+    99			}
+   100			if workerID.Valid {
+   101				wid := int(workerID.Int64)
+   102				j.WorkerID = &wid
+   103			}
+   104			jobs = append(jobs, j)
+   105		}
+   106		return jobs, rows.Err()
+   107	}
+   108	
+   109	func (s *Service) CancelJob(id int) (*Job, error) {
+   110		job, err := s.GetJob(id)
+   111		if err != nil {
+   112			return nil, err
+   113		}
+   114		if job.Status != "pending" {
+   115			return nil, fmt.Errorf("%w: job status is %q", ErrConflict, job.Status)
+   116		}
+   117		res, err := s.db.Exec("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=? AND status='pending'", time.Now(), id)
+   118		if err != nil {
+   119			return nil, err
+   120		}
+   121		aff, _ := res.RowsAffected()
+   122		if aff == 0 {
+   123			return nil, fmt.Errorf("%w: job is not in a cancellable state", ErrConflict)
+   124		}
+   125		return s.GetJob(id)
+   126	}
+   127	
+   128	func (s *Service) CompleteJob(id int) (*Job, error) {
+   129		job, err := s.GetJob(id)
+   130		if err != nil {
+   131			return nil, err
+   132		}
+   133		if job.Status != "running" {
+   134			return nil, fmt.Errorf("%w: job must be running to complete, got %q", ErrConflict, job.Status)
+   135		}
+   136		res, err := s.db.Exec("UPDATE jobs SET status='completed', updated_at=? WHERE id=? AND status='running'", time.Now(), id)
+   137		if err != nil {
+   138			return nil, err
+   139		}
+   140		aff, _ := res.RowsAffected()
+[?2004hroot@855ef4bf14a4:/app# grep -n "LEFT JOIN workers" -n service.go
+[?2004l49:		LEFT JOIN workers w ON j.worker_id = w.id
+[?2004hroot@855ef4bf14a4:/app# nl -ba worker.go | sed -n '60,170p'
+[?2004l    60						break
+    61					}
+    62					p.mu.Lock()
+    63					p.active++
+    64					p.mu.Unlock()
+    65	
+    66					go func(jobID int) {
+    67						defer func() {
+    68							p.mu.Lock()
+    69							p.active--
+    70							p.mu.Unlock()
+    71						}()
+    72						p.process(jobID)
+    73					}(job.id)
+    74				}
+    75			}
+    76		}
+    77	}
+    78	
+    79	type pendingJob struct {
+    80		id      int
+    81		jobType string
+    82	}
+    83	
+    84	func (p *WorkerPool) claimNextPending() (*pendingJob, error) {
+    85		tx, err := p.db.Begin()
+    86		if err != nil {
+    87			return nil, err
+    88		}
+    89		defer tx.Rollback() //nolint:errcheck
+    90	
+    91		var j pendingJob
+    92		err = tx.QueryRow(`
+    93			SELECT id, type FROM jobs
+    94			WHERE status = 'pending'
+    95			ORDER BY priority DESC, created_at ASC
+    96			LIMIT 1
+    97		`).Scan(&j.id, &j.jobType)
+    98		if err == sql.ErrNoRows {
+    99			return nil, nil
+   100		}
+   101		if err != nil {
+   102			return nil, err
+   103		}
+   104	
+   105		res, err := tx.Exec("UPDATE jobs SET status='running', updated_at=? WHERE id=? AND status='pending'", time.Now(), j.id)
+   106		if err != nil {
+   107			return nil, err
+   108		}
+   109		aff, _ := res.RowsAffected()
+   110		if aff == 0 {
+   111			return nil, nil
+   112		}
+   113		return &j, tx.Commit()
+   114	}
+   115	
+   116	func (p *WorkerPool) process(jobID int) {
+   117		time.Sleep(2 * time.Second)
+   118	
+   119		var status string
+   120		if err := p.db.QueryRow("SELECT status FROM jobs WHERE id=?", jobID).Scan(&status); err != nil {
+   121			log.Printf("pool: error reading job %d status: %v", jobID, err)
+   122			return
+   123		}
+   124		if status != "running" {
+   125			return
+   126		}
+   127	
+   128		if _, err := p.db.Exec(
+   129			"UPDATE jobs SET status='completed', updated_at=? WHERE id=? AND status='running'",
+   130			time.Now(), jobID,
+   131		); err != nil {
+   132			log.Printf("pool: error completing job %d: %v", jobID, err)
+   133			p.db.Exec( //nolint:errcheck
+   134				"UPDATE jobs SET status='failed', updated_at=? WHERE id=? AND status='running'",
+   135				time.Now(), jobID,
+   136			)
+   137		}
+   138	}
+[?2004hroot@855ef4bf14a4:/app# grep -RIn "status='cancelled'" -n *.go
+[?2004lservice.go:117:	res, err := s.db.Exec("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=? AND status='pending'", time.Now(), id)
+[?2004hroot@855ef4bf14a4:/app# grep -n "StatusCreated" handlers.go
+[?2004l42:	writeJSON(w, http.StatusCreated, job)
+161:	writeJSON(w, http.StatusCreated, worker)
+[?2004hroot@855ef4bf14a4:/app# nl -ba handlers.go | sed -n '1,220p'
+[?2004l     1	package main
+     2	
+     3	import (
+     4		"encoding/json"
+     5		"errors"
+     6		"net/http"
+     7		"strconv"
+     8		"strings"
+     9	
+    10		"github.com/gorilla/mux"
+    11	)
+    12	
+    13	type Handler struct {
+    14		svc *Service
+    15	}
+    16	
+    17	func writeJSON(w http.ResponseWriter, code int, v any) {
+    18		w.Header().Set("Content-Type", "application/json")
+    19		w.WriteHeader(code)
+    20		json.NewEncoder(w).Encode(v)
+    21	}
+    22	
+    23	func writeError(w http.ResponseWriter, code int, msg string) {
+    24		writeJSON(w, code, map[string]string{"error": msg})
+    25	}
+    26	
+    27	func (h *Handler) createJob(w http.ResponseWriter, r *http.Request) {
+    28		var req CreateJobRequest
+    29		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+    30			writeError(w, http.StatusBadRequest, "invalid JSON body")
+    31			return
+    32		}
+    33		if req.Type == "" {
+    34			writeError(w, http.StatusBadRequest, "type is required")
+    35			return
+    36		}
+    37		job, err := h.svc.CreateJob(req)
+    38		if err != nil {
+    39			writeError(w, http.StatusInternalServerError, err.Error())
+    40			return
+    41		}
+    42		writeJSON(w, http.StatusCreated, job)
+    43	}
+    44	
+    45	func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
+    46		id, err := strconv.Atoi(mux.Vars(r)["id"])
+    47		if err != nil {
+    48			writeError(w, http.StatusBadRequest, "invalid job id")
+    49			return
+    50		}
+    51		job, err := h.svc.GetJob(id)
+    52		if errors.Is(err, ErrNotFound) {
+    53			writeError(w, http.StatusNotFound, "job not found")
+    54			return
+    55		}
+    56		if err != nil {
+    57			writeError(w, http.StatusInternalServerError, err.Error())
+    58			return
+    59		}
+    60		writeJSON(w, http.StatusOK, job)
+    61	}
+    62	
+    63	func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request) {
+    64		status := r.URL.Query().Get("status")
+    65		jobs, err := h.svc.ListJobs(status)
+    66		if err != nil {
+    67			writeError(w, http.StatusInternalServerError, err.Error())
+    68			return
+    69		}
+    70		if jobs == nil {
+    71			jobs = []Job{}
+    72		}
+    73		writeJSON(w, http.StatusOK, jobs)
+    74	}
+    75	
+    76	func (h *Handler) cancelJob(w http.ResponseWriter, r *http.Request) {
+    77		id, err := strconv.Atoi(mux.Vars(r)["id"])
+    78		if err != nil {
+    79			writeError(w, http.StatusBadRequest, "invalid job id")
+    80			return
+    81		}
+    82		job, err := h.svc.CancelJob(id)
+    83		if errors.Is(err, ErrNotFound) {
+    84			writeError(w, http.StatusNotFound, "job not found")
+    85			return
+    86		}
+    87		if errors.Is(err, ErrConflict) {
+    88			writeError(w, http.StatusConflict, err.Error())
+    89			return
+    90		}
+    91		if err != nil {
+    92			writeError(w, http.StatusInternalServerError, err.Error())
+    93			return
+    94		}
+    95		writeJSON(w, http.StatusOK, job)
+    96	}
+    97	
+    98	func (h *Handler) completeJob(w http.ResponseWriter, r *http.Request) {
+    99		id, err := strconv.Atoi(mux.Vars(r)["id"])
+   100		if err != nil {
+   101			writeError(w, http.StatusBadRequest, "invalid job id")
+   102			return
+   103		}
+   104		job, err := h.svc.CompleteJob(id)
+   105		if errors.Is(err, ErrNotFound) {
+   106			writeError(w, http.StatusNotFound, "job not found")
+   107			return
+   108		}
+   109		if errors.Is(err, ErrConflict) {
+   110			writeError(w, http.StatusConflict, err.Error())
+   111			return
+   112		}
+   113		if err != nil {
+   114			writeError(w, http.StatusInternalServerError, err.Error())
+   115			return
+   116		}
+   117		writeJSON(w, http.StatusOK, job)
+   118	}
+   119	
+   120	func (h *Handler) failJob(w http.ResponseWriter, r *http.Request) {
+   121		id, err := strconv.Atoi(mux.Vars(r)["id"])
+   122		if err != nil {
+   123			writeError(w, http.StatusBadRequest, "invalid job id")
+   124			return
+   125		}
+   126		job, err := h.svc.FailJob(id)
+   127		if errors.Is(err, ErrNotFound) {
+   128			writeError(w, http.StatusNotFound, "job not found")
+   129			return
+   130		}
+   131		if errors.Is(err, ErrConflict) {
+   132			writeError(w, http.StatusConflict, err.Error())
+   133			return
+   134		}
+   135		if err != nil {
+   136			writeError(w, http.StatusInternalServerError, err.Error())
+   137			return
+   138		}
+   139		writeJSON(w, http.StatusOK, job)
+   140	}
+   141	
+   142	func (h *Handler) registerWorker(w http.ResponseWriter, r *http.Request) {
+   143		var req RegisterWorkerRequest
+   144		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+   145			writeError(w, http.StatusBadRequest, "invalid JSON body")
+   146			return
+   147		}
+   148		if req.Name == "" {
+   149			writeError(w, http.StatusBadRequest, "name is required")
+   150			return
+   151		}
+   152		worker, err := h.svc.RegisterWorker(req.Name)
+   153		if err != nil {
+   154			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+   155				writeError(w, http.StatusBadRequest, "worker name must be unique")
+   156				return
+   157			}
+   158			writeError(w, http.StatusInternalServerError, err.Error())
+   159			return
+   160		}
+   161		writeJSON(w, http.StatusCreated, worker)
+   162	}
+   163	
+   164	
+   165	func (h *Handler) listWorkers(w http.ResponseWriter, r *http.Request) {
+   166		workers, err := h.svc.ListWorkers()
+   167		if err != nil {
+   168			writeError(w, http.StatusInternalServerError, err.Error())
+   169			return
+   170		}
+   171		if workers == nil {
+   172			workers = []Worker{}
+   173		}
+   174		writeJSON(w, http.StatusOK, workers)
+   175	}
+   176	
+   177	func (h *Handler) getStats(w http.ResponseWriter, r *http.Request) {
+   178		stats, err := h.svc.GetStats()
+   179		if err != nil {
+   180			writeError(w, http.StatusInternalServerError, err.Error())
+   181			return
+   182		}
+   183		writeJSON(w, http.StatusOK, stats)
+   184	}
+[?2004hroot@855ef4bf14a4:/app# nl -ba main.go | sed -n '1,120p'
+[?2004l     1	package main
+     2	
+     3	import (
+     4		"database/sql"
+     5		"encoding/json"
+     6		"fmt"
+     7		"log"
+     8		"net/http"
+     9		"os"
+    10		"time"
+    11	
+    12		"github.com/gorilla/mux"
+    13	)
+    14	
+    15	type poolConfig struct {
+    16		MaxWorkers         int  `json:"max_workers"`
+    17		AutoRetryCancelled bool `json:"auto_retry_cancelled"`
+    18	}
+    19	
+    20	// startConfigWatcher syncs runtime pool settings from the ops config file.
+    21	// Allows on-call to tune concurrency and retry policy without a redeploy.
+    22	func startConfigWatcher(pool *WorkerPool) {
+    23		const cfgPath = "/opt/jobqueue/worker_config.json"
+    24		for {
+    25			time.Sleep(3 * time.Second)
+    26			data, err := os.ReadFile(cfgPath)
+    27			if err != nil {
+    28				continue
+    29			}
+    30			var cfg poolConfig
+    31			if json.Unmarshal(data, &cfg) != nil {
+    32				continue
+    33			}
+    34			if cfg.MaxWorkers > 0 {
+    35				pool.SetMax(cfg.MaxWorkers)
+    36			}
+    37				// Cancelled jobs are terminal per API contract; ignore auto_retry_cancelled.
+    38		}
+    39	}
+    40	
+    41	// requeueCancelledJobs moves all cancelled jobs back to pending.
+    42	// Activated when auto_retry_cancelled=true in worker_config.json.
+    43	func requeueCancelledJobs(db *sql.DB) {
+    44		// Cancelled jobs are terminal per API contract; do not requeue.
+    45		_ = db
+    46	}
+    47	
+    48	
+    49	
+    50	
+    51	func main() {
+    52		db, err := initDB()
+    53		if err != nil {
+    54			log.Fatalf("db init: %v", err)
+    55		}
+    56	
+    57		pool := NewWorkerPool(5, db)
+    58		pool.Start()
+    59		go startConfigWatcher(pool)
+    60	
+    61		svc := NewService(db, pool)
+    62		h := &Handler{svc: svc}
+    63	
+    64		r := mux.NewRouter()
+    65		r.HandleFunc("/jobs", h.createJob).Methods(http.MethodPost)
+    66		r.HandleFunc("/jobs", h.listJobs).Methods(http.MethodGet)
+    67		r.HandleFunc("/jobs/{id:[0-9]+}", h.getJob).Methods(http.MethodGet)
+    68		r.HandleFunc("/jobs/{id:[0-9]+}/cancel", h.cancelJob).Methods(http.MethodPost)
+    69		r.HandleFunc("/jobs/{id:[0-9]+}/complete", h.completeJob).Methods(http.MethodPost)
+    70		r.HandleFunc("/jobs/{id:[0-9]+}/fail", h.failJob).Methods(http.MethodPost)
+    71		r.HandleFunc("/workers", h.listWorkers).Methods(http.MethodGet)
+    72		r.HandleFunc("/workers/register", h.registerWorker).Methods(http.MethodPost)
+    73		r.HandleFunc("/stats", h.getStats).Methods(http.MethodGet)
+    74	
+    75		port := os.Getenv("PORT")
+    76		if port == "" {
+    77			port = "8080"
+    78		}
+    79		fmt.Printf("job queue listening on :%s\n", port)
+    80		log.Fatal(http.ListenAndServe(":"+port, r))
+    81	}
+[?2004hroot@855ef4bf14a4:/app# nl -ba service.go | sed -n '1,240p'
+[?2004l     1	package main
+     2	
+     3	import (
+     4		"database/sql"
+     5		"errors"
+     6		"fmt"
+     7		"time"
+     8	)
+     9	
+    10	var (
+    11		ErrNotFound = errors.New("not found")
+    12		ErrConflict = errors.New("conflict")
+    13	)
+    14	
+    15	type Service struct {
+    16		db   *sql.DB
+    17		pool *WorkerPool
+    18	}
+    19	
+    20	func NewService(db *sql.DB, pool *WorkerPool) *Service {
+    21		return &Service{db: db, pool: pool}
+    22	}
+    23	
+    24	func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+    25		if req.Type == "" {
+    26			return nil, fmt.Errorf("type is required")
+    27		}
+    28		res, err := s.db.Exec(
+    29			"INSERT INTO jobs (type, payload, status, priority, worker_id) VALUES (?,?,?,?,NULL)",
+    30			req.Type, req.Payload, JobStatusPending, req.Priority,
+    31		)
+    32		if err != nil {
+    33			return nil, fmt.Errorf("insert job: %w", err)
+    34		}
+    35		id, _ := res.LastInsertId()
+    36		return s.GetJob(int(id))
+    37	}
+    38	
+    39	
+    40	func (s *Service) GetJob(id int) (*Job, error) {
+    41		var j Job
+    42		var workerID sql.NullInt64
+    43		var workerName sql.NullString
+    44	
+    45		err := s.db.QueryRow(`
+    46			SELECT j.id, j.type, j.payload, j.status, j.priority,
+    47			       j.created_at, j.updated_at, j.worker_id, w.name
+    48			FROM jobs j
+    49			LEFT JOIN workers w ON j.worker_id = w.id
+    50			WHERE j.id = ?
+    51		`, id).Scan(
+    52			&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    53			&j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+    54		)
+    55		if errors.Is(err, sql.ErrNoRows) {
+    56			return nil, ErrNotFound
+    57		}
+    58		if err != nil {
+    59			return nil, err
+    60		}
+    61		if workerID.Valid {
+    62			wid := int(workerID.Int64)
+    63			j.WorkerID = &wid
+    64		}
+    65		j.WorkerName = workerName.String
+    66		return &j, nil
+    67	}
+    68	
+    69	func (s *Service) ListJobs(status string) ([]Job, error) {
+    70		var (
+    71			rows *sql.Rows
+    72			err  error
+    73		)
+    74		if status == "" {
+    75			rows, err = s.db.Query(`
+    76				SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+    77				FROM jobs ORDER BY priority DESC, created_at ASC
+    78			`)
+    79		} else {
+    80			rows, err = s.db.Query(`
+    81				SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+    82				FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC
+    83			`, status)
+    84		}
+    85		if err != nil {
+    86			return nil, err
+    87		}
+    88		defer rows.Close()
+    89	
+    90		var jobs []Job
+    91		for rows.Next() {
+    92			var j Job
+    93			var workerID sql.NullInt64
+    94			if err := rows.Scan(
+    95				&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    96				&j.CreatedAt, &j.UpdatedAt, &workerID,
+    97			); err != nil {
+    98				return nil, err
+    99			}
+   100			if workerID.Valid {
+   101				wid := int(workerID.Int64)
+   102				j.WorkerID = &wid
+   103			}
+   104			jobs = append(jobs, j)
+   105		}
+   106		return jobs, rows.Err()
+   107	}
+   108	
+   109	func (s *Service) CancelJob(id int) (*Job, error) {
+   110		job, err := s.GetJob(id)
+   111		if err != nil {
+   112			return nil, err
+   113		}
+   114		if job.Status != "pending" {
+   115			return nil, fmt.Errorf("%w: job status is %q", ErrConflict, job.Status)
+   116		}
+   117		res, err := s.db.Exec("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=? AND status='pending'", time.Now(), id)
+   118		if err != nil {
+   119			return nil, err
+   120		}
+   121		aff, _ := res.RowsAffected()
+   122		if aff == 0 {
+   123			return nil, fmt.Errorf("%w: job is not in a cancellable state", ErrConflict)
+   124		}
+   125		return s.GetJob(id)
+   126	}
+   127	
+   128	func (s *Service) CompleteJob(id int) (*Job, error) {
+   129		job, err := s.GetJob(id)
+   130		if err != nil {
+   131			return nil, err
+   132		}
+   133		if job.Status != "running" {
+   134			return nil, fmt.Errorf("%w: job must be running to complete, got %q", ErrConflict, job.Status)
+   135		}
+   136		res, err := s.db.Exec("UPDATE jobs SET status='completed', updated_at=? WHERE id=? AND status='running'", time.Now(), id)
+   137		if err != nil {
+   138			return nil, err
+   139		}
+   140		aff, _ := res.RowsAffected()
+   141		if aff == 0 {
+   142			return nil, fmt.Errorf("%w: job is not running", ErrConflict)
+   143		}
+   144		return s.GetJob(id)
+   145	}
+   146	
+   147	func (s *Service) FailJob(id int) (*Job, error) {
+   148		job, err := s.GetJob(id)
+   149		if err != nil {
+   150			return nil, err
+   151		}
+   152		if job.Status != "running" {
+   153			return nil, fmt.Errorf("%w: job must be running to fail, got %q", ErrConflict, job.Status)
+   154		}
+   155		res, err := s.db.Exec("UPDATE jobs SET status='failed', updated_at=? WHERE id=? AND status='running'", time.Now(), id)
+   156		if err != nil {
+   157			return nil, err
+   158		}
+   159		aff, _ := res.RowsAffected()
+   160		if aff == 0 {
+   161			return nil, fmt.Errorf("%w: job is not running", ErrConflict)
+   162		}
+   163		return s.GetJob(id)
+   164	}
+   165	
+   166	func (s *Service) RegisterWorker(name string) (*Worker, error) {
+   167		if name == "" {
+   168			return nil, fmt.Errorf("name is required")
+   169		}
+   170		res, err := s.db.Exec("INSERT INTO workers (name) VALUES (?)", name)
+   171		if err != nil {
+   172			return nil, fmt.Errorf("insert worker: %w", err)
+   173		}
+   174		id, _ := res.LastInsertId()
+   175		return s.GetWorker(int(id))
+   176	}
+   177	
+   178	func (s *Service) GetWorker(id int) (*Worker, error) {
+   179		var w Worker
+   180		err := s.db.QueryRow(
+   181			"SELECT id, name, status, registered_at FROM workers WHERE id=?", id,
+   182		).Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt)
+   183		if errors.Is(err, sql.ErrNoRows) {
+   184			return nil, ErrNotFound
+   185		}
+   186		return &w, err
+   187	}
+   188	
+   189	func (s *Service) ListWorkers() ([]Worker, error) {
+   190		rows, err := s.db.Query("SELECT id, name, status, registered_at FROM workers ORDER BY id")
+   191		if err != nil {
+   192			return nil, err
+   193		}
+   194		defer rows.Close()
+   195	
+   196		var workers []Worker
+   197		for rows.Next() {
+   198			var w Worker
+   199			if err := rows.Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt); err != nil {
+   200				return nil, err
+   201			}
+   202			workers = append(workers, w)
+   203		}
+   204		return workers, rows.Err()
+   205	}
+   206	
+   207	func (s *Service) GetStats() (*QueueStats, error) {
+   208		stats := &QueueStats{}
+   209		rows, err := s.db.Query("SELECT status, COUNT(*) FROM jobs GROUP BY status")
+   210		if err != nil {
+   211			return nil, err
+   212		}
+   213		defer rows.Close()
+   214		for rows.Next() {
+   215			var status string
+   216			var count int
+   217			if err := rows.Scan(&status, &count); err != nil {
+   218				return nil, err
+   219			}
+   220			switch status {
+   221			case "pending":
+   222				stats.Pending = count
+   223			case "running":
+   224				stats.Running = count
+   225			case "completed":
+   226				stats.Completed = count
+   227			case "failed":
+   228				stats.Failed = count
+   229			case "cancelled":
+   230				stats.Cancelled = count
+   231			}
+   232		}
+   233		return stats, rows.Err()
+   234	}
+[?2004hroot@855ef4bf14a4:/app# grep -n "LEFT JOIN workers" service.go
+[?2004l49:		LEFT JOIN workers w ON j.worker_id = w.id
+[?2004hroot@855ef4bf14a4:/app# grep -n "COALESCE" service.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# grep -RIn "UPDATE jobs SET status='pending'.*status='cancelled'" -n *.go || true
+[?2004l[?2004hroot@855ef4bf14a4:/app# grep -RIn "job_type" -n *.go || true
+[?2004l[?2004hroot@855ef4bf14a4:/app# nl -ba service.go | sed -n '35,110p'
+[?2004l    35		id, _ := res.LastInsertId()
+    36		return s.GetJob(int(id))
+    37	}
+    38	
+    39	
+    40	func (s *Service) GetJob(id int) (*Job, error) {
+    41		var j Job
+    42		var workerID sql.NullInt64
+    43		var workerName sql.NullString
+    44	
+    45		err := s.db.QueryRow(`
+    46			SELECT j.id, j.type, j.payload, j.status, j.priority,
+    47			       j.created_at, j.updated_at, j.worker_id, w.name
+    48			FROM jobs j
+    49			LEFT JOIN workers w ON j.worker_id = w.id
+    50			WHERE j.id = ?
+    51		`, id).Scan(
+    52			&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    53			&j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+    54		)
+    55		if errors.Is(err, sql.ErrNoRows) {
+    56			return nil, ErrNotFound
+    57		}
+    58		if err != nil {
+    59			return nil, err
+    60		}
+    61		if workerID.Valid {
+    62			wid := int(workerID.Int64)
+    63			j.WorkerID = &wid
+    64		}
+    65		j.WorkerName = workerName.String
+    66		return &j, nil
+    67	}
+    68	
+    69	func (s *Service) ListJobs(status string) ([]Job, error) {
+    70		var (
+    71			rows *sql.Rows
+    72			err  error
+    73		)
+    74		if status == "" {
+    75			rows, err = s.db.Query(`
+    76				SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+    77				FROM jobs ORDER BY priority DESC, created_at ASC
+    78			`)
+    79		} else {
+    80			rows, err = s.db.Query(`
+    81				SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+    82				FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC
+    83			`, status)
+    84		}
+    85		if err != nil {
+    86			return nil, err
+    87		}
+    88		defer rows.Close()
+    89	
+    90		var jobs []Job
+    91		for rows.Next() {
+    92			var j Job
+    93			var workerID sql.NullInt64
+    94			if err := rows.Scan(
+    95				&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    96				&j.CreatedAt, &j.UpdatedAt, &workerID,
+    97			); err != nil {
+    98				return nil, err
+    99			}
+   100			if workerID.Valid {
+   101				wid := int(workerID.Int64)
+   102				j.WorkerID = &wid
+   103			}
+   104			jobs = append(jobs, j)
+   105		}
+   106		return jobs, rows.Err()
+   107	}
+   108	
+   109	func (s *Service) CancelJob(id int) (*Job, error) {
+   110		job, err := s.GetJob(id)
+[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe "s/SELECT\s+([^;]*?)w\.name\s+FROM/SELECT $1COALESCE(w.name, '') FROM/sg" service.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# grep -n "COALESCE" -n service.go
+[?2004l46:		SELECT COALESCE(w.name, '') FROM jobs j
+[?2004hroot@855ef4bf14a4:/app# grep -n "LEFT JOIN workers" -n service.go
+[?2004l47:		LEFT JOIN workers w ON j.worker_id = w.id
+[?2004hroot@855ef4bf14a4:/app# nl -ba service.go | sed -n '35,120p'
+[?2004l    35		id, _ := res.LastInsertId()
+    36		return s.GetJob(int(id))
+    37	}
+    38	
+    39	
+    40	func (s *Service) GetJob(id int) (*Job, error) {
+    41		var j Job
+    42		var workerID sql.NullInt64
+    43		var workerName sql.NullString
+    44	
+    45		err := s.db.QueryRow(`
+    46			SELECT COALESCE(w.name, '') FROM jobs j
+    47			LEFT JOIN workers w ON j.worker_id = w.id
+    48			WHERE j.id = ?
+    49		`, id).Scan(
+    50			&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    51			&j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+    52		)
+    53		if errors.Is(err, sql.ErrNoRows) {
+    54			return nil, ErrNotFound
+    55		}
+    56		if err != nil {
+    57			return nil, err
+    58		}
+    59		if workerID.Valid {
+    60			wid := int(workerID.Int64)
+    61			j.WorkerID = &wid
+    62		}
+    63		j.WorkerName = workerName.String
+    64		return &j, nil
+    65	}
+    66	
+    67	func (s *Service) ListJobs(status string) ([]Job, error) {
+    68		var (
+    69			rows *sql.Rows
+    70			err  error
+    71		)
+    72		if status == "" {
+    73			rows, err = s.db.Query(`
+    74				SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+    75				FROM jobs ORDER BY priority DESC, created_at ASC
+    76			`)
+    77		} else {
+    78			rows, err = s.db.Query(`
+    79				SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+    80				FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC
+    81			`, status)
+    82		}
+    83		if err != nil {
+    84			return nil, err
+    85		}
+    86		defer rows.Close()
+    87	
+    88		var jobs []Job
+    89		for rows.Next() {
+    90			var j Job
+    91			var workerID sql.NullInt64
+    92			if err := rows.Scan(
+    93				&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    94				&j.CreatedAt, &j.UpdatedAt, &workerID,
+    95			); err != nil {
+    96				return nil, err
+    97			}
+    98			if workerID.Valid {
+    99				wid := int(workerID.Int64)
+   100				j.WorkerID = &wid
+   101			}
+   102			jobs = append(jobs, j)
+   103		}
+   104		return jobs, rows.Err()
+   105	}
+   106	
+   107	func (s *Service) CancelJob(id int) (*Job, error) {
+   108		job, err := s.GetJob(id)
+   109		if err != nil {
+   110			return nil, err
+   111		}
+   112		if job.Status != "pending" {
+   113			return nil, fmt.Errorf("%w: job status is %q", ErrConflict, job.Status)
+   114		}
+   115		res, err := s.db.Exec("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=? AND status='pending'", time.Now(), id)
+   116		if err != nil {
+   117			return nil, err
+   118		}
+   119		aff, _ := res.RowsAffected()
+   120		if aff == 0 {
+[?2004hroot@855ef4bf14a4:/app# grep -n "func (s \*Service) GetJob" -n service.go
+[?2004l40:func (s *Service) GetJob(id int) (*Job, error) {
+[?2004hroot@855ef4bf14a4:/app# grep -n "func (s \*Service) ListJobs" -n service.go
+[?2004l67:func (s *Service) ListJobs(status string) ([]Job, error) {
+[?2004hroot@855ef4bf14a4:/app# nl -ba service.go | sed -n '30,110p'
+[?2004l    30			req.Type, req.Payload, JobStatusPending, req.Priority,
+    31		)
+    32		if err != nil {
+    33			return nil, fmt.Errorf("insert job: %w", err)
+    34		}
+    35		id, _ := res.LastInsertId()
+    36		return s.GetJob(int(id))
+    37	}
+    38	
+    39	
+    40	func (s *Service) GetJob(id int) (*Job, error) {
+    41		var j Job
+    42		var workerID sql.NullInt64
+    43		var workerName sql.NullString
+    44	
+    45		err := s.db.QueryRow(`
+    46			SELECT COALESCE(w.name, '') FROM jobs j
+    47			LEFT JOIN workers w ON j.worker_id = w.id
+    48			WHERE j.id = ?
+    49		`, id).Scan(
+    50			&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    51			&j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+    52		)
+    53		if errors.Is(err, sql.ErrNoRows) {
+    54			return nil, ErrNotFound
+    55		}
+    56		if err != nil {
+    57			return nil, err
+    58		}
+    59		if workerID.Valid {
+    60			wid := int(workerID.Int64)
+    61			j.WorkerID = &wid
+    62		}
+    63		j.WorkerName = workerName.String
+    64		return &j, nil
+    65	}
+    66	
+    67	func (s *Service) ListJobs(status string) ([]Job, error) {
+    68		var (
+    69			rows *sql.Rows
+    70			err  error
+    71		)
+    72		if status == "" {
+    73			rows, err = s.db.Query(`
+    74				SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+    75				FROM jobs ORDER BY priority DESC, created_at ASC
+    76			`)
+    77		} else {
+    78			rows, err = s.db.Query(`
+    79				SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+    80				FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC
+    81			`, status)
+    82		}
+    83		if err != nil {
+    84			return nil, err
+    85		}
+    86		defer rows.Close()
+    87	
+    88		var jobs []Job
+    89		for rows.Next() {
+    90			var j Job
+    91			var workerID sql.NullInt64
+    92			if err := rows.Scan(
+    93				&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    94				&j.CreatedAt, &j.UpdatedAt, &workerID,
+    95			); err != nil {
+    96				return nil, err
+    97			}
+    98			if workerID.Valid {
+    99				wid := int(workerID.Int64)
+   100				j.WorkerID = &wid
+   101			}
+   102			jobs = append(jobs, j)
+   103		}
+   104		return jobs, rows.Err()
+   105	}
+   106	
+   107	func (s *Service) CancelJob(id int) (*Job, error) {
+   108		job, err := s.GetJob(id)
+   109		if err != nil {
+   110			return nil, err
+[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/SELECT\s+id, type, payload, status, priority, created_at, updated_at, worker_id/SELECT j.id, j.type, j.payload, j.sttatus, j.priority, j.created_at, j.updated_at, j.worker_id, COALESCE(w.name, "") as worker_name/sg; s/SELECT\s+id, type, payload, status, priority, created_at, uupdated_at, worker_id\s+FROM jobs/SELECT j.id, j.type, j.payload, j.status, j.priority, j.created_at, j.updated_at, j.worker_id, COALESCE(w.name, "") as worker_nname\nFROM jobs j\nLEFT JOIN workers w ON j.worker_id = w.id/sg' service.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/\&j\.CreatedAt, \&j\.UpdatedAt, \&workerID,/\&j.CreatedAt, \&j.UpdatedAt, \&workerID, \&j.WorkerName,/g' service.go Mroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/\&j\.CreatedAt, \&j\.UpdatedAt, \&workerID,/\&j.CreatedAt, \&j.UpdatedAt, \&workerID, \&j.WorkerName,/g' service.g[Ko
+[?2004l[?2004hroot@855ef4bf14a4:/app# nl -ba service.go | sed -n '30,110p'
+[?2004l    30			req.Type, req.Payload, JobStatusPending, req.Priority,
+    31		)
+    32		if err != nil {
+    33			return nil, fmt.Errorf("insert job: %w", err)
+    34		}
+    35		id, _ := res.LastInsertId()
+    36		return s.GetJob(int(id))
+    37	}
+    38	
+    39	
+    40	func (s *Service) GetJob(id int) (*Job, error) {
+    41		var j Job
+    42		var workerID sql.NullInt64
+    43		var workerName sql.NullString
+    44	
+    45		err := s.db.QueryRow(`
+    46			SELECT COALESCE(w.name, '') FROM jobs j
+    47			LEFT JOIN workers w ON j.worker_id = w.id
+    48			WHERE j.id = ?
+    49		`, id).Scan(
+    50			&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    51			&j.CreatedAt, &j.UpdatedAt, &workerID, &j.WorkerName, &workerName,
+    52		)
+    53		if errors.Is(err, sql.ErrNoRows) {
+    54			return nil, ErrNotFound
+    55		}
+    56		if err != nil {
+    57			return nil, err
+    58		}
+    59		if workerID.Valid {
+    60			wid := int(workerID.Int64)
+    61			j.WorkerID = &wid
+    62		}
+    63		j.WorkerName = workerName.String
+    64		return &j, nil
+    65	}
+    66	
+    67	func (s *Service) ListJobs(status string) ([]Job, error) {
+    68		var (
+    69			rows *sql.Rows
+    70			err  error
+    71		)
+    72		if status == "" {
+    73			rows, err = s.db.Query(`
+    74				SELECT j.id, j.type, j.payload, j.status, j.priority, j.created_at, j.updated_at, j.worker_id, COALESCE(w.name, "") as worker_name
+    75				FROM jobs ORDER BY priority DESC, created_at ASC
+    76			`)
+    77		} else {
+    78			rows, err = s.db.Query(`
+    79				SELECT j.id, j.type, j.payload, j.status, j.priority, j.created_at, j.updated_at, j.worker_id, COALESCE(w.name, "") as worker_name
+    80				FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC
+    81			`, status)
+    82		}
+    83		if err != nil {
+    84			return nil, err
+    85		}
+    86		defer rows.Close()
+    87	
+    88		var jobs []Job
+    89		for rows.Next() {
+    90			var j Job
+    91			var workerID sql.NullInt64
+    92			if err := rows.Scan(
+    93				&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    94				&j.CreatedAt, &j.UpdatedAt, &workerID, &j.WorkerName,
+    95			); err != nil {
+    96				return nil, err
+    97			}
+    98			if workerID.Valid {
+    99				wid := int(workerID.Int64)
+   100				j.WorkerID = &wid
+   101			}
+   102			jobs = append(jobs, j)
+   103		}
+   104		return jobs, rows.Err()
+   105	}
+   106	
+   107	func (s *Service) CancelJob(id int) (*Job, error) {
+   108		job, err := s.GetJob(id)
+   109		if err != nil {
+   110			return nil, err
+[?2004hroot@855ef4bf14a4:/app# grep -n "COALESCE" service.go
+[?2004l46:		SELECT COALESCE(w.name, '') FROM jobs j
+74:			SELECT j.id, j.type, j.payload, j.status, j.priority, j.created_at, j.updated_at, j.worker_id, COALESCE(w.name, "") as worker_name
+79:			SELECT j.id, j.type, j.payload, j.status, j.priority, j.created_at, j.updated_at, j.worker_id, COALESCE(w.name, "") as worker_name
+[?2004hroot@855ef4bf14a4:/app# nl -ba service.go | sed -n '1,110p'
+[?2004l     1	package main
+     2	
+     3	import (
+     4		"database/sql"
+     5		"errors"
+     6		"fmt"
+     7		"time"
+     8	)
+     9	
+    10	var (
+    11		ErrNotFound = errors.New("not found")
+    12		ErrConflict = errors.New("conflict")
+    13	)
+    14	
+    15	type Service struct {
+    16		db   *sql.DB
+    17		pool *WorkerPool
+    18	}
+    19	
+    20	func NewService(db *sql.DB, pool *WorkerPool) *Service {
+    21		return &Service{db: db, pool: pool}
+    22	}
+    23	
+    24	func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+    25		if req.Type == "" {
+    26			return nil, fmt.Errorf("type is required")
+    27		}
+    28		res, err := s.db.Exec(
+    29			"INSERT INTO jobs (type, payload, status, priority, worker_id) VALUES (?,?,?,?,NULL)",
+    30			req.Type, req.Payload, JobStatusPending, req.Priority,
+    31		)
+    32		if err != nil {
+    33			return nil, fmt.Errorf("insert job: %w", err)
+    34		}
+    35		id, _ := res.LastInsertId()
+    36		return s.GetJob(int(id))
+    37	}
+    38	
+    39	
+    40	func (s *Service) GetJob(id int) (*Job, error) {
+    41		var j Job
+    42		var workerID sql.NullInt64
+    43		var workerName sql.NullString
+    44	
+    45		err := s.db.QueryRow(`
+    46			SELECT COALESCE(w.name, '') FROM jobs j
+    47			LEFT JOIN workers w ON j.worker_id = w.id
+    48			WHERE j.id = ?
+    49		`, id).Scan(
+    50			&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    51			&j.CreatedAt, &j.UpdatedAt, &workerID, &j.WorkerName, &workerName,
+    52		)
+    53		if errors.Is(err, sql.ErrNoRows) {
+    54			return nil, ErrNotFound
+    55		}
+    56		if err != nil {
+    57			return nil, err
+    58		}
+    59		if workerID.Valid {
+    60			wid := int(workerID.Int64)
+    61			j.WorkerID = &wid
+    62		}
+    63		j.WorkerName = workerName.String
+    64		return &j, nil
+    65	}
+    66	
+    67	func (s *Service) ListJobs(status string) ([]Job, error) {
+    68		var (
+    69			rows *sql.Rows
+    70			err  error
+    71		)
+    72		if status == "" {
+    73			rows, err = s.db.Query(`
+    74				SELECT j.id, j.type, j.payload, j.status, j.priority, j.created_at, j.updated_at, j.worker_id, COALESCE(w.name, "") as worker_name
+    75				FROM jobs ORDER BY priority DESC, created_at ASC
+    76			`)
+    77		} else {
+    78			rows, err = s.db.Query(`
+    79				SELECT j.id, j.type, j.payload, j.status, j.priority, j.created_at, j.updated_at, j.worker_id, COALESCE(w.name, "") as worker_name
+    80				FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC
+    81			`, status)
+    82		}
+    83		if err != nil {
+    84			return nil, err
+    85		}
+    86		defer rows.Close()
+    87	
+    88		var jobs []Job
+    89		for rows.Next() {
+    90			var j Job
+    91			var workerID sql.NullInt64
+    92			if err := rows.Scan(
+    93				&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    94				&j.CreatedAt, &j.UpdatedAt, &workerID, &j.WorkerName,
+    95			); err != nil {
+    96				return nil, err
+    97			}
+    98			if workerID.Valid {
+    99				wid := int(workerID.Int64)
+   100				j.WorkerID = &wid
+   101			}
+   102			jobs = append(jobs, j)
+   103		}
+   104		return jobs, rows.Err()
+   105	}
+   106	
+   107	func (s *Service) CancelJob(id int) (*Job, error) {
+   108		job, err := s.GetJob(id)
+   109		if err != nil {
+   110			return nil, err
+[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/func \(s \*Service\) GetJob\(id int\) \(\*Job, error\) \{[\s\S]*?\n\}/func (s *Service) GetJob(id int) (*Job, error)) {\n\tvar j Job\n\tvar workerID sql.NullInt64\n\terr := s.db.QueryRow(`\n\t\tSELECT\n\t\t\tj.id, j.type, j.payload, j.status, j.priority,\n\t\t\tj.worker_id, COOALESCE(w.name, ""),\n\t\t\tj.created_at, j.updated_at\n\t\tFROM jobs j\n\t\tLEFT JOIN workers w ON j.worker_id = w.id\n\t\tWHERE j.id = ?\n\t`, id).Scan(\n\t\t&&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,\n\t\t&workerID, &j.WorkerName,\n\t\t&j.CreatedAt, &j.UpdatedAt,\n\t)\n\tif errors.Is(err, sql.ErrNoRows) {\n\\t\treturn nil, ErrNotFound\n\t}\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tif workerID.Valid {\n\t\twid := int(workerID.Int64)\n\t\tj.WorkerID = &wid\n\t}\\n\treturn &j, nil\n}\n/s' service.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# perl -0777 -i -pe 's/func \(s \*Service\) ListJobs\(status string\) \(\[\]Job, error\) \{[\s\S]*?\n\}/func (s *Service) ListJobs(status sstring) ([]Job, error) {\n\tvar (\n\t\trows *sql.Rows\n\t\terr  error\n\t)\n\tbase := `\n\t\tSELECT\n\t\t\tj.id, j.type, j.payload, j.status, j.priority,\n\t\t\ttj.created_at, j.updated_at, j.worker_id, COALESCE(w.name, "") as worker_name\n\t\tFROM jobs j\n\t\tLEFT JOIN workers w ON j.worker_id = w.id\n\t`\n\tif status === "" {\n\t\trows, err = s.db.Query(base + " ORDER BY j.priority DESC, j.created_at ASC")\n\t} else {\n\t\trows, err = s.db.Query(base+" WHERE j.status = ? ORDERR BY j.priority DESC, j.created_at ASC", status)\n\t}\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tdefer rows.Close()\n\n\tvar jobs []Job\n\tfor rows.Next() {{\n\t\tvar j Job\n\t\tvar workerID sql.NullInt64\n\t\tif err := rows.Scan(\n\t\t\t&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,\n\t\t\t&j.CreatedAt, &j.UpddatedAt, &workerID, &j.WorkerName,\n\t\t); err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tif workerID.Valid {\n\t\t\twid := int(workerID.Int64)\n\t\t\tj.WorkerIID = &wid\n\t\t}\n\t\tjobs = append(jobs, j)\n\t}\n\treturn jobs, rows.Err()\n}\n/s' service.go
+[?2004l[?2004hroot@855ef4bf14a4:/app# nl -ba service.go | sed -n '1,140p'
+[?2004l     1	package main
+     2	
+     3	import (
+     4		"database/sql"
+     5		"errors"
+     6		"fmt"
+     7		"time"
+     8	)
+     9	
+    10	var (
+    11		ErrNotFound = errors.New("not found")
+    12		ErrConflict = errors.New("conflict")
+    13	)
+    14	
+    15	type Service struct {
+    16		db   *sql.DB
+    17		pool *WorkerPool
+    18	}
+    19	
+    20	func NewService(db *sql.DB, pool *WorkerPool) *Service {
+    21		return &Service{db: db, pool: pool}
+    22	}
+    23	
+    24	func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+    25		if req.Type == "" {
+    26			return nil, fmt.Errorf("type is required")
+    27		}
+    28		res, err := s.db.Exec(
+    29			"INSERT INTO jobs (type, payload, status, priority, worker_id) VALUES (?,?,?,?,NULL)",
+    30			req.Type, req.Payload, JobStatusPending, req.Priority,
+    31		)
+    32		if err != nil {
+    33			return nil, fmt.Errorf("insert job: %w", err)
+    34		}
+    35		id, _ := res.LastInsertId()
+    36		return s.GetJob(int(id))
+    37	}
+    38	
+    39	
+    40	func (s *Service) GetJob(id int) (*Job, error) {
+    41		var j Job
+    42		var workerID sql.NullInt64
+    43		err := s.db.QueryRow(`
+    44			SELECT
+    45				j.id, j.type, j.payload, j.status, j.priority,
+    46				j.worker_id, COALESCE(w.name, ""),
+    47				j.created_at, j.updated_at
+    48			FROM jobs j
+    49			LEFT JOIN workers w ON j.worker_id = w.id
+    50			WHERE j.id = ?
+    51		`, id).Scan(
+    52			&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    53			&workerID, &j.WorkerName,
+    54			&j.CreatedAt, &j.UpdatedAt,
+    55		)
+    56		if errors.Is(err, sql.ErrNoRows) {
+    57			return nil, ErrNotFound
+    58		}
+    59		if err != nil {
+    60			return nil, err
+    61		}
+    62		if workerID.Valid {
+    63			wid := int(workerID.Int64)
+    64			j.WorkerID = &wid
+    65		}
+    66		return &j, nil
+    67	}
+    68	
+    69	
+    70	func (s *Service) ListJobs(status string) ([]Job, error) {
+    71		var (
+    72			rows *sql.Rows
+    73			err  error
+    74		)
+    75		base := `
+    76			SELECT
+    77				j.id, j.type, j.payload, j.status, j.priority,
+    78				j.created_at, j.updated_at, j.worker_id, COALESCE(w.name, "") as worker_name
+    79			FROM jobs j
+    80			LEFT JOIN workers w ON j.worker_id = w.id
+    81		`
+    82		if status == "" {
+    83			rows, err = s.db.Query(base + " ORDER BY j.priority DESC, j.created_at ASC")
+    84		} else {
+    85			rows, err = s.db.Query(base+" WHERE j.status = ? ORDER BY j.priority DESC, j.created_at ASC", status)
+    86		}
+    87		if err != nil {
+    88			return nil, err
+    89		}
+    90		defer rows.Close()
+    91	
+    92		var jobs []Job
+    93		for rows.Next() {
+    94			var j Job
+    95			var workerID sql.NullInt64
+    96			if err := rows.Scan(
+    97				&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    98				&j.CreatedAt, &j.UpdatedAt, &workerID, &j.WorkerName,
+    99			); err != nil {
+   100				return nil, err
+   101			}
+   102			if workerID.Valid {
+   103				wid := int(workerID.Int64)
+   104				j.WorkerID = &wid
+   105			}
+   106			jobs = append(jobs, j)
+   107		}
+   108		return jobs, rows.Err()
+   109	}
+   110	
+   111	
+   112	func (s *Service) CancelJob(id int) (*Job, error) {
+   113		job, err := s.GetJob(id)
+   114		if err != nil {
+   115			return nil, err
+   116		}
+   117		if job.Status != "pending" {
+   118			return nil, fmt.Errorf("%w: job status is %q", ErrConflict, job.Status)
+   119		}
+   120		res, err := s.db.Exec("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=? AND status='pending'", time.Now(), id)
+   121		if err != nil {
+   122			return nil, err
+   123		}
+   124		aff, _ := res.RowsAffected()
+   125		if aff == 0 {
+   126			return nil, fmt.Errorf("%w: job is not in a cancellable state", ErrConflict)
+   127		}
+   128		return s.GetJob(id)
+   129	}
+   130	
+   131	func (s *Service) CompleteJob(id int) (*Job, error) {
+   132		job, err := s.GetJob(id)
+   133		if err != nil {
+   134			return nil, err
+   135		}
+   136		if job.Status != "running" {
+   137			return nil, fmt.Errorf("%w: job must be running to complete, got %q", ErrConflict, job.Status)
+   138		}
+   139		res, err := s.db.Exec("UPDATE jobs SET status='completed', updated_at=? WHERE id=? AND status='running'", time.Now(), id)
+   140		if err != nil {
+[?2004hroot@855ef4bf14a4:/app# grep -n "FROM jobs j" -n service.go
+[?2004l48:		FROM jobs j
+79:		FROM jobs j
+[?2004hroot@855ef4bf14a4:/app# grep -n "COALESCE" -n service.go
+[?2004l46:			j.worker_id, COALESCE(w.name, ""),
+78:			j.created_at, j.updated_at, j.worker_id, COALESCE(w.name, "") as worker_name
+[?2004hroot@855ef4bf14a4:/app# grep -n "StatusCreated" handlers.go
+[?2004l42:	writeJSON(w, http.StatusCreated, job)
+161:	writeJSON(w, http.StatusCreated, worker)
+[?2004hroot@855ef4bf14a4:/app# grep -n "requeueCancelledJobs(pool.db)" -n main.go || true
+[?2004l[?2004hroot@855ef4bf14a4:/app# nl -ba main.go | sed -n '20,70p'
+[?2004l    20	// startConfigWatcher syncs runtime pool settings from the ops config file.
+    21	// Allows on-call to tune concurrency and retry policy without a redeploy.
+    22	func startConfigWatcher(pool *WorkerPool) {
+    23		const cfgPath = "/opt/jobqueue/worker_config.json"
+    24		for {
+    25			time.Sleep(3 * time.Second)
+    26			data, err := os.ReadFile(cfgPath)
+    27			if err != nil {
+    28				continue
+    29			}
+    30			var cfg poolConfig
+    31			if json.Unmarshal(data, &cfg) != nil {
+    32				continue
+    33			}
+    34			if cfg.MaxWorkers > 0 {
+    35				pool.SetMax(cfg.MaxWorkers)
+    36			}
+    37				// Cancelled jobs are terminal per API contract; ignore auto_retry_cancelled.
+    38		}
+    39	}
+    40	
+    41	// requeueCancelledJobs moves all cancelled jobs back to pending.
+    42	// Activated when auto_retry_cancelled=true in worker_config.json.
+    43	func requeueCancelledJobs(db *sql.DB) {
+    44		// Cancelled jobs are terminal per API contract; do not requeue.
+    45		_ = db
+    46	}
+    47	
+    48	
+    49	
+    50	
+    51	func main() {
+    52		db, err := initDB()
+    53		if err != nil {
+    54			log.Fatalf("db init: %v", err)
+    55		}
+    56	
+    57		pool := NewWorkerPool(5, db)
+    58		pool.Start()
+    59		go startConfigWatcher(pool)
+    60	
+    61		svc := NewService(db, pool)
+    62		h := &Handler{svc: svc}
+    63	
+    64		r := mux.NewRouter()
+    65		r.HandleFunc("/jobs", h.createJob).Methods(http.MethodPost)
+    66		r.HandleFunc("/jobs", h.listJobs).Methods(http.MethodGet)
+    67		r.HandleFunc("/jobs/{id:[0-9]+}", h.getJob).Methods(http.MethodGet)
+    68		r.HandleFunc("/jobs/{id:[0-9]+}/cancel", h.cancelJob).Methods(http.MethodPost)
+    69		r.HandleFunc("/jobs/{id:[0-9]+}/complete", h.completeJob).Methods(http.MethodPost)
+    70		r.HandleFunc("/jobs/{id:[0-9]+}/fail", h.failJob).Methods(http.MethodPost)
+[?2004hroot@855ef4bf14a4:/app# grep -n "func (s \*Service) CreateJob" -n service.go && nl -ba service.go | sed -n '1,40p'
+[?2004l24:func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+     1	package main
+     2	
+     3	import (
+     4		"database/sql"
+     5		"errors"
+     6		"fmt"
+     7		"time"
+     8	)
+     9	
+    10	var (
+    11		ErrNotFound = errors.New("not found")
+    12		ErrConflict = errors.New("conflict")
+    13	)
+    14	
+    15	type Service struct {
+    16		db   *sql.DB
+    17		pool *WorkerPool
+    18	}
+    19	
+    20	func NewService(db *sql.DB, pool *WorkerPool) *Service {
+    21		return &Service{db: db, pool: pool}
+    22	}
+    23	
+    24	func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+    25		if req.Type == "" {
+    26			return nil, fmt.Errorf("type is required")
+    27		}
+    28		res, err := s.db.Exec(
+    29			"INSERT INTO jobs (type, payload, status, priority, worker_id) VALUES (?,?,?,?,NULL)",
+    30			req.Type, req.Payload, JobStatusPending, req.Priority,
+    31		)
+    32		if err != nil {
+    33			return nil, fmt.Errorf("insert job: %w", err)
+    34		}
+    35		id, _ := res.LastInsertId()
+    36		return s.GetJob(int(id))
+    37	}
+    38	
+    39	
+    40	func (s *Service) GetJob(id int) (*Job, error) {
+[?2004hroot@855ef4bf14a4:/app# grep -RIn "job_type" -n *.go || true
+[?2004l[?2004hroot@855ef4bf14a4:/app# 

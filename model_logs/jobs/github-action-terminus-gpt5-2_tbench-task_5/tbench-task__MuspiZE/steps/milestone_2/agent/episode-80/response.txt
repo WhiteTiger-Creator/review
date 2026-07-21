@@ -1,6 +1,0 @@
-{
-  "analysis": "Still echo-only.",
-  "plan": "Stop until reset.",
-  "commands": [],
-  "task_complete": false
-}

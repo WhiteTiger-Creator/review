@@ -1,0 +1,39 @@
+New Terminal Output:
+
+HTTP_CODE:409root@198e88760f8b:/app# 2026/05/26 17:04:06 pool: max_workers 5 -> 5
+2026/05/26 17:04:09 pool: max_workers 5 -> 5
+2026/05/26 17:04:12 pool: max_workers 5 -> 5
+2026/05/26 17:04:15 pool: max_workers 5 -> 5
+2026/05/26 17:04:18 pool: max_workers 5 -> 5
+2026/05/26 17:04:21 pool: max_workers 5 -> 5
+kill %1 2>/dev/null; wait 2>/dev/null
+root@198e88760f8b:/app# rm -f /opt/jobqueue/jobs.db && ./jobqueue &
+[1] 995
+root@198e88760f8b:/app# job queue listening on :8080
+curl -s -X POST http://localhost:8080/jobs/4/cancel | python3 -m json.tool
+{
+    "error": "conflict: job status is \"running\""
+}
+root@198e88760f8b:/app# sleep 3 && curl -s http://localhost:8080/jobs/4 | python3 -m json.tool
+2026/05/26 17:04:28 pool: max_workers 5 -> 5
+{
+    "id": 4,
+    "type": "email",
+    "payload": "{\"to\":\"bob@corp.io\",\"subject\":\"Your invoice is ready\"}",
+    "status": "completed",
+    "priority": 2,
+    "worker_id": null,
+    "worker_name": "",
+    "created_at": "2026-05-26T17:04:25Z",
+    "updated_at": "2026-05-26T17:04:27.594161125Z"
+}
+root@198e88760f8b:/app# 2026/05/26 17:04:31 pool: max_workers 5 -> 5
+curl -s http://localhost:8080/stats | python3 -m json.tool
+{
+    "pending": 0,
+    "running": 1,
+    "completed": 4,
+    "failed": 1,
+    "cancelled": 0
+}
+root@198e88760f8b:/app#

@@ -1,0 +1,45 @@
+Current terminal state:
+Current Terminal Screen:
+     3  import (
+     4          "database/sql"
+     5          "errors"
+     6          "fmt"
+     7          "time"
+     8  )
+     9
+    10  var (
+    11          ErrNotFound = errors.New("not found")
+    12          ErrConflict = errors.New("conflict")
+    13  )
+    14
+    15  type Service struct {
+    16          db   *sql.DB
+    17          pool *WorkerPool
+    18  }
+    19
+    20  func NewService(db *sql.DB, pool *WorkerPool) *Service {
+    21          return &Service{db: db, pool: pool}
+    22  }
+    23
+    24  func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+    25          if req.Type == "" {
+    26                  return nil, fmt.Errorf("type is required")
+    27          }
+    28          res, err := s.db.Exec(
+    29                  "INSERT INTO jobs (type, payload, status, priority, worker_id) VALUES (?,?,?,?,NULL)",
+    30                  req.Type, req.Payload, JobStatusPending, req.Priority,
+    31          )
+    32          if err != nil {
+    33                  return nil, fmt.Errorf("insert job: %w", err)
+    34          }
+    35          id, _ := res.LastInsertId()
+    36          return s.GetJob(int(id))
+    37  }
+    38
+    39
+    40  func (s *Service) GetJob(id int) (*Job, error) {
+root@855ef4bf14a4:/app# grep -RIn "job_type" -n *.go || true
+root@855ef4bf14a4:/app#
+
+
+Are you sure you want to mark the task as complete? This will trigger your solution to be graded and you won't be able to make any further corrections. If so, include "task_complete": true in your JSON response again.

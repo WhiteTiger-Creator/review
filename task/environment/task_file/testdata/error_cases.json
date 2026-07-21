@@ -1,0 +1,7 @@
+[
+  {"description": "missing type field",    "body": {"payload": "x"},              "expected_status": 400},
+  {"description": "missing name field",    "body": {},                            "expected_status": 400},
+  {"description": "job not found",         "id": 9999,                            "expected_status": 404},
+  {"description": "cancel running job",    "id": 2,                               "expected_status": 409},
+  {"description": "cancel completed job",  "id": 1,                               "expected_status": 409}
+]

@@ -1,0 +1,35 @@
+{
+  "analysis": "POST /jobs still fails, now with NOT NULL constraint failed: jobs.type. The binary inserts into jobs(job_type,payload,priority) and does not provide type; our trigger runs AFTER INSERT, but the NOT NULL constraint on type is enforced before triggers, so insert fails. We must make type nullable or provide a default. In SQLite, altering column constraints is not supported directly; we need to rebuild the jobs table: create new table with type NULLable or with DEFAULT '' and adjust code expectations. Best: make type have DEFAULT '' and allow NULL? But contract requires type non-empty; handler already validates. So safe to set type column DEFAULT '' and allow NULL to satisfy insert, then trigger will set proper type from job_type. We'll perform table migration: rename jobs to jobs_old, create new jobs with type TEXT (nullable) + job_type TEXT NOT NULL, payload/status/priority/worker_id/timestamps, copy data mapping type->job_type, drop old, recreate indexes/triggers. Also observed GET /jobs list returns worker_name empty even when worker_id=1; so list endpoint doesn't join workers -> bug; can't fix in binary via code, but we can add a worker_name column in jobs and maintain it via triggers based on worker_id, so the JSON field worker_name (from struct) might be filled from DB column if binary selects it; but list output includes worker_name key already as empty string, meaning binary likely sets it to empty always rather than reading from DB. For GET /jobs/:id it correctly returns worker_name. So we likely only need to satisfy contract for GET /jobs/:id (explicit requirement). We'll proceed with DB migration to fix POST /jobs.\n\nAlso need ensure cancelled jobs never requeued: config fixed in /opt.\n\nNext: migrate DB table safely while server stopped.",
+  "plan": "1) Stop server. 2) Run a SQLite transaction to rebuild jobs table with nullable type and required job_type, ensuring existing data preserved. 3) Recreate triggers to sync type/job_type and updated_at, if any. 4) Restart server and re-test POST /jobs; confirm it returns 201 (binary might return 200—need check; earlier register returned 201, so maybe create returns 201? we previously saw 500 so unknown). If create returns 200, cannot fix via DB; but maybe binary already returns 201 per spec? We'll test. 5) Verify created job has status pending and worker_id null, and GET /jobs/:id worker_name behavior.",
+  "commands": [
+    {
+      "keystrokes": "kill $(cat /tmp/jobqueue.pid) 2>/dev/null || true\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sqlite3 /opt/jobqueue/jobs.db <<'SQL'\nPRAGMA foreign_keys=OFF;\nBEGIN;\n\nALTER TABLE jobs RENAME TO jobs_old;\n\nCREATE TABLE jobs (\n    id         INTEGER PRIMARY KEY AUTOINCREMENT,\n    type       TEXT,\n    job_type   TEXT    NOT NULL,\n    payload    TEXT    NOT NULL DEFAULT '',\n    status     TEXT    NOT NULL DEFAULT 'pending',\n    priority   INTEGER NOT NULL DEFAULT 0,\n    worker_id  INTEGER REFERENCES workers(id),\n    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,\n    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP\n);\n\nINSERT INTO jobs (id, type, job_type, payload, status, priority, worker_id, created_at, updated_at)\nSELECT id,\n       type,\n       COALESCE(job_type, type) AS job_type,\n       payload, status, priority, worker_id, created_at, updated_at\nFROM jobs_old;\n\nDROP TABLE jobs_old;\n\nCREATE TRIGGER jobs_sync_type_insert AFTER INSERT ON jobs\nBEGIN\n  UPDATE jobs\n     SET type=COALESCE(NEW.type, NEW.job_type),\n         job_type=COALESCE(NEW.job_type, NEW.type)\n   WHERE id=NEW.id;\nEND;\n\nCREATE TRIGGER jobs_sync_type_update AFTER UPDATE OF type, job_type ON jobs\nBEGIN\n  UPDATE jobs\n     SET type=COALESCE(NEW.type, NEW.job_type),\n         job_type=COALESCE(NEW.job_type, NEW.type)\n   WHERE id=NEW.id;\nEND;\n\nCOMMIT;\nPRAGMA foreign_keys=ON;\nSQL\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "sqlite3 /opt/jobqueue/jobs.db \".schema jobs\"\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "PORT=8080 DB_PATH=/opt/jobqueue/jobs.db ./jobqueue > /tmp/jobqueue.log 2>&1 & echo $! > /tmp/jobqueue.pid\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "sleep 0.4; curl -sS -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{\"type\":\"email\",\"payload\":\"{}\",\"priority\":1}' -i | sed -n '1,30p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -sS http://localhost:8080/jobs | head -c 200; echo\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "curl -sS http://localhost:8080/jobs/1 | cat\n",
+      "duration": 0.5
+    }
+  ],
+  "task_complete": false
+}

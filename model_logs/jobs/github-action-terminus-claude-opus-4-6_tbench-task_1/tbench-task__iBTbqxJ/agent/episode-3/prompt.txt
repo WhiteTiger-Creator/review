@@ -1,0 +1,325 @@
+New Terminal Output:
+
+root@00130fd7ffef:/app# cat /app/handlers.go
+package main
+
+import (
+        "encoding/json"
+        "errors"
+        "net/http"
+        "strconv"
+
+        "github.com/gorilla/mux"
+)
+
+type Handler struct {
+        svc *Service
+}
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+        w.Header().Set("Content-Type", "application/json")
+        w.WriteHeader(code)
+        json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, code int, msg string) {
+        writeJSON(w, code, map[string]string{"error": msg})
+}
+
+func (h *Handler) createJob(w http.ResponseWriter, r *http.Request) {
+        var req CreateJobRequest
+        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+                writeError(w, http.StatusBadRequest, "invalid JSON body")
+                return
+        }
+        if req.Type == "" {
+                writeError(w, http.StatusBadRequest, "type is required")
+                return
+        }
+        job, err := h.svc.CreateJob(req)
+        if err != nil {
+                writeError(w, http.StatusInternalServerError, err.Error())
+                return
+        }
+        writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
+        id, err := strconv.Atoi(mux.Vars(r)["id"])
+        if err != nil {
+                writeError(w, http.StatusBadRequest, "invalid job id")
+                return
+        }
+        job, err := h.svc.GetJob(id)
+        if errors.Is(err, ErrNotFound) {
+                writeError(w, http.StatusNotFound, "job not found")
+                return
+        }
+        if err != nil {
+                writeError(w, http.StatusInternalServerError, err.Error())
+                return
+        }
+        writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request) {
+        status := r.URL.Query().Get("status")
+        jobs, err := h.svc.ListJobs(status)
+        if err != nil {
+                writeError(w, http.StatusInternalServerError, err.Error())
+                return
+        }
+        if jobs == nil {
+                jobs = []Job{}
+        }
+        writeJSON(w, http.StatusOK, jobs)
+}
+
+func (h *Handler) cancelJob(w http.ResponseWriter, r *http.Request) {
+        id, err := strconv.Atoi(mux.Vars(r)["id"])
+        if err != nil {
+                writeError(w, http.StatusBadRequest, "invalid job id")
+                return
+        }
+        job, err := h.svc.CancelJob(id)
+        if errors.Is(err, ErrNotFound) {
+                writeError(w, http.StatusNotFound, "job not found")
+                return
+        }
+        if errors.Is(err, ErrConflict) {
+                writeError(w, http.StatusConflict, err.Error())
+                return
+        }
+        if err != nil {
+                writeError(w, http.StatusInternalServerError, err.Error())
+                return
+        }
+        writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) completeJob(w http.ResponseWriter, r *http.Request) {
+        id, err := strconv.Atoi(mux.Vars(r)["id"])
+        if err != nil {
+                writeError(w, http.StatusBadRequest, "invalid job id")
+                return
+        }
+        job, err := h.svc.CompleteJob(id)
+        if errors.Is(err, ErrNotFound) {
+                writeError(w, http.StatusNotFound, "job not found")
+                return
+        }
+        if errors.Is(err, ErrConflict) {
+                writeError(w, http.StatusConflict, err.Error())
+                return
+        }
+        if err != nil {
+                writeError(w, http.StatusInternalServerError, err.Error())
+                return
+        }
+        writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) failJob(w http.ResponseWriter, r *http.Request) {
+        id, err := strconv.Atoi(mux.Vars(r)["id"])
+        if err != nil {
+                writeError(w, http.StatusBadRequest, "invalid job id")
+                return
+        }
+        job, err := h.svc.FailJob(id)
+        if errors.Is(err, ErrNotFound) {
+                writeError(w, http.StatusNotFound, "job not found")
+                return
+        }
+        if errors.Is(err, ErrConflict) {
+                writeError(w, http.StatusConflict, err.Error())
+                return
+        }
+        if err != nil {
+                writeError(w, http.StatusInternalServerError, err.Error())
+                return
+        }
+        writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) registerWorker(w http.ResponseWriter, r *http.Request) {
+        var req RegisterWorkerRequest
+        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+                writeError(w, http.StatusBadRequest, "invalid JSON body")
+                return
+        }
+        if req.Name == "" {
+                writeError(w, http.StatusBadRequest, "name is required")
+                return
+        }
+        worker, err := h.svc.RegisterWorker(req.Name)
+        if err != nil {
+                writeError(w, http.StatusInternalServerError, err.Erro
+[... output limited to 10000 bytes; 70 interior bytes omitted ...]
+urn nil, fmt.Errorf("%w: job must be running to complete, got %q", ErrConflict, job.Status)
+        }
+        if _, err := s.db.Exec(
+                "UPDATE jobs SET status='completed', updated_at=? WHERE id=?",
+                time.Now(), id,
+        ); err != nil {
+                return nil, err
+        }
+        return s.GetJob(id)
+}
+
+func (s *Service) FailJob(id int) (*Job, error) {
+        job, err := s.GetJob(id)
+        if err != nil {
+                return nil, err
+        }
+        if job.Status != "running" {
+                return nil, fmt.Errorf("%w: job must be running to fail, got %q", ErrConflict, job.Status)
+        }
+        if _, err := s.db.Exec(
+                "UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+                time.Now(), id,
+        ); err != nil {
+                return nil, err
+        }
+        return s.GetJob(id)
+}
+
+func (s *Service) RegisterWorker(name string) (*Worker, error) {
+        if name == "" {
+root@00130fd7ffef:/app# cat /app/worker.go
+package main
+
+import (
+        "database/sql"
+        "log"
+        "sync"
+        "time"
+)
+
+type WorkerPool struct {
+        mu         sync.Mutex
+        maxWorkers int
+        active     int
+        db         *sql.DB
+        quit       chan struct{}
+}
+
+func NewWorkerPool(max int, db *sql.DB) *WorkerPool {
+        return &WorkerPool{
+                maxWorkers: max,
+                db:         db,
+                quit:       make(chan struct{}),
+        }
+}
+
+func (p *WorkerPool) SetMax(n int) {
+        p.mu.Lock()
+        defer p.mu.Unlock()
+        log.Printf("pool: max_workers %d -> %d", p.maxWorkers, n)
+        p.maxWorkers = n
+}
+
+func (p *WorkerPool) Start() {
+        go p.poll()
+}
+
+func (p *WorkerPool) Stop() {
+        close(p.quit)
+}
+
+func (p *WorkerPool) poll() {
+        ticker := time.NewTicker(500 * time.Millisecond)
+        defer ticker.Stop()
+        for {
+                select {
+                case <-p.quit:
+                        return
+                case <-ticker.C:
+                        p.mu.Lock()
+                        slots := p.maxWorkers - p.active
+                        p.mu.Unlock()
+
+                        for i := 0; i < slots; i++ {
+                                job, err := p.claimNextPending()
+                                if err != nil {
+                                        log.Printf("poll claim error: %v", err)
+                                        break
+                                }
+                                if job == nil {
+                                        break
+                                }
+                                p.mu.Lock()
+                                p.active++
+                                p.mu.Unlock()
+
+                                go func(jobID int) {
+                                        defer func() {
+                                                p.mu.Lock()
+                                                p.active--
+                                                p.mu.Unlock()
+                                        }()
+                                        p.process(jobID)
+                                }(job.id)
+                        }
+                }
+        }
+}
+
+type pendingJob struct {
+        id      int
+        jobType string
+}
+
+func (p *WorkerPool) claimNextPending() (*pendingJob, error) {
+        tx, err := p.db.Begin()
+        if err != nil {
+                return nil, err
+        }
+        defer tx.Rollback() //nolint:errcheck
+
+        var j pendingJob
+        err = tx.QueryRow(`
+                SELECT id, type FROM jobs
+                WHERE status = 'pending'
+                ORDER BY priority DESC, created_at ASC
+                LIMIT 1
+        `).Scan(&j.id, &j.jobType)
+        if err == sql.ErrNoRows {
+                return nil, nil
+        }
+        if err != nil {
+                return nil, err
+        }
+
+        if _, err = tx.Exec(
+                "UPDATE jobs SET status='running', updated_at=? WHERE id=?",
+                time.Now(), j.id,
+        ); err != nil {
+                return nil, err
+        }
+        return &j, tx.Commit()
+}
+
+func (p *WorkerPool) process(jobID int) {
+        time.Sleep(2 * time.Second)
+
+        var status string
+        if err := p.db.QueryRow("SELECT status FROM jobs WHERE id=?", jobID).Scan(&status); err != nil {
+                log.Printf("pool: error reading job %d status: %v", jobID, err)
+                return
+        }
+        if status != "running" {
+                return
+        }
+
+        if _, err := p.db.Exec(
+                "UPDATE jobs SET status='completed', updated_at=? WHERE id=?",
+                time.Now(), jobID,
+        ); err != nil {
+                log.Printf("pool: error completing job %d: %v", jobID, err)
+                p.db.Exec( //nolint:errcheck
+                        "UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+                        time.Now(), jobID,
+                )
+        }
+}
+root@00130fd7ffef:/app#

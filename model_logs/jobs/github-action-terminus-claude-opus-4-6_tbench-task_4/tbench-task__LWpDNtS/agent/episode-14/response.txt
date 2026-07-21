@@ -1,0 +1,26 @@
+{
+  "analysis": "Build succeeded without errors. Now I need to test the application to verify all fixes work correctly.",
+  "plan": "Start the application in the background, then test the endpoints to verify they conform to the contract.",
+  "commands": [
+    {
+      "keystrokes": "rm -f /opt/jobqueue/jobs.db && ./jobqueue &\n",
+      "duration": 2.0
+    },
+    {
+      "keystrokes": "curl -s http://localhost:8080/stats | python3 -m json.tool\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s -w '\\n%{http_code}' -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{\"type\":\"test\",\"payload\":\"hello\"}'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s -w '\\n%{http_code}' -X POST http://localhost:8080/workers/register -H 'Content-Type: application/json' -d '{\"name\":\"test-worker\"}'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s http://localhost:8080/jobs/1 | python3 -m json.tool\n",
+      "duration": 1.0
+    }
+  ]
+}

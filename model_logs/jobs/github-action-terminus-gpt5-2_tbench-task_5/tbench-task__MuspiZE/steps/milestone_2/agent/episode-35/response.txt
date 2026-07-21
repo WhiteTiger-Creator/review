@@ -1,6 +1,0 @@
-{
-  "analysis": "The terminal is non-responsive to command execution; it only echoes input. We cannot validate or complete remaining work in this session.",
-  "plan": "Wait for a new terminal/session. No commands can be executed right now.",
-  "commands": [],
-  "task_complete": false
-}

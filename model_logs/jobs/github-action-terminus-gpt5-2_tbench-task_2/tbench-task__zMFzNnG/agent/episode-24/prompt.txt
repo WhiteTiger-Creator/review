@@ -1,0 +1,41 @@
+Current Terminal Screen:
+service.go:11:  ErrNotFound = errors.New("not found")
+service.go:12:  ErrConflict = errors.New("conflict")
+service.go:55:          return nil, ErrNotFound
+service.go:114:         return nil, fmt.Errorf("%w: job status is %q", ErrConflict, job.Status)
+service.go:131:         return nil, fmt.Errorf("%w: job must be running to complete, got %q", ErrConflict, job.Status)
+service.go:148:         return nil, fmt.Errorf("%w: job must be running to fail, got %q", ErrConflict, job.Status)
+service.go:177:         return nil, ErrNotFound
+root@ea8f2e4b9576:/app# perl -0777 -i -pe 's/INSERT INTO jobs \(job_type, payload, priority\)/INSERT INTO jobs (type, payload, priority)/g; s/\bjob_type\b/type/
+g' service.go
+root@ea8f2e4b9576:/app# gofmt -w service.go
+root@ea8f2e4b9576:/app# make build
+CGO_ENABLED=1 go build -o jobqueue .
+root@ea8f2e4b9576:/app# printf '{"max_workers":5,"auto_retry_cancelled":true}\n' > /opt/jobqueue/worker_config.json
+root@ea8f2e4b9576:/app# DB_PATH=/opt/jobqueue/jobs.db PORT=8080 ./jobqueue > /tmp/jobqueue.log 2>&1 & echo $! > /tmp/jobqueue.pid
+[1] 1993
+root@ea8f2e4b9576:/app# sleep 0.2; tail -n 2 /tmp/jobqueue.log
+job queue listening on :8080
+root@ea8f2e4b9576:/app# curl -s -i -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"email","payload":"{}","priority":1}'
+HTTP/1.1 200 OK
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:06:41 GMT
+Content-Length: 177
+
+{"id":7,"type":"email","payload":"{}","status":"pending","priority":1,"worker_id":null,"worker_name":"","created_at":"2026-05-26T17:06:41Z","updated_at":"2026-0
+5-26T17:06:41Z"}
+root@ea8f2e4b9576:/app# jid=$(curl -s -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"report","payload":"{}"}' | sed -n 's/.
+*"id":\([0-9]*\).*/\1/p'); echo "newjob=$jid"; curl -s -i -X POST http://localhost:8080/jobs/$jid/cancel; sleep 4; echo; curl -s http://localhost:8080/jobs/$jid
+newjob=8
+HTTP/1.1 200 OK
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:06:42 GMT
+Content-Length: 190
+
+{"id":8,"type":"report","payload":"{}","status":"cancelled","priority":0,"worker_id":null,"worker_name":"","created_at":"2026-05-26T17:06:42Z","updated_at":"202
+6-05-26T17:06:42.245233679Z"}
+
+{"id":8,"type":"report","payload":"{}","status":"cancelled","priority":0,"worker_id":null,"worker_name":"","created_at":"2026-05-26T17:06:42Z","updated_at":"202
+6-05-26T17:06:42.245233679Z"}
+root@ea8f2e4b9576:/app# kill $(cat /tmp/jobqueue.pid) 2>/dev/null || true
+root@ea8f2e4b9576:/app#

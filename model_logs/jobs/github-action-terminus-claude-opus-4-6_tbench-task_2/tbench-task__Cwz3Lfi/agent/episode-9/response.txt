@@ -1,0 +1,26 @@
+{
+  "analysis": "Build succeeded. Now I need to start the server and test the endpoints against the contract.",
+  "plan": "Start the server in the background and test the key endpoints.",
+  "commands": [
+    {
+      "keystrokes": "./jobqueue &\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s http://localhost:8080/stats | python3 -m json.tool\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{\"type\":\"test\",\"payload\":\"hello\",\"priority\":1}' -w '\\nHTTP_CODE:%{http_code}\\n'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s http://localhost:8080/jobs/1 | python3 -m json.tool\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s -X POST http://localhost:8080/workers/register -H 'Content-Type: application/json' -d '{\"name\":\"test-worker\"}' -w '\\nHTTP_CODE:%{http_code}\\n'\n",
+      "duration": 1.0
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "analysis": "The file uses tabs (^I). My Python script had spaces which is why the replacement didn't work. I need to directly modify specific lines using sed with line numbers.",
+  "plan": "Use sed to replace the specific lines in service.go to fix the ListJobs function with the correct tab-based indentation.",
+  "commands": [
+    {
+      "keystrokes": "sed -i '74,76c\\\t\\trows, err = s.db.Query(`\\n\\t\\t\\tSELECT j.id, j.type, j.payload, j.status, j.priority, j.created_at, j.updated_at, j.worker_id, COALESCE(w.name, \\'\\') as worker_name\\n\\t\\t\\tFROM jobs j LEFT JOIN workers w ON j.worker_id = w.id ORDER BY j.priority DESC, j.created_at ASC\\n\\t\\t`)' /app/service.go\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '74,77p' /app/service.go\n",
+      "duration": 0.1
+    }
+  ]
+}

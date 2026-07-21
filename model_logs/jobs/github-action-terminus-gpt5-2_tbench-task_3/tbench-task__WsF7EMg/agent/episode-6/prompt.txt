@@ -1,0 +1,41 @@
+Current Terminal Screen:
+root@855ef4bf14a4:/app# perl -0777 -i -pe 's/"UPDATE jobs SET status=\x27completed\x27, updated_at=\? WHERE id=\?"/"UPDATE jobs SET status=\x27completed\x27, up
+dated_at=? WHERE id=? AND status=\x27running\x27"/g; s/"UPDATE jobs SET status=\x27failed\x27, updated_at=\? WHERE id=\?"/"UPDATE jobs SET status=\x27failed\x27
+, updated_at=? WHERE id=? AND status=\x27running\x27"/g' worker.go
+root@855ef4bf14a4:/app# perl -0777 -i -pe 's/worker, err := h\.svc\.RegisterWorker\(req\.Name\)\n\s*if err != nil \{\n\s*writeError\(w, http\.StatusInternalServ
+erError, err\.Error\(\)\)\n\s*return\n\s*\}/worker, err := h.svc.RegisterWorker(req.Name)\n\tif err != nil {\n\t\t\/\/ sqlite uniqueness errors should be a 400
+per API contract\n\t\tif strings.Contains(err.Error(), "UNIQUE constraint failed") {\n\t\t\twriteError(w, http.StatusBadRequest, "worker name must be unique")\n
+\t\t\treturn\n\t\t}\n\t\twriteError(w, http.StatusInternalServerError, err.Error())\n\t\treturn\n\t\t}/s' handlers.go
+root@855ef4bf14a4:/app# perl -0777 -i -pe 's/import \(\n(\s*"encoding\/json"\n\s*"errors"\n\s*"net\/http"\n\s*"strconv"\n)/import (\n$1\t"strings"\n/;' handlers
+.go
+root@855ef4bf14a4:/app# ./jobqueue >/tmp/jobqueue.log 2>&1 & echo $! > /tmp/jobqueue.pid
+[1] 687
+root@855ef4bf14a4:/app# sleep 0.3; tail -n 5 /tmp/jobqueue.log || true
+curl -sS -i -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"email","payload":"{}","priority":9}' | sed -n '1,25p'
+job queue listening on :8080
+root@855ef4bf14a4:/app# curl -sS -i -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"email","payload":"{}","priority":9}' | s
+ed -n '1,25p'
+HTTP/1.1 500 Internal Server Error
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:02:15 GMT
+Content-Length: 64
+
+{"error":"insert job: table jobs has no column named job_type"}
+root@855ef4bf14a4:/app# curl -sS -i -X POST http://localhost:8080/workers/register -H 'Content-Type: application/json' -d '{"name":"worker-alpha"}' | sed -n '1,
+20p'
+HTTP/1.1 500 Internal Server Error
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:02:16 GMT
+Content-Length: 66
+
+{"error":"insert worker: UNIQUE constraint failed: workers.name"}
+root@855ef4bf14a4:/app# JOBID=$(curl -sS -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"notification"}' | python3 -c 'impor
+t sys, json; print(json.load(sys.stdin)["id"])'); echo $JOBID
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+KeyError: 'id'
+
+root@855ef4bf14a4:/app# curl -sS -X POST http://localhost:8080/jobs/$JOBID/cancel | cat
+root@855ef4bf14a4:/app# sleep 3; curl -sS http://localhost:8080/jobs/$JOBID | cat
+kill $(cat /tmp/jobqueue.pid)
+

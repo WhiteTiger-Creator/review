@@ -1,0 +1,301 @@
+New Terminal Output:
+
+root@198e88760f8b:/app# cat /app/handlers.go
+package main
+
+import (
+        "encoding/json"
+        "errors"
+        "net/http"
+        "strconv"
+
+        "github.com/gorilla/mux"
+)
+
+type Handler struct {
+        svc *Service
+}
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+        w.Header().Set("Content-Type", "application/json")
+        w.WriteHeader(code)
+        json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, code int, msg string) {
+        writeJSON(w, code, map[string]string{"error": msg})
+}
+
+func (h *Handler) createJob(w http.ResponseWriter, r *http.Request) {
+        var req CreateJobRequest
+        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+                writeError(w, http.StatusBadRequest, "invalid JSON body")
+                return
+        }
+        if req.Type == "" {
+                writeError(w, http.StatusBadRequest, "type is required")
+                return
+        }
+        job, err := h.svc.CreateJob(req)
+        if err != nil {
+                writeError(w, http.StatusInternalServerError, err.Error())
+                return
+        }
+        writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
+        id, err := strconv.Atoi(mux.Vars(r)["id"])
+        if err != nil {
+                writeError(w, http.StatusBadRequest, "invalid job id")
+                return
+        }
+        job, err := h.svc.GetJob(id)
+        if errors.Is(err, ErrNotFound) {
+                writeError(w, http.StatusNotFound, "job not found")
+                return
+        }
+        if err != nil {
+                writeError(w, http.StatusInternalServerError, err.Error())
+                return
+        }
+        writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request) {
+        status := r.URL.Query().Get("status")
+        jobs, err := h.svc.ListJobs(status)
+        if err != nil {
+                writeError(w, http.StatusInternalServerError, err.Error())
+                return
+        }
+        if jobs == nil {
+                jobs = []Job{}
+        }
+        writeJSON(w, http.StatusOK, jobs)
+}
+
+func (h *Handler) cancelJob(w http.ResponseWriter, r *http.Request) {
+        id, err := strconv.Atoi(mux.Vars(r)["id"])
+        if err != nil {
+                writeError(w, http.StatusBadRequest, "invalid job id")
+                return
+        }
+        job, err := h.svc.CancelJob(id)
+        if errors.Is(err, ErrNotFound) {
+                writeError(w, http.StatusNotFound, "job not found")
+                return
+        }
+        if errors.Is(err, ErrConflict) {
+                writeError(w, http.StatusConflict, err.Error())
+                return
+        }
+        if err != nil {
+                writeError(w, http.StatusInternalServerError, err.Error())
+                return
+        }
+        writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) completeJob(w http.ResponseWriter, r *http.Request) {
+        id, err := strconv.Atoi(mux.Vars(r)["id"])
+        if err != nil {
+                writeError(w, http.StatusBadRequest, "invalid job id")
+                return
+        }
+        job, err := h.svc.CompleteJob(id)
+        if errors.Is(err, ErrNotFound) {
+                writeError(w, http.StatusNotFound, "job not found")
+                return
+        }
+        if errors.Is(err, ErrConflict) {
+                writeError(w, http.StatusConflict, err.Error())
+                return
+        }
+        if err != nil {
+                writeError(w, http.StatusInternalServerError, err.Error())
+                return
+        }
+        writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) failJob(w http.ResponseWriter, r *http.Request) {
+        id, err := strconv.Atoi(mux.Vars(r)["id"])
+        if err != nil {
+                writeError(w, http.StatusBadRequest, "invalid job id")
+                return
+        }
+        job, err := h.svc.FailJob(id)
+        if errors.Is(err, ErrNotFound) {
+                writeError(w, http.StatusNotFound, "job not found")
+                return
+        }
+        if errors.Is(err, ErrConflict) {
+                writeError(w, http.StatusConflict, err.Error())
+                return
+        }
+        if err != nil {
+                writeError(w, http.StatusInternalServerError, err.Error())
+                return
+        }
+        writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) registerWorker(w http.ResponseWriter, r *http.Request) {
+        var req RegisterWorkerRequest
+        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+                writeError(w, http.StatusBadRequest, "invalid JSON body")
+                return
+        }
+        if req.Name == "" {
+                writeError(w, http.StatusBadRequest, "name is required")
+                return
+        }
+        worker, err := h.svc.RegisterWorker(req.Name)
+        if err != nil {
+                writeError(w, http.StatusInternalServerError, err.Erro
+[... output limited to 10000 bytes; 71 interior bytes omitted ...]
+err := initDB()
+        if err != nil {
+                log.Fatalf("db init: %v", err)
+        }
+
+        pool := NewWorkerPool(5, db)
+        pool.Start()
+        go startConfigWatcher(pool)
+
+        svc := NewService(db, pool)
+        h := &Handler{svc: svc}
+
+        r := mux.NewRouter()
+        r.HandleFunc("/jobs", h.createJob).Methods(http.MethodPost)
+        r.HandleFunc("/jobs", h.listJobs).Methods(http.MethodGet)
+        r.HandleFunc("/jobs/{id:[0-9]+}", h.getJob).Methods(http.MethodGet)
+        r.HandleFunc("/jobs/{id:[0-9]+}/cancel", h.cancelJob).Methods(http.MethodPost)
+        r.HandleFunc("/jobs/{id:[0-9]+}/complete", h.completeJob).Methods(http.MethodPost)
+        r.HandleFunc("/jobs/{id:[0-9]+}/fail", h.failJob).Methods(http.MethodPost)
+        r.HandleFunc("/workers", h.listWorkers).Methods(http.MethodGet)
+        r.HandleFunc("/workers/register", h.registerWorker).Methods(http.MethodPost)
+        r.HandleFunc("/stats", h.getStats).Methods(http.MethodGet)
+
+        port := os.Getenv("PORT")
+        if port == "" {
+                port = "8080"
+        }
+        fmt.Printf("job queue listening on :%s\n", port)
+        log.Fatal(http.ListenAndServe(":"+port, r))
+}
+root@198e88760f8b:/app# cat /app/database.go
+package main
+
+import (
+        "database/sql"
+        "fmt"
+        "os"
+
+        _ "github.com/mattn/go-sqlite3"
+)
+
+const schema = `
+CREATE TABLE IF NOT EXISTS workers (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT    NOT NULL UNIQUE,
+    status        TEXT    NOT NULL DEFAULT 'idle',
+    registered_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    type       TEXT    NOT NULL,
+    payload    TEXT    NOT NULL DEFAULT '',
+    status     TEXT    NOT NULL DEFAULT 'pending',
+    priority   INTEGER NOT NULL DEFAULT 0,
+    worker_id  INTEGER REFERENCES workers(id),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+`
+
+func initDB() (*sql.DB, error) {
+        dbPath := os.Getenv("DB_PATH")
+        if dbPath == "" {
+                dbPath = "/opt/jobqueue/jobs.db"
+        }
+
+        db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL")
+        if err != nil {
+                return nil, fmt.Errorf("open: %w", err)
+        }
+        db.SetMaxOpenConns(1)
+
+        if _, err := db.Exec(schema); err != nil {
+                return nil, fmt.Errorf("schema: %w", err)
+        }
+
+        if err := seedDB(db); err != nil {
+                return nil, fmt.Errorf("seed: %w", err)
+        }
+
+        return db, nil
+}
+
+func seedDB(db *sql.DB) error {
+        var count int
+        if err := db.QueryRow("SELECT COUNT(*) FROM workers").Scan(&count); err != nil || count > 0 {
+                return nil
+        }
+
+        for _, name := range []string{"worker-alpha", "worker-beta", "worker-gamma"} {
+                if _, err := db.Exec("INSERT INTO workers (name) VALUES (?)", name); err != nil {
+                        return err
+                }
+        }
+
+        w1, w2 := 1, 2
+        type seedJob struct {
+                jtype    string
+                payload  string
+                status   string
+                priority int
+                workerID *int
+        }
+        jobs := []seedJob{
+                {"email", `{"to":"alice@corp.io","subject":"Welcome aboard"}`, "completed", 5, &w1},
+                {"report", `{"report_id":"q4-2024","format":"pdf"}`, "running", 3, &w2},
+                {"image_resize", `{"src":"/uploads/banner.png","width":1200}`, "pending", 0, nil},
+                {"email", `{"to":"bob@corp.io","subject":"Your invoice is ready"}`, "pending", 2, nil},
+                {"data_export", `{"table":"orders","since":"2024-01-01"}`, "failed", 1, &w1},
+                {"notification", `{"user_id":99,"channel":"slack","msg":"Deploy done"}`, "pending", 4, nil},
+        }
+        for _, j := range jobs {
+                if _, err := db.Exec(
+                        "INSERT INTO jobs (type, payload, status, priority, worker_id) VALUES (?,?,?,?,?)",
+                        j.jtype, j.payload, j.status, j.priority, j.workerID,
+                ); err != nil {
+                        return err
+                }
+        }
+        return nil
+}
+root@198e88760f8b:/app# cat /app/constants.go
+package main
+
+const (
+        JobStatusPending   = "pending"
+        JobStatusRunning   = "running"
+        JobStatusCompleted = "completed"
+        JobStatusFailed    = "failed"
+        JobStatusCancelled = "cancelled"
+
+        WorkerStatusIdle = "idle"
+        WorkerStatusBusy = "busy"
+
+        DefaultPort   = "8080"
+        DefaultDBPath = "/opt/jobqueue/jobs.db"
+        ConfigPath    = "/opt/jobqueue/worker_config.json"
+)
+root@198e88760f8b:/app# cat /app/worker_config.json
+{"max_workers":5,"auto_retry_cancelled":true}
+root@198e88760f8b:/app# cat /opt/jobqueue/worker_config.json
+{"max_workers":5,"auto_retry_cancelled":true}
+root@198e88760f8b:/app#

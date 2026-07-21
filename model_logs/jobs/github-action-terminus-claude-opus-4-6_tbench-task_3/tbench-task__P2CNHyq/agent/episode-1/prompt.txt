@@ -1,0 +1,143 @@
+New Terminal Output:
+root@9da4c3556dba:/app# ls -la /app/
+total 11248
+drwxr-xr-x  6 root root     4096 May 26 17:00 .
+drwxr-xr-x 20 root root      275 May 26 17:00 ..
+-rw-r--r--  1 root root       40 May 26 16:58 .env.example
+-rw-r--r--  1 root root       32 May 26 16:58 .gitignore
+-rw-r--r--  1 root root      158 May 26 16:58 Makefile
+-rw-r--r--  1 root root     3519 May 26 16:58 api_contract.json
+-rw-r--r--  1 root root      360 May 26 16:58 constants.go
+-rw-r--r--  1 root root     2473 May 26 16:58 database.go
+-rw-r--r--  1 root root      127 May 26 16:58 go.mod
+-rw-r--r--  1 root root      340 May 26 16:58 go.sum
+-rw-r--r--  1 root root     4370 May 26 16:58 handlers.go
+-rw-r--r--  1 root root      147 May 26 16:58 healthcheck.sh
+-rwxr-xr-x  1 root root 11433272 May 26 17:00 jobqueue
+-rw-r--r--  1 root root     2203 May 26 16:58 main.go
+drwxr-xr-x  2 root root       63 May 26 16:58 migrations
+-rw-r--r--  1 root root      980 May 26 16:58 models.go
+-rw-r--r--  1 root root      647 May 26 16:58 schema.sql
+drwxr-xr-x  2 root root       45 May 26 16:58 scripts
+-rw-r--r--  1 root root      846 May 26 16:58 seed.sql
+-rw-r--r--  1 root root     5198 May 26 16:58 service.go
+drwxr-xr-x  2 root root       81 May 26 16:58 testdata
+drwxr-xr-x  3 root root       43 May 26 16:58 vendor
+-rw-r--r--  1 root root     2499 May 26 16:58 worker.go
+-rw-r--r--  1 root root       46 May 26 16:58 worker_config.json
+root@9da4c3556dba:/app# cat /app/api_contract.json
+{
+  "base_url": "http://localhost:8080",
+  "endpoints": [
+    {
+      "method": "POST",
+      "path": "/jobs",
+      "description": "Create a new job and enqueue it",
+      "request_body": {
+        "type": "string (required) — job category, e.g. email, report, image_resize",
+        "payload": "string (optional) — arbitrary data passed to the worker",
+        "priority": "integer (optional, default 0) — higher values are processed first"
+      },
+      "responses": {
+        "201": "Job object with status='pending'",
+        "400": "{ \"error\": \"...\" } — missing or invalid fields"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/jobs",
+      "description": "List all jobs, optionally filtered by status",
+      "query_params": {
+        "status": "pending | running | completed | failed | cancelled (optional)"
+      },
+      "responses": {
+        "200": "Array of Job objects"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/jobs/{id}",
+      "description": "Get a single job by ID",
+      "responses": {
+        "200": "Job object",
+        "404": "{ \"error\": \"job not found\" }"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/jobs/{id}/cancel",
+      "description": "Cancel a pending job. Only jobs in 'pending' status can be cancelled.",
+      "responses": {
+        "200": "Updated Job object with status='cancelled'",
+        "404": "{ \"error\": \"job not found\" }",
+        "409": "{ \"error\": \"...\" } — job is not in a cancellable state"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/jobs/{id}/complete",
+      "description": "Mark a running job as completed (called by the worker after finishing)",
+      "responses": {
+        "200": "Updated Job object with status='completed'",
+        "404": "{ \"error\": \"job not found\" }",
+        "409": "{ \"error\": \"...\" } — job is not running"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/jobs/{id}/fail",
+      "description": "Mark a running job as failed (called by the worker on error)",
+      "responses": {
+        "200": "Updated Job object with status='failed'",
+        "404": "{ \"error\": \"job not found\" }",
+        "409": "{ \"error\": \"...\" } — job is not running"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/workers/register",
+      "description": "Register a new worker node",
+      "request_body": {
+        "name": "string (required) — unique worker name"
+      },
+      "responses": {
+        "201": "Worker object",
+        "400": "{ \"error\": \"...\" }"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/workers",
+      "description": "List all registered workers",
+      "responses": {
+        "200": "Array of Worker objects"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/stats",
+      "description": "Get queue depth by status",
+      "responses": {
+        "200": "{ \"pending\": N, \"running\": N, \"completed\": N, \"failed\": N, \"cancelled\": N }"
+      }
+    }
+  ],
+  "job_object": {
+    "id": "integer",
+    "type": "string",
+    "payload": "string",
+    "status": "pending | running | completed | failed | cancelled",
+    "priority": "integer",
+    "worker_id": "integer | null",
+    "worker_name": "string (name of the assigned worker, empty if unassigned)",
+    "created_at": "ISO8601 datetime",
+    "updated_at": "ISO8601 datetime"
+  },
+  "worker_object": {
+    "id": "integer",
+    "name": "string",
+    "status": "idle | busy",
+    "registered_at": "ISO8601 datetime"
+  }
+}
+root@9da4c3556dba:/app#

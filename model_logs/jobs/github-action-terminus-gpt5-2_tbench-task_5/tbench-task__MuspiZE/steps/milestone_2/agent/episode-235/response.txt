@@ -1,6 +1,0 @@
-{
-  "analysis": "Terminal remains in echo-only mode; cannot run commands to complete or verify the task.",
-  "plan": "A fresh terminal/session is required before continuing.",
-  "commands": [],
-  "task_complete": false
-}

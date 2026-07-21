@@ -1,6 +1,0 @@
-{
-  "analysis": "Terminal remains broken; cannot run commands.",
-  "plan": "No action possible.",
-  "commands": [],
-  "task_complete": false
-}

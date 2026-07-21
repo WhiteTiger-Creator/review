@@ -1,6 +1,0 @@
-{
-  "analysis": "Echo-only persists; cannot proceed.",
-  "plan": "Request new terminal.",
-  "commands": [],
-  "task_complete": false
-}

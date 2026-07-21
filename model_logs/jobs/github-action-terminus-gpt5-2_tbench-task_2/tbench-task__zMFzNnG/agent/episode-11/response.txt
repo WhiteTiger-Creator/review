@@ -1,0 +1,31 @@
+{
+  "analysis": "We can see main.go lines showing requeueCancelledJobs updates cancelled->pending. This must be removed to satisfy 'cancelled jobs must remain cancelled' and 'runtime config must not cause cancelled jobs to change state'. Next we need visibility into service/handlers, but we can already safely patch main.go to ignore AutoRetryCancelled and delete requeueCancelledJobs. Also update the on-disk /opt/jobqueue/worker_config.json to set auto_retry_cancelled=false as a belt-and-suspenders fix. After patching, we need to rebuild/restart service; but first check Makefile/Go toolchain availability. We'll patch source now, then inspect build options.",
+  "plan": "1) Edit main.go: remove AutoRetryCancelled field usage in startConfigWatcher (do not call requeueCancelledJobs), and delete requeueCancelledJobs function (or leave but unused). 2) Update /opt/jobqueue/worker_config.json to set auto_retry_cancelled false. 3) Check Makefile to see how to build; try `make build` or `make` if go exists; otherwise we may need to run prebuilt ./jobqueue and hope it recompiles from source (unlikely). We'll at least apply source fixes and then attempt rebuild using whatever tooling is present.",
+  "commands": [
+    {
+      "keystrokes": "apply_patch<<'PATCH'\n*** Begin Patch\n*** Update File: main.go\n@@\n type poolConfig struct {\n         MaxWorkers         int  `json:\"max_workers\"`\n         AutoRetryCancelled bool `json:\"auto_retry_cancelled\"`\n }\n@@\n func startConfigWatcher(pool *WorkerPool) {\n         const cfgPath = \"/opt/jobqueue/worker_config.json\"\n         for {\n                 time.Sleep(3 * time.Second)\n                 data, err := os.ReadFile(cfgPath)\n                 if err != nil {\n                         continue\n                 }\n                 var cfg poolConfig\n                 if json.Unmarshal(data, &cfg) != nil {\n                         continue\n                 }\n                 if cfg.MaxWorkers > 0 {\n                         pool.SetMax(cfg.MaxWorkers)\n                 }\n-                if cfg.AutoRetryCancelled {\n-                        requeueCancelledJobs(pool.db)\n-                }\n+                // NOTE: Cancelled jobs must remain cancelled and must never\n+                // transition to any other state. Runtime configuration must not\n+                // override this invariant.\n+                _ = cfg.AutoRetryCancelled\n         }\n }\n-\n-// requeueCancelledJobs moves all cancelled jobs back to pending.\n-// Activated when auto_retry_cancelled=true in worker_config.json.\n-func requeueCancelledJobs(db *sql.DB) {\n-        if _, err := db.Exec(\n-                \"UPDATE jobs SET status='pending', updated_at=? WHERE status='cancelled'\",\n-                time.Now(),\n-        ); err != nil {\n-                log.Printf(\"requeue error: %v\", err)\n-        }\n-}\n*** End Patch\nPATCH\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "cat /opt/jobqueue/worker_config.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "printf '{\"max_workers\":5,\"auto_retry_cancelled\":false}\\n' > /opt/jobqueue/worker_config.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /opt/jobqueue/worker_config.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat Makefile\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "which go || true; go version 2>/dev/null || echo no-go\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

@@ -1,6 +1,0 @@
-{
-  "analysis": "The terminal is irrecoverably stuck in a continuation prompt state (always returning '+') and is not accepting interrupts or commands. This prevents completing verification and any required fixes. The remaining work depends on being able to run shell commands, so we need a fresh terminal session.",
-  "plan": "No further commands can be executed in the current session. A new terminal/session (or environment reset) is required to proceed.",
-  "commands": [],
-  "task_complete": false
-}

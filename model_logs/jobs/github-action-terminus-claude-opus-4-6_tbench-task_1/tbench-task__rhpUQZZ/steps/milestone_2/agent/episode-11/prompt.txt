@@ -1,4 +1,0 @@
-New Terminal Output:
-nt|^\[)'
-curl -s 'http://localhost:8080/api/notes?limit=100' | python3 -c "import sys,json; data=json.load(sys.stdin); print(f'Count: {len(data)}')"
-

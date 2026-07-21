@@ -1,6 +1,0 @@
-{
-  "analysis": "Terminal remains unusable; cannot execute anything.",
-  "plan": "Stop until session reset.",
-  "commands": [],
-  "task_complete": false
-}

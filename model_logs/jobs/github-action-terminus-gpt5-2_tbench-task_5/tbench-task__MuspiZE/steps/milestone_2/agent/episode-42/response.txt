@@ -1,6 +1,0 @@
-{
-  "analysis": "Still no execution, only echo.",
-  "plan": "Wait for/reset terminal.",
-  "commands": [],
-  "task_complete": false
-}

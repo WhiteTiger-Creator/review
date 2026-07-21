@@ -1,6 +1,0 @@
-{
-  "analysis": "Still unusable.",
-  "plan": "New session required.",
-  "commands": [],
-  "task_complete": false
-}

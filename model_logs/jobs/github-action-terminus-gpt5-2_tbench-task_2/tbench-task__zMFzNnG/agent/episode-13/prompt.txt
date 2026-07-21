@@ -1,0 +1,51 @@
+New Terminal Output:
+null || echo no-go
+no-go
+root@ea8f2e4b9576:/app# find / -maxdepth 4 -type f \( -name go -o -name go1.* \) 2>/dev/null | head -n 50
+root@ea8f2e4b9576:/app# ls -la /usr/local /opt 2>/dev/null | head
+/opt:
+total 0
+drwxr-xr-x  3 root root  22 May 26 16:58 .
+drwxr-xr-x 20 root root 275 May 26 17:00 ..
+drwxr-xr-x  2 root root  32 May 26 16:58 jobqueue
+
+/usr/local:
+total 0
+drwxr-xr-x 11 root root 124 Jan 31  2025 .
+drwxr-xr-x 12 root root 133 Jan 31  2025 ..
+root@ea8f2e4b9576:/app# ls -la /usr/local/bin 2>/dev/null | head
+total 20
+drwxr-xr-x  2 root root  83 May 26 16:58 .
+drwxr-xr-x 11 root root 124 Jan 31  2025 ..
+-rwxr-xr-x  1 root root 207 May 26 16:58 idna
+-rwxr-xr-x  1 root root 233 May 26 16:58 normalizer
+-rwxr-xr-x  1 root root 221 May 26 16:58 py.test
+-rwxr-xr-x  1 root root 215 May 26 16:58 pygmentize
+-rwxr-xr-x  1 root root 221 May 26 16:58 pytest
+root@ea8f2e4b9576:/app# DB_PATH=/opt/jobqueue/jobs.db PORT=8080 ./jobqueue > /tmp/jobqueue.log 2>&1 & echo $! > /tmp/jobqueue.pid
+[1] 1030
+root@ea8f2e4b9576:/app# sleep 0.2; tail -n 5 /tmp/jobqueue.log || true
+job queue listening on :8080
+root@ea8f2e4b9576:/app# curl -s -i http://localhost:8080/stats
+HTTP/1.1 200 OK
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:03:47 GMT
+Content-Length: 65
+
+{"pending":0,"running":4,"completed":1,"failed":1,"cancelled":0}
+root@ea8f2e4b9576:/app# curl -s -i http://localhost:8080/jobs/3
+HTTP/1.1 200 OK
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:03:48 GMT
+Content-Length: 240
+
+{"id":3,"type":"image_resize","payload":"{\"src\":\"/uploads/banner.png\",\"width\":1200}","status":"running","priority":0,"worker_id":null,"worker_name":"","cr
+eated_at":"2026-05-26T17:03:46Z","updated_at":"2026-05-26T17:03:47.418225951Z"}
+root@ea8f2e4b9576:/app# curl -s -i 'http://localhost:8080/jobs?status=pending'
+HTTP/1.1 200 OK
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:03:49 GMT
+Content-Length: 3
+
+[]
+root@ea8f2e4b9576:/app#

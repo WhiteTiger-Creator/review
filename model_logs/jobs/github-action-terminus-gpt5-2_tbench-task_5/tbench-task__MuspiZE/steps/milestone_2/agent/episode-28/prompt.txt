@@ -1,9 +1,0 @@
-New Terminal Output:
-
-tail -n 200 /tmp/server.log || true
-C-c
-bash -lc 'echo HI; pwd; ls -la /app | head'
-bash -lc 'kill $(cat /tmp/notes_server.pid 2>/dev/null) 2>/dev/null || true; ./notes_server >/tmp/server.log 2>&1 & echo $! > /tmp/notes_server.pid; sleep 0.2;
-curl -sS -D- -H "X-API-Key: tb3_notes_api_secret_2026" -H "Content-Type: application/json" -d "{\\"title\\":\\"t1\\",\\"content\\":\\"c1\\"}" http://127.0.0.1:8
-080/api/notes; echo; curl -sS -D- http://127.0.0.1:8080/api/notes?limit=100&offset=0 | head -n 15; echo; tail -n 50 /tmp/server.log'
-

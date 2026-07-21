@@ -1,0 +1,41 @@
+Current Terminal Screen:
+    92                  var workerID sql.NullInt64
+    93                  if err := rows.Scan(
+    94                          &j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    95                          &j.CreatedAt, &j.UpdatedAt, &workerID,
+    96                  ); err != nil {
+    97                          return nil, err
+    98                  }
+    99                  if workerID.Valid {
+   100                          wid := int(workerID.Int64)
+   101                          j.WorkerID = &wid
+   102                  }
+   103                  jobs = append(jobs, j)
+   104          }
+   105          return jobs, rows.Err()
+   106  }
+   107
+   108  func (s *Service) CancelJob(id int) (*Job, error) {
+   109          job, err := s.GetJob(id)
+   110          if err != nil {
+   111                  return nil, err
+   112          }
+   113          if job.Status != "pending" {
+   114                  return nil, fmt.Errorf("%w: job status is %q", ErrConflict, job.Status)
+   115          }
+   116          if _, err := s.db.Exec(
+   117                  "UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?",
+   118                  time.Now(), id,
+   119          ); err != nil {
+   120                  return nil, err
+   121          }
+   122          return s.GetJob(id)
+   123  }
+   124
+   125  func (s *Service) CompleteJob(id int) (*Job, error) {
+   126          job, err := s.GetJob(id)
+   127          if err != nil {
+   128                  return nil, err
+   129          }
+   130          if job.Status != "running" {
+root@ea8f2e4b9576:/app#

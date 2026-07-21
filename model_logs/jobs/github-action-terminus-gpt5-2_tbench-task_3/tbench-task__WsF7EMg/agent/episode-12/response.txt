@@ -1,0 +1,27 @@
+{
+  "analysis": "Verification shows service.go uses LEFT JOIN workers (good) but no COALESCE usage was found. The contract requires every GET /jobs/:id response to include worker_name and jobs with no assigned worker must return an empty string. Without COALESCE (or equivalent), scanning a NULL worker name into a Go string may error or yield incorrect behavior depending on scan target. We should update the SELECT for GetJob/ListJobs to use COALESCE(w.name,'') AS worker_name (and potentially COALESCE(worker_id,NULL) handling already fine). Also stats looks OK (struct defaults to 0 for missing statuses). Next we need to patch service.go queries accordingly and re-check for COALESCE and ensure scans match selected columns.",
+  "plan": "Edit service.go GetJob and ListJobs SQL to return worker_name as a non-NULL string using COALESCE(w.name, '') and ensure Scan targets include &j.WorkerName. Then re-run greps to confirm COALESCE exists and the join remains. No other changes expected.",
+  "commands": [
+    {
+      "keystrokes": "nl -ba service.go | sed -n '35,110p'\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe \"s/SELECT\\s+([^;]*?)w\\.name\\s+FROM/SELECT $1COALESCE(w.name, '') FROM/sg\" service.go\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "grep -n \"COALESCE\" -n service.go\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "grep -n \"LEFT JOIN workers\" -n service.go\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "nl -ba service.go | sed -n '35,120p'\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

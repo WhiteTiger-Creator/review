@@ -1,7 +1,0 @@
-New Terminal Output:
-ount
-curl -s http://localhost:8080/api/notes?limit=100 | grep -o '"id"' | wc -l
-
-curl -s -D - 'http://localhost:8080/api/notes?limit=100' 2>&1 | grep X-Total-Count
-curl -s 'http://localhost:8080/api/notes?limit=100' | grep -o '"id"' | wc -l
-

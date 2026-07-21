@@ -1,0 +1,8 @@
+Previous response had warnings:
+WARNINGS: - Extra text detected before JSON object
+
+New Terminal Output:
+cessfully
+root@971fdf94be36:/app# cd /app && go build -o jobqueue .
+bash: go: command not found
+root@971fdf94be36:/app#

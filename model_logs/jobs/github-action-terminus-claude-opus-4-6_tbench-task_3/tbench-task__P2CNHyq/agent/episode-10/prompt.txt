@@ -1,0 +1,47 @@
+New Terminal Output:
+
+root@9da4c3556dba:/app# sed -n '74,76p' /app/service.go | cat -A
+^I^Irows, err = s.db.Query(`$
+^I^I^ISELECT id, type, payload, status, priority, created_at, updated_at, worker_id$
+^I^I^IFROM jobs ORDER BY priority DESC, created_at ASC$
+root@9da4c3556dba:/app# sed -n '68,106p' /app/service.go
+func (s *Service) ListJobs(status string) ([]Job, error) {
+        var (
+                rows *sql.Rows
+                err  error
+        )
+        if status == "" {
+                rows, err = s.db.Query(`
+                        SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+                        FROM jobs ORDER BY priority DESC, created_at ASC
+                `)
+        } else {
+                rows, err = s.db.Query(`
+                        SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+                        FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC
+                `, status)
+        }
+        if err != nil {
+                return nil, err
+        }
+        defer rows.Close()
+
+        var jobs []Job
+        for rows.Next() {
+                var j Job
+                var workerID sql.NullInt64
+                if err := rows.Scan(
+                        &j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+                        &j.CreatedAt, &j.UpdatedAt, &workerID,
+                ); err != nil {
+                        return nil, err
+                }
+                if workerID.Valid {
+                        wid := int(workerID.Int64)
+                        j.WorkerID = &wid
+                }
+                jobs = append(jobs, j)
+        }
+        return jobs, rows.Err()
+}
+root@9da4c3556dba:/app#

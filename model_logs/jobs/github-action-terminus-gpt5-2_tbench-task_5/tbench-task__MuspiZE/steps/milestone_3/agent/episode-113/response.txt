@@ -1,6 +1,0 @@
-{
-  "analysis": "Terminal remains stuck at '+'.",
-  "plan": "No commands; need new session/reset.",
-  "commands": [],
-  "task_complete": false
-}

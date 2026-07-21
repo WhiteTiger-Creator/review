@@ -1,0 +1,26 @@
+New Terminal Output:
+elled":0}
+root@c18de6e73dca:/app# 2026/05/26 17:07:31 pool: max_workers 5 -> 5
+2026/05/26 17:07:34 pool: max_workers 5 -> 5
+2026/05/26 17:07:37 pool: max_workers 5 -> 5
+2026/05/26 17:07:41 pool: max_workers 5 -> 5
+curl -s -X POST http://localhost:8080/jobs/1/cancel -w '\nHTTP:%{http_code}\n'
+{"error":"conflict: job status is \"completed\""}
+
+HTTP:409
+root@c18de6e73dca:/app# curl -s -X POST http://localhost:8080/jobs/2/complete -w '\nHTTP:%{http_code}\n'
+{"id":2,"type":"report","payload":"{\"report_id\":\"q4-2024\",\"format\":\"pdf\"}","status":"completed","priority":3,"worker_id":2,"worker_name":"worker-beta","
+created_at":"2026-05-26T17:07:25Z","updated_at":"2026-05-26T17:07:42.806409785Z"}
+
+HTTP:200
+root@c18de6e73dca:/app# curl -s -X POST http://localhost:8080/jobs/9999 -w '\nHTTP:%{http_code}\n'
+
+HTTP:405
+root@c18de6e73dca:/app# 2026/05/26 17:07:44 pool: max_workers 5 -> 5
+curl -s http://localhost:8080/jobs?status=cancelled
+[]
+root@c18de6e73dca:/app# curl -s http://localhost:8080/workers
+[{"id":1,"name":"worker-alpha","status":"idle","registered_at":"2026-05-26T17:07:25Z"},{"id":2,"name":"worker-beta","status":"idle","registered_at":"2026-05-26T
+17:07:25Z"},{"id":3,"name":"worker-gamma","status":"idle","registered_at":"2026-05-26T17:07:25Z"},{"id":4,"name":"test-worker-x","status":"idle","registered_at"
+:"2026-05-26T17:07:28Z"}]
+root@c18de6e73dca:/app#

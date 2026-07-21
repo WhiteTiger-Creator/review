@@ -1,6 +1,0 @@
-{
-  "analysis": "The session remains non-functional; no command output is possible.",
-  "plan": "Stop until new terminal is provided.",
-  "commands": [],
-  "task_complete": false
-}

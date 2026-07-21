@@ -1,6 +1,0 @@
-{
-  "analysis": "Terminal session remains broken; cannot execute commands.",
-  "plan": "Require new terminal/session.",
-  "commands": [],
-  "task_complete": false
-}

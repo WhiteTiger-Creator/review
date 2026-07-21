@@ -1,6 +1,0 @@
-{
-  "analysis": "Terminal session remains unusable. Cannot continue.",
-  "plan": "A new terminal/session is required.",
-  "commands": [],
-  "task_complete": false
-}

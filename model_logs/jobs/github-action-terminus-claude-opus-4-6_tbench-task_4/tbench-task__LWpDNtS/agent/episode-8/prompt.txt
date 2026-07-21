@@ -1,0 +1,17 @@
+Previous response had warnings:
+WARNINGS: - Extra text detected before JSON object
+
+New Terminal Output:
+sql.DB) {
+root@971fdf94be36:/app# grep -n 'StatusCreated' /app/handlers.go
+41:     writeJSON(w, http.StatusCreated, job)
+59:     writeJSON(w, http.StatusCreated, job)
+94:     writeJSON(w, http.StatusCreated, job)
+116:    writeJSON(w, http.StatusCreated, job)
+138:    writeJSON(w, http.StatusCreated, job)
+156:    writeJSON(w, http.StatusCreated, worker)
+root@971fdf94be36:/app# grep -n 'StatusOK' /app/handlers.go
+72:     writeJSON(w, http.StatusOK, jobs)
+168:    writeJSON(w, http.StatusOK, workers)
+177:    writeJSON(w, http.StatusOK, stats)
+root@971fdf94be36:/app#

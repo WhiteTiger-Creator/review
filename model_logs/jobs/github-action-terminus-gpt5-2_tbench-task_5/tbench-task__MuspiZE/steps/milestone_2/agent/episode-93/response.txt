@@ -1,6 +1,0 @@
-{
-  "analysis": "Terminal non-functional for execution.",
-  "plan": "No commands.",
-  "commands": [],
-  "task_complete": false
-}

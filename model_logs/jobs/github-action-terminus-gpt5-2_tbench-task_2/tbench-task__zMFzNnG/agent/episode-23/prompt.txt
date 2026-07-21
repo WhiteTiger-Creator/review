@@ -1,0 +1,25 @@
+New Terminal Output:
+ror 1
+root@ea8f2e4b9576:/app# export PATH=/usr/local/go/bin:$PATH
+root@ea8f2e4b9576:/app# perl -i -pe 's/^\s*"database\/sql"\n//' main.go
+root@ea8f2e4b9576:/app# gofmt -w main.go
+root@ea8f2e4b9576:/app# make build
+CGO_ENABLED=1 go build -o jobqueue .
+root@ea8f2e4b9576:/app# printf '{"max_workers":5,"auto_retry_cancelled":true}\n' > /opt/jobqueue/worker_config.json
+root@ea8f2e4b9576:/app# DB_PATH=/opt/jobqueue/jobs.db PORT=8080 ./jobqueue > /tmp/jobqueue.log 2>&1 & echo $! > /tmp/jobqueue.pid
+[1] 1769
+root@ea8f2e4b9576:/app# sleep 0.2; tail -n 2 /tmp/jobqueue.log
+job queue listening on :8080
+root@ea8f2e4b9576:/app# curl -s http://localhost:8080/jobs/1 | cat
+{"id":1,"type":"email","payload":"{\"to\":\"alice@corp.io\",\"subject\":\"Welcome aboard\"}","status":"completed","priority":5,"worker_id":1,"worker_name":"work
+er-alpha","created_at":"2026-05-26T17:03:46Z","updated_at":"2026-05-26T17:03:46Z"}
+root@ea8f2e4b9576:/app# curl -s -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"email","payload":"{}","priority":1}' | cat
+{"error":"insert job: table jobs has no column named job_type"}
+root@ea8f2e4b9576:/app# jid=$(curl -s -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"report","payload":"{}"}' | sed -n 's/.
+*"id":\([0-9]*\).*/\1/p'); echo "newjob=$jid"; curl -s -X POST http://localhost:8080/jobs/$jid/cancel | cat; sleep 4; curl -s http://localhost:8080/jobs/$jid |
+cat
+newjob=
+404 page not found
+root@ea8f2e4b9576:/app# kill $(cat /tmp/jobqueue.pid) 2>/dev/null || true
+[1]+  Terminated              DB_PATH=/opt/jobqueue/jobs.db PORT=8080 ./jobqueue > /tmp/jobqueue.log 2>&1
+root@ea8f2e4b9576:/app#

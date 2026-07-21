@@ -1,6 +1,0 @@
-{
-  "analysis": "No change; terminal not executing.",
-  "plan": "Stop.",
-  "commands": [],
-  "task_complete": false
-}

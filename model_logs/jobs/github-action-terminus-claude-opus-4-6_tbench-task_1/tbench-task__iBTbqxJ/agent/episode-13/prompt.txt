@@ -1,0 +1,48 @@
+New Terminal Output:
+
+root@00130fd7ffef:/app# 2026/05/26 17:04:46 pool: max_workers 5 -> 5
+2026/05/26 17:04:49 pool: max_workers 5 -> 5
+2026/05/26 17:04:52 pool: max_workers 5 -> 5
+2026/05/26 17:04:55 pool: max_workers 5 -> 5
+2026/05/26 17:04:58 pool: max_workers 5 -> 5
+2026/05/26 17:05:01 pool: max_workers 5 -> 5
+2026/05/26 17:05:04 pool: max_workers 5 -> 5
+2026/05/26 17:05:07 pool: max_workers 5 -> 5
+2026/05/26 17:05:10 pool: max_workers 5 -> 5
+2026/05/26 17:05:13 pool: max_workers 5 -> 5
+2026/05/26 17:05:16 pool: max_workers 5 -> 5
+2026/05/26 17:05:19 pool: max_workers 5 -> 5
+2026/05/26 17:05:22 pool: max_workers 5 -> 5
+2026/05/26 17:05:25 pool: max_workers 5 -> 5
+2026/05/26 17:05:28 pool: max_workers 5 -> 5
+2026/05/26 17:05:31 pool: max_workers 5 -> 5
+2026/05/26 17:05:34 pool: max_workers 5 -> 5
+2026/05/26 17:05:37 pool: max_workers 5 -> 5
+kill %1 2>/dev/null; wait 2>/dev/null
+root@00130fd7ffef:/app# rm -f /opt/jobqueue/jobs.db
+root@00130fd7ffef:/app# DB_PATH=/opt/jobqueue/jobs.db PORT=8080 ./jobqueue &
+[1] 753
+root@00130fd7ffef:/app# job queue listening on :8080
+nHTTP_CODE:%{http_code}\n' -X POST http://localhost:8080/jobs/7/cancelcancel","priority":0}' http://localhost:8080/jobs && curl -s -w '\n
+{"id":7,"type":"quickcancel","payload":"","status":"pending","priority":0,"worker_id":null,"worker_name":"","created_at":"2026-05-26T17:05:41Z","updated_at":"20
+26-05-26T17:05:41Z"}
+{"id":7,"type":"quickcancel","payload":"","status":"cancelled","priority":0,"worker_id":null,"worker_name":"","created_at":"2026-05-26T17:05:41Z","updated_at":"
+2026-05-26T17:05:41.505079254Z"}
+
+HTTP_CODE:200
+root@00130fd7ffef:/app# 2026/05/26 17:05:42 pool: max_workers 5 -> 5
+sleep 5 && curl -s http://localhost:8080/jobs/7 | python3 -m json.tool
+2026/05/26 17:05:45 pool: max_workers 5 -> 5
+{
+    "id": 7,
+    "type": "quickcancel",
+    "payload": "",
+    "status": "cancelled",
+    "priority": 0,
+    "worker_id": null,
+    "worker_name": "",
+    "created_at": "2026-05-26T17:05:41Z",
+    "updated_at": "2026-05-26T17:05:41.505079254Z"
+}
+root@00130fd7ffef:/app# 2026/05/26 17:05:48 pool: max_workers 5 -> 5
+

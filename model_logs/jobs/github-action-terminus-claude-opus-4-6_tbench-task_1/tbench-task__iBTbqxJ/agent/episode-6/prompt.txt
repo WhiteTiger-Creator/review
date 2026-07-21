@@ -1,0 +1,20 @@
+New Terminal Output:
+
+root@00130fd7ffef:/app# sed -i 's/writeJSON(w, http.StatusOK, job)/writeJSON(w, http.StatusCreated, job)/' /app/handlers.go
+root@00130fd7ffef:/app# grep -n 'StatusCreated\|StatusOK' /app/handlers.go
+41:     writeJSON(w, http.StatusCreated, job)
+59:     writeJSON(w, http.StatusCreated, job)
+72:     writeJSON(w, http.StatusOK, jobs)
+94:     writeJSON(w, http.StatusCreated, job)
+116:    writeJSON(w, http.StatusCreated, job)
+138:    writeJSON(w, http.StatusCreated, job)
+156:    writeJSON(w, http.StatusCreated, worker)
+168:    writeJSON(w, http.StatusOK, workers)
+177:    writeJSON(w, http.StatusOK, stats)
+root@00130fd7ffef:/app# sed -i 's/INSERT INTO jobs (job_type, payload, priority)/INSERT INTO jobs (type, payload, priority)/' /app/service.go
+root@00130fd7ffef:/app# grep -n 'INSERT INTO jobs' /app/service.go
+29:             "INSERT INTO jobs (type, payload, priority) VALUES (?, ?, ?)",
+root@00130fd7ffef:/app# echo '{"max_workers":5,"auto_retry_cancelled":false}' > /opt/jobqueue/worker_config.json
+root@00130fd7ffef:/app# cat /opt/jobqueue/worker_config.json
+{"max_workers":5,"auto_retry_cancelled":false}
+root@00130fd7ffef:/app#

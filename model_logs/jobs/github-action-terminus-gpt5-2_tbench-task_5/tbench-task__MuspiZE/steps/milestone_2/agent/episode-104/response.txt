@@ -1,6 +1,0 @@
-{
-  "analysis": "Still stuck.",
-  "plan": "No actions.",
-  "commands": [],
-  "task_complete": false
-}

@@ -1,9 +1,0 @@
-New Terminal Output:
-
-root@1ebded0d6da5:/app# curl -s -D - http://127.0.0.1:8080/ -o /dev/null | grep -i content-type
-Content-Type: text/html
-root@1ebded0d6da5:/app# curl -s -D - http://127.0.0.1:8080/style.css -o /dev/null | grep -i content-type
-Content-Type: text/css
-root@1ebded0d6da5:/app# curl -s -D - http://127.0.0.1:8080/app.js -o /dev/null | grep -i content-type
-Content-Type: application/javascript
-root@1ebded0d6da5:/app#

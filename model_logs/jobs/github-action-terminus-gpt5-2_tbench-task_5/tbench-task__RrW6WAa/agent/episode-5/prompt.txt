@@ -1,0 +1,57 @@
+New Terminal Output:
+
+root@739ec6521d58:/app# cat Makefile
+.PHONY: build run clean
+
+build:
+        CGO_ENABLED=1 go build -o jobqueue .
+
+run: build
+        DB_PATH=/opt/jobqueue/jobs.db PORT=8080 ./jobqueue
+
+clean:
+        rm -f jobqueue
+root@739ec6521d58:/app# ls -la scripts migrations
+migrations:
+total 12
+drwxr-xr-x 2 root root   63 May 26 16:57 .
+drwxr-xr-x 6 root root 4096 May 26 16:59 ..
+-rw-r--r-- 1 root root  680 May 26 16:57 001_initial_schema.sql
+-rw-r--r-- 1 root root  315 May 26 16:57 002_add_indexes.sql
+
+scripts:
+total 12
+drwxr-xr-x 2 root root   45 May 26 16:57 .
+drwxr-xr-x 6 root root 4096 May 26 16:59 ..
+-rw-r--r-- 1 root root  238 May 26 16:57 reset_db.sh
+-rw-r--r-- 1 root root  211 May 26 16:57 run_local.sh
+root@739ec6521d58:/app# find / -maxdepth 4 -type f -name go -o -name gofmt 2>/dev/null | head
+root@739ec6521d58:/app# find /usr/local -maxdepth 5 -type f \( -name go -o -name gofmt \) 2>/dev/null | head
+/usr/local/go/bin/go
+/usr/local/go/bin/gofmt
+root@739ec6521d58:/app# find / -maxdepth 5 -type f -name 'go*1.*linux*' 2>/dev/null | head
+root@739ec6521d58:/app# ls -la /usr/local || true
+total 0
+drwxr-xr-x 11 root root 124 Jan 31  2025 .
+drwxr-xr-x 12 root root 133 Jan 31  2025 ..
+drwxr-xr-x  2 root root  83 May 26 16:58 bin
+drwxr-xr-x  2 root root   6 Feb  3  2025 etc
+drwxr-xr-x  2 root root   6 Feb  3  2025 games
+drwxr-xr-x 10 root root 236 Jan 31  2025 go
+drwxr-xr-x  2 root root   6 Feb  3  2025 include
+drwxr-xr-x  3 root root  24 Feb  4  2025 lib
+lrwxrwxrwx  1 root root   9 Feb  3  2025 man -> share/man
+drwxr-xr-x  2 root root   6 Feb  3  2025 sbin
+drwxr-xr-x  4 root root  40 Feb  4  2025 share
+drwxr-xr-x  2 root root   6 Feb  3  2025 src
+root@739ec6521d58:/app# ls -la /usr/local/go/bin 2>/dev/null || true
+total 14948
+drwxr-xr-x  2 root root       29 Jan 31  2025 .
+drwxr-xr-x 10 root root      236 Jan 31  2025 ..
+-rwxr-xr-x  1 root root 12688957 Jan 31  2025 go
+-rwxr-xr-x  1 root root  2614997 Jan 31  2025 gofmt
+root@739ec6521d58:/app# ldd ./jobqueue 2>/dev/null || true
+        linux-vdso.so.1 (0x00007fff9255a000)
+        libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007fd1ff92b000)
+        /lib64/ld-linux-x86-64.so.2 (0x00007fd1ffb11000)
+root@739ec6521d58:/app#

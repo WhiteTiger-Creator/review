@@ -1,0 +1,5 @@
+New Terminal Output:
+
+root@198e88760f8b:/app# cd /app && go build -o jobqueue . 2>&1
+bash: go: command not found
+root@198e88760f8b:/app#

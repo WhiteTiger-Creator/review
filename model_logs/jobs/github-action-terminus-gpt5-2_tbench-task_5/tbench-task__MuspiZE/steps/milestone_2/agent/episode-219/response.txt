@@ -1,6 +1,0 @@
-{
-  "analysis": "No change; terminal is echo-only.",
-  "plan": "No further action.",
-  "commands": [],
-  "task_complete": false
-}

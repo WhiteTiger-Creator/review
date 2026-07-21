@@ -1,3 +1,0 @@
-libmicrohttpd=1.0.1
-sqlite3=3.46.1
-libcjson=1.7.18

@@ -1,0 +1,14 @@
+{
+  "analysis": "The Scan is fixed but I still need to assign workerName to j.WorkerName before appending to the jobs slice.",
+  "plan": "Add `j.WorkerName = workerName` after the workerID valid check, before `jobs = append(jobs, j)`.",
+  "commands": [
+    {
+      "keystrokes": "sed -i '/j.WorkerID = \\&wid/,/jobs = append(jobs, j)/ { /jobs = append(jobs, j)/i\\\t\\t\\tj.WorkerName = workerName\n}' /app/service.go\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '93,115p' /app/service.go\n",
+      "duration": 0.1
+    }
+  ]
+}

@@ -1,6 +1,0 @@
-{
-  "analysis": "Terminal remains stuck; cannot execute commands.",
-  "plan": "No further action in this session.",
-  "commands": [],
-  "task_complete": false
-}

@@ -1,0 +1,3663 @@
+[?2004hroot@739ec6521d58:/app# asciinema rec --stdin /logs/agent/recording.cast
+[?2004lbash: asciinema: command not found
+[?2004hroot@739ec6521d58:/app# clear
+[?2004l[H[J[3J[?2004hroot@739ec6521d58:/app# cd /app
+[?2004l[?2004hroot@739ec6521d58:/app# ls -la
+[?2004ltotal 11248
+drwxr-xr-x  6 root root     4096 May 26 16:59 .
+drwxr-xr-x 20 root root      275 May 26 17:00 ..
+-rw-r--r--  1 root root       40 May 26 16:57 .env.example
+-rw-r--r--  1 root root       32 May 26 16:57 .gitignore
+-rw-r--r--  1 root root      158 May 26 16:57 Makefile
+-rw-r--r--  1 root root     3519 May 26 16:57 api_contract.json
+-rw-r--r--  1 root root      360 May 26 16:57 constants.go
+-rw-r--r--  1 root root     2473 May 26 16:57 database.go
+-rw-r--r--  1 root root      127 May 26 16:57 go.mod
+-rw-r--r--  1 root root      340 May 26 16:57 go.sum
+-rw-r--r--  1 root root     4370 May 26 16:57 handlers.go
+-rw-r--r--  1 root root      147 May 26 16:57 healthcheck.sh
+-rwxr-xr-x  1 root root 11433272 May 26 16:59 jobqueue
+-rw-r--r--  1 root root     2203 May 26 16:57 main.go
+drwxr-xr-x  2 root root       63 May 26 16:57 migrations
+-rw-r--r--  1 root root      980 May 26 16:57 models.go
+-rw-r--r--  1 root root      647 May 26 16:57 schema.sql
+drwxr-xr-x  2 root root       45 May 26 16:57 scripts
+-rw-r--r--  1 root root      846 May 26 16:57 seed.sql
+-rw-r--r--  1 root root     5198 May 26 16:57 service.go
+drwxr-xr-x  2 root root       81 May 26 16:57 testdata
+drwxr-xr-x  3 root root       43 May 26 16:57 vendor
+-rw-r--r--  1 root root     2499 May 26 16:57 worker.go
+-rw-r--r--  1 root root       46 May 26 16:57 worker_config.json
+[?2004hroot@739ec6521d58:/app# sed -n '1,200p' api_contract.json
+[?2004l{
+  "base_url": "http://localhost:8080",
+  "endpoints": [
+    {
+      "method": "POST",
+      "path": "/jobs",
+      "description": "Create a new job and enqueue it",
+      "request_body": {
+        "type": "string (required) — job category, e.g. email, report, image_resize",
+        "payload": "string (optional) — arbitrary data passed to the worker",
+        "priority": "integer (optional, default 0) — higher values are processed first"
+      },
+      "responses": {
+        "201": "Job object with status='pending'",
+        "400": "{ \"error\": \"...\" } — missing or invalid fields"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/jobs",
+      "description": "List all jobs, optionally filtered by status",
+      "query_params": {
+        "status": "pending | running | completed | failed | cancelled (optional)"
+      },
+      "responses": {
+        "200": "Array of Job objects"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/jobs/{id}",
+      "description": "Get a single job by ID",
+      "responses": {
+        "200": "Job object",
+        "404": "{ \"error\": \"job not found\" }"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/jobs/{id}/cancel",
+      "description": "Cancel a pending job. Only jobs in 'pending' status can be cancelled.",
+      "responses": {
+        "200": "Updated Job object with status='cancelled'",
+        "404": "{ \"error\": \"job not found\" }",
+        "409": "{ \"error\": \"...\" } — job is not in a cancellable state"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/jobs/{id}/complete",
+      "description": "Mark a running job as completed (called by the worker after finishing)",
+      "responses": {
+        "200": "Updated Job object with status='completed'",
+        "404": "{ \"error\": \"job not found\" }",
+        "409": "{ \"error\": \"...\" } — job is not running"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/jobs/{id}/fail",
+      "description": "Mark a running job as failed (called by the worker on error)",
+      "responses": {
+        "200": "Updated Job object with status='failed'",
+        "404": "{ \"error\": \"job not found\" }",
+        "409": "{ \"error\": \"...\" } — job is not running"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/workers/register",
+      "description": "Register a new worker node",
+      "request_body": {
+        "name": "string (required) — unique worker name"
+      },
+      "responses": {
+        "201": "Worker object",
+        "400": "{ \"error\": \"...\" }"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/workers",
+      "description": "List all registered workers",
+      "responses": {
+        "200": "Array of Worker objects"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/stats",
+      "description": "Get queue depth by status",
+      "responses": {
+        "200": "{ \"pending\": N, \"running\": N, \"completed\": N, \"failed\": N, \"cancelled\": N }"
+      }
+    }
+  ],
+  "job_object": {
+    "id": "integer",
+    "type": "string",
+    "payload": "string",
+    "status": "pending | running | completed | failed | cancelled",
+    "priority": "integer",
+    "worker_id": "integer | null",
+    "worker_name": "string (name of the assigned worker, empty if unassigned)",
+    "created_at": "ISO8601 datetime",
+    "updated_at": "ISO8601 datetime"
+  },
+  "worker_object": {
+    "id": "integer",
+    "name": "string",
+    "status": "idle | busy",
+    "registered_at": "ISO8601 datetime"
+  }
+}
+[?2004hroot@739ec6521d58:/app# find . -maxdepth 1 -type f -name '*.go' -print
+[?2004l./constants.go
+./database.go
+./handlers.go
+./main.go
+./models.go
+./service.go
+./worker.go
+[?2004hroot@739ec6521d58:/app# sed -n '1,200p' main.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/gorilla/mux"
+)
+
+type poolConfig struct {
+	MaxWorkers         int  `json:"max_workers"`
+	AutoRetryCancelled bool `json:"auto_retry_cancelled"`
+}
+
+// startConfigWatcher syncs runtime pool settings from the ops config file.
+// Allows on-call to tune concurrency and retry policy without a redeploy.
+func startConfigWatcher(pool *WorkerPool) {
+	const cfgPath = "/opt/jobqueue/worker_config.json"
+	for {
+		time.Sleep(3 * time.Second)
+		data, err := os.ReadFile(cfgPath)
+		if err != nil {
+			continue
+		}
+		var cfg poolConfig
+		if json.Unmarshal(data, &cfg) != nil {
+			continue
+		}
+		if cfg.MaxWorkers > 0 {
+			pool.SetMax(cfg.MaxWorkers)
+		}
+		if cfg.AutoRetryCancelled {
+			requeueCancelledJobs(pool.db)
+		}
+	}
+}
+
+// requeueCancelledJobs moves all cancelled jobs back to pending.
+// Activated when auto_retry_cancelled=true in worker_config.json.
+func requeueCancelledJobs(db *sql.DB) {
+	if _, err := db.Exec(
+		"UPDATE jobs SET status='pending', updated_at=? WHERE status='cancelled'",
+		time.Now(),
+	); err != nil {
+		log.Printf("requeue error: %v", err)
+	}
+}
+
+func main() {
+	db, err := initDB()
+	if err != nil {
+		log.Fatalf("db init: %v", err)
+	}
+
+	pool := NewWorkerPool(5, db)
+	pool.Start()
+	go startConfigWatcher(pool)
+
+	svc := NewService(db, pool)
+	h := &Handler{svc: svc}
+
+	r := mux.NewRouter()
+	r.HandleFunc("/jobs", h.createJob).Methods(http.MethodPost)
+	r.HandleFunc("/jobs", h.listJobs).Methods(http.MethodGet)
+	r.HandleFunc("/jobs/{id:[0-9]+}", h.getJob).Methods(http.MethodGet)
+	r.HandleFunc("/jobs/{id:[0-9]+}/cancel", h.cancelJob).Methods(http.MethodPost)
+	r.HandleFunc("/jobs/{id:[0-9]+}/complete", h.completeJob).Methods(http.MethodPost)
+	r.HandleFunc("/jobs/{id:[0-9]+}/fail", h.failJob).Methods(http.MethodPost)
+	r.HandleFunc("/workers", h.listWorkers).Methods(http.MethodGet)
+	r.HandleFunc("/workers/register", h.registerWorker).Methods(http.MethodPost)
+	r.HandleFunc("/stats", h.getStats).Methods(http.MethodGet)
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	fmt.Printf("job queue listening on :%s\n", port)
+	log.Fatal(http.ListenAndServe(":"+port, r))
+}
+[?2004hroot@739ec6521d58:/app# sed -n '1,240p' handlers.go
+[?2004lpackage main
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+
+	"github.com/gorilla/mux"
+)
+
+type Handler struct {
+	svc *Service
+}
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, code int, msg string) {
+	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+func (h *Handler) createJob(w http.ResponseWriter, r *http.Request) {
+	var req CreateJobRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Type == "" {
+		writeError(w, http.StatusBadRequest, "type is required")
+		return
+	}
+	job, err := h.svc.CreateJob(req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.GetJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request) {
+	status := r.URL.Query().Get("status")
+	jobs, err := h.svc.ListJobs(status)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if jobs == nil {
+		jobs = []Job{}
+	}
+	writeJSON(w, http.StatusOK, jobs)
+}
+
+func (h *Handler) cancelJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.CancelJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) completeJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.CompleteJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) failJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.FailJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) registerWorker(w http.ResponseWriter, r *http.Request) {
+	var req RegisterWorkerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	worker, err := h.svc.RegisterWorker(req.Name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, worker)
+}
+
+func (h *Handler) listWorkers(w http.ResponseWriter, r *http.Request) {
+	workers, err := h.svc.ListWorkers()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if workers == nil {
+		workers = []Worker{}
+	}
+	writeJSON(w, http.StatusOK, workers)
+}
+
+func (h *Handler) getStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.svc.GetStats()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+[?2004hroot@739ec6521d58:/app# sed -n '1,260p' service.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+)
+
+var (
+	ErrNotFound = errors.New("not found")
+	ErrConflict = errors.New("conflict")
+)
+
+type Service struct {
+	db   *sql.DB
+	pool *WorkerPool
+}
+
+func NewService(db *sql.DB, pool *WorkerPool) *Service {
+	return &Service{db: db, pool: pool}
+}
+
+func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+	if req.Type == "" {
+		return nil, fmt.Errorf("type is required")
+	}
+	res, err := s.db.Exec(
+		"INSERT INTO jobs (job_type, payload, priority) VALUES (?, ?, ?)",
+		req.Type, req.Payload, req.Priority,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert job: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetJob(int(id))
+}
+
+func (s *Service) GetJob(id int) (*Job, error) {
+	var j Job
+	var workerID sql.NullInt64
+	var workerName sql.NullString
+
+	err := s.db.QueryRow(`
+		SELECT j.id, j.type, j.payload, j.status, j.priority,
+		       j.created_at, j.updated_at, j.worker_id, w.name
+		FROM jobs j
+		LEFT JOIN workers w ON j.worker_id = w.id
+		WHERE j.id = ?
+	`, id).Scan(
+		&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+		&j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if workerID.Valid {
+		wid := int(workerID.Int64)
+		j.WorkerID = &wid
+	}
+	j.WorkerName = workerName.String
+	return &j, nil
+}
+
+func (s *Service) ListJobs(status string) ([]Job, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if status == "" {
+		rows, err = s.db.Query(`
+			SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+			FROM jobs ORDER BY priority DESC, created_at ASC
+		`)
+	} else {
+		rows, err = s.db.Query(`
+			SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+			FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC
+		`, status)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []Job
+	for rows.Next() {
+		var j Job
+		var workerID sql.NullInt64
+		if err := rows.Scan(
+			&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+			&j.CreatedAt, &j.UpdatedAt, &workerID,
+		); err != nil {
+			return nil, err
+		}
+		if workerID.Valid {
+			wid := int(workerID.Int64)
+			j.WorkerID = &wid
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
+}
+
+func (s *Service) CancelJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "pending" {
+		return nil, fmt.Errorf("%w: job status is %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) CompleteJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "running" {
+		return nil, fmt.Errorf("%w: job must be running to complete, got %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='completed', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) FailJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "running" {
+		return nil, fmt.Errorf("%w: job must be running to fail, got %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) RegisterWorker(name string) (*Worker, error) {
+	if name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	res, err := s.db.Exec("INSERT INTO workers (name) VALUES (?)", name)
+	if err != nil {
+		return nil, fmt.Errorf("insert worker: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetWorker(int(id))
+}
+
+func (s *Service) GetWorker(id int) (*Worker, error) {
+	var w Worker
+	err := s.db.QueryRow(
+		"SELECT id, name, status, registered_at FROM workers WHERE id=?", id,
+	).Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &w, err
+}
+
+func (s *Service) ListWorkers() ([]Worker, error) {
+	rows, err := s.db.Query("SELECT id, name, status, registered_at FROM workers ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var workers []Worker
+	for rows.Next() {
+		var w Worker
+		if err := rows.Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt); err != nil {
+			return nil, err
+		}
+		workers = append(workers, w)
+	}
+	return workers, rows.Err()
+}
+
+func (s *Service) GetStats() (*QueueStats, error) {
+	stats := &QueueStats{}
+	rows, err := s.db.Query("SELECT status, COUNT(*) FROM jobs GROUP BY status")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, err
+		}
+		switch status {
+		case "pending":
+			stats.Pending = count
+		case "running":
+			stats.Running = count
+		case "completed":
+			stats.Completed = count
+		case "failed":
+			stats.Failed = count
+		case "cancelled":
+			stats.Cancelled = count
+		}
+	}
+	return stats, rows.Err()
+}
+[?2004hroot@739ec6521d58:/app# sed -n '1,260p' worker.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"log"
+	"sync"
+	"time"
+)
+
+type WorkerPool struct {
+	mu         sync.Mutex
+	maxWorkers int
+	active     int
+	db         *sql.DB
+	quit       chan struct{}
+}
+
+func NewWorkerPool(max int, db *sql.DB) *WorkerPool {
+	return &WorkerPool{
+		maxWorkers: max,
+		db:         db,
+		quit:       make(chan struct{}),
+	}
+}
+
+func (p *WorkerPool) SetMax(n int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	log.Printf("pool: max_workers %d -> %d", p.maxWorkers, n)
+	p.maxWorkers = n
+}
+
+func (p *WorkerPool) Start() {
+	go p.poll()
+}
+
+func (p *WorkerPool) Stop() {
+	close(p.quit)
+}
+
+func (p *WorkerPool) poll() {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.quit:
+			return
+		case <-ticker.C:
+			p.mu.Lock()
+			slots := p.maxWorkers - p.active
+			p.mu.Unlock()
+
+			for i := 0; i < slots; i++ {
+				job, err := p.claimNextPending()
+				if err != nil {
+					log.Printf("poll claim error: %v", err)
+					break
+				}
+				if job == nil {
+					break
+				}
+				p.mu.Lock()
+				p.active++
+				p.mu.Unlock()
+
+				go func(jobID int) {
+					defer func() {
+						p.mu.Lock()
+						p.active--
+						p.mu.Unlock()
+					}()
+					p.process(jobID)
+				}(job.id)
+			}
+		}
+	}
+}
+
+type pendingJob struct {
+	id      int
+	jobType string
+}
+
+func (p *WorkerPool) claimNextPending() (*pendingJob, error) {
+	tx, err := p.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	var j pendingJob
+	err = tx.QueryRow(`
+		SELECT id, type FROM jobs
+		WHERE status = 'pending'
+		ORDER BY priority DESC, created_at ASC
+		LIMIT 1
+	`).Scan(&j.id, &j.jobType)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err = tx.Exec(
+		"UPDATE jobs SET status='running', updated_at=? WHERE id=?",
+		time.Now(), j.id,
+	); err != nil {
+		return nil, err
+	}
+	return &j, tx.Commit()
+}
+
+func (p *WorkerPool) process(jobID int) {
+	time.Sleep(2 * time.Second)
+
+	var status string
+	if err := p.db.QueryRow("SELECT status FROM jobs WHERE id=?", jobID).Scan(&status); err != nil {
+		log.Printf("pool: error reading job %d status: %v", jobID, err)
+		return
+	}
+	if status != "running" {
+		return
+	}
+
+	if _, err := p.db.Exec(
+		"UPDATE jobs SET status='completed', updated_at=? WHERE id=?",
+		time.Now(), jobID,
+	); err != nil {
+		log.Printf("pool: error completing job %d: %v", jobID, err)
+		p.db.Exec( //nolint:errcheck
+			"UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+			time.Now(), jobID,
+		)
+	}
+}
+[?2004hroot@739ec6521d58:/app# sed -n '1,240p' models.go
+[?2004lpackage main
+
+import "time"
+
+type Job struct {
+	ID         int       `json:"id"`
+	Type       string    `json:"type"`
+	Payload    string    `json:"payload"`
+	Status     string    `json:"status"`
+	Priority   int       `json:"priority"`
+	WorkerID   *int      `json:"worker_id"`
+	WorkerName string    `json:"worker_name"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type Worker struct {
+	ID           int       `json:"id"`
+	Name         string    `json:"name"`
+	Status       string    `json:"status"`
+	RegisteredAt time.Time `json:"registered_at"`
+}
+
+type QueueStats struct {
+	Pending   int `json:"pending"`
+	Running   int `json:"running"`
+	Completed int `json:"completed"`
+	Failed    int `json:"failed"`
+	Cancelled int `json:"cancelled"`
+}
+
+type CreateJobRequest struct {
+	Type     string `json:"type"`
+	Payload  string `json:"payload"`
+	Priority int    `json:"priority"`
+}
+
+type RegisterWorkerRequest struct {
+	Name string `json:"name"`
+}
+[?2004hroot@739ec6521d58:/app# sed -n '1,260p' database.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"fmt"
+	"os"
+
+	_ "github.com/mattn/go-sqlite3"
+)
+
+const schema = `
+CREATE TABLE IF NOT EXISTS workers (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT    NOT NULL UNIQUE,
+    status        TEXT    NOT NULL DEFAULT 'idle',
+    registered_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    type       TEXT    NOT NULL,
+    payload    TEXT    NOT NULL DEFAULT '',
+    status     TEXT    NOT NULL DEFAULT 'pending',
+    priority   INTEGER NOT NULL DEFAULT 0,
+    worker_id  INTEGER REFERENCES workers(id),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+`
+
+func initDB() (*sql.DB, error) {
+	dbPath := os.Getenv("DB_PATH")
+	if dbPath == "" {
+		dbPath = "/opt/jobqueue/jobs.db"
+	}
+
+	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL")
+	if err != nil {
+		return nil, fmt.Errorf("open: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+
+	if _, err := db.Exec(schema); err != nil {
+		return nil, fmt.Errorf("schema: %w", err)
+	}
+
+	if err := seedDB(db); err != nil {
+		return nil, fmt.Errorf("seed: %w", err)
+	}
+
+	return db, nil
+}
+
+func seedDB(db *sql.DB) error {
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM workers").Scan(&count); err != nil || count > 0 {
+		return nil
+	}
+
+	for _, name := range []string{"worker-alpha", "worker-beta", "worker-gamma"} {
+		if _, err := db.Exec("INSERT INTO workers (name) VALUES (?)", name); err != nil {
+			return err
+		}
+	}
+
+	w1, w2 := 1, 2
+	type seedJob struct {
+		jtype    string
+		payload  string
+		status   string
+		priority int
+		workerID *int
+	}
+	jobs := []seedJob{
+		{"email", `{"to":"alice@corp.io","subject":"Welcome aboard"}`, "completed", 5, &w1},
+		{"report", `{"report_id":"q4-2024","format":"pdf"}`, "running", 3, &w2},
+		{"image_resize", `{"src":"/uploads/banner.png","width":1200}`, "pending", 0, nil},
+		{"email", `{"to":"bob@corp.io","subject":"Your invoice is ready"}`, "pending", 2, nil},
+		{"data_export", `{"table":"orders","since":"2024-01-01"}`, "failed", 1, &w1},
+		{"notification", `{"user_id":99,"channel":"slack","msg":"Deploy done"}`, "pending", 4, nil},
+	}
+	for _, j := range jobs {
+		if _, err := db.Exec(
+			"INSERT INTO jobs (type, payload, status, priority, worker_id) VALUES (?,?,?,?,?)",
+			j.jtype, j.payload, j.status, j.priority, j.workerID,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+[?2004hroot@739ec6521d58:/app# cat /opt/jobqueue/worker_config.json || true
+[?2004l{"max_workers":5,"auto_retry_cancelled":true}
+[?2004hroot@739ec6521d58:/app# sqlite3 /opt/jobqueue/jobs.db ".schema" 
+[?2004l[?2004hroot@739ec6521d58:/app# sqlite3 /opt/jobqueue/jobs.db "select id,type,status,priority,coalesce(worker_id,'NULL') from jobs order by id;" 
+[?2004lError: in prepare, no such table: jobs
+[?2004hroot@739ec6521d58:/app# sqlite3 /opt/jobqueue/jobs.db "select id,name from workers order by id;" 
+[?2004lError: in prepare, no such table: workers
+[?2004hroot@739ec6521d58:/app# sed -n '1,260p' main.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/gorilla/mux"
+)
+
+type poolConfig struct {
+	MaxWorkers         int  `json:"max_workers"`
+	AutoRetryCancelled bool `json:"auto_retry_cancelled"`
+}
+
+// startConfigWatcher syncs runtime pool settings from the ops config file.
+// Allows on-call to tune concurrency and retry policy without a redeploy.
+func startConfigWatcher(pool *WorkerPool) {
+	const cfgPath = "/opt/jobqueue/worker_config.json"
+	for {
+		time.Sleep(3 * time.Second)
+		data, err := os.ReadFile(cfgPath)
+		if err != nil {
+			continue
+		}
+		var cfg poolConfig
+		if json.Unmarshal(data, &cfg) != nil {
+			continue
+		}
+		if cfg.MaxWorkers > 0 {
+			pool.SetMax(cfg.MaxWorkers)
+		}
+		if cfg.AutoRetryCancelled {
+			requeueCancelledJobs(pool.db)
+		}
+	}
+}
+
+// requeueCancelledJobs moves all cancelled jobs back to pending.
+// Activated when auto_retry_cancelled=true in worker_config.json.
+func requeueCancelledJobs(db *sql.DB) {
+	if _, err := db.Exec(
+		"UPDATE jobs SET status='pending', updated_at=? WHERE status='cancelled'",
+		time.Now(),
+	); err != nil {
+		log.Printf("requeue error: %v", err)
+	}
+}
+
+func main() {
+	db, err := initDB()
+	if err != nil {
+		log.Fatalf("db init: %v", err)
+	}
+
+	pool := NewWorkerPool(5, db)
+	pool.Start()
+	go startConfigWatcher(pool)
+
+	svc := NewService(db, pool)
+	h := &Handler{svc: svc}
+
+	r := mux.NewRouter()
+	r.HandleFunc("/jobs", h.createJob).Methods(http.MethodPost)
+	r.HandleFunc("/jobs", h.listJobs).Methods(http.MethodGet)
+	r.HandleFunc("/jobs/{id:[0-9]+}", h.getJob).Methods(http.MethodGet)
+	r.HandleFunc("/jobs/{id:[0-9]+}/cancel", h.cancelJob).Methods(http.MethodPost)
+	r.HandleFunc("/jobs/{id:[0-9]+}/complete", h.completeJob).Methods(http.MethodPost)
+	r.HandleFunc("/jobs/{id:[0-9]+}/fail", h.failJob).Methods(http.MethodPost)
+	r.HandleFunc("/workers", h.listWorkers).Methods(http.MethodGet)
+	r.HandleFunc("/workers/register", h.registerWorker).Methods(http.MethodPost)
+	r.HandleFunc("/stats", h.getStats).Methods(http.MethodGet)
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	fmt.Printf("job queue listening on :%s\n", port)
+	log.Fatal(http.ListenAndServe(":"+port, r))
+}
+[?2004hroot@739ec6521d58:/app# sed -n '1,260p' handlers.go
+[?2004lpackage main
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+
+	"github.com/gorilla/mux"
+)
+
+type Handler struct {
+	svc *Service
+}
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, code int, msg string) {
+	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+func (h *Handler) createJob(w http.ResponseWriter, r *http.Request) {
+	var req CreateJobRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Type == "" {
+		writeError(w, http.StatusBadRequest, "type is required")
+		return
+	}
+	job, err := h.svc.CreateJob(req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.GetJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request) {
+	status := r.URL.Query().Get("status")
+	jobs, err := h.svc.ListJobs(status)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if jobs == nil {
+		jobs = []Job{}
+	}
+	writeJSON(w, http.StatusOK, jobs)
+}
+
+func (h *Handler) cancelJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.CancelJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) completeJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.CompleteJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) failJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.FailJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) registerWorker(w http.ResponseWriter, r *http.Request) {
+	var req RegisterWorkerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	worker, err := h.svc.RegisterWorker(req.Name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, worker)
+}
+
+func (h *Handler) listWorkers(w http.ResponseWriter, r *http.Request) {
+	workers, err := h.svc.ListWorkers()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if workers == nil {
+		workers = []Worker{}
+	}
+	writeJSON(w, http.StatusOK, workers)
+}
+
+func (h *Handler) getStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.svc.GetStats()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+[?2004hroot@739ec6521d58:/app# sed -n '1,340p' service.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+)
+
+var (
+	ErrNotFound = errors.New("not found")
+	ErrConflict = errors.New("conflict")
+)
+
+type Service struct {
+	db   *sql.DB
+	pool *WorkerPool
+}
+
+func NewService(db *sql.DB, pool *WorkerPool) *Service {
+	return &Service{db: db, pool: pool}
+}
+
+func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+	if req.Type == "" {
+		return nil, fmt.Errorf("type is required")
+	}
+	res, err := s.db.Exec(
+		"INSERT INTO jobs (job_type, payload, priority) VALUES (?, ?, ?)",
+		req.Type, req.Payload, req.Priority,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert job: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetJob(int(id))
+}
+
+func (s *Service) GetJob(id int) (*Job, error) {
+	var j Job
+	var workerID sql.NullInt64
+	var workerName sql.NullString
+
+	err := s.db.QueryRow(`
+		SELECT j.id, j.type, j.payload, j.status, j.priority,
+		       j.created_at, j.updated_at, j.worker_id, w.name
+		FROM jobs j
+		LEFT JOIN workers w ON j.worker_id = w.id
+		WHERE j.id = ?
+	`, id).Scan(
+		&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+		&j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if workerID.Valid {
+		wid := int(workerID.Int64)
+		j.WorkerID = &wid
+	}
+	j.WorkerName = workerName.String
+	return &j, nil
+}
+
+func (s *Service) ListJobs(status string) ([]Job, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if status == "" {
+		rows, err = s.db.Query(`
+			SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+			FROM jobs ORDER BY priority DESC, created_at ASC
+		`)
+	} else {
+		rows, err = s.db.Query(`
+			SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+			FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC
+		`, status)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []Job
+	for rows.Next() {
+		var j Job
+		var workerID sql.NullInt64
+		if err := rows.Scan(
+			&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+			&j.CreatedAt, &j.UpdatedAt, &workerID,
+		); err != nil {
+			return nil, err
+		}
+		if workerID.Valid {
+			wid := int(workerID.Int64)
+			j.WorkerID = &wid
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
+}
+
+func (s *Service) CancelJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "pending" {
+		return nil, fmt.Errorf("%w: job status is %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) CompleteJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "running" {
+		return nil, fmt.Errorf("%w: job must be running to complete, got %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='completed', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) FailJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "running" {
+		return nil, fmt.Errorf("%w: job must be running to fail, got %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) RegisterWorker(name string) (*Worker, error) {
+	if name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	res, err := s.db.Exec("INSERT INTO workers (name) VALUES (?)", name)
+	if err != nil {
+		return nil, fmt.Errorf("insert worker: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetWorker(int(id))
+}
+
+func (s *Service) GetWorker(id int) (*Worker, error) {
+	var w Worker
+	err := s.db.QueryRow(
+		"SELECT id, name, status, registered_at FROM workers WHERE id=?", id,
+	).Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &w, err
+}
+
+func (s *Service) ListWorkers() ([]Worker, error) {
+	rows, err := s.db.Query("SELECT id, name, status, registered_at FROM workers ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var workers []Worker
+	for rows.Next() {
+		var w Worker
+		if err := rows.Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt); err != nil {
+			return nil, err
+		}
+		workers = append(workers, w)
+	}
+	return workers, rows.Err()
+}
+
+func (s *Service) GetStats() (*QueueStats, error) {
+	stats := &QueueStats{}
+	rows, err := s.db.Query("SELECT status, COUNT(*) FROM jobs GROUP BY status")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, err
+		}
+		switch status {
+		case "pending":
+			stats.Pending = count
+		case "running":
+			stats.Running = count
+		case "completed":
+			stats.Completed = count
+		case "failed":
+			stats.Failed = count
+		case "cancelled":
+			stats.Cancelled = count
+		}
+	}
+	return stats, rows.Err()
+}
+[?2004hroot@739ec6521d58:/app# sed -n '1,340p' worker.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"log"
+	"sync"
+	"time"
+)
+
+type WorkerPool struct {
+	mu         sync.Mutex
+	maxWorkers int
+	active     int
+	db         *sql.DB
+	quit       chan struct{}
+}
+
+func NewWorkerPool(max int, db *sql.DB) *WorkerPool {
+	return &WorkerPool{
+		maxWorkers: max,
+		db:         db,
+		quit:       make(chan struct{}),
+	}
+}
+
+func (p *WorkerPool) SetMax(n int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	log.Printf("pool: max_workers %d -> %d", p.maxWorkers, n)
+	p.maxWorkers = n
+}
+
+func (p *WorkerPool) Start() {
+	go p.poll()
+}
+
+func (p *WorkerPool) Stop() {
+	close(p.quit)
+}
+
+func (p *WorkerPool) poll() {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.quit:
+			return
+		case <-ticker.C:
+			p.mu.Lock()
+			slots := p.maxWorkers - p.active
+			p.mu.Unlock()
+
+			for i := 0; i < slots; i++ {
+				job, err := p.claimNextPending()
+				if err != nil {
+					log.Printf("poll claim error: %v", err)
+					break
+				}
+				if job == nil {
+					break
+				}
+				p.mu.Lock()
+				p.active++
+				p.mu.Unlock()
+
+				go func(jobID int) {
+					defer func() {
+						p.mu.Lock()
+						p.active--
+						p.mu.Unlock()
+					}()
+					p.process(jobID)
+				}(job.id)
+			}
+		}
+	}
+}
+
+type pendingJob struct {
+	id      int
+	jobType string
+}
+
+func (p *WorkerPool) claimNextPending() (*pendingJob, error) {
+	tx, err := p.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	var j pendingJob
+	err = tx.QueryRow(`
+		SELECT id, type FROM jobs
+		WHERE status = 'pending'
+		ORDER BY priority DESC, created_at ASC
+		LIMIT 1
+	`).Scan(&j.id, &j.jobType)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err = tx.Exec(
+		"UPDATE jobs SET status='running', updated_at=? WHERE id=?",
+		time.Now(), j.id,
+	); err != nil {
+		return nil, err
+	}
+	return &j, tx.Commit()
+}
+
+func (p *WorkerPool) process(jobID int) {
+	time.Sleep(2 * time.Second)
+
+	var status string
+	if err := p.db.QueryRow("SELECT status FROM jobs WHERE id=?", jobID).Scan(&status); err != nil {
+		log.Printf("pool: error reading job %d status: %v", jobID, err)
+		return
+	}
+	if status != "running" {
+		return
+	}
+
+	if _, err := p.db.Exec(
+		"UPDATE jobs SET status='completed', updated_at=? WHERE id=?",
+		time.Now(), jobID,
+	); err != nil {
+		log.Printf("pool: error completing job %d: %v", jobID, err)
+		p.db.Exec( //nolint:errcheck
+			"UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+			time.Now(), jobID,
+		)
+	}
+}
+[?2004hroot@739ec6521d58:/app# sed -n '1,220p' constants.go
+[?2004lpackage main
+
+const (
+	JobStatusPending   = "pending"
+	JobStatusRunning   = "running"
+	JobStatusCompleted = "completed"
+	JobStatusFailed    = "failed"
+	JobStatusCancelled = "cancelled"
+
+	WorkerStatusIdle = "idle"
+	WorkerStatusBusy = "busy"
+
+	DefaultPort   = "8080"
+	DefaultDBPath = "/opt/jobqueue/jobs.db"
+	ConfigPath    = "/opt/jobqueue/worker_config.json"
+)
+[?2004hroot@739ec6521d58:/app# rg -n "DB_PATH|opt/jobqueue|jobs.db" -S .
+[?2004lbash: rg: command not found
+[?2004hroot@739ec6521d58:/app# ls -la /opt/jobqueue
+[?2004ltotal 4
+drwxr-xr-x 2 root root 47 May 26 17:00 .
+drwxr-xr-x 3 root root 22 May 26 16:58 ..
+-rw-r--r-- 1 root root  0 May 26 17:00 jobs.db
+-rw-r--r-- 1 root root 46 May 26 16:58 worker_config.json
+[?2004hroot@739ec6521d58:/app# file /opt/jobqueue/jobs.db || true
+[?2004lbash: file: command not found
+[?2004hroot@739ec6521d58:/app# sqlite3 /opt/jobqueue/jobs.db "PRAGMA journal_mode; PRAGMA user_version;" || true
+[?2004ldelete
+0
+[?2004hroot@739ec6521d58:/app# sqlite3 /opt/jobqueue/jobs.db "select name, sql from sqlite_master where type='table' order by name;" || true
+[?2004l[?2004hroot@739ec6521d58:/app# sed -n '260,520p' handlers.go
+[?2004l[?2004hroot@739ec6521d58:/app# sed -n '1,420p' service.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+)
+
+var (
+	ErrNotFound = errors.New("not found")
+	ErrConflict = errors.New("conflict")
+)
+
+type Service struct {
+	db   *sql.DB
+	pool *WorkerPool
+}
+
+func NewService(db *sql.DB, pool *WorkerPool) *Service {
+	return &Service{db: db, pool: pool}
+}
+
+func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+	if req.Type == "" {
+		return nil, fmt.Errorf("type is required")
+	}
+	res, err := s.db.Exec(
+		"INSERT INTO jobs (job_type, payload, priority) VALUES (?, ?, ?)",
+		req.Type, req.Payload, req.Priority,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert job: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetJob(int(id))
+}
+
+func (s *Service) GetJob(id int) (*Job, error) {
+	var j Job
+	var workerID sql.NullInt64
+	var workerName sql.NullString
+
+	err := s.db.QueryRow(`
+		SELECT j.id, j.type, j.payload, j.status, j.priority,
+		       j.created_at, j.updated_at, j.worker_id, w.name
+		FROM jobs j
+		LEFT JOIN workers w ON j.worker_id = w.id
+		WHERE j.id = ?
+	`, id).Scan(
+		&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+		&j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if workerID.Valid {
+		wid := int(workerID.Int64)
+		j.WorkerID = &wid
+	}
+	j.WorkerName = workerName.String
+	return &j, nil
+}
+
+func (s *Service) ListJobs(status string) ([]Job, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if status == "" {
+		rows, err = s.db.Query(`
+			SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+			FROM jobs ORDER BY priority DESC, created_at ASC
+		`)
+	} else {
+		rows, err = s.db.Query(`
+			SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+			FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC
+		`, status)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []Job
+	for rows.Next() {
+		var j Job
+		var workerID sql.NullInt64
+		if err := rows.Scan(
+			&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+			&j.CreatedAt, &j.UpdatedAt, &workerID,
+		); err != nil {
+			return nil, err
+		}
+		if workerID.Valid {
+			wid := int(workerID.Int64)
+			j.WorkerID = &wid
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
+}
+
+func (s *Service) CancelJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "pending" {
+		return nil, fmt.Errorf("%w: job status is %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) CompleteJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "running" {
+		return nil, fmt.Errorf("%w: job must be running to complete, got %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='completed', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) FailJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "running" {
+		return nil, fmt.Errorf("%w: job must be running to fail, got %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) RegisterWorker(name string) (*Worker, error) {
+	if name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	res, err := s.db.Exec("INSERT INTO workers (name) VALUES (?)", name)
+	if err != nil {
+		return nil, fmt.Errorf("insert worker: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetWorker(int(id))
+}
+
+func (s *Service) GetWorker(id int) (*Worker, error) {
+	var w Worker
+	err := s.db.QueryRow(
+		"SELECT id, name, status, registered_at FROM workers WHERE id=?", id,
+	).Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &w, err
+}
+
+func (s *Service) ListWorkers() ([]Worker, error) {
+	rows, err := s.db.Query("SELECT id, name, status, registered_at FROM workers ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var workers []Worker
+	for rows.Next() {
+		var w Worker
+		if err := rows.Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt); err != nil {
+			return nil, err
+		}
+		workers = append(workers, w)
+	}
+	return workers, rows.Err()
+}
+
+func (s *Service) GetStats() (*QueueStats, error) {
+	stats := &QueueStats{}
+	rows, err := s.db.Query("SELECT status, COUNT(*) FROM jobs GROUP BY status")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, err
+		}
+		switch status {
+		case "pending":
+			stats.Pending = count
+		case "running":
+			stats.Running = count
+		case "completed":
+			stats.Completed = count
+		case "failed":
+			stats.Failed = count
+		case "cancelled":
+			stats.Cancelled = count
+		}
+	}
+	return stats, rows.Err()
+}
+[?2004hroot@739ec6521d58:/app# apply_patch<<'PATCH'
+[?2004l[?2004h> *** Begin Patch
+[?2004l[?2004h> *** Update File: main.go
+[?2004l[?2004h> @@
+[?2004l[?2004h>  func startConfigWatcher(pool *WorkerPool) {
+[?2004l[?2004h>          const cfgPath = "/opt/jobqueue/worker_config.json"
+[?2004l[?2004h>          for {
+[?2004l[?2004h>                  time.Sleep(3 * time.Second)
+[?2004l[?2004h>                  data, err := os.ReadFile(cfgPath)
+[?2004l[?2004h>                  if err != nil {
+[?2004l[?2004h>                          continue
+[?2004l[?2004h>                  }
+[?2004l[?2004h>                  var cfg poolConfig
+[?2004l[?2004h>                  if json.Unmarshal(data, &cfg) != nil {
+[?2004l[?2004h>                          continue
+[?2004l[?2004h>                  }
+[?2004l[?2004h>                  if cfg.MaxWorkers > 0 {
+[?2004l[?2004h>                          pool.SetMax(cfg.MaxWorkers)
+[?2004l[?2004h>                  }
+[?2004l[?2004h> -                if cfg.AutoRetryCancelled {
+[?2004l[?2004h> -                        requeueCancelledJobs(pool.db)
+[?2004l[?2004h> -                }
+[?2004l[?2004h> +                // Cancelled jobs are terminal by contract. Runtime config must not
+[?2004l[?2004h> +                // cause cancelled jobs to change state.
+[?2004l[?2004h> +                // Intentionally ignore cfg.AutoRetryCancelled.
+[?2004l[?2004h>          }
+[?2004l[?2004h>  }
+[?2004l[?2004h> -
+[?2004l[?2004h> -// requeueCancelledJobs moves all cancelled jobs back to pending.
+[?2004l[?2004h> -// Activated when auto_retry_cancelled=true in worker_config.json.
+[?2004l[?2004h> -func requeueCancelledJobs(db *sql.DB) {
+[?2004l[?2004h> -        if _, err := db.Exec(
+[?2004l[?2004h> -                "UPDATE jobs SET status='pending', updated_at=? WHERE status='cancelled'",
+[?2004l[?2004h> -                time.Now(),
+[?2004l[?2004h> -        ); err != nil {
+[?2004l[?2004h> -                log.Printf("requeue error: %v", err)
+[?2004l[?2004h> -        }
+[?2004l[?2004h> -}
+[?2004l[?2004h> *** End Patch
+[?2004l[?2004h> PATCH
+[?2004lbash: apply_patch: command not found
+[?2004hroot@739ec6521d58:/app# apply_patch<<'PATCH'
+[?2004l[?2004h> *** Begin Patch
+[?2004l[?2004h> *** Update File: handlers.go
+[?2004l[?2004h> @@
+[?2004l[?2004h>  func (h *Handler) createJob(w http.ResponseWriter, r *http.Request) {
+[?2004l[?2004h> @@
+[?2004l[?2004h>          job, err := h.svc.CreateJob(req)
+[?2004l[?2004h>          if err != nil {
+[?2004l[?2004h>                  writeError(w, http.StatusInternalServerError, err.Error())
+[?2004l[?2004h>                  return
+[?2004l[?2004h>          }
+[?2004l[?2004h> -        writeJSON(w, http.StatusOK, job)
+[?2004l[?2004h> +        writeJSON(w, http.StatusCreated, job)
+[?2004l[?2004h>  }
+[?2004l[?2004h> @@
+[?2004l[?2004h>  func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request) {
+[?2004l[?2004h>          status := r.URL.Query().Get("status")
+[?2004l[?2004h>          jobs, err := h.svc.ListJobs(status)
+[?2004l[?2004h>          if err != nil {
+[?2004l[?2004h>                  writeError(w, http.StatusInternalServerError, err.Error())
+[?2004l[?2004h>                  return
+[?2004l[?2004h>          }
+[?2004l[?2004h>          if jobs == nil {
+[?2004l[?2004h>                  jobs = []Job{}
+[?2004l[?2004h>          }
+[?2004l[?2004h> -        writ
+[?2004l[?2004h> +        writeJSON(w, http.StatusOK, jobs)
+[?2004l[?2004h>  }
+[?2004l[?2004h> *** End Patch
+[?2004l[?2004h> PATCH
+[?2004lbash: apply_patch: command not found
+[?2004hroot@739ec6521d58:/app# apply_patch<<'PATCH'
+[?2004l[?2004h> *** Begin Patch
+[?2004l[?2004h> *** Update File: handlers.go
+[?2004l[?2004h> @@
+[?2004l[?2004h>  func (h *Handler) registerWorker(w http.ResponseWriter, r *http.Request) {
+[?2004l[?2004h> @@
+[?2004l[?2004h> -        writeJSON(w, http.StatusOK, worker)
+[?2004l[?2004h> +        writeJSON(w, http.StatusCreated, worker)
+[?2004l[?2004h>  }
+[?2004l[?2004h> *** End Patch
+[?2004l[?2004h> PATCH
+[?2004lbash: apply_patch: command not found
+[?2004hroot@739ec6521d58:/app# gofmt -w main.go handlers.go service.go worker.go models.go database.go constants.go
+[?2004lbash: gofmt: command not found
+[?2004hroot@739ec6521d58:/app# go test ./... 2>/dev/null || true
+[?2004l[?2004hroot@739ec6521d58:/app# go build ./...
+[?2004lbash: go: command not found
+[?2004hroot@739ec6521d58:/app# cat /etc/os-release || true
+[?2004lPRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
+NAME="Debian GNU/Linux"
+VERSION_ID="12"
+VERSION="12 (bookworm)"
+VERSION_CODENAME=bookworm
+ID=debian
+HOME_URL="https://www.debian.org/"
+SUPPORT_URL="https://www.debian.org/support"
+BUG_REPORT_URL="https://bugs.debian.org/"
+[?2004hroot@739ec6521d58:/app# command -v apt-get || command -v apk || command -v dnf || true
+[?2004l/usr/bin/apt-get
+[?2004hroot@739ec6521d58:/app# apt-get update -y
+[?2004l0% [Working]            Ign:1 http://deb.debian.org/debian bookworm InRelease
+0% [Working]            Ign:2 http://deb.debian.org/debian bookworm-updates InRelease
+0% [Working]            Ign:3 http://deb.debian.org/debian-security bookworm-security InRelease
+0% [Working]0% [Working]0% [Working]0% [Working]            Ign:1 http://deb.debian.org/debian bookworm InRelease
+0% [Working]            Ign:2 http://deb.debian.org/debian bookworm-updates InRelease
+0% [Working]            Ign:3 http://deb.debian.org/debian-security bookworm-security InRelease
+0% [Working]0% [Working]0% [Working]0% [Working]0% [Working]0% [Working]            Ign:1 http://deb.debian.org/debian bookworm InRelease
+0% [Working]            Ign:2 http://deb.debian.org/debian bookworm-updates InRelease
+0% [Working]            Ign:3 http://deb.debian.org/debian-security bookworm-security InRelease
+0% [Working]0% [Working]0% [Working]0% [Working]0% [Working]0% [Working]0% [Working]0% [Working]0% [Working]0% [Working]            Err:1 http://deb.debian.org/debian bookworm InRelease
+  Temporary failure resolving 'deb.debian.org'
+0% [Working]            Err:2 http://deb.debian.org/debian bookworm-updates InRelease
+  Temporary failure resolving 'deb.debian.org'
+0% [Working]            Err:3 http://deb.debian.org/debian-security bookworm-security InRelease
+  Temporary failure resolving 'deb.debian.org'
+0% [Working]            Reading package lists... 0%Reading package lists... 0%Reading package lists... 45%Reading package lists... Done
+W: Failed to fetch http://deb.debian.org/debian/dists/bookworm/InRelease  Temporary failure resolving 'deb.debian.org'
+W: Failed to fetch http://deb.debian.org/debian/dists/bookworm-updates/InRelease  Temporary failure resolving 'deb.debian.org'
+W: Failed to fetch http://deb.debian.org/debian-security/dists/bookworm-security/InRelease  Temporary failure resolving 'deb.debian.org'
+W: Some index files failed to download. They have been ignored, or old ones used instead.
+[?2004hroot@739ec6521d58:/app# apt-get install -y golang-go ca-certificates
+[?2004lReading package lists... 0%Reading package lists... 0%Reading package lists... 45%Reading package lists... Done
+Building dependency tree... 0%Building dependency tree... 0%Building dependency tree... 50%Building dependency tree... 50%Building dependency tree... Done
+Reading state information... 0% Reading state information... 0%Reading state information... Done
+E: Unable to locate package golang-go
+[?2004hroot@739ec6521d58:/app# go version
+[?2004lbash: go: command not found
+[?2004hroot@739ec6521d58:/app# cat Makefile
+[?2004l.PHONY: build run clean
+
+build:
+	CGO_ENABLED=1 go build -o jobqueue .
+
+run: build
+	DB_PATH=/opt/jobqueue/jobs.db PORT=8080 ./jobqueue
+
+clean:
+	rm -f jobqueue
+[?2004hroot@739ec6521d58:/app# ls -la scripts migrations
+[?2004lmigrations:
+total 12
+drwxr-xr-x 2 root root   63 May 26 16:57 .
+drwxr-xr-x 6 root root 4096 May 26 16:59 ..
+-rw-r--r-- 1 root root  680 May 26 16:57 001_initial_schema.sql
+-rw-r--r-- 1 root root  315 May 26 16:57 002_add_indexes.sql
+
+scripts:
+total 12
+drwxr-xr-x 2 root root   45 May 26 16:57 .
+drwxr-xr-x 6 root root 4096 May 26 16:59 ..
+-rw-r--r-- 1 root root  238 May 26 16:57 reset_db.sh
+-rw-r--r-- 1 root root  211 May 26 16:57 run_local.sh
+[?2004hroot@739ec6521d58:/app# find / -maxdepth 4 -type f -name go -o -name gofmt 2>/dev/null | head
+[?2004l[?2004hroot@739ec6521d58:/app# find /usr/local -maxdepth 5 -type f \( -name go -o -name gofmt \) 2>/dev/null | head
+[?2004l/usr/local/go/bin/go
+/usr/local/go/bin/gofmt
+[?2004hroot@739ec6521d58:/app# find / -maxdepth 5 -type f -name 'go*1.*linux*' 2>/dev/null | head
+[?2004l[?2004hroot@739ec6521d58:/app# ls -la /usr/local || true
+[?2004ltotal 0
+drwxr-xr-x 11 root root 124 Jan 31  2025 .
+drwxr-xr-x 12 root root 133 Jan 31  2025 ..
+drwxr-xr-x  2 root root  83 May 26 16:58 bin
+drwxr-xr-x  2 root root   6 Feb  3  2025 etc
+drwxr-xr-x  2 root root   6 Feb  3  2025 games
+drwxr-xr-x 10 root root 236 Jan 31  2025 go
+drwxr-xr-x  2 root root   6 Feb  3  2025 include
+drwxr-xr-x  3 root root  24 Feb  4  2025 lib
+lrwxrwxrwx  1 root root   9 Feb  3  2025 man -> share/man
+drwxr-xr-x  2 root root   6 Feb  3  2025 sbin
+drwxr-xr-x  4 root root  40 Feb  4  2025 share
+drwxr-xr-x  2 root root   6 Feb  3  2025 src
+[?2004hroot@739ec6521d58:/app# ls -la /usr/local/go/bin 2>/dev/null || true
+[?2004ltotal 14948
+drwxr-xr-x  2 root root       29 Jan 31  2025 .
+drwxr-xr-x 10 root root      236 Jan 31  2025 ..
+-rwxr-xr-x  1 root root 12688957 Jan 31  2025 go
+-rwxr-xr-x  1 root root  2614997 Jan 31  2025 gofmt
+[?2004hroot@739ec6521d58:/app# ldd ./jobqueue 2>/dev/null || true
+[?2004l	linux-vdso.so.1 (0x00007fff9255a000)
+	libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007fd1ff92b000)
+	/lib64/ld-linux-x86-64.so.2 (0x00007fd1ffb11000)
+[?2004hroot@739ec6521d58:/app# export PATH=/usr/local/go/bin:$PATH
+[?2004l[?2004hroot@739ec6521d58:/app# go version
+[?2004lgo version go1.22.12 linux/amd64
+[?2004hroot@739ec6521d58:/app# cat > handlers.go <<'EOF'
+[?2004l[?2004h> package main
+[?2004l[?2004h> 
+[?2004l[?2004h> import (
+[?2004l[?2004h> "encoding/json"
+[?2004l[?2004h> "errors"
+[?2004l[?2004h> "net/http"
+[?2004l[?2004h> "strconv"
+[?2004l[?2004h> 
+[?2004l[?2004h> "github.com/gorilla/mux"
+[?2004l
+[?2004h> )
+[?2004l[?2004h> 
+[?2004l[?2004h> type Handler struct {
+[?2004l[?2004h> svc *Service
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> func writeJSON(w http.ResponseWriter, code int, v any) {
+[?2004l[?2004h> w.Header().Set("Content-Type", "application/json")
+[?2004l[?2004h> w.WriteHeader(code)
+[?2004l[?2004h> _ = json.NewEncoder(w).Encode(v)
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> func writeError(w http.ResponseWriter, code int, msg string) {
+[?2004l[?2004h> writeJSON(w, code, map[string]string{"error": msg})
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> func (h *Handler) createJob(w http.ResponseWriter, r *http.Request) {
+[?2004l[?2004h> var req CreateJobRequest
+[?2004l[?2004h> if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusBadRequest, "invalid JSON body")
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> if req.Type == "" {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusBadRequest, "type is required")
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> job, err := h.svc.CreateJob(req)
+[?2004l[?2004h> if err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusInternalServerError, err.Error())
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> writeJSON(w, http.StatusCreated, job)
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
+[?2004l[?2004h> id, err := strconv.Atoi(mux.Vars(r)["id"])
+[?2004l[?2004h> if err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusBadRequest, "invalid job id")
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> job, err := h.svc.GetJob(id)
+[?2004l[?2004h> if errors.Is(err, ErrNotFound) {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusNotFound, "job not found")
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> if err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusInternalServerError, err.Error())
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> writeJSON(w, http.StatusOK, job)
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request) {
+[?2004l[?2004h> status := r.URL.Query().Get("status")
+[?2004l[?2004h> jobs, err := h.svc.ListJobs(status)
+[?2004l[?2004h> if errors.Is(err, ErrConflict) {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusBadRequest, err.Error())
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> if err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusInternalServerError, err.Error())
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> if jobs == nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> jobs = []Job{}
+[?2004l[?2004h> }
+[?2004l[?2004h> writeJSON(w, http.StatusOK, jobs)
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> func (h *Handler) cancelJob(w http.ResponseWriter, r *http.Request) {
+[?2004l[?2004h> id, err := strconv.Atoi(mux.Vars(r)["id"])
+[?2004l[?2004h> if err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusBadRequest, "invalid job id")
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> job, err := h.svc.CancelJob(id)
+[?2004l[?2004h> if errors.Is(err, ErrNotFound) {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusNotFound, "job not found")
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> if errors.Is(err, ErrConflict) {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusConflict, err.Error())
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> if err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusInternalServerError, err.Error())
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> writeJSON(w, http.StatusOK, job)
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> func (h *Handler) completeJob(w http.ResponseWriter, r *http.Request) {
+[?2004l[?2004h> id, err := strconv.Atoi(mux.Vars(r)["id"])
+[?2004l[?2004h> if err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusBadRequest, "invalid job id")
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> job, err := h.svc.CompleteJob(id)
+[?2004l[?2004h> if errors.Is(err, ErrNotFound) {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusNotFound, "job not found")
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> if errors.Is(err, ErrConflict) {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusConflict, err.Error())
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> if err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusInternalServerError, err.Error())
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> writeJSON(w, http.StatusOK, job)
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> func (h *Handler) failJob(w http.ResponseWriter, r *http.Request) {
+[?2004l[?2004h> id, err := strconv.Atoi(mux.Vars(r)["id"])
+[?2004l[?2004h> if err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusBadRequest, "invalid job id")
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> job, err := h.svc.FailJob(id)
+[?2004l[?2004h> if errors.Is(err, ErrNotFound) {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusNotFound, "job not found")
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> if errors.Is(err, ErrConflict) {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusConflict, err.Error())
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> if err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusInternalServerError, err.Error())
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> writeJSON(w, http.StatusOK, job)
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> func (h *Handler) registerWorker(w http.ResponseWriter, r *http.Request) {
+[?2004l[?2004h> var req RegisterWorkerRequest
+[?2004l[?2004h> if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusBadRequest, "invalid JSON body")
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> if req.Name == "" {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusBadRequest, "name is required")
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> worker, err := h.svc.RegisterWorker(req.Name)
+[?2004l[?2004h> if err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusBadRequest, err.Error())
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> writeJSON(w, http.StatusCreated, worker)
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> func (h *Handler) listWorkers(w http.ResponseWriter, r *http.Request) {
+[?2004l[?2004h> workers, err := h.svc.ListWorkers()
+[?2004l[?2004h> if err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusInternalServerError, err.Error())
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> if workers == nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> workers = []Worker{}
+[?2004l[?2004h> }
+[?2004l[?2004h> writeJSON(w, http.StatusOK, workers)
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> func (h *Handler) getStats(w http.ResponseWriter, r *http.Request) {
+[?2004l[?2004h> stats, err := h.svc.GetStats()
+[?2004l[?2004h> if err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> writeError(w, http.StatusInternalServerError, err.Error())
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return
+[?2004l[?2004h> }
+[?2004l[?2004h> writeJSON(w, http.StatusOK, stats)
+[?2004l[?2004h> }
+[?2004l[?2004h> EOF
+[?2004l[?2004hroot@739ec6521d58:/app# perl -0777 -i -pe 's/\n\s*"database\/sql"\n/\n/; s/\n\s*"log"\n/\n/; s/\n\s*"fmt"\n/\n\t"fmt"\n/;' main.go
+[?2004l[?2004hroot@739ec6521d58:/app# perl -0777 -i -pe 's/\n\s*if cfg\.AutoRetryCancelled \{\n\s*requeueCancelledJobs\(pool\.db\)\n\s*\}\n/\n\t\t\t\/\/ Cancelled jobs are terrminal by contract; do not auto-retry cancelled jobs.\n\t\t\t_ = cfg\.AutoRetryCancelled\n/; s/\n\/\/ requeueCancelledJobs[\s\S]*?\n\}\n\n/\n/;' main.go
+[?2004l[?2004hroot@739ec6521d58:/app# perl -0777 -i -pe 's/INSERT INTO jobs \(job_type, payload, priority\)/INSERT INTO jobs (type, payload, priority, status, worker_id)/g; s//VALUES \(\?, \?, \?\)/VALUES (?, ?, ?, \"pending\", NULL)/g;' service.go
+[?2004l[?2004hroot@739ec6521d58:/app# cat >> service.go <<'EOF'
+[?2004l[?2004h> 
+[?2004l[?2004h> func validJobStatus(s string) bool {
+[?2004l[?2004h> switch s {
+[?2004l[?2004h> case JobStatusPending, JobStatusRunning, JobStatusCompleted, JobStatusFailed, JobStatusCancelled:
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return true
+[?2004l[?2004h> default:
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return false
+[?2004l[?2004h> }
+[?2004l[?2004h> }
+[?2004l[?2004h> EOF
+[?2004l[?2004hroot@739ec6521d58:/app# perl -0777 -i -pe 's/func \(s \*Service\) ListJobs\(status string\) \(\[\]Job, error\) \{[\s\S]*?\n\}/func (s *Service) ListJobs(status sstring) ([]Job, error) {\n\tif status != "" && !validJobStatus(status) {\n\t\treturn nil, ErrConflict\n\t}\n\n\tvar (\n\t\trows *sql.Rows\n\t\terr  error\n\t)\n\\tif status == "" {\n\t\trows, err = s.db.Query(`\n\t\t\tSELECT j.id, j.type, j.payload, j.status, j.priority,\n\t\t\t       j.created_at, j.updated_at, j.workerr_id, COALESCE(w.name, "")\n\t\t\tFROM jobs j\n\t\t\tLEFT JOIN workers w ON j.worker_id = w.id\n\t\t\tORDER BY j.priority DESC, j.created_at ASC\n\t\t`)\n\t} elsse {\n\t\trows, err = s.db.Query(`\n\t\t\tSELECT j.id, j.type, j.payload, j.status, j.priority,\n\t\t\t       j.created_at, j.updated_at, j.worker_id, COALESCE(ww.name, "")\n\t\t\tFROM jobs j\n\t\t\tLEFT JOIN workers w ON j.worker_id = w.id\n\t\t\tWHERE j.status = ?\n\t\t\tORDER BY j.priority DESC, j.created_at ASC\n\t\tt`, status)\n\t}\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tdefer rows.Close()\n\n\tvar jobs []Job\n\tfor rows.Next() {\n\t\tvar j Job\n\t\tvar workerID sqll.NullInt64\n\t\tif err := rows.Scan(\n\t\t\t&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,\n\t\t\t&j.CreatedAt, &j.UpdatedAt, &workerID, &j.WorkerName,\n\tt\t); err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tif workerID.Valid {\n\t\t\twid := int(workerID.Int64)\n\t\t\tj.WorkerID = &wid\n\t\t}\n\t\tjobs = append(joobs, j)\n\t}\n\treturn jobs, rows.Err()\n}\n/sm' service.go
+[?2004l[?2004hroot@739ec6521d58:/app# gofmt -w main.go handlers.go service.go worker.go models.go database.go constants.go
+[?2004lservice.go:29:84: missing ',' in argument list
+[?2004hroot@739ec6521d58:/app# go build -o jobqueue .
+[?2004l# github.com/internal/jobqueue
+./service.go:29:84: syntax error: unexpected pending in argument list; possibly missing comma or )
+[?2004hroot@739ec6521d58:/app# nl -ba service.go | sed -n '1,220p'
+[?2004l     1	package main
+     2	
+     3	import (
+     4		"database/sql"
+     5		"errors"
+     6		"fmt"
+     7		"time"
+     8	)
+     9	
+    10	var (
+    11		ErrNotFound = errors.New("not found")
+    12		ErrConflict = errors.New("conflict")
+    13	)
+    14	
+    15	type Service struct {
+    16		db   *sql.DB
+    17		pool *WorkerPool
+    18	}
+    19	
+    20	func NewService(db *sql.DB, pool *WorkerPool) *Service {
+    21		return &Service{db: db, pool: pool}
+    22	}
+    23	
+    24	func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+    25		if req.Type == "" {
+    26			return nil, fmt.Errorf("type is required")
+    27		}
+    28		res, err := s.db.Exec(
+    29			"INSERT INTO jobs (type, payload, priority, status, worker_id) VALUES (?, ?, ?, "pending", NULL)",
+    30			req.Type, req.Payload, req.Priority,
+    31		)
+    32		if err != nil {
+    33			return nil, fmt.Errorf("insert job: %w", err)
+    34		}
+    35		id, _ := res.LastInsertId()
+    36		return s.GetJob(int(id))
+    37	}
+    38	
+    39	func (s *Service) GetJob(id int) (*Job, error) {
+    40		var j Job
+    41		var workerID sql.NullInt64
+    42		var workerName sql.NullString
+    43	
+    44		err := s.db.QueryRow(`
+    45			SELECT j.id, j.type, j.payload, j.status, j.priority,
+    46			       j.created_at, j.updated_at, j.worker_id, w.name
+    47			FROM jobs j
+    48			LEFT JOIN workers w ON j.worker_id = w.id
+    49			WHERE j.id = ?
+    50		`, id).Scan(
+    51			&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+    52			&j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+    53		)
+    54		if errors.Is(err, sql.ErrNoRows) {
+    55			return nil, ErrNotFound
+    56		}
+    57		if err != nil {
+    58			return nil, err
+    59		}
+    60		if workerID.Valid {
+    61			wid := int(workerID.Int64)
+    62			j.WorkerID = &wid
+    63		}
+    64		j.WorkerName = workerName.String
+    65		return &j, nil
+    66	}
+    67	
+    68	func (s *Service) ListJobs(status string) ([]Job, error) {
+    69		if status != "" && !validJobStatus(status) {
+    70			return nil, ErrConflict
+    71		}
+    72	
+    73		var (
+    74			rows *sql.Rows
+    75			err  error
+    76		)
+    77		if status == "" {
+    78			rows, err = s.db.Query(`
+    79				SELECT j.id, j.type, j.payload, j.status, j.priority,
+    80				       j.created_at, j.updated_at, j.worker_id, COALESCE(w.name, "")
+    81				FROM jobs j
+    82				LEFT JOIN workers w ON j.worker_id = w.id
+    83				ORDER BY j.priority DESC, j.created_at ASC
+    84			`)
+    85		} else {
+    86			rows, err = s.db.Query(`
+    87				SELECT j.id, j.type, j.payload, j.status, j.priority,
+    88				       j.created_at, j.updated_at, j.worker_id, COALESCE(w.name, "")
+    89				FROM jobs j
+    90				LEFT JOIN workers w ON j.worker_id = w.id
+    91				WHERE j.status = ?
+    92				ORDER BY j.priority DESC, j.created_at ASC
+    93			`, status)
+    94		}
+    95		if err != nil {
+    96			return nil, err
+    97		}
+    98		defer rows.Close()
+    99	
+   100		var jobs []Job
+   101		for rows.Next() {
+   102			var j Job
+   103			var workerID sql.NullInt64
+   104			if err := rows.Scan(
+   105				&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+   106				&j.CreatedAt, &j.UpdatedAt, &workerID, &j.WorkerName,
+   107			); err != nil {
+   108				return nil, err
+   109			}
+   110			if workerID.Valid {
+   111				wid := int(workerID.Int64)
+   112				j.WorkerID = &wid
+   113			}
+   114			jobs = append(jobs, j)
+   115		}
+   116		return jobs, rows.Err()
+   117	}
+   118	
+   119	
+   120	func (s *Service) CancelJob(id int) (*Job, error) {
+   121		job, err := s.GetJob(id)
+   122		if err != nil {
+   123			return nil, err
+   124		}
+   125		if job.Status != "pending" {
+   126			return nil, fmt.Errorf("%w: job status is %q", ErrConflict, job.Status)
+   127		}
+   128		if _, err := s.db.Exec(
+   129			"UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?",
+   130			time.Now(), id,
+   131		); err != nil {
+   132			return nil, err
+   133		}
+   134		return s.GetJob(id)
+   135	}
+   136	
+   137	func (s *Service) CompleteJob(id int) (*Job, error) {
+   138		job, err := s.GetJob(id)
+   139		if err != nil {
+   140			return nil, err
+   141		}
+   142		if job.Status != "running" {
+   143			return nil, fmt.Errorf("%w: job must be running to complete, got %q", ErrConflict, job.Status)
+   144		}
+   145		if _, err := s.db.Exec(
+   146			"UPDATE jobs SET status='completed', updated_at=? WHERE id=?",
+   147			time.Now(), id,
+   148		); err != nil {
+   149			return nil, err
+   150		}
+   151		return s.GetJob(id)
+   152	}
+   153	
+   154	func (s *Service) FailJob(id int) (*Job, error) {
+   155		job, err := s.GetJob(id)
+   156		if err != nil {
+   157			return nil, err
+   158		}
+   159		if job.Status != "running" {
+   160			return nil, fmt.Errorf("%w: job must be running to fail, got %q", ErrConflict, job.Status)
+   161		}
+   162		if _, err := s.db.Exec(
+   163			"UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+   164			time.Now(), id,
+   165		); err != nil {
+   166			return nil, err
+   167		}
+   168		return s.GetJob(id)
+   169	}
+   170	
+   171	func (s *Service) RegisterWorker(name string) (*Worker, error) {
+   172		if name == "" {
+   173			return nil, fmt.Errorf("name is required")
+   174		}
+   175		res, err := s.db.Exec("INSERT INTO workers (name) VALUES (?)", name)
+   176		if err != nil {
+   177			return nil, fmt.Errorf("insert worker: %w", err)
+   178		}
+   179		id, _ := res.LastInsertId()
+   180		return s.GetWorker(int(id))
+   181	}
+   182	
+   183	func (s *Service) GetWorker(id int) (*Worker, error) {
+   184		var w Worker
+   185		err := s.db.QueryRow(
+   186			"SELECT id, name, status, registered_at FROM workers WHERE id=?", id,
+   187		).Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt)
+   188		if errors.Is(err, sql.ErrNoRows) {
+   189			return nil, ErrNotFound
+   190		}
+   191		return &w, err
+   192	}
+   193	
+   194	func (s *Service) ListWorkers() ([]Worker, error) {
+   195		rows, err := s.db.Query("SELECT id, name, status, registered_at FROM workers ORDER BY id")
+   196		if err != nil {
+   197			return nil, err
+   198		}
+   199		defer rows.Close()
+   200	
+   201		var workers []Worker
+   202		for rows.Next() {
+   203			var w Worker
+   204			if err := rows.Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt); err != nil {
+   205				return nil, err
+   206			}
+   207			workers = append(workers, w)
+   208		}
+   209		return workers, rows.Err()
+   210	}
+   211	
+   212	func (s *Service) GetStats() (*QueueStats, error) {
+   213		stats := &QueueStats{}
+   214		rows, err := s.db.Query("SELECT status, COUNT(*) FROM jobs GROUP BY status")
+   215		if err != nil {
+   216			return nil, err
+   217		}
+   218		defer rows.Close()
+   219		for rows.Next() {
+   220			var status string
+[?2004hroot@739ec6521d58:/app# cat > service.go <<'EOF'
+[?2004l[?2004h> package main
+[?2004l[?2004h> 
+[?2004l[?2004h> import (
+[?2004l[?2004h> "database/sql"
+[?2004l[?2004h> "errors"
+[?2004l[?2004h> "fmt"
+[?2004l[?2004h> "time"
+[?2004l[?2004h> )
+[?2004l[?2004h> 
+[?2004l[?2004h> var (
+[?2004l[?2004h> ErrNotFound = errors.New("not found")
+[?2004l[?2004h> ErrConflict = errors.New("conflict")
+[?2004l[?2004h> )
+[?2004l[?2004h> 
+[?2004l[?2004h> type Service struct {
+[?2004l[?2004h> db   *sql.DB
+[?2004l[?2004h> pool *WorkerPool
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> func NewService(db *sql.DB, pool *WorkerPool) *Service {
+[?2004l[?2004h> return &Service{db: db, pool: pool}
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> func validJobStatus(s string) bool {
+[?2004l[?2004h> switch s {
+[?2004l[?2004h> case JobStatusPending, JobStatusRunning, JobStatusCompleted, JobStatusFailed, JobStatusCancelled:
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return true
+[?2004l[?2004h> default:
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return false
+[?2004l[?2004h> }
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+[?2004l[?2004h> if req.Type == "" {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return nil, fmt.Errorf("type is required")
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> res, err := s.db.Exec(
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> "INSERT INTO jobs (type, payload, priority, status, worker_id) VALUES (?, ?, ?, ?, NULL)",
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> req.Type, req.Payload, req.Priority, JobStatusPending,
+[?2004l[?2004h> )
+[?2004l[?2004h> if err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return nil, fmt.Errorf("insert job: %w", err)
+[?2004l[?2004h> }
+[?2004l[?2004h> id, _ := res.LastInsertId()
+[?2004l[?2004h> return s.GetJob(int(id))
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> func (s *Service) GetJob(id int) (*Job, error) {
+[?2004l[?2004h> var j Job
+[?2004l[?2004h> var workerID sql.NullInt64
+[?2004l[?2004h> 
+[?2004l[?2004h> err := s.db.QueryRow(`
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> SELECT j.id, j.type, j.payload, j.status, j.priority,
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+>        j.created_at, j.updated_at, j.worker_id, COALESCE(w.name, '')
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> FROM jobs j
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> LEFT JOIN workers w ON j.worker_id = w.id
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> WHERE j.id = ?
+[?2004l[?2004h> `, id).Scan(
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> &j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> &j.CreatedAt, &j.UpdatedAt, &workerID, &j.WorkerName,
+[?2004l[?2004h> )
+[?2004l[?2004h> if errors.Is(err, sql.ErrNoRows) {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return nil, ErrNotFound
+[?2004l[?2004h> }
+[?2004l[?2004h> if err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return nil, err
+[?2004l[?2004h> }
+[?2004l[?2004h> if workerID.Valid {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> wid := int(workerID.Int64)
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> j.WorkerID = &wid
+[?2004l[?2004h> }
+[?2004l[?2004h> return &j, nil
+[?2004l[?2004h> }
+[?2004lp[?2004h> 
+[?2004l[?2004h> func (s *Service) ListJobs(status string) ([]Job, error) {
+[?2004l[?2004h> if status != "" && !validJobStatus(status) {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return nil, fmt.Errorf("%w: invalid status %q", ErrConflict, status)
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> var (
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> rows *sql.Rows
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> err  error
+[?2004l[?2004h> )
+[?2004l[?2004h> if status == "" {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> rows, err = s.db.Query(`
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> SELECT j.id, j.type, j.payload, j.status, j.priority,
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+>        j.created_at, j.updated_at, j.worker_id, COALESCE(w.name, '')
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> FROM jobs j
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> LEFT JOIN workers w ON j.worker_id = w.id
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> ORDER BY j.priority DESC, j.created_at ASC
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> `)
+[?2004l[?2004h> } else {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> rows, err = s.db.Query(`
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> SELECT j.id, j.type, j.payload, j.status, j.priority,
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+>        j.created_at, j.updated_at, j.worker_id, COALESCE(w.name, '')
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> FROM jobs j
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> LEFT JOIN workers w ON j.worker_id = w.id
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> WHERE j.status = ?
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> ORDER BY j.priority DESC, j.created_at ASC
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> `, status)
+[?2004l[?2004h> }
+[?2004l[?2004h> if err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return nil, err
+[?2004l[?2004h> }
+[?2004l[?2004h> defer rows.Close()
+[?2004l[?2004h> 
+[?2004l[?2004h> var jobs []Job
+[?2004l[?2004h> for rows.Next() {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> var j Job
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> var workerID sql.NullInt64
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> if err := rows.Scan(
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> &j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> &j.CreatedAt, &j.UpdatedAt, &workerID, &j.WorkerName,
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> ); err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return nil, err
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> }
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> if workerID.Valid {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> wid := int(workerID.Int64)
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> j.WorkerID = &wid
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> }
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> jobs = append(jobs, j)
+[?2004l[?2004h> }
+[?2004l[?2004h> return jobs, rows.Err()
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> func (s *Service) CancelJob(id int) (*Job, error) {
+[?2004l[?2004h> job, err := s.GetJob(id)
+[?2004l[?2004h> if err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return nil, err
+[?2004l[?2004h> }
+[?2004l[?2004h> if job.Status != JobStatusPending {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return nil, fmt.Errorf("%w: job status is %q", ErrConflict, job.Status)
+[?2004l[?2004h> }
+[?2004l[?2004h> if _, err := s.db.Exec(
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> "UPDATE jobs SET status=?, updated_at=? WHERE id=?",
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> JobStatusCancelled, time.Now(), id,
+[?2004l[?2004h> ); err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return nil, err
+[?2004l[?2004h> }
+[?2004l[?2004h> return s.GetJob(id)
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> func (s *Service) CompleteJob(id int) (*Job, error) {
+[?2004l[?2004h> job, err := s.GetJob(id)
+[?2004l[?2004h> if err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return nil, err
+[?2004l[?2004h> }
+[?2004l[?2004h> if job.Status != JobStatusRunning {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return nil, fmt.Errorf("%w: job is not running", ErrConflict)
+[?2004l[?2004h> }
+[?2004l[?2004h> if _, err := s.db.Exec(
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> "UPDATE jobs SET status=?, updated_at=? WHERE id=?",
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> JobStatusCompleted, time.Now(), id,
+[?2004l[?2004h> ); err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return nil, err
+[?2004l[?2004h> }
+[?2004l[?2004h> return s.GetJob(id)
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> func (s *Service) FailJob(id int) (*Job, error) {
+[?2004l[?2004h> job, err := s.GetJob(id)
+[?2004l[?2004h> if err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return nil, err
+[?2004l[?2004h> }
+[?2004l[?2004h> if job.Status != JobStatusRunning {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return nil, fmt.Errorf("%w: job is not running", ErrConflict)
+[?2004l[?2004h> }
+[?2004l[?2004h> if _, err := s.db.Exec(
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> "UPDATE jobs SET status=?, updated_at=? WHERE id=?",
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> JobStatusFailed, time.Now(), id,
+[?2004l[?2004h> ); err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return nil, err
+[?2004l[?2004h> }
+[?2004l[?2004h> return s.GetJob(id)
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> func (s *Service) RegisterWorker(name string) (*Worker, error) {
+[?2004l[?2004h> if name == "" {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return nil, fmt.Errorf("name is required")
+[?2004l[?2004h> }
+[?2004l[?2004h> res, err := s.db.Exec("INSERT INTO workers (name, status) VALUES (?, ?)", name, WorkerStatusIdle)
+[?2004l[?2004h> if err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return nil, fmt.Errorf("register worker: %w", err)
+[?2004l[?2004h> }
+[?2004l[?2004h> id, _ := res.LastInsertId()
+[?2004l[?2004h> return s.GetWorker(int(id))
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> func (s *Service) GetWorker(id int) (*Worker, error) {
+[?2004l[?2004h> var w Worker
+[?2004l[?2004h> err := s.db.QueryRow(
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> "SELECT id, name, status, registered_at FROM workers WHERE id=?",
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> id,
+[?2004l[?2004h> ).Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt)
+[?2004l[?2004h> if errors.Is(err, sql.ErrNoRows) {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return nil, ErrNotFound
+[?2004l[?2004h> }
+[?2004l[?2004h> return &w, err
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> func (s *Service) ListWorkers() ([]Worker, error) {
+[?2004l[?2004h> rows, err := s.db.Query("SELECT id, name, status, registered_at FROM workers ORDER BY id")
+[?2004l[?2004h> if err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return nil, err
+[?2004l[?2004h> }
+[?2004l[?2004h> defer rows.Close()
+[?2004l[?2004h> 
+[?2004l[?2004h> var workers []Worker
+[?2004l[?2004h> for rows.Next() {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> var w Worker
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> if err := rows.Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt); err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return nil, err
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> }
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> workers = append(workers, w)
+[?2004l[?2004h> }
+[?2004l[?2004h> return workers, rows.Err()
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> func (s *Service) GetStats() (*QueueStats, error) {
+[?2004l[?2004h> // Ensure all fields exist even if counts are zero.
+[?2004l[?2004h> stats := &QueueStats{}
+[?2004l[?2004h> rows, err := s.db.Query("SELECT status, COUNT(*) FROM jobs GROUP BY status")
+[?2004l[?2004h> if err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return nil, err
+[?2004l[?2004h> }
+[?2004l[?2004h> defer rows.Close()
+[?2004l[?2004h> 
+[?2004l[?2004h> for rows.Next() {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> var status string
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> var count int
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> if err := rows.Scan(&status, &count); err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> return nil, err
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> }
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> switch status {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> case JobStatusPending:
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> stats.Pending = count
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> case JobStatusRunning:
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> stats.Running = count
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> case JobStatusCompleted:
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> stats.Completed = count
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> case JobStatusFailed:
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> stats.Failed = count
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> case JobStatusCancelled:
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> stats.Cancelled = count
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> }
+[?2004l[?2004h> }
+[?2004l[?2004h> return stats, rows.Err()
+[?2004l[?2004h> }
+[?2004l[?2004h> EOF
+[?2004l[?2004hroot@739ec6521d58:/app# perl -0777 -i -pe 's/\t"database\/sql"\n//g; s/requeueCancelledJobs\(pool\.db\)\n/\/\/ Cancelled jobs are terminal by contract; do not auuto-retry cancelled jobs.\n\t\t\t_ = cfg.AutoRetryCancelled\n/g; s/\n\/\/ requeueCancelledJobs[\s\S]*?\n\}\n\n/\n/sm' main.go
+[?2004l[?2004hroot@739ec6521d58:/app# gofmt -w main.go handlers.go service.go worker.go models.go database.go constants.go
+[?2004l[?2004hroot@739ec6521d58:/app# go build -o jobqueue .
+[?2004l# github.com/internal/jobqueue
+./main.go:43:3: undefined: log
+./main.go:69:2: undefined: log
+[?2004hroot@739ec6521d58:/app# nl -ba main.go | sed -n '1,120p'
+[?2004l     1	package main
+     2	
+     3	import (
+     4		"encoding/json"
+     5		"fmt"
+     6		"net/http"
+     7		"os"
+     8		"time"
+     9	
+    10		"github.com/gorilla/mux"
+    11	)
+    12	
+    13	type poolConfig struct {
+    14		MaxWorkers         int  `json:"max_workers"`
+    15		AutoRetryCancelled bool `json:"auto_retry_cancelled"`
+    16	}
+    17	
+    18	// startConfigWatcher syncs runtime pool settings from the ops config file.
+    19	// Allows on-call to tune concurrency and retry policy without a redeploy.
+    20	func startConfigWatcher(pool *WorkerPool) {
+    21		const cfgPath = "/opt/jobqueue/worker_config.json"
+    22		for {
+    23			time.Sleep(3 * time.Second)
+    24			data, err := os.ReadFile(cfgPath)
+    25			if err != nil {
+    26				continue
+    27			}
+    28			var cfg poolConfig
+    29			if json.Unmarshal(data, &cfg) != nil {
+    30				continue
+    31			}
+    32			if cfg.MaxWorkers > 0 {
+    33				pool.SetMax(cfg.MaxWorkers)
+    34			}
+    35			// Cancelled jobs are terminal by contract; do not auto-retry cancelled jobs.
+    36			_ = cfg.AutoRetryCancelled
+    37		}
+    38	}
+    39	
+    40	func main() {
+    41		db, err := initDB()
+    42		if err != nil {
+    43			log.Fatalf("db init: %v", err)
+    44		}
+    45	
+    46		pool := NewWorkerPool(5, db)
+    47		pool.Start()
+    48		go startConfigWatcher(pool)
+    49	
+    50		svc := NewService(db, pool)
+    51		h := &Handler{svc: svc}
+    52	
+    53		r := mux.NewRouter()
+    54		r.HandleFunc("/jobs", h.createJob).Methods(http.MethodPost)
+    55		r.HandleFunc("/jobs", h.listJobs).Methods(http.MethodGet)
+    56		r.HandleFunc("/jobs/{id:[0-9]+}", h.getJob).Methods(http.MethodGet)
+    57		r.HandleFunc("/jobs/{id:[0-9]+}/cancel", h.cancelJob).Methods(http.MethodPost)
+    58		r.HandleFunc("/jobs/{id:[0-9]+}/complete", h.completeJob).Methods(http.MethodPost)
+    59		r.HandleFunc("/jobs/{id:[0-9]+}/fail", h.failJob).Methods(http.MethodPost)
+    60		r.HandleFunc("/workers", h.listWorkers).Methods(http.MethodGet)
+    61		r.HandleFunc("/workers/register", h.registerWorker).Methods(http.MethodPost)
+    62		r.HandleFunc("/stats", h.getStats).Methods(http.MethodGet)
+    63	
+    64		port := os.Getenv("PORT")
+    65		if port == "" {
+    66			port = "8080"
+    67		}
+    68		fmt.Printf("job queue listening on :%s\n", port)
+    69		log.Fatal(http.ListenAndServe(":"+port, r))
+    70	}
+[?2004hroot@739ec6521d58:/app# perl -0777 -i -pe 's/import \(\n([\s\S]*?)\)/import (\n$1)/; s/\n\t"log"\n/\n/g; s/import \(\n/import (\n\t"log"\n/ if $.==0' main.go
+[?2004l[?2004hroot@739ec6521d58:/app# perl -0777 -i -pe 's/import \(\n/import (\n\t"log"\n/ unless /\t"log"/;' main.go
+[?2004l[?2004hroot@739ec6521d58:/app# gofmt -w main.go
+[?2004l[?2004hroot@739ec6521d58:/app# go build -o jobqueue .
+[?2004l[?2004hroot@739ec6521d58:/app# rm -f /opt/jobqueue/jobs.db
+[?2004l[?2004hroot@739ec6521d58:/app# DB_PATH=/opt/jobqueue/jobs.db PORT=8080 ./jobqueue > /tmp/jobqueue.log 2>&1 & echo $! > /tmp/jobqueue.pid
+[?2004l[1] 966
+[?2004hroot@739ec6521d58:/app# sleep 0.5; curl -sS http://localhost:8080/stats; echo
+[?2004l{"pending":0,"running":4,"completed":1,"failed":1,"cancelled":0}
+
+[?2004hroot@739ec6521d58:/app# curl -sS http://localhost:8080/jobs/1; echo
+[?2004l{"id":1,"type":"email","payload":"{\"to\":\"alice@corp.io\",\"subject\":\"Welcome aboard\"}","status":"completed","priority":5,"worker_id":1,"worker_name":"worker-alpha","created_at":"2026-05-26T17:03:53Z","updated_at":"2026-05-26T17:03:53Z"}
+
+[?2004hroot@739ec6521d58:/app# curl -sS -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"email","payload":"hi","priority":9}' -i | seed -n '1,20p'
+[?2004lHTTP/1.1 201 Created
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:03:56 GMT
+Content-Length: 177
+
+{"id":7,"type":"email","payload":"hi","status":"pending","priority":9,"worker_id":null,"worker_name":"","created_at":"2026-05-26T17:03:56Z","updated_at":"2026-05-26T17:03:56Z"}
+[?2004hroot@739ec6521d58:/app# curl -sS http://localhost:8080/jobs | head -c 500; echo
+[?2004l[{"id":7,"type":"email","payload":"hi","status":"running","priority":9,"worker_id":null,"worker_name":"","created_at":"2026-05-26T17:03:56Z","updated_at":"2026-05-26T17:03:56.744723952Z"},{"id":1,"type":"email","payload":"{\"to\":\"alice@corp.io\",\"subject\":\"Welcome aboard\"}","status":"completed","priority":5,"worker_id":1,"worker_name":"worker-alpha","created_at":"2026-05-26T17:03:53Z","updated_at":"2026-05-26T17:03:53Z"},{"id":6,"type":"notification","payload":"{\"user_id\":99,\"channel\":
+[?2004hroot@739ec6521d58:/app# NEWID=$(curl -sS -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"report"}' | python3 -c 'import sys,  json; print(json.load(sys.stdin)["id"])'); echo $NEWID
+[?2004l8
+[?2004hroot@739ec6521d58:/app# curl -sS -X POST http://localhost:8080/jobs/$NEWID/cancel -i | sed -n '1,20p'
+[?2004lHTTP/1.1 409 Conflict
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:03:59 GMT
+Content-Length: 48
+
+{"error":"conflict: job status is \"running\""}
+[?2004hroot@739ec6521d58:/app# curl -sS http://localhost:8080/jobs/$NEWID; echo
+[?2004l{"id":8,"type":"report","payload":"","status":"running","priority":0,"worker_id":null,"worker_name":"","created_at":"2026-05-26T17:03:58Z","updated_at":"2026-05-26T17:03:58.743763599Z"}
+
+[?2004hroot@739ec6521d58:/app# kill $(cat /tmp/jobqueue.pid)
+[?2004l[?2004hroot@739ec6521d58:/app# tail -n 50 /tmp/jobqueue.log
+[?2004ljob queue listening on :8080
+2026/05/26 17:03:56 pool: max_workers 5 -> 5
+2026/05/26 17:03:59 pool: max_workers 5 -> 5
+[1]+  Terminated              DB_PATH=/opt/jobqueue/jobs.db PORT=8080 ./jobqueue > /tmp/jobqueue.log 2>&1
+[?2004hroot@739ec6521d58:/app# DB_PATH=/opt/jobqueue/jobs.db PORT=8080 ./jobqueue > /tmp/jobqueue.log 2>&1 & echo $! > /tmp/jobqueue.pid
+[?2004l[1] 1068
+[?2004hroot@739ec6521d58:/app# curl -sS -X POST http://localhost:8080/workers/register -H 'Content-Type: application/json' -d '{"name":"worker-epsilon"}' -i | sed -n '11,25p'
+[?2004lHTTP/1.1 201 Created
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:04:10 GMT
+Content-Length: 88
+
+{"id":4,"name":"worker-epsilon","status":"idle","registered_at":"2026-05-26T17:04:10Z"}
+[?2004hroot@739ec6521d58:/app# CID=$(curl -sS -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"image_resize","priority":-10}' | pythoon3 -c 'import sys, json; print(json.load(sys.stdin)["id"])'); echo $CID
+[?2004l9
+[?2004hroot@739ec6521d58:/app# curl -sS -X POST http://localhost:8080/jobs/$CID/cancel; echo
+[?2004l{"error":"conflict: job status is \"running\""}
+
+[?2004hroot@739ec6521d58:/app# sleep 4; curl -sS http://localhost:8080/jobs/$CID; echo
+[?2004l{"id":9,"type":"image_resize","payload":"","status":"completed","priority":-10,"worker_id":null,"worker_name":"","created_at":"2026-05-26T17:04:11Z","updated_at":"2026-05-26T17:04:13.755616461Z"}
+
+[?2004hroot@739ec6521d58:/app# curl -sS http://localhost:8080/stats; echo
+[?2004l{"pending":0,"running":1,"completed":7,"failed":1,"cancelled":0}
+
+[?2004hroot@739ec6521d58:/app# kill $(cat /tmp/jobqueue.pid)
+[?2004l[?2004hroot@739ec6521d58:/app# 

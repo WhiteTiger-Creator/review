@@ -1,6 +1,0 @@
-{
-  "analysis": "Echo-only continues; cannot proceed.",
-  "plan": "Need terminal reset.",
-  "commands": [],
-  "task_complete": false
-}

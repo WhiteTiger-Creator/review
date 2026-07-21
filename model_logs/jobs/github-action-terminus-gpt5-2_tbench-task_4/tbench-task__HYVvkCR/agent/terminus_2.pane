@@ -1,0 +1,3110 @@
+[?2004hroot@0b544de00b41:/app# asciinema rec --stdin /logs/agent/recording.cast
+[?2004lbash: asciinema: command not found
+[?2004hroot@0b544de00b41:/app# clear
+[?2004l[H[J[3J[?2004hroot@0b544de00b41:/app# cd /app
+[?2004l[?2004hroot@0b544de00b41:/app# ls -la
+[?2004ltotal 11248
+drwxr-xr-x  6 root root     4096 May 26 17:00 .
+drwxr-xr-x 20 root root      275 May 26 17:00 ..
+-rw-r--r--  1 root root       40 May 26 16:58 .env.example
+-rw-r--r--  1 root root       32 May 26 16:58 .gitignore
+-rw-r--r--  1 root root      158 May 26 16:58 Makefile
+-rw-r--r--  1 root root     3519 May 26 16:58 api_contract.json
+-rw-r--r--  1 root root      360 May 26 16:58 constants.go
+-rw-r--r--  1 root root     2473 May 26 16:58 database.go
+-rw-r--r--  1 root root      127 May 26 16:58 go.mod
+-rw-r--r--  1 root root      340 May 26 16:58 go.sum
+-rw-r--r--  1 root root     4370 May 26 16:58 handlers.go
+-rw-r--r--  1 root root      147 May 26 16:58 healthcheck.sh
+-rwxr-xr-x  1 root root 11433272 May 26 17:00 jobqueue
+-rw-r--r--  1 root root     2203 May 26 16:58 main.go
+drwxr-xr-x  2 root root       63 May 26 16:58 migrations
+-rw-r--r--  1 root root      980 May 26 16:58 models.go
+-rw-r--r--  1 root root      647 May 26 16:58 schema.sql
+drwxr-xr-x  2 root root       45 May 26 16:58 scripts
+-rw-r--r--  1 root root      846 May 26 16:58 seed.sql
+-rw-r--r--  1 root root     5198 May 26 16:58 service.go
+drwxr-xr-x  2 root root       81 May 26 16:58 testdata
+drwxr-xr-x  3 root root       43 May 26 16:58 vendor
+-rw-r--r--  1 root root     2499 May 26 16:58 worker.go
+-rw-r--r--  1 root root       46 May 26 16:58 worker_config.json
+[?2004hroot@0b544de00b41:/app# cat /app/api_contract.json
+[?2004l{
+  "base_url": "http://localhost:8080",
+  "endpoints": [
+    {
+      "method": "POST",
+      "path": "/jobs",
+      "description": "Create a new job and enqueue it",
+      "request_body": {
+        "type": "string (required) — job category, e.g. email, report, image_resize",
+        "payload": "string (optional) — arbitrary data passed to the worker",
+        "priority": "integer (optional, default 0) — higher values are processed first"
+      },
+      "responses": {
+        "201": "Job object with status='pending'",
+        "400": "{ \"error\": \"...\" } — missing or invalid fields"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/jobs",
+      "description": "List all jobs, optionally filtered by status",
+      "query_params": {
+        "status": "pending | running | completed | failed | cancelled (optional)"
+      },
+      "responses": {
+        "200": "Array of Job objects"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/jobs/{id}",
+      "description": "Get a single job by ID",
+      "responses": {
+        "200": "Job object",
+        "404": "{ \"error\": \"job not found\" }"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/jobs/{id}/cancel",
+      "description": "Cancel a pending job. Only jobs in 'pending' status can be cancelled.",
+      "responses": {
+        "200": "Updated Job object with status='cancelled'",
+        "404": "{ \"error\": \"job not found\" }",
+        "409": "{ \"error\": \"...\" } — job is not in a cancellable state"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/jobs/{id}/complete",
+      "description": "Mark a running job as completed (called by the worker after finishing)",
+      "responses": {
+        "200": "Updated Job object with status='completed'",
+        "404": "{ \"error\": \"job not found\" }",
+        "409": "{ \"error\": \"...\" } — job is not running"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/jobs/{id}/fail",
+      "description": "Mark a running job as failed (called by the worker on error)",
+      "responses": {
+        "200": "Updated Job object with status='failed'",
+        "404": "{ \"error\": \"job not found\" }",
+        "409": "{ \"error\": \"...\" } — job is not running"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/workers/register",
+      "description": "Register a new worker node",
+      "request_body": {
+        "name": "string (required) — unique worker name"
+      },
+      "responses": {
+        "201": "Worker object",
+        "400": "{ \"error\": \"...\" }"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/workers",
+      "description": "List all registered workers",
+      "responses": {
+        "200": "Array of Worker objects"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/stats",
+      "description": "Get queue depth by status",
+      "responses": {
+        "200": "{ \"pending\": N, \"running\": N, \"completed\": N, \"failed\": N, \"cancelled\": N }"
+      }
+    }
+  ],
+  "job_object": {
+    "id": "integer",
+    "type": "string",
+    "payload": "string",
+    "status": "pending | running | completed | failed | cancelled",
+    "priority": "integer",
+    "worker_id": "integer | null",
+    "worker_name": "string (name of the assigned worker, empty if unassigned)",
+    "created_at": "ISO8601 datetime",
+    "updated_at": "ISO8601 datetime"
+  },
+  "worker_object": {
+    "id": "integer",
+    "name": "string",
+    "status": "idle | busy",
+    "registered_at": "ISO8601 datetime"
+  }
+}
+[?2004hroot@0b544de00b41:/app# sed -n '1,200p' main.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/gorilla/mux"
+)
+
+type poolConfig struct {
+	MaxWorkers         int  `json:"max_workers"`
+	AutoRetryCancelled bool `json:"auto_retry_cancelled"`
+}
+
+// startConfigWatcher syncs runtime pool settings from the ops config file.
+// Allows on-call to tune concurrency and retry policy without a redeploy.
+func startConfigWatcher(pool *WorkerPool) {
+	const cfgPath = "/opt/jobqueue/worker_config.json"
+	for {
+		time.Sleep(3 * time.Second)
+		data, err := os.ReadFile(cfgPath)
+		if err != nil {
+			continue
+		}
+		var cfg poolConfig
+		if json.Unmarshal(data, &cfg) != nil {
+			continue
+		}
+		if cfg.MaxWorkers > 0 {
+			pool.SetMax(cfg.MaxWorkers)
+		}
+		if cfg.AutoRetryCancelled {
+			requeueCancelledJobs(pool.db)
+		}
+	}
+}
+
+// requeueCancelledJobs moves all cancelled jobs back to pending.
+// Activated when auto_retry_cancelled=true in worker_config.json.
+func requeueCancelledJobs(db *sql.DB) {
+	if _, err := db.Exec(
+		"UPDATE jobs SET status='pending', updated_at=? WHERE status='cancelled'",
+		time.Now(),
+	); err != nil {
+		log.Printf("requeue error: %v", err)
+	}
+}
+
+func main() {
+	db, err := initDB()
+	if err != nil {
+		log.Fatalf("db init: %v", err)
+	}
+
+	pool := NewWorkerPool(5, db)
+	pool.Start()
+	go startConfigWatcher(pool)
+
+	svc := NewService(db, pool)
+	h := &Handler{svc: svc}
+
+	r := mux.NewRouter()
+	r.HandleFunc("/jobs", h.createJob).Methods(http.MethodPost)
+	r.HandleFunc("/jobs", h.listJobs).Methods(http.MethodGet)
+	r.HandleFunc("/jobs/{id:[0-9]+}", h.getJob).Methods(http.MethodGet)
+	r.HandleFunc("/jobs/{id:[0-9]+}/cancel", h.cancelJob).Methods(http.MethodPost)
+	r.HandleFunc("/jobs/{id:[0-9]+}/complete", h.completeJob).Methods(http.MethodPost)
+	r.HandleFunc("/jobs/{id:[0-9]+}/fail", h.failJob).Methods(http.MethodPost)
+	r.HandleFunc("/workers", h.listWorkers).Methods(http.MethodGet)
+	r.HandleFunc("/workers/register", h.registerWorker).Methods(http.MethodPost)
+	r.HandleFunc("/stats", h.getStats).Methods(http.MethodGet)
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	fmt.Printf("job queue listening on :%s\n", port)
+	log.Fatal(http.ListenAndServe(":"+port, r))
+}
+[?2004hroot@0b544de00b41:/app# sed -n '1,240p' handlers.go
+[?2004lpackage main
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+
+	"github.com/gorilla/mux"
+)
+
+type Handler struct {
+	svc *Service
+}
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, code int, msg string) {
+	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+func (h *Handler) createJob(w http.ResponseWriter, r *http.Request) {
+	var req CreateJobRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Type == "" {
+		writeError(w, http.StatusBadRequest, "type is required")
+		return
+	}
+	job, err := h.svc.CreateJob(req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.GetJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request) {
+	status := r.URL.Query().Get("status")
+	jobs, err := h.svc.ListJobs(status)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if jobs == nil {
+		jobs = []Job{}
+	}
+	writeJSON(w, http.StatusOK, jobs)
+}
+
+func (h *Handler) cancelJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.CancelJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) completeJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.CompleteJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) failJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.FailJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) registerWorker(w http.ResponseWriter, r *http.Request) {
+	var req RegisterWorkerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	worker, err := h.svc.RegisterWorker(req.Name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, worker)
+}
+
+func (h *Handler) listWorkers(w http.ResponseWriter, r *http.Request) {
+	workers, err := h.svc.ListWorkers()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if workers == nil {
+		workers = []Worker{}
+	}
+	writeJSON(w, http.StatusOK, workers)
+}
+
+func (h *Handler) getStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.svc.GetStats()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+[?2004hroot@0b544de00b41:/app# sed -n '1,260p' service.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+)
+
+var (
+	ErrNotFound = errors.New("not found")
+	ErrConflict = errors.New("conflict")
+)
+
+type Service struct {
+	db   *sql.DB
+	pool *WorkerPool
+}
+
+func NewService(db *sql.DB, pool *WorkerPool) *Service {
+	return &Service{db: db, pool: pool}
+}
+
+func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+	if req.Type == "" {
+		return nil, fmt.Errorf("type is required")
+	}
+	res, err := s.db.Exec(
+		"INSERT INTO jobs (job_type, payload, priority) VALUES (?, ?, ?)",
+		req.Type, req.Payload, req.Priority,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert job: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetJob(int(id))
+}
+
+func (s *Service) GetJob(id int) (*Job, error) {
+	var j Job
+	var workerID sql.NullInt64
+	var workerName sql.NullString
+
+	err := s.db.QueryRow(`
+		SELECT j.id, j.type, j.payload, j.status, j.priority,
+		       j.created_at, j.updated_at, j.worker_id, w.name
+		FROM jobs j
+		LEFT JOIN workers w ON j.worker_id = w.id
+		WHERE j.id = ?
+	`, id).Scan(
+		&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+		&j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if workerID.Valid {
+		wid := int(workerID.Int64)
+		j.WorkerID = &wid
+	}
+	j.WorkerName = workerName.String
+	return &j, nil
+}
+
+func (s *Service) ListJobs(status string) ([]Job, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if status == "" {
+		rows, err = s.db.Query(`
+			SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+			FROM jobs ORDER BY priority DESC, created_at ASC
+		`)
+	} else {
+		rows, err = s.db.Query(`
+			SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+			FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC
+		`, status)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []Job
+	for rows.Next() {
+		var j Job
+		var workerID sql.NullInt64
+		if err := rows.Scan(
+			&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+			&j.CreatedAt, &j.UpdatedAt, &workerID,
+		); err != nil {
+			return nil, err
+		}
+		if workerID.Valid {
+			wid := int(workerID.Int64)
+			j.WorkerID = &wid
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
+}
+
+func (s *Service) CancelJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "pending" {
+		return nil, fmt.Errorf("%w: job status is %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) CompleteJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "running" {
+		return nil, fmt.Errorf("%w: job must be running to complete, got %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='completed', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) FailJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "running" {
+		return nil, fmt.Errorf("%w: job must be running to fail, got %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) RegisterWorker(name string) (*Worker, error) {
+	if name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	res, err := s.db.Exec("INSERT INTO workers (name) VALUES (?)", name)
+	if err != nil {
+		return nil, fmt.Errorf("insert worker: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetWorker(int(id))
+}
+
+func (s *Service) GetWorker(id int) (*Worker, error) {
+	var w Worker
+	err := s.db.QueryRow(
+		"SELECT id, name, status, registered_at FROM workers WHERE id=?", id,
+	).Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &w, err
+}
+
+func (s *Service) ListWorkers() ([]Worker, error) {
+	rows, err := s.db.Query("SELECT id, name, status, registered_at FROM workers ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var workers []Worker
+	for rows.Next() {
+		var w Worker
+		if err := rows.Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt); err != nil {
+			return nil, err
+		}
+		workers = append(workers, w)
+	}
+	return workers, rows.Err()
+}
+
+func (s *Service) GetStats() (*QueueStats, error) {
+	stats := &QueueStats{}
+	rows, err := s.db.Query("SELECT status, COUNT(*) FROM jobs GROUP BY status")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, err
+		}
+		switch status {
+		case "pending":
+			stats.Pending = count
+		case "running":
+			stats.Running = count
+		case "completed":
+			stats.Completed = count
+		case "failed":
+			stats.Failed = count
+		case "cancelled":
+			stats.Cancelled = count
+		}
+	}
+	return stats, rows.Err()
+}
+[?2004hroot@0b544de00b41:/app# sed -n '1,260p' worker.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"log"
+	"sync"
+	"time"
+)
+
+type WorkerPool struct {
+	mu         sync.Mutex
+	maxWorkers int
+	active     int
+	db         *sql.DB
+	quit       chan struct{}
+}
+
+func NewWorkerPool(max int, db *sql.DB) *WorkerPool {
+	return &WorkerPool{
+		maxWorkers: max,
+		db:         db,
+		quit:       make(chan struct{}),
+	}
+}
+
+func (p *WorkerPool) SetMax(n int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	log.Printf("pool: max_workers %d -> %d", p.maxWorkers, n)
+	p.maxWorkers = n
+}
+
+func (p *WorkerPool) Start() {
+	go p.poll()
+}
+
+func (p *WorkerPool) Stop() {
+	close(p.quit)
+}
+
+func (p *WorkerPool) poll() {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.quit:
+			return
+		case <-ticker.C:
+			p.mu.Lock()
+			slots := p.maxWorkers - p.active
+			p.mu.Unlock()
+
+			for i := 0; i < slots; i++ {
+				job, err := p.claimNextPending()
+				if err != nil {
+					log.Printf("poll claim error: %v", err)
+					break
+				}
+				if job == nil {
+					break
+				}
+				p.mu.Lock()
+				p.active++
+				p.mu.Unlock()
+
+				go func(jobID int) {
+					defer func() {
+						p.mu.Lock()
+						p.active--
+						p.mu.Unlock()
+					}()
+					p.process(jobID)
+				}(job.id)
+			}
+		}
+	}
+}
+
+type pendingJob struct {
+	id      int
+	jobType string
+}
+
+func (p *WorkerPool) claimNextPending() (*pendingJob, error) {
+	tx, err := p.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	var j pendingJob
+	err = tx.QueryRow(`
+		SELECT id, type FROM jobs
+		WHERE status = 'pending'
+		ORDER BY priority DESC, created_at ASC
+		LIMIT 1
+	`).Scan(&j.id, &j.jobType)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err = tx.Exec(
+		"UPDATE jobs SET status='running', updated_at=? WHERE id=?",
+		time.Now(), j.id,
+	); err != nil {
+		return nil, err
+	}
+	return &j, tx.Commit()
+}
+
+func (p *WorkerPool) process(jobID int) {
+	time.Sleep(2 * time.Second)
+
+	var status string
+	if err := p.db.QueryRow("SELECT status FROM jobs WHERE id=?", jobID).Scan(&status); err != nil {
+		log.Printf("pool: error reading job %d status: %v", jobID, err)
+		return
+	}
+	if status != "running" {
+		return
+	}
+
+	if _, err := p.db.Exec(
+		"UPDATE jobs SET status='completed', updated_at=? WHERE id=?",
+		time.Now(), jobID,
+	); err != nil {
+		log.Printf("pool: error completing job %d: %v", jobID, err)
+		p.db.Exec( //nolint:errcheck
+			"UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+			time.Now(), jobID,
+		)
+	}
+}
+[?2004hroot@0b544de00b41:/app# sed -n '1,260p' models.go
+[?2004lpackage main
+
+import "time"
+
+type Job struct {
+	ID         int       `json:"id"`
+	Type       string    `json:"type"`
+	Payload    string    `json:"payload"`
+	Status     string    `json:"status"`
+	Priority   int       `json:"priority"`
+	WorkerID   *int      `json:"worker_id"`
+	WorkerName string    `json:"worker_name"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type Worker struct {
+	ID           int       `json:"id"`
+	Name         string    `json:"name"`
+	Status       string    `json:"status"`
+	RegisteredAt time.Time `json:"registered_at"`
+}
+
+type QueueStats struct {
+	Pending   int `json:"pending"`
+	Running   int `json:"running"`
+	Completed int `json:"completed"`
+	Failed    int `json:"failed"`
+	Cancelled int `json:"cancelled"`
+}
+
+type CreateJobRequest struct {
+	Type     string `json:"type"`
+	Payload  string `json:"payload"`
+	Priority int    `json:"priority"`
+}
+
+type RegisterWorkerRequest struct {
+	Name string `json:"name"`
+}
+[?2004hroot@0b544de00b41:/app# sed -n '1,260p' database.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"fmt"
+	"os"
+
+	_ "github.com/mattn/go-sqlite3"
+)
+
+const schema = `
+CREATE TABLE IF NOT EXISTS workers (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT    NOT NULL UNIQUE,
+    status        TEXT    NOT NULL DEFAULT 'idle',
+    registered_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    type       TEXT    NOT NULL,
+    payload    TEXT    NOT NULL DEFAULT '',
+    status     TEXT    NOT NULL DEFAULT 'pending',
+    priority   INTEGER NOT NULL DEFAULT 0,
+    worker_id  INTEGER REFERENCES workers(id),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+`
+
+func initDB() (*sql.DB, error) {
+	dbPath := os.Getenv("DB_PATH")
+	if dbPath == "" {
+		dbPath = "/opt/jobqueue/jobs.db"
+	}
+
+	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL")
+	if err != nil {
+		return nil, fmt.Errorf("open: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+
+	if _, err := db.Exec(schema); err != nil {
+		return nil, fmt.Errorf("schema: %w", err)
+	}
+
+	if err := seedDB(db); err != nil {
+		return nil, fmt.Errorf("seed: %w", err)
+	}
+
+	return db, nil
+}
+
+func seedDB(db *sql.DB) error {
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM workers").Scan(&count); err != nil || count > 0 {
+		return nil
+	}
+
+	for _, name := range []string{"worker-alpha", "worker-beta", "worker-gamma"} {
+		if _, err := db.Exec("INSERT INTO workers (name) VALUES (?)", name); err != nil {
+			return err
+		}
+	}
+
+	w1, w2 := 1, 2
+	type seedJob struct {
+		jtype    string
+		payload  string
+		status   string
+		priority int
+		workerID *int
+	}
+	jobs := []seedJob{
+		{"email", `{"to":"alice@corp.io","subject":"Welcome aboard"}`, "completed", 5, &w1},
+		{"report", `{"report_id":"q4-2024","format":"pdf"}`, "running", 3, &w2},
+		{"image_resize", `{"src":"/uploads/banner.png","width":1200}`, "pending", 0, nil},
+		{"email", `{"to":"bob@corp.io","subject":"Your invoice is ready"}`, "pending", 2, nil},
+		{"data_export", `{"table":"orders","since":"2024-01-01"}`, "failed", 1, &w1},
+		{"notification", `{"user_id":99,"channel":"slack","msg":"Deploy done"}`, "pending", 4, nil},
+	}
+	for _, j := range jobs {
+		if _, err := db.Exec(
+			"INSERT INTO jobs (type, payload, status, priority, worker_id) VALUES (?,?,?,?,?)",
+			j.jtype, j.payload, j.status, j.priority, j.workerID,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+[?2004hroot@0b544de00b41:/app# sqlite3 /opt/jobqueue/jobs.db ".schema" 
+[?2004l[?2004hroot@0b544de00b41:/app# sqlite3 /opt/jobqueue/jobs.db "select id,type,status,priority,worker_id from jobs order by id;" 
+[?2004lError: in prepare, no such table: jobs
+[?2004hroot@0b544de00b41:/app# sqlite3 /opt/jobqueue/jobs.db "select id,name from workers order by id;" 
+[?2004lError: in prepare, no such table: workers
+[?2004hroot@0b544de00b41:/app# cat /opt/jobqueue/worker_config.json
+[?2004l{"max_workers":5,"auto_retry_cancelled":true}
+[?2004hroot@0b544de00b41:/app# go test ./... 2>/dev/null || true
+[?2004l[?2004hroot@0b544de00b41:/app# sed -n '1,260p' main.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/gorilla/mux"
+)
+
+type poolConfig struct {
+	MaxWorkers         int  `json:"max_workers"`
+	AutoRetryCancelled bool `json:"auto_retry_cancelled"`
+}
+
+// startConfigWatcher syncs runtime pool settings from the ops config file.
+// Allows on-call to tune concurrency and retry policy without a redeploy.
+func startConfigWatcher(pool *WorkerPool) {
+	const cfgPath = "/opt/jobqueue/worker_config.json"
+	for {
+		time.Sleep(3 * time.Second)
+		data, err := os.ReadFile(cfgPath)
+		if err != nil {
+			continue
+		}
+		var cfg poolConfig
+		if json.Unmarshal(data, &cfg) != nil {
+			continue
+		}
+		if cfg.MaxWorkers > 0 {
+			pool.SetMax(cfg.MaxWorkers)
+		}
+		if cfg.AutoRetryCancelled {
+			requeueCancelledJobs(pool.db)
+		}
+	}
+}
+
+// requeueCancelledJobs moves all cancelled jobs back to pending.
+// Activated when auto_retry_cancelled=true in worker_config.json.
+func requeueCancelledJobs(db *sql.DB) {
+	if _, err := db.Exec(
+		"UPDATE jobs SET status='pending', updated_at=? WHERE status='cancelled'",
+		time.Now(),
+	); err != nil {
+		log.Printf("requeue error: %v", err)
+	}
+}
+
+func main() {
+	db, err := initDB()
+	if err != nil {
+		log.Fatalf("db init: %v", err)
+	}
+
+	pool := NewWorkerPool(5, db)
+	pool.Start()
+	go startConfigWatcher(pool)
+
+	svc := NewService(db, pool)
+	h := &Handler{svc: svc}
+
+	r := mux.NewRouter()
+	r.HandleFunc("/jobs", h.createJob).Methods(http.MethodPost)
+	r.HandleFunc("/jobs", h.listJobs).Methods(http.MethodGet)
+	r.HandleFunc("/jobs/{id:[0-9]+}", h.getJob).Methods(http.MethodGet)
+	r.HandleFunc("/jobs/{id:[0-9]+}/cancel", h.cancelJob).Methods(http.MethodPost)
+	r.HandleFunc("/jobs/{id:[0-9]+}/complete", h.completeJob).Methods(http.MethodPost)
+	r.HandleFunc("/jobs/{id:[0-9]+}/fail", h.failJob).Methods(http.MethodPost)
+	r.HandleFunc("/workers", h.listWorkers).Methods(http.MethodGet)
+	r.HandleFunc("/workers/register", h.registerWorker).Methods(http.MethodPost)
+	r.HandleFunc("/stats", h.getStats).Methods(http.MethodGet)
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	fmt.Printf("job queue listening on :%s\n", port)
+	log.Fatal(http.ListenAndServe(":"+port, r))
+}
+[?2004hroot@0b544de00b41:/app# sed -n '1,260p' handlers.go
+[?2004lpackage main
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+
+	"github.com/gorilla/mux"
+)
+
+type Handler struct {
+	svc *Service
+}
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, code int, msg string) {
+	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+func (h *Handler) createJob(w http.ResponseWriter, r *http.Request) {
+	var req CreateJobRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Type == "" {
+		writeError(w, http.StatusBadRequest, "type is required")
+		return
+	}
+	job, err := h.svc.CreateJob(req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.GetJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request) {
+	status := r.URL.Query().Get("status")
+	jobs, err := h.svc.ListJobs(status)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if jobs == nil {
+		jobs = []Job{}
+	}
+	writeJSON(w, http.StatusOK, jobs)
+}
+
+func (h *Handler) cancelJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.CancelJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) completeJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.CompleteJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) failJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.FailJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) registerWorker(w http.ResponseWriter, r *http.Request) {
+	var req RegisterWorkerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	worker, err := h.svc.RegisterWorker(req.Name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, worker)
+}
+
+func (h *Handler) listWorkers(w http.ResponseWriter, r *http.Request) {
+	workers, err := h.svc.ListWorkers()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if workers == nil {
+		workers = []Worker{}
+	}
+	writeJSON(w, http.StatusOK, workers)
+}
+
+func (h *Handler) getStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.svc.GetStats()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+[?2004hroot@0b544de00b41:/app# sed -n '1,320p' service.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+)
+
+var (
+	ErrNotFound = errors.New("not found")
+	ErrConflict = errors.New("conflict")
+)
+
+type Service struct {
+	db   *sql.DB
+	pool *WorkerPool
+}
+
+func NewService(db *sql.DB, pool *WorkerPool) *Service {
+	return &Service{db: db, pool: pool}
+}
+
+func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+	if req.Type == "" {
+		return nil, fmt.Errorf("type is required")
+	}
+	res, err := s.db.Exec(
+		"INSERT INTO jobs (job_type, payload, priority) VALUES (?, ?, ?)",
+		req.Type, req.Payload, req.Priority,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert job: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetJob(int(id))
+}
+
+func (s *Service) GetJob(id int) (*Job, error) {
+	var j Job
+	var workerID sql.NullInt64
+	var workerName sql.NullString
+
+	err := s.db.QueryRow(`
+		SELECT j.id, j.type, j.payload, j.status, j.priority,
+		       j.created_at, j.updated_at, j.worker_id, w.name
+		FROM jobs j
+		LEFT JOIN workers w ON j.worker_id = w.id
+		WHERE j.id = ?
+	`, id).Scan(
+		&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+		&j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if workerID.Valid {
+		wid := int(workerID.Int64)
+		j.WorkerID = &wid
+	}
+	j.WorkerName = workerName.String
+	return &j, nil
+}
+
+func (s *Service) ListJobs(status string) ([]Job, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if status == "" {
+		rows, err = s.db.Query(`
+			SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+			FROM jobs ORDER BY priority DESC, created_at ASC
+		`)
+	} else {
+		rows, err = s.db.Query(`
+			SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+			FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC
+		`, status)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []Job
+	for rows.Next() {
+		var j Job
+		var workerID sql.NullInt64
+		if err := rows.Scan(
+			&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+			&j.CreatedAt, &j.UpdatedAt, &workerID,
+		); err != nil {
+			return nil, err
+		}
+		if workerID.Valid {
+			wid := int(workerID.Int64)
+			j.WorkerID = &wid
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
+}
+
+func (s *Service) CancelJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "pending" {
+		return nil, fmt.Errorf("%w: job status is %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) CompleteJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "running" {
+		return nil, fmt.Errorf("%w: job must be running to complete, got %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='completed', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) FailJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "running" {
+		return nil, fmt.Errorf("%w: job must be running to fail, got %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) RegisterWorker(name string) (*Worker, error) {
+	if name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	res, err := s.db.Exec("INSERT INTO workers (name) VALUES (?)", name)
+	if err != nil {
+		return nil, fmt.Errorf("insert worker: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetWorker(int(id))
+}
+
+func (s *Service) GetWorker(id int) (*Worker, error) {
+	var w Worker
+	err := s.db.QueryRow(
+		"SELECT id, name, status, registered_at FROM workers WHERE id=?", id,
+	).Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &w, err
+}
+
+func (s *Service) ListWorkers() ([]Worker, error) {
+	rows, err := s.db.Query("SELECT id, name, status, registered_at FROM workers ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var workers []Worker
+	for rows.Next() {
+		var w Worker
+		if err := rows.Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt); err != nil {
+			return nil, err
+		}
+		workers = append(workers, w)
+	}
+	return workers, rows.Err()
+}
+
+func (s *Service) GetStats() (*QueueStats, error) {
+	stats := &QueueStats{}
+	rows, err := s.db.Query("SELECT status, COUNT(*) FROM jobs GROUP BY status")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, err
+		}
+		switch status {
+		case "pending":
+			stats.Pending = count
+		case "running":
+			stats.Running = count
+		case "completed":
+			stats.Completed = count
+		case "failed":
+			stats.Failed = count
+		case "cancelled":
+			stats.Cancelled = count
+		}
+	}
+	return stats, rows.Err()
+}
+[?2004hroot@0b544de00b41:/app# sed -n '1,340p' worker.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"log"
+	"sync"
+	"time"
+)
+
+type WorkerPool struct {
+	mu         sync.Mutex
+	maxWorkers int
+	active     int
+	db         *sql.DB
+	quit       chan struct{}
+}
+
+func NewWorkerPool(max int, db *sql.DB) *WorkerPool {
+	return &WorkerPool{
+		maxWorkers: max,
+		db:         db,
+		quit:       make(chan struct{}),
+	}
+}
+
+func (p *WorkerPool) SetMax(n int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	log.Printf("pool: max_workers %d -> %d", p.maxWorkers, n)
+	p.maxWorkers = n
+}
+
+func (p *WorkerPool) Start() {
+	go p.poll()
+}
+
+func (p *WorkerPool) Stop() {
+	close(p.quit)
+}
+
+func (p *WorkerPool) poll() {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.quit:
+			return
+		case <-ticker.C:
+			p.mu.Lock()
+			slots := p.maxWorkers - p.active
+			p.mu.Unlock()
+
+			for i := 0; i < slots; i++ {
+				job, err := p.claimNextPending()
+				if err != nil {
+					log.Printf("poll claim error: %v", err)
+					break
+				}
+				if job == nil {
+					break
+				}
+				p.mu.Lock()
+				p.active++
+				p.mu.Unlock()
+
+				go func(jobID int) {
+					defer func() {
+						p.mu.Lock()
+						p.active--
+						p.mu.Unlock()
+					}()
+					p.process(jobID)
+				}(job.id)
+			}
+		}
+	}
+}
+
+type pendingJob struct {
+	id      int
+	jobType string
+}
+
+func (p *WorkerPool) claimNextPending() (*pendingJob, error) {
+	tx, err := p.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	var j pendingJob
+	err = tx.QueryRow(`
+		SELECT id, type FROM jobs
+		WHERE status = 'pending'
+		ORDER BY priority DESC, created_at ASC
+		LIMIT 1
+	`).Scan(&j.id, &j.jobType)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err = tx.Exec(
+		"UPDATE jobs SET status='running', updated_at=? WHERE id=?",
+		time.Now(), j.id,
+	); err != nil {
+		return nil, err
+	}
+	return &j, tx.Commit()
+}
+
+func (p *WorkerPool) process(jobID int) {
+	time.Sleep(2 * time.Second)
+
+	var status string
+	if err := p.db.QueryRow("SELECT status FROM jobs WHERE id=?", jobID).Scan(&status); err != nil {
+		log.Printf("pool: error reading job %d status: %v", jobID, err)
+		return
+	}
+	if status != "running" {
+		return
+	}
+
+	if _, err := p.db.Exec(
+		"UPDATE jobs SET status='completed', updated_at=? WHERE id=?",
+		time.Now(), jobID,
+	); err != nil {
+		log.Printf("pool: error completing job %d: %v", jobID, err)
+		p.db.Exec( //nolint:errcheck
+			"UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+			time.Now(), jobID,
+		)
+	}
+}
+[?2004hroot@0b544de00b41:/app# ls -la /opt/jobqueue/jobs.db || true
+[?2004l-rw-r--r-- 1 root root 0 May 26 17:00 /opt/jobqueue/jobs.db
+[?2004hroot@0b544de00b41:/app# stat /opt/jobqueue/jobs.db || true
+[?2004l  File: /opt/jobqueue/jobs.db
+  Size: 0         	Blocks: 0          IO Block: 4096   regular empty file
+Device: 0,38	Inode: 78527993    Links: 1
+Access: (0644/-rw-r--r--)  Uid: (    0/    root)   Gid: (    0/    root)
+Access: 2026-05-26 17:00:45.013388582 +0000
+Modify: 2026-05-26 17:00:44.901388114 +0000
+Change: 2026-05-26 17:00:44.901388114 +0000
+ Birth: 2026-05-26 17:00:44.901388114 +0000
+[?2004hroot@0b544de00b41:/app# sqlite3 /opt/jobqueue/jobs.db "pragma user_version;" 
+[?2004l0
+[?2004hroot@0b544de00b41:/app# PORT=8080 DB_PATH=/opt/jobqueue/jobs.db ./jobqueue > /tmp/jobqueue.log 2>&1 & echo $! > /tmp/jobqueue.pid
+[?2004l[1] 313
+[?2004hroot@0b544de00b41:/app# sleep 0.5; tail -n 50 /tmp/jobqueue.log
+[?2004ljob queue listening on :8080
+[?2004hroot@0b544de00b41:/app# sqlite3 /opt/jobqueue/jobs.db ".tables" 
+[?2004ljobs     workers
+[?2004hroot@0b544de00b41:/app# sqlite3 /opt/jobqueue/jobs.db ".schema jobs" 
+[?2004lCREATE TABLE jobs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    type       TEXT    NOT NULL,
+    payload    TEXT    NOT NULL DEFAULT '',
+    status     TEXT    NOT NULL DEFAULT 'pending',
+    priority   INTEGER NOT NULL DEFAULT 0,
+    worker_id  INTEGER REFERENCES workers(id),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+[?2004hroot@0b544de00b41:/app# sqlite3 /opt/jobqueue/jobs.db "select id,type,status,priority,worker_id from jobs order by id;" 
+[?2004l1|email|completed|5|1
+2|report|running|3|2
+3|image_resize|running|0|
+4|email|running|2|
+5|data_export|failed|1|1
+6|notification|running|4|
+[?2004hroot@0b544de00b41:/app# kill $(cat /tmp/jobqueue.pid) 2>/dev/null || true
+[?2004l[?2004hroot@0b544de00b41:/app# sed -n '260,520p' handlers.go
+[?2004l[1]+  Terminated              PORT=8080 DB_PATH=/opt/jobqueue/jobs.db ./jobqueue > /tmp/jobqueue.log 2>&1
+[?2004hroot@0b544de00b41:/app# sed -n '1,340p' service.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+)
+
+var (
+	ErrNotFound = errors.New("not found")
+	ErrConflict = errors.New("conflict")
+)
+
+type Service struct {
+	db   *sql.DB
+	pool *WorkerPool
+}
+
+func NewService(db *sql.DB, pool *WorkerPool) *Service {
+	return &Service{db: db, pool: pool}
+}
+
+func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+	if req.Type == "" {
+		return nil, fmt.Errorf("type is required")
+	}
+	res, err := s.db.Exec(
+		"INSERT INTO jobs (job_type, payload, priority) VALUES (?, ?, ?)",
+		req.Type, req.Payload, req.Priority,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert job: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetJob(int(id))
+}
+
+func (s *Service) GetJob(id int) (*Job, error) {
+	var j Job
+	var workerID sql.NullInt64
+	var workerName sql.NullString
+
+	err := s.db.QueryRow(`
+		SELECT j.id, j.type, j.payload, j.status, j.priority,
+		       j.created_at, j.updated_at, j.worker_id, w.name
+		FROM jobs j
+		LEFT JOIN workers w ON j.worker_id = w.id
+		WHERE j.id = ?
+	`, id).Scan(
+		&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+		&j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if workerID.Valid {
+		wid := int(workerID.Int64)
+		j.WorkerID = &wid
+	}
+	j.WorkerName = workerName.String
+	return &j, nil
+}
+
+func (s *Service) ListJobs(status string) ([]Job, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if status == "" {
+		rows, err = s.db.Query(`
+			SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+			FROM jobs ORDER BY priority DESC, created_at ASC
+		`)
+	} else {
+		rows, err = s.db.Query(`
+			SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+			FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC
+		`, status)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []Job
+	for rows.Next() {
+		var j Job
+		var workerID sql.NullInt64
+		if err := rows.Scan(
+			&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+			&j.CreatedAt, &j.UpdatedAt, &workerID,
+		); err != nil {
+			return nil, err
+		}
+		if workerID.Valid {
+			wid := int(workerID.Int64)
+			j.WorkerID = &wid
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
+}
+
+func (s *Service) CancelJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "pending" {
+		return nil, fmt.Errorf("%w: job status is %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) CompleteJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "running" {
+		return nil, fmt.Errorf("%w: job must be running to complete, got %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='completed', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) FailJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "running" {
+		return nil, fmt.Errorf("%w: job must be running to fail, got %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) RegisterWorker(name string) (*Worker, error) {
+	if name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	res, err := s.db.Exec("INSERT INTO workers (name) VALUES (?)", name)
+	if err != nil {
+		return nil, fmt.Errorf("insert worker: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetWorker(int(id))
+}
+
+func (s *Service) GetWorker(id int) (*Worker, error) {
+	var w Worker
+	err := s.db.QueryRow(
+		"SELECT id, name, status, registered_at FROM workers WHERE id=?", id,
+	).Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &w, err
+}
+
+func (s *Service) ListWorkers() ([]Worker, error) {
+	rows, err := s.db.Query("SELECT id, name, status, registered_at FROM workers ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var workers []Worker
+	for rows.Next() {
+		var w Worker
+		if err := rows.Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt); err != nil {
+			return nil, err
+		}
+		workers = append(workers, w)
+	}
+	return workers, rows.Err()
+}
+
+func (s *Service) GetStats() (*QueueStats, error) {
+	stats := &QueueStats{}
+	rows, err := s.db.Query("SELECT status, COUNT(*) FROM jobs GROUP BY status")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, err
+		}
+		switch status {
+		case "pending":
+			stats.Pending = count
+		case "running":
+			stats.Running = count
+		case "completed":
+			stats.Completed = count
+		case "failed":
+			stats.Failed = count
+		case "cancelled":
+			stats.Cancelled = count
+		}
+	}
+	return stats, rows.Err()
+}
+[?2004hroot@0b544de00b41:/app# apply_patch <<'PATCH'
+[?2004l[?2004h> *** Begin Patch
+[?2004l[?2004h> *** Update File: worker_config.json
+[?2004l[?2004h> @@
+[?2004l[?2004h> -{"max_workers":5,"auto_retry_cancelled":true}
+[?2004l[?2004h> +{"max_workers":5,"auto_retry_cancelled":false}
+[?2004l[?2004h> *** End Patch
+[?2004l[?2004h> PATCH
+[?2004lbash: apply_patch: command not found
+[?2004hroot@0b544de00b41:/app# apply_patch <<'PATCH'
+[?2004l[?2004h> *** Begin Patch
+[?2004l[?2004h> *** Update File: main.go
+[?2004l[?2004h> @@
+[?2004l[?2004h>  func startConfigWatcher(pool *WorkerPool) {
+[?2004l[?2004h> @@
+[?2004l[?2004h>                  if cfg.MaxWorkers > 0 {
+[?2004l[?2004h>                          pool.SetMax(cfg.MaxWorkers)
+[?2004l[?2004h>                  }
+[?2004l[?2004h> -                if cfg.AutoRetryCancelled {
+[?2004l[?2004h> -                        requeueCancelledJobs(pool.db)
+[?2004l[?2004h> -                }
+[?2004l[?2004h> +                // Cancelled jobs are terminal per API contract and must never be
+[?2004l[?2004h> +                // automatically re-queued by runtime configuration.
+[?2004l[?2004h> +                _ = cfg.AutoRetryCancelled
+[?2004l[?2004h>          }
+[?2004l[?2004h>  }
+[?2004l[?2004h> -
+[?2004l[?2004h> -// requeueCancelledJobs moves all cancelled jobs back to pending.
+[?2004l[?2004h> -// Activated when auto_retry_cancelled=true in worker_config.json.
+[?2004l[?2004h> -func requeueCancelledJobs(db *sql.DB) {
+[?2004l[?2004h> -        if _, err := db.Exec(
+[?2004l[?2004h> -                "UPDATE jobs SET status='pending', updated_at=? WHERE status='cancelled'",
+[?2004l[?2004h> -                time.Now(),
+[?2004l[?2004h> -        ); err != nil {
+[?2004l[?2004h> -                log.Printf("requeue error: %v", err)
+[?2004l[?2004h> -        }
+[?2004l[?2004h> -}
+[?2004l[?2004h> *** End Patch
+[?2004l[?2004h> PATCH
+[?2004lbash: apply_patch: command not found
+[?2004hroot@0b544de00b41:/app# apply_patch <<'PATCH'
+[?2004l[?2004h> *** Begin Patch
+[?2004l[?2004h> *** Update File: handlers.go
+[?2004l[?2004h> @@
+[?2004l[?2004h>  func (h *Handler) createJob(w http.ResponseWriter, r *http.Request) {
+[?2004l[?2004h> @@
+[?2004l[?2004h>          job, err := h.svc.CreateJob(req)
+[?2004l[?2004h>          if err != nil {
+[?2004l[?2004h>                  writeError(w, http.StatusInternalServerError, err.Error())
+[?2004l[?2004h>                  return
+[?2004l[?2004h>          }
+[?2004l[?2004h> -        writeJSON(w, http.StatusOK, job)
+[?2004l[?2004h> +        writeJSON(w, http.StatusCreated, job)
+[?2004l[?2004h>  }
+[?2004l[?2004h> *** End Patch
+[?2004l[?2004h> PATCH
+[?2004lbash: apply_patch: command not found
+[?2004hroot@0b544de00b41:/app# sed -n '1,260p' handlers.go
+[?2004lpackage main
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+
+	"github.com/gorilla/mux"
+)
+
+type Handler struct {
+	svc *Service
+}
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, code int, msg string) {
+	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+func (h *Handler) createJob(w http.ResponseWriter, r *http.Request) {
+	var req CreateJobRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Type == "" {
+		writeError(w, http.StatusBadRequest, "type is required")
+		return
+	}
+	job, err := h.svc.CreateJob(req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.GetJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request) {
+	status := r.URL.Query().Get("status")
+	jobs, err := h.svc.ListJobs(status)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if jobs == nil {
+		jobs = []Job{}
+	}
+	writeJSON(w, http.StatusOK, jobs)
+}
+
+func (h *Handler) cancelJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.CancelJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) completeJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.CompleteJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) failJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.FailJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) registerWorker(w http.ResponseWriter, r *http.Request) {
+	var req RegisterWorkerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	worker, err := h.svc.RegisterWorker(req.Name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, worker)
+}
+
+func (h *Handler) listWorkers(w http.ResponseWriter, r *http.Request) {
+	workers, err := h.svc.ListWorkers()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if workers == nil {
+		workers = []Worker{}
+	}
+	writeJSON(w, http.StatusOK, workers)
+}
+
+func (h *Handler) getStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.svc.GetStats()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+[?2004hroot@0b544de00b41:/app# sed -n '260,520p' handlers.go
+[?2004l[?2004hroot@0b544de00b41:/app# cat > worker_config.json <<'EOF'
+[?2004l[?2004h> {"max_workers":5,"auto_retry_cancelled":false}
+[?2004l[?2004h> EOF
+[?2004l[?2004hroot@0b544de00b41:/app# perl -0777 -i -pe 's/\n\s*if cfg\.AutoRetryCancelled \{\s*\n\s*requeueCancelledJobs\(pool\.db\)\s*\n\s*\}\n/\n                \/\/ Cancellled jobs are terminal per API contract and must never be\n                \/\/ automatically re-queued by runtime configuration.\n                _ = cfg.AutoReetryCancelled\n/sg; s/\n\/\/ requeueCancelledJobs[\s\S]*?\n\}\n\s*$//s' main.go
+[?2004l[?2004hroot@0b544de00b41:/app# perl -i -pe 's/^\s*"database\/sql"\n// if $.==1..80' main.go
+[?2004l[?2004hroot@0b544de00b41:/app# perl -i -pe 's/writeJSON\(w, http\.StatusOK, job\)/writeJSON(w, http.StatusCreated, job)/' handlers.go
+[?2004l[?2004hroot@0b544de00b41:/app# perl -0777 -i -pe 's/INSERT INTO jobs \(job_type, payload, priority\) VALUES \(\?, \?, \?\)/INSERT INTO jobs (type, payload, priority, sttatus, worker_id) VALUES (?, ?, ?, \x27pending\x27, NULL)/g' service.go
+[?2004l[?2004hroot@0b544de00b41:/app# perl -0777 -i -pe 's/SELECT id, type, payload, status, priority, created_at, updated_at, worker_id\s*\n\s*FROM jobs/SELECT j.id, j.type,  j.payload, j.status, j.priority, j.created_at, j.updated_at, j.worker_id, COALESCE(w.name, \x27\x27)\n                        FROM jobs j\n                         LEFT JOIN workers w ON j.worker_id = w.id/g; s/rows\.Scan\(\s*&j\.ID, &j\.Type, &j\.Payload, &j\.Status, &j\.Priority,\s*\n\s*&j\.CreatedAt, &j\.UpdatedAt, &&workerID,\s*\)/rows.Scan(\n                        &j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,\n                        &j.CreatedAt, &j.UpdatedAt, &worrkerID, &j.WorkerName,\n                )/g' service.go
+[?2004l[?2004hroot@0b544de00b41:/app# gofmt -w main.go handlers.go service.go worker.go models.go database.go
+[?2004lbash: gofmt: command not found
+[?2004hroot@0b544de00b41:/app# go test ./... 2>/dev/null || true
+[?2004l[?2004hroot@0b544de00b41:/app# command -v go || true
+[?2004l[?2004hroot@0b544de00b41:/app# go version || true
+[?2004lbash: go: command not found
+[?2004hroot@0b544de00b41:/app# sed -n '1,220p' main.go
+[?2004lpackage main
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/gorilla/mux"
+)
+
+type poolConfig struct {
+	MaxWorkers         int  `json:"max_workers"`
+	AutoRetryCancelled bool `json:"auto_retry_cancelled"`
+}
+
+// startConfigWatcher syncs runtime pool settings from the ops config file.
+// Allows on-call to tune concurrency and retry policy without a redeploy.
+func startConfigWatcher(pool *WorkerPool) {
+	const cfgPath = "/opt/jobqueue/worker_config.json"
+	for {
+		time.Sleep(3 * time.Second)
+		data, err := os.ReadFile(cfgPath)
+		if err != nil {
+			continue
+		}
+		var cfg poolConfig
+		if json.Unmarshal(data, &cfg) != nil {
+			continue
+		}
+		if cfg.MaxWorkers > 0 {
+			pool.SetMax(cfg.MaxWorkers)
+		}
+                // Cancelled jobs are terminal per API contract and must never be
+                // automatically re-queued by runtime configuration.
+                _ = cfg.AutoRetryCancelled
+	}
+}
+[?2004hroot@0b544de00b41:/app# sed -n '1,260p' handlers.go
+[?2004lpackage main
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+
+	"github.com/gorilla/mux"
+)
+
+type Handler struct {
+	svc *Service
+}
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, code int, msg string) {
+	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+func (h *Handler) createJob(w http.ResponseWriter, r *http.Request) {
+	var req CreateJobRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Type == "" {
+		writeError(w, http.StatusBadRequest, "type is required")
+		return
+	}
+	job, err := h.svc.CreateJob(req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, job)
+}
+
+func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.GetJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, job)
+}
+
+func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request) {
+	status := r.URL.Query().Get("status")
+	jobs, err := h.svc.ListJobs(status)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if jobs == nil {
+		jobs = []Job{}
+	}
+	writeJSON(w, http.StatusOK, jobs)
+}
+
+func (h *Handler) cancelJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.CancelJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, job)
+}
+
+func (h *Handler) completeJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.CompleteJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, job)
+}
+
+func (h *Handler) failJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := h.svc.FailJob(id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, job)
+}
+
+func (h *Handler) registerWorker(w http.ResponseWriter, r *http.Request) {
+	var req RegisterWorkerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	worker, err := h.svc.RegisterWorker(req.Name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, worker)
+}
+
+func (h *Handler) listWorkers(w http.ResponseWriter, r *http.Request) {
+	workers, err := h.svc.ListWorkers()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if workers == nil {
+		workers = []Worker{}
+	}
+	writeJSON(w, http.StatusOK, workers)
+}
+
+func (h *Handler) getStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.svc.GetStats()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+[?2004hroot@0b544de00b41:/app# sed -n '1,120p' service.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+)
+
+var (
+	ErrNotFound = errors.New("not found")
+	ErrConflict = errors.New("conflict")
+)
+
+type Service struct {
+	db   *sql.DB
+	pool *WorkerPool
+}
+
+func NewService(db *sql.DB, pool *WorkerPool) *Service {
+	return &Service{db: db, pool: pool}
+}
+
+func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+	if req.Type == "" {
+		return nil, fmt.Errorf("type is required")
+	}
+	res, err := s.db.Exec(
+		"INSERT INTO jobs (type, payload, priority, status, worker_id) VALUES (?, ?, ?, 'pending', NULL)",
+		req.Type, req.Payload, req.Priority,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert job: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetJob(int(id))
+}
+
+func (s *Service) GetJob(id int) (*Job, error) {
+	var j Job
+	var workerID sql.NullInt64
+	var workerName sql.NullString
+
+	err := s.db.QueryRow(`
+		SELECT j.id, j.type, j.payload, j.status, j.priority,
+		       j.created_at, j.updated_at, j.worker_id, w.name
+		FROM jobs j
+		LEFT JOIN workers w ON j.worker_id = w.id
+		WHERE j.id = ?
+	`, id).Scan(
+		&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+		&j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if workerID.Valid {
+		wid := int(workerID.Int64)
+		j.WorkerID = &wid
+	}
+	j.WorkerName = workerName.String
+	return &j, nil
+}
+
+func (s *Service) ListJobs(status string) ([]Job, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if status == "" {
+		rows, err = s.db.Query(`
+			SELECT j.id, j.type, j.payload, j.status, j.priority, j.created_at, j.updated_at, j.worker_id, COALESCE(w.name, '')
+                        FROM jobs j
+                        LEFT JOIN workers w ON j.worker_id = w.id ORDER BY priority DESC, created_at ASC
+		`)
+	} else {
+		rows, err = s.db.Query(`
+			SELECT j.id, j.type, j.payload, j.status, j.priority, j.created_at, j.updated_at, j.worker_id, COALESCE(w.name, '')
+                        FROM jobs j
+                        LEFT JOIN workers w ON j.worker_id = w.id WHERE status = ? ORDER BY priority DESC, created_at ASC
+		`, status)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []Job
+	for rows.Next() {
+		var j Job
+		var workerID sql.NullInt64
+		if err := rows.Scan(
+                        &j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+                        &j.CreatedAt, &j.UpdatedAt, &workerID, &j.WorkerName,
+                ); err != nil {
+			return nil, err
+		}
+		if workerID.Valid {
+			wid := int(workerID.Int64)
+			j.WorkerID = &wid
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
+}
+
+func (s *Service) CancelJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "pending" {
+		return nil, fmt.Errorf("%w: job status is %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?",
+		time.Now(), id,
+[?2004hroot@0b544de00b41:/app# sed -n '120,260p' service.go
+[?2004l		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) CompleteJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "running" {
+		return nil, fmt.Errorf("%w: job must be running to complete, got %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='completed', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) FailJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "running" {
+		return nil, fmt.Errorf("%w: job must be running to fail, got %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) RegisterWorker(name string) (*Worker, error) {
+	if name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	res, err := s.db.Exec("INSERT INTO workers (name) VALUES (?)", name)
+	if err != nil {
+		return nil, fmt.Errorf("insert worker: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetWorker(int(id))
+}
+
+func (s *Service) GetWorker(id int) (*Worker, error) {
+	var w Worker
+	err := s.db.QueryRow(
+		"SELECT id, name, status, registered_at FROM workers WHERE id=?", id,
+	).Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &w, err
+}
+
+func (s *Service) ListWorkers() ([]Worker, error) {
+	rows, err := s.db.Query("SELECT id, name, status, registered_at FROM workers ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var workers []Worker
+	for rows.Next() {
+		var w Worker
+		if err := rows.Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt); err != nil {
+			return nil, err
+		}
+		workers = append(workers, w)
+	}
+	return workers, rows.Err()
+}
+
+func (s *Service) GetStats() (*QueueStats, error) {
+	stats := &QueueStats{}
+	rows, err := s.db.Query("SELECT status, COUNT(*) FROM jobs GROUP BY status")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, err
+		}
+		switch status {
+		case "pending":
+			stats.Pending = count
+		case "running":
+			stats.Running = count
+		case "completed":
+			stats.Completed = count
+		case "failed":
+			stats.Failed = count
+		case "cancelled":
+			stats.Cancelled = count
+		}
+	}
+	return stats, rows.Err()
+}
+[?2004hroot@0b544de00b41:/app# perl -i -pe 's/writeJSON\(w, http\.StatusOK, worker\)/writeJSON(w, http.StatusCreated, worker)/' handlers.go
+[?2004l[?2004hroot@0b544de00b41:/app# perl -0777 -i -pe 's/if err != nil \{\s*writeError\(w, http\.StatusInternalServerError, err\.Error\(\)\)\s*return\s*\}/if err != nil {\n                 if errors.Is(err, ErrConflict) {\n                        writeError(w, http.StatusConflict, err.Error())\n                        return\n                 }\n                writeError(w, http.StatusInternalServerError, err.Error())\n                return\n        }/sg' handlers.go
+[?2004l[?2004hroot@0b544de00b41:/app# go test ./...
+[?2004lbash: go: command not found
+[?2004hroot@0b544de00b41:/app# PORT=8080 DB_PATH=/opt/jobqueue/jobs.db ./jobqueue > /tmp/jobqueue.log 2>&1 & echo $! > /tmp/jobqueue.pid
+[?2004l[1] 572
+[?2004hroot@0b544de00b41:/app# sleep 0.3; curl -sS -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"email","payload":"{}","priority"::1}' -i | sed -n '1,20p'
+[?2004lHTTP/1.1 500 Internal Server Error
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:01:45 GMT
+Content-Length: 64
+
+{"error":"insert job: table jobs has no column named job_type"}
+[?2004hroot@0b544de00b41:/app# curl -sS http://localhost:8080/stats
+[?2004l{"pending":0,"running":1,"completed":4,"failed":1,"cancelled":0}
+[?2004hroot@0b544de00b41:/app# kill $(cat /tmp/jobqueue.pid) 2>/dev/null || true
+[?2004l[?2004hroot@0b544de00b41:/app# apt-get update
+[?2004l0% [Working]            Ign:1 http://deb.debian.org/debian bookworm InRelease
+0% [Working]            Ign:2 http://deb.debian.org/debian bookworm-updates InRelease
+0% [Working]            Ign:3 http://deb.debian.org/debian-security bookworm-security InRelease
+0% [Working]0% [Working]0% [Working]0% [Working]            Ign:1 http://deb.debian.org/debian bookworm InRelease
+0% [Working]            Ign:2 http://deb.debian.org/debian bookworm-updates InRelease
+0% [Working]            Ign:3 http://deb.debian.org/debian-security bookworm-security InRelease
+0% [Working]0% [Working]0% [Working]0% [Working]0% [Working]0% [Working]            Ign:1 http://deb.debian.org/debian bookworm InRelease
+0% [Working]            Ign:2 http://deb.debian.org/debian bookworm-updates InRelease
+0% [Working]            Ign:3 http://deb.debian.org/debian-security bookworm-security InRelease
+0% [Working]0% [Working]0% [Working]0% [Working]0% [Working]0% [Working]0% [Working]0% [Working]0% [Working]0% [Working]            Err:1 http://deb.debian.org/debian bookworm InRelease
+  Temporary failure resolving 'deb.debian.org'
+0% [Working]            Err:2 http://deb.debian.org/debian bookworm-updates InRelease
+  Temporary failure resolving 'deb.debian.org'
+0% [Working]            Err:3 http://deb.debian.org/debian-security bookworm-security InRelease
+  Temporary failure resolving 'deb.debian.org'
+0% [Working]            Reading package lists... 0%Reading package lists... 0%Reading package lists... 45%Reading package lists... Done
+W: Failed to fetch http://deb.debian.org/debian/dists/bookworm/InRelease  Temporary failure resolving 'deb.debian.org'
+W: Failed to fetch http://deb.debian.org/debian/dists/bookworm-updates/InRelease  Temporary failure resolving 'deb.debian.org'
+W: Failed to fetch http://deb.debian.org/debian-security/dists/bookworm-security/InRelease  Temporary failure resolving 'deb.debian.org'
+W: Some index files failed to download. They have been ignored, or old ones used instead.
+[1]+  Terminated              PORT=8080 DB_PATH=/opt/jobqueue/jobs.db ./jobqueue > /tmp/jobqueue.log 2>&1
+[?2004hroot@0b544de00b41:/app# apt-get install -y golang-go
+[?2004lReading package lists... 0%Reading package lists... 0%Reading package lists... 45%Reading package lists... Done
+Building dependency tree... 0%Building dependency tree... 0%Building dependency tree... 50%Building dependency tree... 50%Building dependency tree... Done
+Reading state information... 0% Reading state information... 0%Reading state information... Done
+E: Unable to locate package golang-go
+[?2004hroot@0b544de00b41:/app# go version
+[?2004lbash: go: command not found
+[?2004hroot@0b544de00b41:/app# gofmt -w main.go handlers.go service.go worker.go models.go database.go constants.go
+[?2004lbash: gofmt: command not found
+[?2004hroot@0b544de00b41:/app# go build -o jobqueue .
+[?2004lbash: go: command not found
+[?2004hroot@0b544de00b41:/app# PORT=8080 DB_PATH=/opt/jobqueue/jobs.db ./jobqueue > /tmp/jobqueue.log 2>&1 & echo $! > /tmp/jobqueue.pid
+[?2004l[1] 674
+[?2004hroot@0b544de00b41:/app# sleep 0.4; curl -sS -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"email","payload":"{}","priority"::1}' -i | sed -n '1,30p'
+[?2004lHTTP/1.1 500 Internal Server Error
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:03:38 GMT
+Content-Length: 64
+
+{"error":"insert job: table jobs has no column named job_type"}
+[?2004hroot@0b544de00b41:/app# curl -sS -X POST http://localhost:8080/workers/register -H 'Content-Type: application/json' -d '{"name":"worker-epsilon"}' -i | sed -n '11,30p'
+[?2004lHTTP/1.1 201 Created
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:03:39 GMT
+Content-Length: 88
+
+{"id":4,"name":"worker-epsilon","status":"idle","registered_at":"2026-05-26T17:03:39Z"}
+[?2004hroot@0b544de00b41:/app# curl -sS http://localhost:8080/stats
+[?2004l{"pending":0,"running":1,"completed":4,"failed":1,"cancelled":0}
+[?2004hroot@0b544de00b41:/app# kill $(cat /tmp/jobqueue.pid) 2>/dev/null || true
+[?2004l[?2004hroot@0b544de00b41:/app# cat > /opt/jobqueue/worker_config.json <<'EOF'
+[?2004l[?2004h> {"max_workers":5,"auto_retry_cancelled":false}
+[?2004l[?2004h> EOF
+[?2004l[1]+  Terminated              PORT=8080 DB_PATH=/opt/jobqueue/jobs.db ./jobqueue > /tmp/jobqueue.log 2>&1
+[?2004hroot@0b544de00b41:/app# sqlite3 /opt/jobqueue/jobs.db "ALTER TABLE jobs ADD COLUMN job_type TEXT;" 
+[?2004l[?2004hroot@0b544de00b41:/app# sqlite3 /opt/jobqueue/jobs.db "UPDATE jobs SET job_type = type WHERE job_type IS NULL OR job_type='';" 
+[?2004l[?2004hroot@0b544de00b41:/app# sqlite3 /opt/jobqueue/jobs.db "CREATE TRIGGER IF NOT EXISTS jobs_sync_type_insert AFTER INSERT ON jobs BEGIN UPDATE jobs SET type=COALESCCE(NEW.type, NEW.job_type), job_type=COALESCE(NEW.job_type, NEW.type) WHERE id=NEW.id; END;" 
+[?2004l[?2004hroot@0b544de00b41:/app# sqlite3 /opt/jobqueue/jobs.db "CREATE TRIGGER IF NOT EXISTS jobs_sync_type_update AFTER UPDATE OF type, job_type ON jobs BEGIN UPDATE jobbs SET type=COALESCE(NEW.type, NEW.job_type), job_type=COALESCE(NEW.job_type, NEW.type) WHERE id=NEW.id; END;" 
+[?2004l[?2004hroot@0b544de00b41:/app# sqlite3 /opt/jobqueue/jobs.db ".schema jobs"
+[?2004lCREATE TABLE jobs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    type       TEXT    NOT NULL,
+    payload    TEXT    NOT NULL DEFAULT '',
+    status     TEXT    NOT NULL DEFAULT 'pending',
+    priority   INTEGER NOT NULL DEFAULT 0,
+    worker_id  INTEGER REFERENCES workers(id),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+, job_type TEXT);
+CREATE TRIGGER jobs_sync_type_insert AFTER INSERT ON jobs BEGIN UPDATE jobs SET type=COALESCE(NEW.type, NEW.job_type), job_type=COALESCE(NEW.job_type, NEW.type) WHERE id=NEW.id; END;
+CREATE TRIGGER jobs_sync_type_update AFTER UPDATE OF type, job_type ON jobs BEGIN UPDATE jobs SET type=COALESCE(NEW.type, NEW.job_type), job_type=COALESCE(NEW.job_type, NEW.type) WHERE id=NEW.id; END;
+[?2004hroot@0b544de00b41:/app# PORT=8080 DB_PATH=/opt/jobqueue/jobs.db ./jobqueue > /tmp/jobqueue.log 2>&1 & echo $! > /tmp/jobqueue.pid
+[?2004l[1] 773
+[?2004hroot@0b544de00b41:/app# sleep 0.4; curl -sS -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"email","payload":"{}","priority"::1}' -i | sed -n '1,40p'
+[?2004lHTTP/1.1 500 Internal Server Error
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:03:57 GMT
+Content-Length: 62
+
+{"error":"insert job: NOT NULL constraint failed: jobs.type"}
+[?2004hroot@0b544de00b41:/app# curl -sS http://localhost:8080/jobs/1 | cat
+[?2004l{"id":1,"type":"email","payload":"{\"to\":\"alice@corp.io\",\"subject\":\"Welcome aboard\"}","status":"completed","priority":5,"worker_id":1,"worker_name":"worker-alpha","created_at":"2026-05-26T17:00:57Z","updated_at":"2026-05-26T17:00:57Z"}
+[?2004hroot@0b544de00b41:/app# curl -sS http://localhost:8080/jobs | head -c 500; echo
+[?2004l[{"id":1,"type":"email","payload":"{\"to\":\"alice@corp.io\",\"subject\":\"Welcome aboard\"}","status":"completed","priority":5,"worker_id":1,"worker_name":"","created_at":"2026-05-26T17:00:57Z","updated_at":"2026-05-26T17:00:57Z"},{"id":6,"type":"notification","payload":"{\"user_id\":99,\"channel\":\"slack\",\"msg\":\"Deploy done\"}","status":"completed","priority":4,"worker_id":null,"worker_name":"","created_at":"2026-05-26T17:00:57Z","updated_at":"2026-05-26T17:01:00.047042068Z"},{"id":2,"typ
+[?2004hroot@0b544de00b41:/app# kill $(cat /tmp/jobqueue.pid) 2>/dev/null || true
+[?2004l[?2004hroot@0b544de00b41:/app# sqlite3 /opt/jobqueue/jobs.db <<'SQL'
+[?2004l[?2004h> PRAGMA foreign_keys=OFF;
+[?2004l[?2004h> BEGIN;
+[?2004l[?2004h> 
+[?2004l[?2004h> ALTER TABLE jobs RENAME TO jobs_old;
+[?2004l[?2004h> 
+[?2004l[?2004h> CREATE TABLE jobs (
+[?2004l[?2004h>     id         INTEGER PRIMARY KEY AUTOINCREMENT,
+[?2004l[?2004h>     type       TEXT,
+[?2004l[?2004h>     job_type   TEXT    NOT NULL,
+[?2004l[?2004h>     payload    TEXT    NOT NULL DEFAULT '',
+[?2004l[?2004h>     status     TEXT    NOT NULL DEFAULT 'pending',
+[?2004l[?2004h>     priority   INTEGER NOT NULL DEFAULT 0,
+[?2004l[?2004h>     worker_id  INTEGER REFERENCES workers(id),
+[?2004l[?2004h>     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+[?2004l[?2004h>     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+[?2004l[?2004h> );
+[?2004l[?2004h> 
+[?2004l[?2004h> INSERT INTO jobs (id, type, job_type, payload, status, priority, worker_id, created_at, updated_at)
+[?2004l[?2004h> SELECT id,
+[?2004l[?2004h>        type,
+[?2004l[?2004h>        COALESCE(job_type, type) AS job_type,
+[?2004l[?2004h>        payload, status, priority, worker_id, created_at, updated_at
+[?2004l[?2004h> FROM jobs_old;
+[?2004l[?2004h> 
+[?2004l[?2004h> DROP TABLE jobs_old;
+[?2004l[?2004h> 
+[?2004l[?2004h> CREATE TRIGGER jobs_sync_type_insert AFTER INSERT ON jobs
+[?2004l[?2004h> BEGIN
+[?2004l[?2004h>   UPDATE jobs
+[?2004l[?2004h>      SET type=COALESCE(NEW.type, NEW.job_type),
+[?2004l[?2004h>          job_type=COALESCE(NEW.job_type, NEW.type)
+[?2004l[?2004h>    WHERE id=NEW.id;
+[?2004l[?2004h> END;
+[?2004l[?2004h> 
+[?2004l[?2004h> CREATE TRIGGER jobs_sync_type_update AFTER UPDATE OF type, job_type ON jobs
+[?2004l[?2004h> BEGIN
+[?2004l[?2004h>   UPDATE jobs
+[?2004l[?2004h>      SET type=COALESCE(NEW.type, NEW.job_type),
+[?2004l[?2004h>          job_type=COALESCE(NEW.job_type, NEW.type)
+[?2004l[?2004h>    WHERE id=NEW.id;
+[?2004l[?2004h> END;
+[?2004l[?2004h> 
+[?2004l[?2004h> COMMIT;
+[?2004l[?2004h> PRAGMA foreign_keys=ON;
+[?2004l[?2004h> SQL
+[?2004l[1]+  Terminated              PORT=8080 DB_PATH=/opt/jobqueue/jobs.db ./jobqueue > /tmp/jobqueue.log 2>&1
+[?2004hroot@0b544de00b41:/app# sqlite3 /opt/jobqueue/jobs.db ".schema jobs"
+[?2004lCREATE TABLE jobs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    type       TEXT,
+    job_type   TEXT    NOT NULL,
+    payload    TEXT    NOT NULL DEFAULT '',
+    status     TEXT    NOT NULL DEFAULT 'pending',
+    priority   INTEGER NOT NULL DEFAULT 0,
+    worker_id  INTEGER REFERENCES workers(id),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TRIGGER jobs_sync_type_insert AFTER INSERT ON jobs
+BEGIN
+  UPDATE jobs
+     SET type=COALESCE(NEW.type, NEW.job_type),
+         job_type=COALESCE(NEW.job_type, NEW.type)
+   WHERE id=NEW.id;
+END;
+CREATE TRIGGER jobs_sync_type_update AFTER UPDATE OF type, job_type ON jobs
+BEGIN
+  UPDATE jobs
+     SET type=COALESCE(NEW.type, NEW.job_type),
+         job_type=COALESCE(NEW.job_type, NEW.type)
+   WHERE id=NEW.id;
+END;
+[?2004hroot@0b544de00b41:/app# PORT=8080 DB_PATH=/opt/jobqueue/jobs.db ./jobqueue > /tmp/jobqueue.log 2>&1 & echo $! > /tmp/jobqueue.pid
+[?2004l[1] 845
+[?2004hroot@0b544de00b41:/app# sleep 0.4; curl -sS -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"email","payload":"{}","priority"::1}' -i | sed -n '1,30p'
+[?2004lHTTP/1.1 200 OK
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:04:15 GMT
+Content-Length: 177
+
+{"id":7,"type":"email","payload":"{}","status":"pending","priority":1,"worker_id":null,"worker_name":"","created_at":"2026-05-26T17:04:15Z","updated_at":"2026-05-26T17:04:15Z"}
+[?2004hroot@0b544de00b41:/app# curl -sS http://localhost:8080/jobs | head -c 200; echo
+[?2004l[{"id":1,"type":"email","payload":"{\"to\":\"alice@corp.io\",\"subject\":\"Welcome aboard\"}","status":"completed","priority":5,"worker_id":1,"worker_name":"","created_at":"2026-05-26T17:00:57Z","upda
+[?2004hroot@0b544de00b41:/app# curl -sS http://localhost:8080/jobs/1 | cat
+[?2004l{"id":1,"type":"email","payload":"{\"to\":\"alice@corp.io\",\"subject\":\"Welcome aboard\"}","status":"completed","priority":5,"worker_id":1,"worker_name":"worker-alpha","created_at":"2026-05-26T17:00:57Z","updated_at":"2026-05-26T17:00:57Z"}
+[?2004hroot@0b544de00b41:/app# command -v go || true; ls -la /usr/local/go/bin/go 2>/dev/null || true
+[?2004l-rwxr-xr-x 1 root root 12688957 Jan 31  2025 /usr/local/go/bin/go
+[?2004hroot@0b544de00b41:/app# find / -maxdepth 4 -type f -name go -path '*/bin/go' 2>/dev/null | head
+[?2004l[?2004hroot@0b544de00b41:/app# find / -maxdepth 5 -type f -name gofmt -path '*/bin/gofmt' 2>/dev/null | head
+[?2004l/usr/local/go/bin/gofmt
+[?2004hroot@0b544de00b41:/app# env | grep -E 'GOROOT|GOPATH|PATH'
+[?2004lPATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+DB_PATH=/opt/jobqueue/jobs.db
+GOPATH=/go
+[?2004hroot@0b544de00b41:/app# kill $(cat /tmp/jobqueue.pid) 2>/dev/null || true
+[?2004l[?2004hroot@0b544de00b41:/app# export PATH=/usr/local/go/bin:$PATH
+[?2004l[1]+  Terminated              PORT=8080 DB_PATH=/opt/jobqueue/jobs.db ./jobqueue > /tmp/jobqueue.log 2>&1
+[?2004hroot@0b544de00b41:/app# go version
+[?2004lgo version go1.22.12 linux/amd64
+[?2004hroot@0b544de00b41:/app# gofmt -w *.go
+[?2004l[?2004hroot@0b544de00b41:/app# go build -o jobqueue .
+[?2004l# github.com/internal/jobqueue
+./main.go:5:2: "fmt" imported and not used
+./main.go:6:2: "log" imported and not used
+./main.go:7:2: "net/http" imported and not used
+./main.go:11:2: "github.com/gorilla/mux" imported and not used
+[?2004hroot@0b544de00b41:/app# PORT=8080 DB_PATH=/opt/jobqueue/jobs.db ./jobqueue > /tmp/jobqueue.log 2>&1 & echo $! > /tmp/jobqueue.pid
+[?2004l[1] 1033
+[?2004hroot@0b544de00b41:/app# sleep 0.4; curl -sS -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"email","payload":"{}","priority"::1}' -i | sed -n '1,20p'
+[?2004lHTTP/1.1 200 OK
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:04:45 GMT
+Content-Length: 177
+
+{"id":8,"type":"email","payload":"{}","status":"pending","priority":1,"worker_id":null,"worker_name":"","created_at":"2026-05-26T17:04:45Z","updated_at":"2026-05-26T17:04:45Z"}
+[?2004hroot@0b544de00b41:/app# curl -sS -X POST http://localhost:8080/workers/register -H 'Content-Type: application/json' -d '{"name":"worker-epsilon2"}' -i | sed -n ''1,20p'
+[?2004lHTTP/1.1 201 Created
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:04:45 GMT
+Content-Length: 89
+
+{"id":5,"name":"worker-epsilon2","status":"idle","registered_at":"2026-05-26T17:04:45Z"}
+[?2004hroot@0b544de00b41:/app# curl -sS http://localhost:8080/jobs/1 | cat
+[?2004l{"id":1,"type":"email","payload":"{\"to\":\"alice@corp.io\",\"subject\":\"Welcome aboard\"}","status":"completed","priority":5,"worker_id":1,"worker_name":"worker-alpha","created_at":"2026-05-26T17:00:57Z","updated_at":"2026-05-26T17:00:57Z"}
+[?2004hroot@0b544de00b41:/app# curl -sS http://localhost:8080/stats | cat
+[?2004l{"pending":0,"running":1,"completed":6,"failed":1,"cancelled":0}
+[?2004hroot@0b544de00b41:/app# sed -n '1,260p' main.go
+[?2004lpackage main
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/gorilla/mux"
+)
+
+type poolConfig struct {
+	MaxWorkers         int  `json:"max_workers"`
+	AutoRetryCancelled bool `json:"auto_retry_cancelled"`
+}
+
+// startConfigWatcher syncs runtime pool settings from the ops config file.
+// Allows on-call to tune concurrency and retry policy without a redeploy.
+func startConfigWatcher(pool *WorkerPool) {
+	const cfgPath = "/opt/jobqueue/worker_config.json"
+	for {
+		time.Sleep(3 * time.Second)
+		data, err := os.ReadFile(cfgPath)
+		if err != nil {
+			continue
+		}
+		var cfg poolConfig
+		if json.Unmarshal(data, &cfg) != nil {
+			continue
+		}
+		if cfg.MaxWorkers > 0 {
+			pool.SetMax(cfg.MaxWorkers)
+		}
+		// Cancelled jobs are terminal per API contract and must never be
+		// automatically re-queued by runtime configuration.
+		_ = cfg.AutoRetryCancelled
+	}
+}
+[?2004hroot@0b544de00b41:/app# cat > main.go <<'EOF'
+[?2004l[?2004h> package main
+[?2004l[?2004h> 
+[?2004l[?2004h> import (
+[?2004l[?2004h> "encoding/json"
+[?2004l[?2004h> "fmt"
+[?2004l[?2004h> "log"
+[?2004l[?2004h> "net/http"
+[?2004l[?2004h> "os"
+[?2004l[?2004h> "time"
+[?2004l[?2004h> 
+[?2004l[?2004h> "github.com/gorilla/mux"
+[?2004l[?2004h> )
+[?2004l[?2004h> 
+[?2004l[?2004h> type poolConfig struct {
+[?2004l[?2004h> MaxWorkers         int  `json:"max_workers"`
+[?2004l[?2004h> AutoRetryCancelled bool `json:"auto_retry_cancelled"`
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> // startConfigWatcher syncs runtime pool settings from the ops config file.
+[?2004l[?2004h> // Allows on-call to tune concurrency without a redeploy.
+[?2004l[?2004h> //
+[?2004l[?2004h> // Note: Cancelled jobs are terminal per API contract and must never be
+[?2004l[?2004h> // automatically re-queued by runtime configuration.
+[?2004l[?2004h> func startConfigWatcher(pool *WorkerPool) {
+[?2004l[?2004h> const cfgPath = "/opt/jobqueue/worker_config.json"
+[?2004l[?2004h> for {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> time.Sleep(3 * time.Second)
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> data, err := os.ReadFile(cfgPath)
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> if err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> continue
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> }
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> var cfg poolConfig
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> if json.Unmarshal(data, &cfg) != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> continue
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> }
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> if cfg.MaxWorkers > 0 {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> pool.SetMax(cfg.MaxWorkers)
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> }
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> _ = cfg.AutoRetryCancelled
+[?2004l[?2004h> }
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> func main() {
+[?2004l[?2004h> db, err := initDB()
+[?2004l[?2004h> if err != nil {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> log.Fatalf("db init: %v", err)
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> pool := NewWorkerPool(5, db)
+[?2004l[?2004h> pool.Start()
+[?2004l[?2004h> go startConfigWatcher(pool)
+[?2004l[?2004h> 
+[?2004l[?2004h> svc := NewService(db, pool)
+[?2004l[?2004h> h := &Handler{svc: svc}
+[?2004l[?2004h> 
+[?2004l[?2004h> r := mux.NewRouter()
+[?2004l[?2004h> r.HandleFunc("/jobs", h.createJob).Methods(http.MethodPost)
+[?2004l[?2004h> r.HandleFunc("/jobs", h.listJobs).Methods(http.MethodGet)
+[?2004l[?2004h> r.HandleFunc("/jobs/{id:[0-9]+}", h.getJob).Methods(http.MethodGet)
+[?2004l[?2004h> r.HandleFunc("/jobs/{id:[0-9]+}/cancel", h.cancelJob).Methods(http.MethodPost)
+[?2004l[?2004h> r.HandleFunc("/jobs/{id:[0-9]+}/complete", h.completeJob).Methods(http.MethodPost)
+[?2004l[?2004h> r.HandleFunc("/jobs/{id:[0-9]+}/fail", h.failJob).Methods(http.MethodPost)
+[?2004l[?2004h> r.HandleFunc("/workers", h.listWorkers).Methods(http.MethodGet)
+[?2004l[?2004h> r.HandleFunc("/workers/register", h.registerWorker).Methods(http.MethodPost)
+[?2004l[?2004h> r.HandleFunc("/stats", h.getStats).Methods(http.MethodGet)
+[?2004l[?2004h> 
+[?2004l[?2004h> port := os.Getenv("PORT")
+[?2004l[?2004h> if port == "" {
+[?2004l[?2004h> 
+.env.example        constants.go        handlers.go         migrations/         seed.sql            worker.go           
+.gitignore          database.go         healthcheck.sh      models.go           service.go          worker_config.json  
+Makefile            go.mod              jobqueue            schema.sql          testdata/           
+api_contract.json   go.sum              main.go             scripts/            vendor/             
+> port = "8080"
+[?2004l[?2004h> }
+[?2004l[?2004h> fmt.Printf("job queue listening on :%s\n", port)
+[?2004l[?2004h> log.Fatal(http.ListenAndServe(":"+port, r))
+[?2004l[?2004h> }
+[?2004l[?2004h> EOF
+[?2004l[?2004hroot@0b544de00b41:/app# export PATH=/usr/local/go/bin:$PATH
+[?2004l[?2004hroot@0b544de00b41:/app# gofmt -w main.go
+[?2004l[?2004hroot@0b544de00b41:/app# go build -o jobqueue .
+[?2004l[?2004hroot@0b544de00b41:/app# kill $(cat /tmp/jobqueue.pid) 2>/dev/null || true
+[?2004l[?2004hroot@0b544de00b41:/app# PORT=8080 DB_PATH=/opt/jobqueue/jobs.db ./jobqueue > /tmp/jobqueue.log 2>&1 & echo $! > /tmp/jobqueue.pid
+[?2004l[2] 1224
+[1]   Terminated              PORT=8080 DB_PATH=/opt/jobqueue/jobs.db ./jobqueue > /tmp/jobqueue.log 2>&1
+[?2004hroot@0b544de00b41:/app# sleep 0.4; curl -sS -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"email","payload":"{}","priority"::1}' -i | sed -n '1,20p'
+[?2004lHTTP/1.1 500 Internal Server Error
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:05:06 GMT
+Content-Length: 66
+
+{"error":"insert job: NOT NULL constraint failed: jobs.job_type"}
+[?2004hroot@0b544de00b41:/app# perl -0777 -i -pe 's/INSERT INTO jobs \(type, payload, priority, status, worker_id\) VALUES \(\?, \?, \?, \'pending\', NULL\)/INSERT INTOO jobs (type, job_type, payload, priority, status, worker_id) VALUES (?, ?, ?, ?, \'pending\', NULL)/g; s/req\.Type, req\.Payload, req\.Priority/req.Type, req.Tyype, req.Payload, req.Priority/g' service.go
+[?2004lbash: syntax error near unexpected token `('
+[?2004hroot@0b544de00b41:/app# export PATH=/usr/local/go/bin:$PATH
+[?2004l[?2004hroot@0b544de00b41:/app# gofmt -w service.go
+[?2004l[?2004hroot@0b544de00b41:/app# go build -o jobqueue .
+[?2004l[?2004hroot@0b544de00b41:/app# kill $(cat /tmp/jobqueue.pid) 2>/dev/null || true
+[?2004l[?2004hroot@0b544de00b41:/app# PORT=8080 DB_PATH=/opt/jobqueue/jobs.db ./jobqueue > /tmp/jobqueue.log 2>&1 & echo $! > /tmp/jobqueue.pid
+[?2004l[3] 1353
+[2]   Terminated              PORT=8080 DB_PATH=/opt/jobqueue/jobs.db ./jobqueue > /tmp/jobqueue.log 2>&1
+[?2004hroot@0b544de00b41:/app# sleep 0.4; curl -sS -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"email","payload":"{}","priority"::1}' -i | sed -n '1,25p'
+[?2004lHTTP/1.1 500 Internal Server Error
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:05:23 GMT
+Content-Length: 66
+
+{"error":"insert job: NOT NULL constraint failed: jobs.job_type"}
+[?2004hroot@0b544de00b41:/app# curl -sS http://localhost:8080/stats | cat
+[?2004l{"pending":0,"running":1,"completed":6,"failed":1,"cancelled":0}
+[?2004hroot@0b544de00b41:/app# export PATH=/usr/local/go/bin:$PATH
+[?2004l[?2004hroot@0b544de00b41:/app# grep -n "func (s \*Service) CreateJob" -n service.go
+[?2004l24:func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+[?2004hroot@0b544de00b41:/app# sed -n '1,80p' service.go
+[?2004lpackage main
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+)
+
+var (
+	ErrNotFound = errors.New("not found")
+	ErrConflict = errors.New("conflict")
+)
+
+type Service struct {
+	db   *sql.DB
+	pool *WorkerPool
+}
+
+func NewService(db *sql.DB, pool *WorkerPool) *Service {
+	return &Service{db: db, pool: pool}
+}
+
+func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+	if req.Type == "" {
+		return nil, fmt.Errorf("type is required")
+	}
+	res, err := s.db.Exec(
+		"INSERT INTO jobs (type, payload, priority, status, worker_id) VALUES (?, ?, ?, 'pending', NULL)",
+		req.Type, req.Payload, req.Priority,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert job: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetJob(int(id))
+}
+
+func (s *Service) GetJob(id int) (*Job, error) {
+	var j Job
+	var workerID sql.NullInt64
+	var workerName sql.NullString
+
+	err := s.db.QueryRow(`
+		SELECT j.id, j.type, j.payload, j.status, j.priority,
+		       j.created_at, j.updated_at, j.worker_id, w.name
+		FROM jobs j
+		LEFT JOIN workers w ON j.worker_id = w.id
+		WHERE j.id = ?
+	`, id).Scan(
+		&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+		&j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if workerID.Valid {
+		wid := int(workerID.Int64)
+		j.WorkerID = &wid
+	}
+	j.WorkerName = workerName.String
+	return &j, nil
+}
+
+func (s *Service) ListJobs(status string) ([]Job, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if status == "" {
+		rows, err = s.db.Query(`
+			SELECT j.id, j.type, j.payload, j.status, j.priority, j.created_at, j.updated_at, j.worker_id, COALESCE(w.name, '')
+                        FROM jobs j
+                        LEFT JOIN workers w ON j.worker_id = w.id ORDER BY priority DESC, created_at ASC
+		`)
+	} else {
+		rows, err = s.db.Query(`
+[?2004hroot@0b544de00b41:/app# perl -0777 -i -pe "s/\"INSERT INTO jobs \(type, payload, priority, status, worker_id\) VALUES \(\?, \?, \?, 'pending', NULL\)\"/\"INSERT  INTO jobs (type, job_type, payload, priority, status, worker_id) VALUES (?, ?, ?, ?, 'pending', NULL)\"/g; s/req\.Type, req\.Payload, req\.Priority/req.Type, reeq.Type, req.Payload, req.Priority/g" service.go
+[?2004l[?2004hroot@0b544de00b41:/app# gofmt -w service.go
+[?2004l[?2004hroot@0b544de00b41:/app# go build -o jobqueue .
+[?2004l[?2004hroot@0b544de00b41:/app# kill $(cat /tmp/jobqueue.pid) 2>/dev/null || true
+[?2004l[?2004hroot@0b544de00b41:/app# PORT=8080 DB_PATH=/opt/jobqueue/jobs.db ./jobqueue > /tmp/jobqueue.log 2>&1 & echo $! > /tmp/jobqueue.pid
+[?2004l[4] 1543
+[3]   Terminated              PORT=8080 DB_PATH=/opt/jobqueue/jobs.db ./jobqueue > /tmp/jobqueue.log 2>&1
+[?2004hroot@0b544de00b41:/app# sleep 0.4; curl -sS -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"email","payload":"{}","priority"::1}' -i | sed -n '1,25p'
+[?2004lHTTP/1.1 201 Created
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:05:39 GMT
+Content-Length: 177
+
+{"id":9,"type":"email","payload":"{}","status":"pending","priority":1,"worker_id":null,"worker_name":"","created_at":"2026-05-26T17:05:39Z","updated_at":"2026-05-26T17:05:39Z"}
+[?2004hroot@0b544de00b41:/app# jid=$(curl -sS -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"notification","payload":"{}","priorityy":0}' | sed -n 's/.*"id":\([0-9]*\).*/\1/p'); echo "created=$jid"; curl -sS -X POST http://localhost:8080/jobs/$jid/cancel | cat; echo
+[?2004lcreated=10
+{"id":10,"type":"notification","payload":"{}","status":"cancelled","priority":0,"worker_id":null,"worker_name":"","created_at":"2026-05-26T17:05:49Z","updated_at":"2026-05-26T17:05:49.118649184Z"}
+
+[?2004hroot@0b544de00b41:/app# curl -sS -i -X POST http://localhost:8080/jobs/1/cancel | sed -n '1,20p'
+[?2004lHTTP/1.1 409 Conflict
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:05:50 GMT
+Content-Length: 50
+
+{"error":"conflict: job status is \"completed\""}
+[?2004hroot@0b544de00b41:/app# sleep 4; curl -sS http://localhost:8080/jobs/$jid | cat; echo
+[?2004l{"id":10,"type":"notification","payload":"{}","status":"cancelled","priority":0,"worker_id":null,"worker_name":"","created_at":"2026-05-26T17:05:49Z","updated_at":"2026-05-26T17:05:49.118649184Z"}
+
+[?2004hroot@0b544de00b41:/app# jid2=$(curl -sS -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"type":"image_resize","payload":"{}","prioritty":0}' | sed -n 's/.*"id":\([0-9]*\).*/\1/p'); echo "created2=$jid2"; sleep 3; curl -sS http://localhost:8080/jobs/$jid2 | cat; echo
+[?2004lcreated2=11
+{"id":11,"type":"image_resize","payload":"{}","status":"completed","priority":0,"worker_id":null,"worker_name":"","created_at":"2026-05-26T17:05:55Z","updated_at":"2026-05-26T17:05:57.834778318Z"}
+
+[?2004hroot@0b544de00b41:/app# curl -sS -i -X POST http://localhost:8080/workers/register -H 'Content-Type: application/json' -d '{"name":"worker-zeta"}' | sed -n '1,155p'
+[?2004lHTTP/1.1 201 Created
+Content-Type: application/json
+Date: Tue, 26 May 2026 17:06:00 GMT
+Content-Length: 85
+
+{"id":6,"name":"worker-zeta","status":"idle","registered_at":"2026-05-26T17:06:00Z"}
+[?2004hroot@0b544de00b41:/app# curl -sS http://localhost:8080/stats | cat; echo
+[?2004l{"pending":0,"running":1,"completed":8,"failed":1,"cancelled":1}
+
+[?2004hroot@0b544de00b41:/app# 

@@ -1,6 +1,0 @@
-{
-  "analysis": "No change; cannot execute commands.",
-  "plan": "Need session reset/new terminal.",
-  "commands": [],
-  "task_complete": false
-}

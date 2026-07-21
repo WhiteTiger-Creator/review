@@ -1,6 +1,0 @@
-{
-  "analysis": "Echo-only continues.",
-  "plan": "Need new terminal/session.",
-  "commands": [],
-  "task_complete": false
-}

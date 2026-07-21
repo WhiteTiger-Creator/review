@@ -1,0 +1,41 @@
+Current Terminal Screen:
+> -                }
+> +                // NOTE: Cancelled jobs must remain cancelled and must never
+> +                // transition to any other state. Runtime configuration must not
+> +                // override this invariant.
+> +                _ = cfg.AutoRetryCancelled
+>          }
+>  }
+> -
+> -// requeueCancelledJobs moves all cancelled jobs back to pending.
+> -// Activated when auto_retry_cancelled=true in worker_config.json.
+> -func requeueCancelledJobs(db *sql.DB) {
+> -        if _, err := db.Exec(
+> -                "UPDATE jobs SET status='pending', updated_at=? WHERE status='cancelled'",
+> -                time.Now(),
+> -        ); err != nil {
+> -                log.Printf("requeue error: %v", err)
+> -        }
+> -}
+> *** End Patch
+> PATCH
+bash: apply_patch: command not found
+root@ea8f2e4b9576:/app# cat /opt/jobqueue/worker_config.json
+{"max_workers":5,"auto_retry_cancelled":true}
+root@ea8f2e4b9576:/app# printf '{"max_workers":5,"auto_retry_cancelled":false}\n' > /opt/jobqueue/worker_config.json
+root@ea8f2e4b9576:/app# cat /opt/jobqueue/worker_config.json
+{"max_workers":5,"auto_retry_cancelled":false}
+root@ea8f2e4b9576:/app# cat Makefile
+.PHONY: build run clean
+
+build:
+        CGO_ENABLED=1 go build -o jobqueue .
+
+run: build
+        DB_PATH=/opt/jobqueue/jobs.db PORT=8080 ./jobqueue
+
+clean:
+        rm -f jobqueue
+root@ea8f2e4b9576:/app# which go || true; go version 2>/dev/null || echo no-go
+no-go
+root@ea8f2e4b9576:/app#

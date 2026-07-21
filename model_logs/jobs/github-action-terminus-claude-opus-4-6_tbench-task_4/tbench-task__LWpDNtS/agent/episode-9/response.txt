@@ -1,0 +1,12 @@
+Now I need to fix the `ListJobs` function to include `worker_name` via a JOIN with the workers table. Let me rewrite that function.
+
+{
+  "analysis": "Status codes are now correct. Now I need to fix ListJobs in service.go to include worker_name from the workers table via a LEFT JOIN, matching what GetJob already does.",
+  "plan": "Rewrite the ListJobs function in service.go to JOIN with workers table and populate worker_name field.",
+  "commands": [
+    {
+      "keystrokes": "cat -n /app/service.go | sed -n '68,107p'\n",
+      "duration": 0.3
+    }
+  ]
+}

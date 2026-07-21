@@ -1,0 +1,108 @@
+New Terminal Output:
+
+root@198e88760f8b:/app# 2026/05/26 17:03:54 pool: max_workers 5 -> 5
+2026/05/26 17:03:57 pool: max_workers 5 -> 5
+2026/05/26 17:04:00 pool: max_workers 5 -> 5
+curl -s http://localhost:8080/jobs/3 | python3 -m json.tool
+{
+    "id": 3,
+    "type": "image_resize",
+    "payload": "{\"src\":\"/uploads/banner.png\",\"width\":1200}",
+    "status": "completed",
+    "priority": 0,
+    "worker_id": null,
+    "worker_name": "",
+    "created_at": "2026-05-26T17:03:48Z",
+    "updated_at": "2026-05-26T17:03:51.081086828Z"
+}
+root@198e88760f8b:/app# curl -s http://localhost:8080/jobs | python3 -m json.tool
+[
+    {
+        "id": 1,
+        "type": "email",
+        "payload": "{\"to\":\"alice@corp.io\",\"subject\":\"Welcome aboard\"}",
+        "status": "completed",
+        "priority": 5,
+        "worker_id": 1,
+        "worker_name": "worker-alpha",
+        "created_at": "2026-05-26T17:03:48Z",
+        "updated_at": "2026-05-26T17:03:48Z"
+    },
+    {
+        "id": 6,
+        "type": "notification",
+        "payload": "{\"user_id\":99,\"channel\":\"slack\",\"msg\":\"Deploy done\"}",
+        "status": "completed",
+        "priority": 4,
+        "worker_id": null,
+        "worker_name": "",
+        "created_at": "2026-05-26T17:03:48Z",
+        "updated_at": "2026-05-26T17:03:51.081040068Z"
+    },
+    {
+        "id": 2,
+        "type": "report",
+        "payload": "{\"report_id\":\"q4-2024\",\"format\":\"pdf\"}",
+        "status": "running",
+        "priority": 3,
+        "worker_id": 2,
+        "worker_name": "worker-beta",
+        "created_at": "2026-05-26T17:03:48Z",
+        "updated_at": "2026-05-26T17:03:48Z"
+    },
+    {
+        "id": 4,
+        "type": "email",
+        "payload": "{\"to\":\"bob@corp.io\",\"subject\":\"Your invoice is ready\"}",
+        "status": "completed",
+        "priority": 2,
+        "worker_id": null,
+        "worker_name": "",
+        "created_at": "2026-05-26T17:03:48Z",
+        "updated_at": "2026-05-26T17:03:51.081072766Z"
+    },
+    {
+        "id": 5,
+        "type": "data_export",
+        "payload": "{\"table\":\"orders\",\"since\":\"2024-01-01\"}",
+        "status": "failed",
+        "priority": 1,
+        "worker_id": 1,
+        "worker_name": "worker-alpha",
+        "created_at": "2026-05-26T17:03:48Z",
+        "updated_at": "2026-05-26T17:03:48Z"
+    },
+    {
+        "id": 3,
+        "type": "image_resize",
+        "payload": "{\"src\":\"/uploads/banner.png\",\"width\":1200}",
+        "status": "completed",
+        "priority": 0,
+        "worker_id": null,
+        "worker_name": "",
+        "created_at": "2026-05-26T17:03:48Z",
+        "updated_at": "2026-05-26T17:03:51.081086828Z"
+    },
+    {
+        "id": 7,
+        "type": "test",
+        "payload": "hello",
+        "status": "completed",
+        "priority": 0,
+        "worker_id": null,
+        "worker_name": "",
+        "created_at": "2026-05-26T17:03:50Z",
+        "updated_at": "2026-05-26T17:03:52.581249144Z"
+    }
+]
+root@198e88760f8b:/app# curl -s -w '\nHTTP_CODE:%{http_code}' -X POST http://localhost:8080/jobs/7/cancel
+{"error":"conflict: job status is \"completed\""}
+
+HTTP_CODE:409root@198e88760f8b:/app# 2026/05/26 17:04:03 pool: max_workers 5 -> 5
+curl -s -w '\nHTTP_CODE:%{http_code}' -X POST http://localhost:8080/jobs/7/cancel
+{"error":"conflict: job status is \"completed\""}
+
+HTTP_CODE:409root@198e88760f8b:/app# curl -s -w '\nHTTP_CODE:%{http_code}' -X POST http://localhost:8080/jobs/1/cancel
+{"error":"conflict: job status is \"completed\""}
+
+HTTP_CODE:409root@198e88760f8b:/app#

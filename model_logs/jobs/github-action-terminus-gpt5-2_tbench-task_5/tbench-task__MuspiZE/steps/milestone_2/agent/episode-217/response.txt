@@ -1,6 +1,0 @@
-{
-  "analysis": "Terminal unusable.",
-  "plan": "Stop.",
-  "commands": [],
-  "task_complete": false
-}

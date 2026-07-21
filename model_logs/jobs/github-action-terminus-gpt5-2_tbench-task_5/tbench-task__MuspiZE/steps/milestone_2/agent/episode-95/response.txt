@@ -1,6 +1,0 @@
-{
-  "analysis": "Terminal is stuck echoing commands.",
-  "plan": "Need new terminal session to continue.",
-  "commands": [],
-  "task_complete": false
-}

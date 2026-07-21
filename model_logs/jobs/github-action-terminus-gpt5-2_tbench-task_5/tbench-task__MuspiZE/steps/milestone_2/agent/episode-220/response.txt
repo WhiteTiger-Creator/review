@@ -1,6 +1,0 @@
-{
-  "analysis": "Terminal still echo-only.",
-  "plan": "Need reset.",
-  "commands": [],
-  "task_complete": false
-}

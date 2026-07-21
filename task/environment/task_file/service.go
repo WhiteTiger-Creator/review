@@ -1,0 +1,227 @@
+package main
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+)
+
+var (
+	ErrNotFound = errors.New("not found")
+	ErrConflict = errors.New("conflict")
+)
+
+type Service struct {
+	db   *sql.DB
+	pool *WorkerPool
+}
+
+func NewService(db *sql.DB, pool *WorkerPool) *Service {
+	return &Service{db: db, pool: pool}
+}
+
+func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+	if req.Type == "" {
+		return nil, fmt.Errorf("type is required")
+	}
+	res, err := s.db.Exec(
+		"INSERT INTO jobs (job_type, payload, priority) VALUES (?, ?, ?)",
+		req.Type, req.Payload, req.Priority,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert job: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetJob(int(id))
+}
+
+func (s *Service) GetJob(id int) (*Job, error) {
+	var j Job
+	var workerID sql.NullInt64
+	var workerName sql.NullString
+
+	err := s.db.QueryRow(`
+		SELECT j.id, j.type, j.payload, j.status, j.priority,
+		       j.created_at, j.updated_at, j.worker_id, w.name
+		FROM jobs j
+		LEFT JOIN workers w ON j.worker_id = w.id
+		WHERE j.id = ?
+	`, id).Scan(
+		&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+		&j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if workerID.Valid {
+		wid := int(workerID.Int64)
+		j.WorkerID = &wid
+	}
+	j.WorkerName = workerName.String
+	return &j, nil
+}
+
+func (s *Service) ListJobs(status string) ([]Job, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if status == "" {
+		rows, err = s.db.Query(`
+			SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+			FROM jobs ORDER BY priority DESC, created_at ASC
+		`)
+	} else {
+		rows, err = s.db.Query(`
+			SELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+			FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC
+		`, status)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []Job
+	for rows.Next() {
+		var j Job
+		var workerID sql.NullInt64
+		if err := rows.Scan(
+			&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+			&j.CreatedAt, &j.UpdatedAt, &workerID,
+		); err != nil {
+			return nil, err
+		}
+		if workerID.Valid {
+			wid := int(workerID.Int64)
+			j.WorkerID = &wid
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
+}
+
+func (s *Service) CancelJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "pending" {
+		return nil, fmt.Errorf("%w: job status is %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) CompleteJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "running" {
+		return nil, fmt.Errorf("%w: job must be running to complete, got %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='completed', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) FailJob(id int) (*Job, error) {
+	job, err := s.GetJob(id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "running" {
+		return nil, fmt.Errorf("%w: job must be running to fail, got %q", ErrConflict, job.Status)
+	}
+	if _, err := s.db.Exec(
+		"UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+		time.Now(), id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetJob(id)
+}
+
+func (s *Service) RegisterWorker(name string) (*Worker, error) {
+	if name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	res, err := s.db.Exec("INSERT INTO workers (name) VALUES (?)", name)
+	if err != nil {
+		return nil, fmt.Errorf("insert worker: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.GetWorker(int(id))
+}
+
+func (s *Service) GetWorker(id int) (*Worker, error) {
+	var w Worker
+	err := s.db.QueryRow(
+		"SELECT id, name, status, registered_at FROM workers WHERE id=?", id,
+	).Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &w, err
+}
+
+func (s *Service) ListWorkers() ([]Worker, error) {
+	rows, err := s.db.Query("SELECT id, name, status, registered_at FROM workers ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var workers []Worker
+	for rows.Next() {
+		var w Worker
+		if err := rows.Scan(&w.ID, &w.Name, &w.Status, &w.RegisteredAt); err != nil {
+			return nil, err
+		}
+		workers = append(workers, w)
+	}
+	return workers, rows.Err()
+}
+
+func (s *Service) GetStats() (*QueueStats, error) {
+	stats := &QueueStats{}
+	rows, err := s.db.Query("SELECT status, COUNT(*) FROM jobs GROUP BY status")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, err
+		}
+		switch status {
+		case "pending":
+			stats.Pending = count
+		case "running":
+			stats.Running = count
+		case "completed":
+			stats.Completed = count
+		case "failed":
+			stats.Failed = count
+		case "cancelled":
+			stats.Cancelled = count
+		}
+	}
+	return stats, rows.Err()
+}

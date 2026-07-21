@@ -1,0 +1,12 @@
+New Terminal Output:
+00:57Z"}
+root@0b544de00b41:/app# command -v go || true; ls -la /usr/local/go/bin/go 2>/dev/null || true
+-rwxr-xr-x 1 root root 12688957 Jan 31  2025 /usr/local/go/bin/go
+root@0b544de00b41:/app# find / -maxdepth 4 -type f -name go -path '*/bin/go' 2>/dev/null | head
+root@0b544de00b41:/app# find / -maxdepth 5 -type f -name gofmt -path '*/bin/gofmt' 2>/dev/null | head
+/usr/local/go/bin/gofmt
+root@0b544de00b41:/app# env | grep -E 'GOROOT|GOPATH|PATH'
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+DB_PATH=/opt/jobqueue/jobs.db
+GOPATH=/go
+root@0b544de00b41:/app#

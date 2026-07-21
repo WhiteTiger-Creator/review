@@ -1,5 +1,0 @@
-rm -f notes_server
-gcc -Wall -Wextra -o notes_server src/main.c src/routes.c src/db.c -lmicrohttpd -lsqlite3 -lcjson -lpthread
-src/routes.c:42:13: warning: ‘request_completed’ defined but not used [-Wunused-function]
-   42 | static void request_completed(void *cls, struct MHD_Connection *connection,
-      |             ^~~~~~~~~~~~~~~~~

@@ -1,6 +1,0 @@
-{
-  "analysis": "The terminal session is persistently echoing input without executing any commands, preventing further progress (build/run/test).",
-  "plan": "A fresh terminal/session is required to continue. No commands can be run in the current state.",
-  "commands": [],
-  "task_complete": false
-}

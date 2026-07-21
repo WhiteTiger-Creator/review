@@ -1,6 +1,0 @@
-{
-  "analysis": "Terminal remains echo-only and non-executing.",
-  "plan": "Need fresh session.",
-  "commands": [],
-  "task_complete": false
-}

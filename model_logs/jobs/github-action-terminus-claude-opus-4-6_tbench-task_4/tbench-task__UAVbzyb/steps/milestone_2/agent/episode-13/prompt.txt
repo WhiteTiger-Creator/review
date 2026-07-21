@@ -1,6 +1,0 @@
-New Terminal Output:
--Cou
-nt
-
-curl -s -D- 'http://localhost:8080/api/notes?limit=100' 2>&1 | grep X-Total-Count
-

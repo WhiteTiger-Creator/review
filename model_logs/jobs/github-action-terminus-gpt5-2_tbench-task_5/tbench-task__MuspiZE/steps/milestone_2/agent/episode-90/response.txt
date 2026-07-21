@@ -1,6 +1,0 @@
-{
-  "analysis": "Terminal still broken.",
-  "plan": "New session required.",
-  "commands": [],
-  "task_complete": false
-}

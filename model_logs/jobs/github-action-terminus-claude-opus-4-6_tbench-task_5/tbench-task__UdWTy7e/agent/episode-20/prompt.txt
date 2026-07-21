@@ -1,0 +1,39 @@
+New Terminal Output:
+4475Z"
+}
+root@198e88760f8b:/app# 2026/05/26 17:05:16 pool: max_workers 5 -> 5
+2026/05/26 17:05:19 pool: max_workers 5 -> 5
+2026/05/26 17:05:22 pool: max_workers 5 -> 5
+2026/05/26 17:05:25 pool: max_workers 5 -> 5
+2026/05/26 17:05:28 pool: max_workers 5 -> 5
+2026/05/26 17:05:31 pool: max_workers 5 -> 5
+2026/05/26 17:05:34 pool: max_workers 5 -> 5
+kill %1 2>/dev/null; wait 2>/dev/null
+root@198e88760f8b:/app# find / -name '*test*' -path '*app*' 2>/dev/null | grep -v vendor | grep -v '.git'
+/app/testdata
+/usr/local/go/src/cmd/compile/internal/test/testdata/append_test.go
+/usr/local/go/src/net/http/mapping_test.go
+/usr/local/go/src/runtime/pprof/testdata/mappingtest
+/usr/local/go/src/sort/example_wrapper_test.go
+root@198e88760f8b:/app# ls /app/testdata/
+error_cases.json  sample_jobs.json  sample_workers.json
+root@198e88760f8b:/app# cat /app/testdata/*
+[
+  {"description": "missing type field",    "body": {"payload": "x"},              "expected_status": 400},
+  {"description": "missing name field",    "body": {},                            "expected_status": 400},
+  {"description": "job not found",         "id": 9999,                            "expected_status": 404},
+  {"description": "cancel running job",    "id": 2,                               "expected_status": 409},
+  {"description": "cancel completed job",  "id": 1,                               "expected_status": 409}
+]
+[
+  {"type": "email",        "payload": "{\"to\":\"user@example.com\",\"subject\":\"Hello\"}", "priority": 3},
+  {"type": "report",       "payload": "{\"report_id\":\"rpt-001\",\"format\":\"csv\"}",      "priority": 1},
+  {"type": "image_resize", "payload": "{\"src\":\"/uploads/img.png\",\"width\":800}",        "priority": 0},
+  {"type": "notification", "payload": "{\"user_id\":42,\"channel\":\"email\"}",              "priority": 2}
+]
+[
+  {"name": "worker-alpha"},
+  {"name": "worker-beta"},
+  {"name": "worker-gamma"}
+]
+root@198e88760f8b:/app#

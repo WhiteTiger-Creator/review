@@ -1,0 +1,106 @@
+New Terminal Output:
+ }
+   107
+root@971fdf94be36:/app# cat > /tmp/listjobs_fix.py << 'EOF'
+> import re
+>
+> with open('/app/service.go', 'r') as f:
+>     content = f.read()
+>
+> old_func = '''func (s *Service) ListJobs(status string) ([]Job, error) {
+> \tvar (
+> \t\trows *sql.Rows
+> \t\terr  error
+> \t)
+> \tif status == "" {
+> \t\trows, err = s.db.Query(`
+> \t\t\tSELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+> \t\t\tFROM jobs ORDER BY priority DESC, created_at ASC
+> \t\t`)
+> \t} else {
+> \t\trows, err = s.db.Query(`
+> \t\t\tSELECT id, type, payload, status, priority, created_at, updated_at, worker_id
+> \t\t\tFROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC
+> \t\t`, status)
+> \t}
+> \tif err != nil {
+> \t\treturn nil, err
+> \t}
+> \tdefer rows.Close()
+>
+> \tvar jobs []Job
+> \tfor rows.Next() {
+> \t\tvar j Job
+> \t\tvar workerID sql.NullInt64
+> \t\tif err := rows.Scan(
+> \t\t\t&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+> \t\t\t&j.CreatedAt, &j.UpdatedAt, &workerID,
+> \t\t); err != nil {
+> \t\t\treturn nil, err
+> \t\t}
+> \t\tif workerID.Valid {
+> \t\t\twid := int(workerID.Int64)
+> \t\t\tj.WorkerID = &wid
+> \t\t}
+> \t\tjobs = append(jobs, j)
+> \t}
+> \treturn jobs, rows.Err()
+> }'''
+>
+> new_func = '''func (s *Service) ListJobs(status string) ([]Job, error) {
+> \tvar (
+> \t\trows *sql.Rows
+> \t\terr  error
+> \t)
+> \tif status == "" {
+> \t\trows, err = s.db.Query(`
+> \t\t\tSELECT j.id, j.type, j.payload, j.status, j.priority, j.created_at, j.updated_at, j.worker_id, w.name
+> \t\t\tFROM jobs j
+> \t\t\tLEFT JOIN workers w ON j.worker_id = w.id
+> \t\t\tORDER BY j.priority DESC, j.created_at ASC
+> \t\t`)
+> \t} else {
+> \t\trows, err = s.db.Query(`
+> \t\t\tSELECT j.id, j.type, j.payload, j.status, j.priority, j.created_at, j.updated_at, j.worker_id, w.name
+> \t\t\tFROM jobs j
+> \t\t\tLEFT JOIN workers w ON j.worker_id = w.id
+> \t\t\tWHERE j.status = ? ORDER BY j.priority DESC, j.created_at ASC
+> \t\t`, status)
+> \t}
+> \tif err != nil {
+> \t\treturn nil, err
+> \t}
+> \tdefer rows.Close()
+>
+> \tvar jobs []Job
+> \tfor rows.Next() {
+> \t\tvar j Job
+> \t\tvar workerID sql.NullInt64
+> \t\tvar workerName sql.NullString
+> \t\tif err := rows.Scan(
+> \t\t\t&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority,
+> \t\t\t&j.CreatedAt, &j.UpdatedAt, &workerID, &workerName,
+> \t\t); err != nil {
+> \t\t\treturn nil, err
+> \t\t}
+> \t\tif workerID.Valid {
+> \t\t\twid := int(workerID.Int64)
+> \t\t\tj.WorkerID = &wid
+> \t\t}
+> \t\tj.WorkerName = workerName.String
+> \t\tjobs = append(jobs, j)
+> \t}
+> \treturn jobs, rows.Err()
+> }'''
+>
+> if old_func in content:
+>     content = content.replace(old_func, new_func)
+>     with open('/app/service.go', 'w') as f:
+>         f.write(content)
+>     print("ListJobs replaced successfully")
+> else:
+>     print("Could not find old ListJobs function")
+> EOF
+root@971fdf94be36:/app# python3 /tmp/listjobs_fix.py
+ListJobs replaced successfully
+root@971fdf94be36:/app#

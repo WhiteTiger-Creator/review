@@ -1,0 +1,7 @@
+New Terminal Output:
+not found
+root@971fdf94be36:/app# which go 2>/dev/null || find / -name 'go' -type f 2>/dev/null | head -20
+/usr/local/go/bin/go
+root@971fdf94be36:/app# ls /usr/local/go/bin/ 2>/dev/null || ls /usr/lib/go*/bin/ 2>/dev/null
+go  gofmt
+root@971fdf94be36:/app#

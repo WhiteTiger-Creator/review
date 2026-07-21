@@ -1,6 +1,0 @@
-{
-  "analysis": "The terminal session remains echo-only, so no further work can be done.",
-  "plan": "Need a fresh terminal/session.",
-  "commands": [],
-  "task_complete": false
-}

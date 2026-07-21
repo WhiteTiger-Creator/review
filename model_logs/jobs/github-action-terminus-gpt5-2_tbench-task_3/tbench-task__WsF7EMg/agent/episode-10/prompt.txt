@@ -1,0 +1,41 @@
+Current Terminal Screen:
+   102                  return nil, err
+   103          }
+   104
+   105          res, err := tx.Exec("UPDATE jobs SET status='running', updated_at=? WHERE id=? AND status='pending'", time.Now(), j.id)
+   106          if err != nil {
+   107                  return nil, err
+   108          }
+   109          aff, _ := res.RowsAffected()
+   110          if aff == 0 {
+   111                  return nil, nil
+   112          }
+   113          return &j, tx.Commit()
+   114  }
+   115
+   116  func (p *WorkerPool) process(jobID int) {
+   117          time.Sleep(2 * time.Second)
+   118
+   119          var status string
+   120          if err := p.db.QueryRow("SELECT status FROM jobs WHERE id=?", jobID).Scan(&status); err != nil {
+   121                  log.Printf("pool: error reading job %d status: %v", jobID, err)
+   122                  return
+   123          }
+   124          if status != "running" {
+   125                  return
+   126          }
+   127
+   128          if _, err := p.db.Exec(
+   129                  "UPDATE jobs SET status='completed', updated_at=? WHERE id=? AND status='running'",
+   130                  time.Now(), jobID,
+   131          ); err != nil {
+   132                  log.Printf("pool: error completing job %d: %v", jobID, err)
+   133                  p.db.Exec( //nolint:errcheck
+   134                          "UPDATE jobs SET status='failed', updated_at=? WHERE id=? AND status='running'",
+   135                          time.Now(), jobID,
+   136                  )
+   137          }
+   138  }
+root@855ef4bf14a4:/app# grep -RIn "status='cancelled'" -n *.go
+service.go:117: res, err := s.db.Exec("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=? AND status='pending'", time.Now(), id)
+root@855ef4bf14a4:/app#

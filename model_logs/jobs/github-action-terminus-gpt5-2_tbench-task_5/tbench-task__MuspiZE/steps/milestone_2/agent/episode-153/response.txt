@@ -1,6 +1,0 @@
-{
-  "analysis": "Echo-only continues; cannot execute commands.",
-  "plan": "No further action.",
-  "commands": [],
-  "task_complete": false
-}

@@ -1,0 +1,132 @@
+job queue listening on :8080
+============================= test session starts ==============================
+platform linux -- Python 3.11.2, pytest-8.4.1, pluggy-1.6.0 -- /usr/bin/python3
+cachedir: .pytest_cache
+rootdir: /tests
+plugins: json-ctrf-0.5.0
+collecting ... collected 31 items
+
+../tests/test_outputs.py::TestJobCreation::test_create_job_returns_201 PASSED [  3%]
+../tests/test_outputs.py::TestJobCreation::test_create_job_stores_payload_correctly PASSED [  6%]
+../tests/test_outputs.py::TestJobCreation::test_create_job_missing_type_returns_400 PASSED [  9%]
+../tests/test_outputs.py::TestJobCreation::test_create_job_default_priority_is_zero PASSED [ 12%]
+../tests/test_outputs.py::TestJobCreation::test_create_job_worker_id_is_null_on_creation PASSED [ 16%]
+../tests/test_outputs.py::TestListJobs::test_list_all_jobs_returns_at_least_six_seeded PASSED [ 19%]
+../tests/test_outputs.py::TestListJobs::test_list_jobs_filtered_by_status_pending FAILED [ 22%]
+../tests/test_outputs.py::TestListJobs::test_list_jobs_filtered_by_status_completed FAILED [ 25%]
+../tests/test_outputs.py::TestListJobs::test_list_jobs_filtered_by_status_failed FAILED [ 29%]
+../tests/test_outputs.py::TestListJobs::test_get_job_by_id FAILED        [ 32%]
+../tests/test_outputs.py::TestListJobs::test_get_job_not_found_returns_404 PASSED [ 35%]
+../tests/test_outputs.py::TestJobWorkerName::test_running_job_has_worker_name_populated FAILED [ 38%]
+../tests/test_outputs.py::TestJobWorkerName::test_completed_job_has_worker_name_populated FAILED [ 41%]
+../tests/test_outputs.py::TestJobWorkerName::test_pending_job_has_empty_worker_name FAILED [ 45%]
+../tests/test_outputs.py::TestCancelJob::test_cancel_pending_job_returns_200 FAILED [ 48%]
+../tests/test_outputs.py::TestCancelJob::test_cancel_running_job_returns_409 PASSED [ 51%]
+../tests/test_outputs.py::TestCancelJob::test_cancel_completed_job_returns_409 PASSED [ 54%]
+../tests/test_outputs.py::TestCancelJob::test_cancel_failed_job_returns_409 PASSED [ 58%]
+../tests/test_outputs.py::TestCancelJob::test_cancel_nonexistent_job_returns_404 PASSED [ 61%]
+../tests/test_outputs.py::TestCancelJob::test_cancelled_job_stays_cancelled FAILED [ 64%]
+../tests/test_outputs.py::TestJobLifecycle::test_complete_running_job FAILED [ 67%]
+../tests/test_outputs.py::TestJobLifecycle::test_complete_pending_job_returns_409 PASSED [ 70%]
+../tests/test_outputs.py::TestJobLifecycle::test_fail_nonexistent_job_returns_404 PASSED [ 74%]
+../tests/test_outputs.py::TestWorkers::test_list_workers_returns_three_seeded PASSED [ 77%]
+../tests/test_outputs.py::TestWorkers::test_register_worker_returns_201 PASSED [ 80%]
+../tests/test_outputs.py::TestWorkers::test_register_worker_missing_name_returns_400 PASSED [ 83%]
+../tests/test_outputs.py::TestStats::test_get_stats_returns_expected_shape PASSED [ 87%]
+../tests/test_outputs.py::TestStats::test_stats_completed_count_is_at_least_one PASSED [ 90%]
+../tests/test_outputs.py::TestWorkerPool::test_pending_job_gets_processed_automatically 2026/05/26 17:04:32 pool: max_workers 5 -> 5
+PASSED [ 93%]
+../tests/test_outputs.py::TestFileIntegrity::test_api_contract_not_modified PASSED [ 96%]
+../tests/test_outputs.py::TestFileIntegrity::test_no_bypass_scripts_added PASSED [100%]
+
+=================================== FAILURES ===================================
+____________ TestListJobs.test_list_jobs_filtered_by_status_pending ____________
+/tests/test_outputs.py:69: in test_list_jobs_filtered_by_status_pending
+    assert r.status_code == 200
+E   assert 500 == 200
+E    +  where 500 = <Response [500]>.status_code
+___________ TestListJobs.test_list_jobs_filtered_by_status_completed ___________
+/tests/test_outputs.py:77: in test_list_jobs_filtered_by_status_completed
+    assert r.status_code == 200
+E   assert 500 == 200
+E    +  where 500 = <Response [500]>.status_code
+____________ TestListJobs.test_list_jobs_filtered_by_status_failed _____________
+/tests/test_outputs.py:86: in test_list_jobs_filtered_by_status_failed
+    assert r.status_code == 200
+E   assert 500 == 200
+E    +  where 500 = <Response [500]>.status_code
+_______________________ TestListJobs.test_get_job_by_id ________________________
+/tests/test_outputs.py:95: in test_get_job_by_id
+    assert r.status_code == 200
+E   assert 201 == 200
+E    +  where 201 = <Response [201]>.status_code
+_________ TestJobWorkerName.test_running_job_has_worker_name_populated _________
+/tests/test_outputs.py:112: in test_running_job_has_worker_name_populated
+    assert r.status_code == 200
+E   assert 201 == 200
+E    +  where 201 = <Response [201]>.status_code
+________ TestJobWorkerName.test_completed_job_has_worker_name_populated ________
+/tests/test_outputs.py:122: in test_completed_job_has_worker_name_populated
+    assert r.status_code == 200
+E   assert 201 == 200
+E    +  where 201 = <Response [201]>.status_code
+___________ TestJobWorkerName.test_pending_job_has_empty_worker_name ___________
+/tests/test_outputs.py:130: in test_pending_job_has_empty_worker_name
+    assert r.status_code == 200
+E   assert 201 == 200
+E    +  where 201 = <Response [201]>.status_code
+______________ TestCancelJob.test_cancel_pending_job_returns_200 _______________
+/tests/test_outputs.py:144: in test_cancel_pending_job_returns_200
+    assert r.status_code == 200, f"expected 200, got {r.status_code}: {r.text}"
+E   AssertionError: expected 200, got 201: {"id":11,"type":"test_cancel","payload":"","status":"cancelled","priority":0,"worker_id":null,"worker_name":"","created_at":"2026-05-26T17:04:31Z","updated_at":"2026-05-26T17:04:31.084095009Z"}
+E     
+E   assert 201 == 200
+E    +  where 201 = <Response [201]>.status_code
+_______________ TestCancelJob.test_cancelled_job_stays_cancelled _______________
+/tests/test_outputs.py:173: in test_cancelled_job_stays_cancelled
+    assert cancel_r.status_code == 200, \
+E   AssertionError: cancel failed (check cancel guard bug): 201 {"id":12,"type":"durable_cancel_check","payload":"","status":"cancelled","priority":0,"worker_id":null,"worker_name":"","created_at":"2026-05-26T17:04:31Z","updated_at":"2026-05-26T17:04:31.100017615Z"}
+E     
+E   assert 201 == 200
+E    +  where 201 = <Response [201]>.status_code
+__________________ TestJobLifecycle.test_complete_running_job __________________
+/tests/test_outputs.py:192: in test_complete_running_job
+    assert r.status_code == 200, f"expected 200, got {r.status_code}: {r.text}"
+E   AssertionError: expected 200, got 201: {"id":2,"type":"report","payload":"{\"report_id\":\"q4-2024\",\"format\":\"pdf\"}","status":"completed","priority":3,"worker_id":2,"worker_name":"worker-beta","created_at":"2026-05-26T17:04:29Z","updated_at":"2026-05-26T17:04:31.108909066Z"}
+E     
+E   assert 201 == 200
+E    +  where 201 = <Response [201]>.status_code
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED ../tests/test_outputs.py::TestJobCreation::test_create_job_returns_201
+PASSED ../tests/test_outputs.py::TestJobCreation::test_create_job_stores_payload_correctly
+PASSED ../tests/test_outputs.py::TestJobCreation::test_create_job_missing_type_returns_400
+PASSED ../tests/test_outputs.py::TestJobCreation::test_create_job_default_priority_is_zero
+PASSED ../tests/test_outputs.py::TestJobCreation::test_create_job_worker_id_is_null_on_creation
+PASSED ../tests/test_outputs.py::TestListJobs::test_list_all_jobs_returns_at_least_six_seeded
+PASSED ../tests/test_outputs.py::TestListJobs::test_get_job_not_found_returns_404
+PASSED ../tests/test_outputs.py::TestCancelJob::test_cancel_running_job_returns_409
+PASSED ../tests/test_outputs.py::TestCancelJob::test_cancel_completed_job_returns_409
+PASSED ../tests/test_outputs.py::TestCancelJob::test_cancel_failed_job_returns_409
+PASSED ../tests/test_outputs.py::TestCancelJob::test_cancel_nonexistent_job_returns_404
+PASSED ../tests/test_outputs.py::TestJobLifecycle::test_complete_pending_job_returns_409
+PASSED ../tests/test_outputs.py::TestJobLifecycle::test_fail_nonexistent_job_returns_404
+PASSED ../tests/test_outputs.py::TestWorkers::test_list_workers_returns_three_seeded
+PASSED ../tests/test_outputs.py::TestWorkers::test_register_worker_returns_201
+PASSED ../tests/test_outputs.py::TestWorkers::test_register_worker_missing_name_returns_400
+PASSED ../tests/test_outputs.py::TestStats::test_get_stats_returns_expected_shape
+PASSED ../tests/test_outputs.py::TestStats::test_stats_completed_count_is_at_least_one
+PASSED ../tests/test_outputs.py::TestWorkerPool::test_pending_job_gets_processed_automatically
+PASSED ../tests/test_outputs.py::TestFileIntegrity::test_api_contract_not_modified
+PASSED ../tests/test_outputs.py::TestFileIntegrity::test_no_bypass_scripts_added
+FAILED ../tests/test_outputs.py::TestListJobs::test_list_jobs_filtered_by_status_pending
+FAILED ../tests/test_outputs.py::TestListJobs::test_list_jobs_filtered_by_status_completed
+FAILED ../tests/test_outputs.py::TestListJobs::test_list_jobs_filtered_by_status_failed
+FAILED ../tests/test_outputs.py::TestListJobs::test_get_job_by_id - assert 20...
+FAILED ../tests/test_outputs.py::TestJobWorkerName::test_running_job_has_worker_name_populated
+FAILED ../tests/test_outputs.py::TestJobWorkerName::test_completed_job_has_worker_name_populated
+FAILED ../tests/test_outputs.py::TestJobWorkerName::test_pending_job_has_empty_worker_name
+FAILED ../tests/test_outputs.py::TestCancelJob::test_cancel_pending_job_returns_200
+FAILED ../tests/test_outputs.py::TestCancelJob::test_cancelled_job_stays_cancelled
+FAILED ../tests/test_outputs.py::TestJobLifecycle::test_complete_running_job
+======================== 10 failed, 21 passed in 3.28s =========================

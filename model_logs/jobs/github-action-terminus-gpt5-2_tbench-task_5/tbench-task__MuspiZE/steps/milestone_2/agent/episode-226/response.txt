@@ -1,6 +1,0 @@
-{
-  "analysis": "No command execution possible.",
-  "plan": "New session required.",
-  "commands": [],
-  "task_complete": false
-}

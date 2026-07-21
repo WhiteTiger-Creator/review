@@ -1,9 +1,0 @@
-Previous response had warnings:
-WARNINGS: - Command 1 should end with newline when followed by another command. Otherwise the two commands will be concatenated together on the same line.
-
-New Terminal Output:
-l-Count
-
-curl -s http://localhost:8080/api/notes -D - 2>&1 | grep X-Total-Count
-curl -s -D /tmp/headers http://localhost:8080/api/notes > /tmp/body && grep X-Total-Count /tmp/headers
-

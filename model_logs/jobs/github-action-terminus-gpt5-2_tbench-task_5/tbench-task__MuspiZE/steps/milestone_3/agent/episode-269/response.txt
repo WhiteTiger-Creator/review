@@ -1,6 +1,0 @@
-{
-  "analysis": "No change: terminal stuck at '+'.",
-  "plan": "No commands; requires a new terminal/session reset.",
-  "commands": [],
-  "task_complete": false
-}

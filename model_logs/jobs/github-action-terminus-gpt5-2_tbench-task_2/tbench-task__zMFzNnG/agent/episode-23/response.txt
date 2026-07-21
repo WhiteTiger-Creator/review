@@ -1,0 +1,59 @@
+{
+  "analysis": "We rebuilt and confirmed GET /jobs/1 now includes worker_name correctly (good). However POST /jobs is broken: it returns an error \"insert job: table jobs has no column named job_type\". That’s a major bug: the schema uses column `type`, not `job_type`. So Service.CreateJob likely inserts into `job_type` column. This must be fixed, and also ensure POST /jobs returns HTTP 201 with created job and correct defaults. Our test curl didn’t show status code; only JSON error. Also the second POST failed so jid empty and cancel hit 404.\nWe also need to ensure create job sets status pending and worker_id null. Next: inspect service.go CreateJob and handlers.go createJob for status code. Then patch CreateJob SQL, error mapping (400 vs 500), and ensure created job returned with 201. Then retest POST /jobs and cancel behaviour with config watcher (auto_retry_cancelled=true) to ensure cancelled remains cancelled (we already removed requeue in main.go).",
+  "plan": "1) Inspect handlers.go createJob to confirm it writes status code 201 and maps validation errors to 400. 2) Inspect service.go CreateJob SQL and fix it to insert into `jobs (type, payload, priority, status, worker_id)` (or omit status/worker_id to defaults) using correct column names and forcing status pending and worker_id NULL. 3) Ensure CreateJob validates type non-empty; default priority to 0; payload default empty string.\n4) Add/ensure an ErrBadRequest error type so handler can return 400 for invalid/missing fields rather than 500. (If already exists, use it.)\n5) gofmt, rebuild, run server, and curl POST /jobs to verify 201 and response body; then cancel the created job quickly and wait >3s to ensure it stays cancelled even with auto_retry_cancelled=true. Also verify worker pool doesn’t set worker_id for pool-processed jobs by checking created job’s worker_id stays null after completion.\n",
+  "commands": [
+    {
+      "keystrokes": "export PATH=/usr/local/go/bin:$PATH\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "nl -ba handlers.go | sed -n '1,80p'\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "nl -ba service.go | sed -n '1,70p'\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "grep -n 'ErrBadRequest\\|ErrConflict\\|ErrNotFound' -n *.go\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/INSERT INTO jobs \\(job_type, payload, priority\\)/INSERT INTO jobs (type, payload, priority)/g; s/\\bjob_type\\b/type/g' service.go\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "gofmt -w service.go\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "make build\n",
+      "duration": 20.0
+    },
+    {
+      "keystrokes": "printf '{\"max_workers\":5,\"auto_retry_cancelled\":true}\\n' > /opt/jobqueue/worker_config.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "DB_PATH=/opt/jobqueue/jobs.db PORT=8080 ./jobqueue > /tmp/jobqueue.log 2>&1 & echo $! > /tmp/jobqueue.pid\n",
+      "duration": 0.2
+    },
+    {
+      "keystrokes": "sleep 0.2; tail -n 2 /tmp/jobqueue.log\n",
+      "duration": 0.3
+    },
+    {
+      "keystrokes": "curl -s -i -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{\"type\":\"email\",\"payload\":\"{}\",\"priority\":1}'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "jid=$(curl -s -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{\"type\":\"report\",\"payload\":\"{}\"}' | sed -n 's/.*\"id\":\\([0-9]*\\).*/\\1/p'); echo \"newjob=$jid\"; curl -s -i -X POST http://localhost:8080/jobs/$jid/cancel; sleep 4; echo; curl -s http://localhost:8080/jobs/$jid\n",
+      "duration": 6.0
+    },
+    {
+      "keystrokes": "kill $(cat /tmp/jobqueue.pid) 2>/dev/null || true\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

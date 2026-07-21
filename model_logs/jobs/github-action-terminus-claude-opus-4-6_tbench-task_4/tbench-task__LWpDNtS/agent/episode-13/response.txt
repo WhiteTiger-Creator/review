@@ -1,0 +1,10 @@
+{
+  "analysis": "Go is installed at /usr/local/go/bin/go. I need to use the full path to build.",
+  "plan": "Build the application using the full path to go binary.",
+  "commands": [
+    {
+      "keystrokes": "export PATH=$PATH:/usr/local/go/bin && go build -o jobqueue .\n",
+      "duration": 30.0
+    }
+  ]
+}

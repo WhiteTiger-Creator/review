@@ -1,0 +1,52 @@
+New Terminal Output:
+
+root@00130fd7ffef:/app# 2026/05/26 17:04:07 pool: max_workers 5 -> 5
+2026/05/26 17:04:10 pool: max_workers 5 -> 5
+2026/05/26 17:04:13 pool: max_workers 5 -> 5
+2026/05/26 17:04:16 pool: max_workers 5 -> 5
+2026/05/26 17:04:19 pool: max_workers 5 -> 5
+2026/05/26 17:04:22 pool: max_workers 5 -> 5
+2026/05/26 17:04:25 pool: max_workers 5 -> 5
+2026/05/26 17:04:28 pool: max_workers 5 -> 5
+2026/05/26 17:04:31 pool: max_workers 5 -> 5
+2026/05/26 17:04:34 pool: max_workers 5 -> 5
+curl -s -w '\nHTTP_CODE:%{http_code}\n' -X POST http://localhost:8080/jobs/7/cancel
+{"error":"conflict: job status is \"completed\""}
+
+HTTP_CODE:409
+root@00130fd7ffef:/app# curl -s -w '\nHTTP_CODE:%{http_code}\n' -X POST -H 'Content-Type: application/json' -d '{"type":"canceltest","priority":0}' http://local
+host:8080/jobs
+{"id":8,"type":"canceltest","payload":"","status":"pending","priority":0,"worker_id":null,"worker_name":"","created_at":"2026-05-26T17:04:37Z","updated_at":"202
+6-05-26T17:04:37Z"}
+
+HTTP_CODE:201
+root@00130fd7ffef:/app# 2026/05/26 17:04:37 pool: max_workers 5 -> 5
+curl -s -w '\nHTTP_CODE:%{http_code}\n' -X POST http://localhost:8080/jobs/8/cancel
+{"error":"conflict: job status is \"running\""}
+
+HTTP_CODE:409
+root@00130fd7ffef:/app# curl -s -w '\nHTTP_CODE:%{http_code}\n' -X POST http://localhost:8080/jobs/8/cancel
+{"error":"conflict: job status is \"running\""}
+
+HTTP_CODE:409
+root@00130fd7ffef:/app# curl -s -w '\nHTTP_CODE:%{http_code}\n' -X POST -H 'Content-Type: application/json' -d '{"name":"test-worker"}' http://localhost:8080/wo
+rkers/register
+{"id":4,"name":"test-worker","status":"idle","registered_at":"2026-05-26T17:04:40Z"}
+
+HTTP_CODE:201
+root@00130fd7ffef:/app# 2026/05/26 17:04:40 pool: max_workers 5 -> 5
+sleep 5 && curl -s http://localhost:8080/jobs/8 | python3 -m json.tool
+2026/05/26 17:04:43 pool: max_workers 5 -> 5
+{
+    "id": 8,
+    "type": "canceltest",
+    "payload": "",
+    "status": "completed",
+    "priority": 0,
+    "worker_id": null,
+    "worker_name": "",
+    "created_at": "2026-05-26T17:04:37Z",
+    "updated_at": "2026-05-26T17:04:39.229760564Z"
+}
+root@00130fd7ffef:/app# 2026/05/26 17:04:46 pool: max_workers 5 -> 5
+

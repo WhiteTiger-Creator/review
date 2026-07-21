@@ -1,8 +1,0 @@
-New Terminal Output:
-
-404root@1b06f1f3df22:/app# curl --path-as-is -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8080/%2e%2e/etc/passwd'
-403root@1b06f1f3df22:/app# curl --path-as-is -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8080/.%2e/etc/passwd'
-403root@1b06f1f3df22:/app# curl --path-as-is -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8080/%2e./etc/passwd'
-403root@1b06f1f3df22:/app# curl --path-as-is -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8080/../etc/passwd'
-403root@1b06f1f3df22:/app# curl --path-as-is -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8080/foo/../../etc/passwd'
-403root@1b06f1f3df22:/app#

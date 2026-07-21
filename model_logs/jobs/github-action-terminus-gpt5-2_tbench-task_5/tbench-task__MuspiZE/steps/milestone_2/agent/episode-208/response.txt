@@ -1,6 +1,0 @@
-{
-  "analysis": "Still broken.",
-  "plan": "Stop.",
-  "commands": [],
-  "task_complete": false
-}

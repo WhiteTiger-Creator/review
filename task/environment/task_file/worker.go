@@ -1,0 +1,136 @@
+package main
+
+import (
+	"database/sql"
+	"log"
+	"sync"
+	"time"
+)
+
+type WorkerPool struct {
+	mu         sync.Mutex
+	maxWorkers int
+	active     int
+	db         *sql.DB
+	quit       chan struct{}
+}
+
+func NewWorkerPool(max int, db *sql.DB) *WorkerPool {
+	return &WorkerPool{
+		maxWorkers: max,
+		db:         db,
+		quit:       make(chan struct{}),
+	}
+}
+
+func (p *WorkerPool) SetMax(n int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	log.Printf("pool: max_workers %d -> %d", p.maxWorkers, n)
+	p.maxWorkers = n
+}
+
+func (p *WorkerPool) Start() {
+	go p.poll()
+}
+
+func (p *WorkerPool) Stop() {
+	close(p.quit)
+}
+
+func (p *WorkerPool) poll() {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.quit:
+			return
+		case <-ticker.C:
+			p.mu.Lock()
+			slots := p.maxWorkers - p.active
+			p.mu.Unlock()
+
+			for i := 0; i < slots; i++ {
+				job, err := p.claimNextPending()
+				if err != nil {
+					log.Printf("poll claim error: %v", err)
+					break
+				}
+				if job == nil {
+					break
+				}
+				p.mu.Lock()
+				p.active++
+				p.mu.Unlock()
+
+				go func(jobID int) {
+					defer func() {
+						p.mu.Lock()
+						p.active--
+						p.mu.Unlock()
+					}()
+					p.process(jobID)
+				}(job.id)
+			}
+		}
+	}
+}
+
+type pendingJob struct {
+	id      int
+	jobType string
+}
+
+func (p *WorkerPool) claimNextPending() (*pendingJob, error) {
+	tx, err := p.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	var j pendingJob
+	err = tx.QueryRow(`
+		SELECT id, type FROM jobs
+		WHERE status = 'pending'
+		ORDER BY priority DESC, created_at ASC
+		LIMIT 1
+	`).Scan(&j.id, &j.jobType)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err = tx.Exec(
+		"UPDATE jobs SET status='running', updated_at=? WHERE id=?",
+		time.Now(), j.id,
+	); err != nil {
+		return nil, err
+	}
+	return &j, tx.Commit()
+}
+
+func (p *WorkerPool) process(jobID int) {
+	time.Sleep(2 * time.Second)
+
+	var status string
+	if err := p.db.QueryRow("SELECT status FROM jobs WHERE id=?", jobID).Scan(&status); err != nil {
+		log.Printf("pool: error reading job %d status: %v", jobID, err)
+		return
+	}
+	if status != "running" {
+		return
+	}
+
+	if _, err := p.db.Exec(
+		"UPDATE jobs SET status='completed', updated_at=? WHERE id=?",
+		time.Now(), jobID,
+	); err != nil {
+		log.Printf("pool: error completing job %d: %v", jobID, err)
+		p.db.Exec( //nolint:errcheck
+			"UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+			time.Now(), jobID,
+		)
+	}
+}

@@ -1,6 +1,0 @@
-{
-  "analysis": "Still stuck at '+'. No commands can be executed in this terminal session.",
-  "plan": "No further commands; requires controller to reset/replace the terminal session.",
-  "commands": [],
-  "task_complete": false
-}

@@ -1,6 +1,0 @@
-{
-  "analysis": "Still stuck at '+', no command execution possible.",
-  "plan": "No commands; requires reset/new session.",
-  "commands": [],
-  "task_complete": false
-}

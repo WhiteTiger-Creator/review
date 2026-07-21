@@ -1,0 +1,41 @@
+Current Terminal Screen:
+                return nil, nil
+        }
+        if err != nil {
+                return nil, err
+        }
+
+        if _, err = tx.Exec(
+                "UPDATE jobs SET status='running', updated_at=? WHERE id=?",
+                time.Now(), j.id,
+        ); err != nil {
+                return nil, err
+        }
+        return &j, tx.Commit()
+}
+
+func (p *WorkerPool) process(jobID int) {
+        time.Sleep(2 * time.Second)
+
+        var status string
+        if err := p.db.QueryRow("SELECT status FROM jobs WHERE id=?", jobID).Scan(&status); err != nil {
+                log.Printf("pool: error reading job %d status: %v", jobID, err)
+                return
+        }
+        if status != "running" {
+                return
+        }
+
+        if _, err := p.db.Exec(
+                "UPDATE jobs SET status='completed', updated_at=? WHERE id=?",
+                time.Now(), jobID,
+        ); err != nil {
+                log.Printf("pool: error completing job %d: %v", jobID, err)
+                p.db.Exec( //nolint:errcheck
+                        "UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+                        time.Now(), jobID,
+                )
+        }
+}
+root@ea8f2e4b9576:/app# sed -n '260,520p' worker.go
+root@ea8f2e4b9576:/app#

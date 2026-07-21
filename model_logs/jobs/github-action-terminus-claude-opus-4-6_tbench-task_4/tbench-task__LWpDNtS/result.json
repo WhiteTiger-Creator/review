@@ -1,0 +1,132 @@
+{
+    "id": "25c033cf-f3ff-4aa1-a001-de85dcf675a7",
+    "task_name": "tbench-task",
+    "trial_name": "tbench-task__LWpDNtS",
+    "trial_uri": "file:///root/jobs/github-action-terminus-claude-opus-4-6_tbench-task_4/tbench-task__LWpDNtS",
+    "task_id": {
+        "path": "harbor_tasks/tbench-task"
+    },
+    "source": null,
+    "task_checksum": "738db13bb29371387c315567bdb5a780a4757533b1d61c489e4f189abce44a30",
+    "config": {
+        "task": {
+            "path": "harbor_tasks/tbench-task",
+            "git_url": null,
+            "git_commit_id": null,
+            "name": null,
+            "ref": null,
+            "overwrite": false,
+            "download_dir": null,
+            "source": null
+        },
+        "trial_name": "tbench-task__LWpDNtS",
+        "trials_dir": "jobs/github-action-terminus-claude-opus-4-6_tbench-task_4",
+        "timeout_multiplier": 1.0,
+        "agent_timeout_multiplier": null,
+        "verifier_timeout_multiplier": null,
+        "agent_setup_timeout_multiplier": null,
+        "environment_build_timeout_multiplier": null,
+        "agent": {
+            "name": "terminus-2",
+            "import_path": null,
+            "model_name": "openai/@anthropic/claude-opus-4-6",
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "kwargs": {
+                "model_info": {
+                    "max_input_tokens": 200000,
+                    "max_output_tokens": 16384
+                }
+            },
+            "env": {}
+        },
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "suppress_override_warnings": false,
+            "mounts_json": null,
+            "env": {},
+            "kwargs": {}
+        },
+        "verifier": {
+            "override_timeout_sec": null,
+            "max_timeout_sec": null,
+            "env": {},
+            "disable": false
+        },
+        "artifacts": [],
+        "job_id": "417e1288-29a3-4294-bbe7-c86f8b79a9eb"
+    },
+    "agent_info": {
+        "name": "terminus-2",
+        "version": "2.0.0",
+        "model_info": {
+            "name": "@anthropic/claude-opus-4-6",
+            "provider": "openai"
+        }
+    },
+    "agent_result": {
+        "n_input_tokens": 295178,
+        "n_cache_tokens": 0,
+        "n_output_tokens": 17300,
+        "cost_usd": null,
+        "rollout_details": [],
+        "metadata": {
+            "n_episodes": 19,
+            "api_request_times_msec": [
+                7714.122772216797,
+                20512.153387069702,
+                19115.04554748535,
+                3779.827833175659,
+                2893.313407897949,
+                41221.60077095032,
+                27740.47803878784,
+                12889.915943145752,
+                6455.59024810791,
+                9494.186162948608,
+                14755.305528640747,
+                15123.9914894104,
+                4816.861391067505,
+                3768.2647705078125,
+                6066.4222240448,
+                13249.502897262573,
+                32058.06541442871,
+                21837.092399597168,
+                22083.277702331543
+            ],
+            "summarization_count": 0
+        }
+    },
+    "verifier_result": {
+        "rewards": {
+            "reward": 1.0
+        }
+    },
+    "exception_info": null,
+    "started_at": "2026-05-26T16:58:14.954309Z",
+    "finished_at": "2026-05-26T17:07:08.491183Z",
+    "environment_setup": {
+        "started_at": "2026-05-26T16:58:15.042171Z",
+        "finished_at": "2026-05-26T17:00:18.974671Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-05-26T17:00:18.974718Z",
+        "finished_at": "2026-05-26T17:00:36.049225Z"
+    },
+    "agent_execution": {
+        "started_at": "2026-05-26T17:00:36.049321Z",
+        "finished_at": "2026-05-26T17:06:48.629737Z"
+    },
+    "verifier": {
+        "started_at": "2026-05-26T17:06:48.734503Z",
+        "finished_at": "2026-05-26T17:06:56.055557Z"
+    },
+    "step_results": null
+}

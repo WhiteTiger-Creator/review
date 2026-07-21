@@ -1,0 +1,41 @@
+Current Terminal Screen:
+   149          }
+   150          if _, err := s.db.Exec(
+   151                  "UPDATE jobs SET status='failed', updated_at=? WHERE id=?",
+   152                  time.Now(), id,
+   153          ); err != nil {
+   154                  return nil, err
+   155          }
+   156          return s.GetJob(id)
+   157  }
+   158
+   159  func (s *Service) RegisterWorker(name string) (*Worker, error) {
+   160          if name == "" {
+   161                  return nil, fmt.Errorf("name is required")
+   162          }
+   163          res, err := s.db.Exec("INSERT INTO workers (name) VALUES (?)", name)
+   164          if err != nil {
+   165                  return nil, fmt.Errorf("insert worker: %w", err)
+   166          }
+   167          id, _ := res.LastInsertId()
+   168          return s.GetWorker(int(id))
+   169  }
+   170
+root@ea8f2e4b9576:/app# grep -n 'CreateJob\|ListJobs\|GetJob\|Cancel\|Complete\|Fail' -n service.go
+24:func (s *Service) CreateJob(req CreateJobRequest) (*Job, error) {
+36:     return s.GetJob(int(id))
+39:func (s *Service) GetJob(id int) (*Job, error) {
+68:func (s *Service) ListJobs(status string) ([]Job, error) {
+108:func (s *Service) CancelJob(id int) (*Job, error) {
+109:    job, err := s.GetJob(id)
+122:    return s.GetJob(id)
+125:func (s *Service) CompleteJob(id int) (*Job, error) {
+126:    job, err := s.GetJob(id)
+139:    return s.GetJob(id)
+142:func (s *Service) FailJob(id int) (*Job, error) {
+143:    job, err := s.GetJob(id)
+156:    return s.GetJob(id)
+219:                    stats.Completed = count
+221:                    stats.Failed = count
+223:                    stats.Cancelled = count
+root@ea8f2e4b9576:/app#

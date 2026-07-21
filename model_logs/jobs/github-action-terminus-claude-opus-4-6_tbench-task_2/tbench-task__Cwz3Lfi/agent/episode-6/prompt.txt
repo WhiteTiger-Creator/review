@@ -1,0 +1,17 @@
+New Terminal Output:
+
+root@c18de6e73dca:/app# sed -i '59s/http.StatusCreated/http.StatusOK/' /app/handlers.go
+root@c18de6e73dca:/app# sed -i '94s/http.StatusCreated/http.StatusOK/' /app/handlers.go
+root@c18de6e73dca:/app# sed -i '116s/http.StatusCreated/http.StatusOK/' /app/handlers.go
+root@c18de6e73dca:/app# sed -i '138s/http.StatusCreated/http.StatusOK/' /app/handlers.go
+root@c18de6e73dca:/app# grep -n 'StatusOK\|StatusCreated' /app/handlers.go
+41:     writeJSON(w, http.StatusCreated, job)
+59:     writeJSON(w, http.StatusOK, job)
+72:     writeJSON(w, http.StatusOK, jobs)
+94:     writeJSON(w, http.StatusOK, job)
+116:    writeJSON(w, http.StatusOK, job)
+138:    writeJSON(w, http.StatusOK, job)
+156:    writeJSON(w, http.StatusCreated, worker)
+168:    writeJSON(w, http.StatusOK, workers)
+177:    writeJSON(w, http.StatusOK, stats)
+root@c18de6e73dca:/app#

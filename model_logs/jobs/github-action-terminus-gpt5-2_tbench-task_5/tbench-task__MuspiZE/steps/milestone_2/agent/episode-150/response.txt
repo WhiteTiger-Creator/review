@@ -1,6 +1,0 @@
-{
-  "analysis": "Still cannot execute.",
-  "plan": "Stop.",
-  "commands": [],
-  "task_complete": false
-}

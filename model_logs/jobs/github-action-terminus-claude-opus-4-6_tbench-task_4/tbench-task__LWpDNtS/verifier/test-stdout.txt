@@ -1,0 +1,76 @@
+job queue listening on :8080
+============================= test session starts ==============================
+platform linux -- Python 3.11.2, pytest-8.4.1, pluggy-1.6.0 -- /usr/bin/python3
+cachedir: .pytest_cache
+rootdir: /tests
+plugins: json-ctrf-0.5.0
+collecting ... collected 31 items
+
+../tests/test_outputs.py::TestJobCreation::test_create_job_returns_201 PASSED [  3%]
+../tests/test_outputs.py::TestJobCreation::test_create_job_stores_payload_correctly PASSED [  6%]
+../tests/test_outputs.py::TestJobCreation::test_create_job_missing_type_returns_400 PASSED [  9%]
+../tests/test_outputs.py::TestJobCreation::test_create_job_default_priority_is_zero PASSED [ 12%]
+../tests/test_outputs.py::TestJobCreation::test_create_job_worker_id_is_null_on_creation PASSED [ 16%]
+../tests/test_outputs.py::TestListJobs::test_list_all_jobs_returns_at_least_six_seeded PASSED [ 19%]
+../tests/test_outputs.py::TestListJobs::test_list_jobs_filtered_by_status_pending PASSED [ 22%]
+../tests/test_outputs.py::TestListJobs::test_list_jobs_filtered_by_status_completed PASSED [ 25%]
+../tests/test_outputs.py::TestListJobs::test_list_jobs_filtered_by_status_failed PASSED [ 29%]
+../tests/test_outputs.py::TestListJobs::test_get_job_by_id PASSED        [ 32%]
+../tests/test_outputs.py::TestListJobs::test_get_job_not_found_returns_404 PASSED [ 35%]
+../tests/test_outputs.py::TestJobWorkerName::test_running_job_has_worker_name_populated PASSED [ 38%]
+../tests/test_outputs.py::TestJobWorkerName::test_completed_job_has_worker_name_populated PASSED [ 41%]
+../tests/test_outputs.py::TestJobWorkerName::test_pending_job_has_empty_worker_name PASSED [ 45%]
+../tests/test_outputs.py::TestCancelJob::test_cancel_pending_job_returns_200 PASSED [ 48%]
+../tests/test_outputs.py::TestCancelJob::test_cancel_running_job_returns_409 PASSED [ 51%]
+../tests/test_outputs.py::TestCancelJob::test_cancel_completed_job_returns_409 PASSED [ 54%]
+../tests/test_outputs.py::TestCancelJob::test_cancel_failed_job_returns_409 PASSED [ 58%]
+../tests/test_outputs.py::TestCancelJob::test_cancel_nonexistent_job_returns_404 PASSED [ 61%]
+../tests/test_outputs.py::TestCancelJob::test_cancelled_job_stays_cancelled 2026/05/26 17:06:52 pool: max_workers 5 -> 5
+2026/05/26 17:06:55 pool: max_workers 5 -> 5
+PASSED [ 64%]
+../tests/test_outputs.py::TestJobLifecycle::test_complete_running_job PASSED [ 67%]
+../tests/test_outputs.py::TestJobLifecycle::test_complete_pending_job_returns_409 PASSED [ 70%]
+../tests/test_outputs.py::TestJobLifecycle::test_fail_nonexistent_job_returns_404 PASSED [ 74%]
+../tests/test_outputs.py::TestWorkers::test_list_workers_returns_three_seeded PASSED [ 77%]
+../tests/test_outputs.py::TestWorkers::test_register_worker_returns_201 PASSED [ 80%]
+../tests/test_outputs.py::TestWorkers::test_register_worker_missing_name_returns_400 PASSED [ 83%]
+../tests/test_outputs.py::TestStats::test_get_stats_returns_expected_shape PASSED [ 87%]
+../tests/test_outputs.py::TestStats::test_stats_completed_count_is_at_least_one PASSED [ 90%]
+../tests/test_outputs.py::TestWorkerPool::test_pending_job_gets_processed_automatically PASSED [ 93%]
+../tests/test_outputs.py::TestFileIntegrity::test_api_contract_not_modified PASSED [ 96%]
+../tests/test_outputs.py::TestFileIntegrity::test_no_bypass_scripts_added PASSED [100%]
+
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED ../tests/test_outputs.py::TestJobCreation::test_create_job_returns_201
+PASSED ../tests/test_outputs.py::TestJobCreation::test_create_job_stores_payload_correctly
+PASSED ../tests/test_outputs.py::TestJobCreation::test_create_job_missing_type_returns_400
+PASSED ../tests/test_outputs.py::TestJobCreation::test_create_job_default_priority_is_zero
+PASSED ../tests/test_outputs.py::TestJobCreation::test_create_job_worker_id_is_null_on_creation
+PASSED ../tests/test_outputs.py::TestListJobs::test_list_all_jobs_returns_at_least_six_seeded
+PASSED ../tests/test_outputs.py::TestListJobs::test_list_jobs_filtered_by_status_pending
+PASSED ../tests/test_outputs.py::TestListJobs::test_list_jobs_filtered_by_status_completed
+PASSED ../tests/test_outputs.py::TestListJobs::test_list_jobs_filtered_by_status_failed
+PASSED ../tests/test_outputs.py::TestListJobs::test_get_job_by_id
+PASSED ../tests/test_outputs.py::TestListJobs::test_get_job_not_found_returns_404
+PASSED ../tests/test_outputs.py::TestJobWorkerName::test_running_job_has_worker_name_populated
+PASSED ../tests/test_outputs.py::TestJobWorkerName::test_completed_job_has_worker_name_populated
+PASSED ../tests/test_outputs.py::TestJobWorkerName::test_pending_job_has_empty_worker_name
+PASSED ../tests/test_outputs.py::TestCancelJob::test_cancel_pending_job_returns_200
+PASSED ../tests/test_outputs.py::TestCancelJob::test_cancel_running_job_returns_409
+PASSED ../tests/test_outputs.py::TestCancelJob::test_cancel_completed_job_returns_409
+PASSED ../tests/test_outputs.py::TestCancelJob::test_cancel_failed_job_returns_409
+PASSED ../tests/test_outputs.py::TestCancelJob::test_cancel_nonexistent_job_returns_404
+PASSED ../tests/test_outputs.py::TestCancelJob::test_cancelled_job_stays_cancelled
+PASSED ../tests/test_outputs.py::TestJobLifecycle::test_complete_running_job
+PASSED ../tests/test_outputs.py::TestJobLifecycle::test_complete_pending_job_returns_409
+PASSED ../tests/test_outputs.py::TestJobLifecycle::test_fail_nonexistent_job_returns_404
+PASSED ../tests/test_outputs.py::TestWorkers::test_list_workers_returns_three_seeded
+PASSED ../tests/test_outputs.py::TestWorkers::test_register_worker_returns_201
+PASSED ../tests/test_outputs.py::TestWorkers::test_register_worker_missing_name_returns_400
+PASSED ../tests/test_outputs.py::TestStats::test_get_stats_returns_expected_shape
+PASSED ../tests/test_outputs.py::TestStats::test_stats_completed_count_is_at_least_one
+PASSED ../tests/test_outputs.py::TestWorkerPool::test_pending_job_gets_processed_automatically
+PASSED ../tests/test_outputs.py::TestFileIntegrity::test_api_contract_not_modified
+PASSED ../tests/test_outputs.py::TestFileIntegrity::test_no_bypass_scripts_added
+============================== 31 passed in 5.69s ==============================

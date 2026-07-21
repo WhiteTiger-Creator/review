@@ -1,37 +1,39 @@
 version = "2.0"
-steps = [
-    { name = "milestone_1", agent = { timeout_sec = 1200 }, verifier = { timeout_sec = 600 } },
-    { name = "milestone_2", agent = { timeout_sec = 1200 }, verifier = { timeout_sec = 600 } },
-    { name = "milestone_3", agent = { timeout_sec = 1200 }, verifier = { timeout_sec = 600 } },
-]
 
 [metadata]
 difficulty = "hard"
-category = "software-engineering"
+category = "debugging"
+tags = [
+    "go",
+    "sqlite",
+    "debugging",
+    "concurrency",
+    "worker-pool",
+]
+expert_time_estimate_min = 60.0
+junior_time_estimate_min = 480.0
+codebase_size = "Small"
+task_subtypes = [
+    "API Integration",
+]
 subcategories = [
     "api_integration",
 ]
-tags = [
-    "c",
-    "javascript",
-    "rest-api",
-    "sqlite",
-    "crud",
-    "libmicrohttpd",
-]
+number_of_milestones = 0
 languages = [
-    "c",
-    "javascript",
+    "go",
 ]
-codebase_size = "small"
-number_of_milestones = 3
-expert_time_estimate_min = 120
-junior_time_estimate_min = 360
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 1800.0
 
 [environment]
 allow_internet = false
-build_timeout_sec = 900
+build_timeout_sec = 600.0
 cpus = 2
-memory_mb = 4096
+memory_mb = 2048
 storage_mb = 10240
 workdir = "/app"

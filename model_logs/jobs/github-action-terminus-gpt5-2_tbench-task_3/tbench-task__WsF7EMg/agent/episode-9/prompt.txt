@@ -1,0 +1,41 @@
+Current Terminal Screen:
+   152          worker, err := h.svc.RegisterWorker(req.Name)
+   153          if err != nil {
+   154                  if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+   155                          writeError(w, http.StatusBadRequest, "worker name must be unique")
+   156                          return
+   157                  }
+   158                  writeError(w, http.StatusInternalServerError, err.Error())
+   159                  return
+   160          }
+   161          writeJSON(w, http.StatusCreated, worker)
+   162  }
+   163
+   164
+   165  func (h *Handler) listWorkers(w http.ResponseWriter, r *http.Request) {
+   166          workers, err := h.svc.ListWorkers()
+   167          if err != nil {
+   168                  writeError(w, http.StatusInternalServerError, err.Error())
+   169                  return
+   170          }
+   171          if workers == nil {
+   172                  workers = []Worker{}
+   173          }
+   174          writeJSON(w, http.StatusOK, workers)
+   175  }
+   176
+   177  func (h *Handler) getStats(w http.ResponseWriter, r *http.Request) {
+   178          stats, err := h.svc.GetStats()
+   179          if err != nil {
+   180                  writeError(w, http.StatusInternalServerError, err.Error())
+   181                  return
+   182          }
+   183          writeJSON(w, http.StatusOK, stats)
+   184  }
+root@855ef4bf14a4:/app# perl -0777 -i -pe 's/\n\s*if cfg\.AutoRetryCancelled \{\n\s*requeueCancelledJobs\(pool\.db\)\n\s*\}\n/\n\t\t\t\/\/ Cancelled jobs are te
+rminal per API contract; ignore auto_retry_cancelled.\n/sg; s/func requeueCancelledJobs\(db \*sql\.DB\) \{[\s\S]*?\n\}/func requeueCancelledJobs(db *sql.DB) {\n
+\t\/\/ Cancelled jobs are terminal per API contract; do not requeue.\n\t_ = db\n}\n/s' main.go
+root@855ef4bf14a4:/app# grep -n "requeueCancelledJobs" -n main.go
+41:// requeueCancelledJobs moves all cancelled jobs back to pending.
+43:func requeueCancelledJobs(db *sql.DB) {
+root@855ef4bf14a4:/app#

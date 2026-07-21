@@ -1,0 +1,42 @@
+{
+  "analysis": "There's a critical issue! The sed command replaced ALL occurrences of `writeJSON(w, http.StatusOK, job)` with `writeJSON(w, http.StatusCreated, job)`, but only createJob should return 201. The getJob, cancelJob, completeJob, and failJob handlers should all return 200. Also, the ListJobs COALESCE fix wasn't applied (grep shows no COALESCE in service.go). And `go` isn't in PATH - I need to find it.",
+  "plan": "1. Fix handlers.go - revert the incorrect StatusCreated changes for getJob, cancelJob, completeJob, failJob\n2. Fix ListJobs in service.go manually\n3. Find go binary and rebuild",
+  "commands": [
+    {
+      "keystrokes": "sed -n '55,65p' /app/handlers.go\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '88,98p' /app/handlers.go\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '110,120p' /app/handlers.go\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '132,142p' /app/handlers.go\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -i '59s/http.StatusCreated/http.StatusOK/' /app/handlers.go\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -i '94s/http.StatusCreated/http.StatusOK/' /app/handlers.go\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -i '116s/http.StatusCreated/http.StatusOK/' /app/handlers.go\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -i '138s/http.StatusCreated/http.StatusOK/' /app/handlers.go\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "grep -n 'StatusCreated\\|StatusOK' /app/handlers.go\n",
+      "duration": 0.1
+    }
+  ]
+}

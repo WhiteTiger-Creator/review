@@ -1,5 +1,0 @@
-The last piece is the browser client in /app/www/app.js. Point fetch at the same-origin API base /api/notes. When the script runs, load the list into the notes-list element. Each row needs edit and delete buttons whose class lists include edit-btn and delete-btn.
-
-Submitting note-form should create a note when nothing is selected and update the active row otherwise. When create or save succeeds, note-title and note-content should be empty and the form should be ready for a new note on the next submit rather than staying on the previous row. Delete must call the API and refresh the list. After every successful POST, PUT, or DELETE, reload the list so the page matches the database.
-
-Send Content-Type application/json and the trimmed API key from /app/config/api.key on POST, PUT, and DELETE only, not on GET. The automated frontend harness is not a real browser; read /app/docs/js_verifier_mock.md for DOM and fetch quirks before you declare done. Keep /app.js reachable over HTTP from the running server on port 8080, not only on disk.

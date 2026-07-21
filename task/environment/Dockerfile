@@ -1,35 +1,25 @@
-FROM python:3.12-slim@sha256:804ddf3251a60bbf9c92e73b7566c40428d54d0e79d3428194edf40da6521286
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        tmux=3.5a-3 \
-        asciinema=2.4.0-1 \
-    && rm -rf /var/lib/apt/lists/*
+FROM golang:1.22-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc=4:14.2.0-1 \
-    make-guile=4.4.1-2 \
-    libmicrohttpd-dev=1.0.1-4 \
-    libsqlite3-dev=3.46.1-7+deb13u1 \
-    libcjson-dev=1.7.18-3.1+deb13u1 \
-    curl=8.14.1-2+deb13u3 \
-    file=1:5.46-5 \
+        gcc sqlite3 tmux curl python3 python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-COPY verifier-requirements.txt /opt/verifier-requirements.txt
-
-RUN python3 -m pip install --no-cache-dir \
-    pytest==8.4.1 \
-    pytest-json-ctrf==0.3.5 \
-    pytest-timeout==2.3.1 \
-    quickjs==1.19.4
+RUN pip3 install --break-system-packages --no-cache-dir \
+    pytest==8.4.1 pytest-json-ctrf==0.5.0 requests==2.32.3
 
 WORKDIR /app
 
-RUN mkdir -p /app/data /logs/verifier
+RUN mkdir -p /opt/jobqueue /logs/verifier
 
-COPY data/app/ /app/
+COPY task_file/ ./
 
-CMD ["/bin/bash"]
+# Ops config: auto_retry_cancelled is on from the last incident response.
+# This is intentional — toggled by on-call, not application code.
+RUN cp worker_config.json /opt/jobqueue/worker_config.json
+
+RUN CGO_ENABLED=1 go build -mod=vendor -o jobqueue .
+
+ENV DB_PATH=/opt/jobqueue/jobs.db
+ENV PORT=8080
+
+EXPOSE 8080

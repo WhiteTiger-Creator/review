@@ -1,0 +1,41 @@
+Current Terminal Screen:
+    "failed": 1,
+    "cancelled": 0
+}
+root@198e88760f8b:/app# 2026/05/26 17:04:34 pool: max_workers 5 -> 5
+2026/05/26 17:04:37 pool: max_workers 5 -> 5
+2026/05/26 17:04:40 pool: max_workers 5 -> 5
+2026/05/26 17:04:43 pool: max_workers 5 -> 5
+2026/05/26 17:04:46 pool: max_workers 5 -> 5
+2026/05/26 17:04:49 pool: max_workers 5 -> 5
+2026/05/26 17:04:52 pool: max_workers 5 -> 5
+2026/05/26 17:04:55 pool: max_workers 5 -> 5
+2026/05/26 17:04:58 pool: max_workers 5 -> 5
+2026/05/26 17:05:01 pool: max_workers 5 -> 5
+2026/05/26 17:05:04 pool: max_workers 5 -> 5
+2026/05/26 17:05:07 pool: max_workers 5 -> 5
+kill %1 2>/dev/null; wait 2>/dev/null
+root@198e88760f8b:/app# rm -f /opt/jobqueue/jobs.db && ./jobqueue &
+[1] 1054
+root@198e88760f8b:/app# job queue listening on :8080
+=json.load(sys.stdin); print(j["id"],j["status"])'tent-Type: application/json' -d '{"type":"cancelme"}' | python3 -c 'import json,sys; j=
+7 pending
+root@198e88760f8b:/app# curl -s -X POST http://localhost:8080/jobs/7/cancel | python3 -m json.tool
+{
+    "error": "conflict: job status is \"running\""
+}
+root@198e88760f8b:/app# sleep 4 && curl -s http://localhost:8080/jobs/7 | python3 -m json.tool
+2026/05/26 17:05:13 pool: max_workers 5 -> 5
+{
+    "id": 7,
+    "type": "cancelme",
+    "payload": "",
+    "status": "completed",
+    "priority": 0,
+    "worker_id": null,
+    "worker_name": "",
+    "created_at": "2026-05-26T17:05:10Z",
+    "updated_at": "2026-05-26T17:05:12.971184475Z"
+}
+root@198e88760f8b:/app# 2026/05/26 17:05:16 pool: max_workers 5 -> 5
+
