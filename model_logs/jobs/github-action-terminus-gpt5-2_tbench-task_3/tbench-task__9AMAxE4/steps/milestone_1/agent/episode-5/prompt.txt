@@ -1,0 +1,118 @@
+New Terminal Output:
+
+root@08d5c4164ec3:/app# apply_patch<<'PATCH'
+> *** Begin Patch
+> *** Update File: src/main.c
+> @@
+>  static int url_contains_encoded_dotdot(const char *url) {
+> @@
+>  }
+> +
+> +static int from_hex(char c) {
+> +    if (c >= '0' && c <= '9') return c - '0';
+> +    if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+> +    if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+> +    return -1;
+> +}
+> +
+> +// Percent-decode URL path into out (NUL-terminated). Returns 0 on success.
+> +static int url_percent_decode(const char *in, char *out, size_t out_sz) {
+> +    size_t oi = 0;
+> +    for (size_t i = 0; in[i] != '\0'; i++) {
+> +        if (oi + 1 >= out_sz) return -1;
+> +        if (in[i] == '%' && in[i+1] && in[i+2]) {
+> +            int hi = from_hex(in[i+1]);
+> +            int lo = from_hex(in[i+2]);
+> +            if (hi < 0 || lo < 0) return -1;
+> +            out[oi++] = (char)((hi << 4) | lo);
+> +            i += 2;
+> +            continue;
+> +        }
+> +        out[oi++] = in[i];
+> +    }
+> +    out[oi] = '\0';
+> +    return 0;
+> +}
+> +
+> +static int path_has_dot_segments(const char *path) {
+> +    // Reject "." or ".." path segments after decoding.
+> +    // Assumes path begins with '/'.
+> +    const char *p = path;
+> +    while (*p) {
+> +        while (*p == '/') p++;
+> +        if (*p == '\0') break;
+> +        const char *seg = p;
+> +        while (*p && *p != '/') p++;
+> +        size_t len = (size_t)(p - seg);
+> +        if ((len == 1 && seg[0] == '.') || (len == 2 && seg[0] == '.' && seg[1] == '.'))
+> +            return 1;
+> +    }
+> +    return 0;
+> +}
+> @@
+>  static enum MHD_Result serve_static_file(struct MHD_Connection *connection,
+>      const char *url) {
+> -    if (strstr(url, "..") != NULL || url_contains_encoded_dotdot(url)) {
+> +    char decoded[1024];
+> +    if (url_percent_decode(url, decoded, sizeof(decoded)) != 0) {
+> +        struct MHD_Response *r = MHD_create_response_from_buffer(
+> +            9, (void *)"Forbidden", MHD_RESPMEM_PERSISTENT);
+> +        enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_FORBIDDEN, r);
+> +        MHD_destroy_response(r);
+> +        return ret;
+> +    }
+> +
+> +    if (strstr(url, "..") != NULL || url_contains_encoded_dotdot(url) ||
+> +        strstr(decoded, "..") != NULL || path_has_dot_segments(decoded)) {
+>          struct MHD_Response *r = MHD_create_response_from_buffer(
+>              9, (void *)"Forbidden", MHD_RESPMEM_PERSISTENT);
+>          enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_FORBIDDEN, r);
+>          MHD_destroy_response(r);
+>          return ret;
+>      }
+> @@
+> -    const char *path = strcmp(url, "/") == 0 ? "/index.html" : url;
+> +    const char *path = strcmp(decoded, "/") == 0 ? "/index.html" : decoded;
+>      snprintf(filepath, sizeof(filepath), "%s%s", WWW_DIR, path);
+> *** End Patch
+> PATCH
+bash: apply_patch: command not found
+[1]+  Done                    ./notes_server
+root@08d5c4164ec3:/app# make clean && make
+rm -f notes_server
+gcc -Wall -Wextra -O2 -Iinclude -o notes_server src/main.c src/routes.c src/static.c src/db.c src/auth.c -lmicrohttpd -lsqlite3
+src/routes.c:42:13: warning: ‘request_completed’ defined but not used [-Wunused-function]
+   42 | static void request_completed(void *cls, struct MHD_Connection *connection,
+      |             ^~~~~~~~~~~~~~~~~
+root@08d5c4164ec3:/app# ./notes_server & echo $! > /tmp/notes_server.pid
+[1] 630
+root@08d5c4164ec3:/app# Server running on port 8080
+printf 'GET /..//Makefile HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n' | nc -N 127.0.0.1 8080 | head -n 20
+bash: nc: command not found
+root@08d5c4164ec3:/app# printf 'GET /%2e%2e/Makefile HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n' | nc -N 127.0.0.1 8080 | head -n 20
+bash: nc: command not found
+root@08d5c4164ec3:/app# curl -i http://127.0.0.1:8080/ | head -n 5
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100   643  100   643    0     0   754k      0 --:--:-- --:--:-- --:--:--  627k
+HTTP/1.1 200 OK
+Date: Tue, 26 May 2026 12:42:56 GMT
+Connection: close
+Content-Type: text/html
+Content-Length: 643
+root@08d5c4164ec3:/app# curl -i http://127.0.0.1:8080/api/notes | head -n 20
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100     2  100     2    0     0   2049      0 --:--:-- --:--:-- --:--:--  2000
+HTTP/1.1 200 OK
+Date: Tue, 26 May 2026 12:42:57 GMT
+Connection: close
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+X-Total-Count: 0
+Content-Length: 2
+
+[]root@08d5c4164ec3:/app# kill $(cat /tmp/notes_server.pid)
+root@08d5c4164ec3:/app#

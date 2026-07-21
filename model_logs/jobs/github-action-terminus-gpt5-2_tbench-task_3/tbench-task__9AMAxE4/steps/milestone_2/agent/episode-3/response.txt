@@ -1,0 +1,27 @@
+{
+  "analysis": "routes.c only supports OPTIONS and GET /api/notes with hardcoded limit/offset and uses stub DB functions that return empty arrays and counts 0. auth.c always returns invalid. db.c has init_db creating table but all CRUD functions are stubs. We need to implement full API and DB layer per contract: auth key check, request body buffering with 65536 limit, JSON parsing for title/content, title non-empty validation, paging via query params limit/offset (default 50 cap 100), X-Total-Count header, routes for GET/POST /api/notes and GET/PUT/DELETE /api/notes/{id}, correct 404/401/413 error JSON, and concurrency-safe SQLite operations (WAL, busy_timeout, serialized access or proper threading mode).",
+  "plan": "1) Implement auth.c to load and cache /app/config/api.key (trim whitespace) and compare to X-API-Key header; return 1 if matches else 0. 2) Implement db.c functions using prepared statements and SQLite JSON building manually (escape strings). Configure SQLite for concurrency: open with FULLMUTEX (or serialized) and set PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000. Use transactions for create/update/delete. 3) Update routes.c: parse query params limit/offset; implement connection_info buffering for POST/PUT bodies with size enforcement; parse JSON (likely simplest minimal parser for two string fields) and validate title non-empty (also for PUT). Implement endpoints and proper status codes/bodies; add X-Total-Count on collection GET. Enforce API key only on POST/PUT/DELETE, return 401 with JSON error body per contract (contract doesn’t spell the exact error string; we’ll search if mentioned elsewhere; if not, choose {\"error\":\"unauthorized\"}). 4) Rebuild with make and run basic curl checks including parallel POSTs to ensure no dropped rows.",
+  "commands": [
+    {
+      "keystrokes": "grep -n \"unauthor\" -n /app/docs/api_contract.md\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,220p' /app/src/routes.h /app/src/static.c /app/src/static.h\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,120p' /app/src/auth.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "apply_patch<<'PATCH'\n*** Begin Patch\n*** Delete File: src/auth.c\n*** End Patch\nPATCH\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "apply_patch<<'PATCH'\n*** Begin Patch\n*** Add File: src/auth.c\n+#include \"auth.h\"\n+\n+#include <ctype.h>\n+#include <stdio.h>\n+#include <stdlib.h>\n+#include <string.h>\n+\n+#define API_KEY_PATH \"/app/config/api.key\"\n+\n+static char *cached_key = NULL;\n+\n+static void trim_in_place(char *s) {\n+    if (!s) return;\n+\n+    size_t len = strlen(s);\n+    while (len > 0 && isspace((unsigned char)s[len - 1])) {\n+        s[len - 1] = '\\0';\n+        len--;\n+    }\n+    size_t i = 0;\n+    while (s[i] && isspace((unsigned char)s[i])) i++;\n+    if (i > 0) memmove(s, s + i, strlen(s + i) + 1);\n+}\n+\n+static const char *get_api_key(void) {\n+    if (cached_key) return cached_key;\n+\n+    FILE *f = fopen(API_KEY_PATH, \"rb\");\n+    if (!f) return NULL;\n+\n+    char buf[256];\n+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);\n+    fclose(f);\n+    buf[n] = '\\0';\n+    trim_in_place(buf);\n+\n+    cached_key = strdup(buf);\n+    return cached_key;\n+}\n+\n+int api_key_valid(struct MHD_Connection *connection) {\n+    const char *expected = get_api_key();\n+    if (!expected || expected[0] == '\\0') return 0;\n+\n+    const char *provided = MHD_lookup_connection_value(connection,\n+                                                       MHD_HEADER_KIND,\n+                                                       \"X-API-Key\");\n+    if (!provided) return 0;\n+    return strcmp(provided, expected) == 0;\n+}\n+\n*** End Patch\nPATCH\n",
+      "duration": 1.0
+    }
+  ],
+  "task_complete": false
+}

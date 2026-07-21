@@ -1,0 +1,59 @@
+{
+  "analysis": "We successfully found and killed the old notes_server (PID 1217). Port 8080 is now free and new notes_server started (PID 2465). Log is empty but likely running; main prints to stdout, which we redirected—should show 'Server running'. Maybe buffered; but likely ok. Now we must re-test API behavior on the new server: POST with key should return 201, GET collection should show count, parallel POST should be 201s. Also remove debug fprintf injected earlier (line added around 281). Then complete remaining contract checks: paging, not-found body, PUT validation, DELETE response, 413 on oversize using stdlib python to generate large body, OPTIONS headers, CORS and JSON content-type are present. Finally confirm static still works.",
+  "plan": "1) Verify server is listening via curl GET /api/notes. 2) Test POST unauthorized vs authorized; confirm 201 and response body contains id/title/content. 3) Parallel POSTs -> all 201. 4) Verify X-Total-Count reflects total pre-page. 5) Test GET/PUT/DELETE for missing id gives 404 with exact {\"error\":\"not found\"}. 6) Test PUT with empty title rejected 400. 7) Test 413 with >65536 body using python3 generating payload (no requests module). 8) Remove debug fprintf line from routes.c and rebuild if necessary (not required for runtime but should clean).",
+  "commands": [
+    {
+      "keystrokes": "curl -si http://127.0.0.1:8080/api/notes | sed -n '1,30p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "KEY=$(cat /app/config/api.key | tr -d ' \\t\\r\\n')\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "curl -si -X POST http://127.0.0.1:8080/api/notes -H 'Content-Type: application/json' --data '{\"title\":\"t1\",\"content\":\"c1\"}' | sed -n '1,30p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -si -X POST http://127.0.0.1:8080/api/notes -H \"X-API-Key: $KEY\" -H 'Content-Type: application/json' --data '{\"title\":\"t1\",\"content\":\"c1\"}' | sed -n '1,40p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "ID=$(curl -s -X POST http://127.0.0.1:8080/api/notes -H \"X-API-Key: $KEY\" -H 'Content-Type: application/json' --data '{\"title\":\"t2\",\"content\":\"c2\"}' | sed -n 's/.*\"id\":\\([0-9][0-9]*\\).*/\\1/p'); echo \"ID=$ID\"\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -si http://127.0.0.1:8080/api/notes/$ID | sed -n '1,30p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -si -X PUT http://127.0.0.1:8080/api/notes/$ID -H \"X-API-Key: $KEY\" -H 'Content-Type: application/json' --data '{\"title\":\"   \",\"content\":\"x\"}' | sed -n '1,30p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -si -X DELETE http://127.0.0.1:8080/api/notes/$ID -H \"X-API-Key: $KEY\" | sed -n '1,30p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -si http://127.0.0.1:8080/api/notes/99999 | sed -n '1,25p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "python3 - <<'PY'\nimport json, urllib.request\nkey=open('/app/config/api.key').read().strip()\npayload={'title':'x','content':'a'*70000}\ndata=json.dumps(payload).encode('utf-8')\nreq=urllib.request.Request('http://127.0.0.1:8080/api/notes', data=data, method='POST')\nreq.add_header('Content-Type','application/json')\nreq.add_header('X-API-Key', key)\ntry:\n    urllib.request.urlopen(req)\nexcept urllib.error.HTTPError as e:\n    print(e.code)\n    print(e.read(80))\nPY\n",
+      "duration": 2.0
+    },
+    {
+      "keystrokes": "seq 1 15 | xargs -I{} -P15 sh -c \"curl -s -o /dev/null -w '%{http_code}\\n' -X POST http://127.0.0.1:8080/api/notes -H \\\"X-API-Key: $KEY\\\" -H 'Content-Type: application/json' --data '{\\\"title\\\":\\\"p{}\\\",\\\"content\\\":\\\"c\\\"}'\" | sort | uniq -c\n",
+      "duration": 10.0
+    },
+    {
+      "keystrokes": "curl -si http://127.0.0.1:8080/api/notes?limit=1&offset=0 | grep -i '^X-Total-Count:'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "grep -n \"POST parse fail\" -n /app/src/routes.c || true\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

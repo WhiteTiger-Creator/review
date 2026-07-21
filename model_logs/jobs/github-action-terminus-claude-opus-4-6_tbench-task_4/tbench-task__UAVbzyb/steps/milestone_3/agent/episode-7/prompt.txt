@@ -1,0 +1,41 @@
+Current Terminal Screen:
+            *con_cls = ci;
+            return MHD_YES;
+        }
+        if (*upload_data_size > 0) {
+            *upload_data_size = 0;
+            return MHD_YES;
+        }
+    } else if (strcmp(method, "GET") == 0) {
+        if (*con_cls == NULL) {
+            struct connection_info *ci = calloc(1, sizeof(struct connection_info));
+            *con_cls = ci;
+            return MHD_YES;
+        }
+    }
+
+    /* Route: GET /api/notes */
+    if (strcmp(url, "/api/notes") == 0 && strcmp(method, "GET") == 0) {
+        const char *limit_str = MHD_lookup_connection_value(connection, MHD_GET_ARGUMENT_KIND, "limit");
+        const char *offset_str = MHD_lookup_connection_value(connection, MHD_GET_ARGUMENT_KIND, "offset");
+        int limit = 50;
+        int offset = 0;
+        if (limit_str) {
+            limit = atoi(limit_str);
+            if (limit <= 0) limit = 50;
+            if (limit > 100) limit = 100;
+        }
+        if (offset_str) {
+            offset = atoi(offset_str);
+            if (offset < 0) offset = 0;
+        }
+        int total = get_total_notes_count();
+        char *json = get_notes_paginated_json(limit, offset);
+        char count_str[32];
+        snprintf(count_str, sizeof(count_str), "%d", total);
+        enum MHD_Result r = send_response(connection,
+            json ? json : "[]", MHD_HTTP_OK, count_str);
+        if (json) free(json);
+        return r;
+    }
+root@1ebded0d6da5:/app#

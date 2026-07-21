@@ -1,0 +1,9 @@
+New Terminal Output:
+s_server
+root@8115be450cb5:/app# kill 866 2>/dev/null; kill $(lsof -t -i:8080 2>/dev/null) 2>/dev/null; sleep 1
+[1]+  Done                    /app/notes_server
+root@8115be450cb5:/app# kill -9 $(ps aux | grep notes_server | grep -v grep | awk '{print $2}') 2>/dev/null; sleep 1
+bash: ps: command not found
+root@8115be450cb5:/app# ps aux | grep notes_server
+bash: ps: command not found
+root@8115be450cb5:/app#

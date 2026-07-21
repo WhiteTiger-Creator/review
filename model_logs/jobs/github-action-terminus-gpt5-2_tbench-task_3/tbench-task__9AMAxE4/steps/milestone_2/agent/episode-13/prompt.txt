@@ -1,0 +1,29 @@
+New Terminal Output:
+
+root@08d5c4164ec3:/app# command -v ss && ss -ltnp | grep ':8080' || true
+root@08d5c4164ec3:/app# command -v netstat && netstat -ltnp 2>/dev/null | grep ':8080' || true
+root@08d5c4164ec3:/app# command -v lsof && lsof -nP -iTCP:8080 -sTCP:LISTEN || true
+root@08d5c4164ec3:/app# command -v fuser && fuser -n tcp 8080 -v 2>/dev/null || true
+root@08d5c4164ec3:/app# if command -v ss >/dev/null 2>&1; then PID=$(ss -ltnp 2>/dev/null | awk '/:8080/{match($0,/pid=([0-9]+)/,m); if(m[1]){print m[1]; exit}}
+'); echo "LISTEN_PID=$PID"; if [ -n "$PID" ]; then kill -TERM "$PID"; fi; fi
+root@08d5c4164ec3:/app# if command -v fuser >/dev/null 2>&1; then PID=$(fuser -n tcp 8080 2>/dev/null | awk '{print $1}'); echo "FUSER_PID=$PID"; if [ -n "$PID"
+ ]; then kill -TERM "$PID"; fi; fi
+root@08d5c4164ec3:/app# ./notes_server > /tmp/notes_server.log 2>&1 & echo $!
+[2] 1942
+1942
+root@08d5c4164ec3:/app# tail -n 5 /tmp/notes_server.log
+Failed to start server
+[2]+  Exit 1                  ./notes_server > /tmp/notes_server.log 2>&1
+root@08d5c4164ec3:/app# KEY=$(cat /app/config/api.key | tr -d ' \t\r\n')
+root@08d5c4164ec3:/app# curl -si -X POST http://127.0.0.1:8080/api/notes -H "X-API-Key: $KEY" -H 'Content-Type: application/json' --data '{"title":"t1","content
+":"c1"}' | sed -n '1,40p'
+HTTP/1.1 400 Bad Request
+Date: Tue, 26 May 2026 12:48:28 GMT
+Connection: close
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+Content-Length: 23
+
+{"error":"bad request"}root@08d5c4164ec3:/app#

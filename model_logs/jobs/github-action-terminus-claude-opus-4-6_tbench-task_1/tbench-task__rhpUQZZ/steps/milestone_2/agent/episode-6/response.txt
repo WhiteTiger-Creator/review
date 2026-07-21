@@ -1,0 +1,42 @@
+{
+  "analysis": "The basic API is working: POST creates notes (201), GET lists/fetches notes, auth is enforced (401 for missing key), title validation works (400 for missing title), and 404 for non-existent notes. Now I need to test PUT, DELETE, OPTIONS, X-Total-Count header, pagination, and static file serving.",
+  "plan": "Test remaining endpoints and features.",
+  "commands": [
+    {
+      "keystrokes": "curl -s -X PUT http://localhost:8080/api/notes/1 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{\"title\":\"Updated Title\",\"content\":\"Updated content\"}'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s -o /dev/null -w '%{http_code}' -X PUT http://localhost:8080/api/notes/99999 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{\"title\":\"Test\",\"content\":\"test\"}'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s -X DELETE http://localhost:8080/api/notes/2 -H 'X-API-Key: tb3_notes_api_secret_2026'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s -X DELETE http://localhost:8080/api/notes/99999 -H 'X-API-Key: tb3_notes_api_secret_2026'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s -D- -X OPTIONS http://localhost:8080/api/notes 2>&1 | head -20\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s -D- http://localhost:8080/api/notes 2>&1 | head -20\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s http://localhost:8080/app.js | head -5\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s -o /dev/null -w '%{http_code}' -X PUT http://localhost:8080/api/notes/1 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{\"title\":\"\",\"content\":\"empty title\"}'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s -o /dev/null -w '%{http_code}' -X DELETE http://localhost:8080/api/notes/1\n",
+      "duration": 1.0
+    }
+  ]
+}

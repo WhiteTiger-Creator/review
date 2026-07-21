@@ -1,0 +1,14 @@
+{
+  "analysis": "The wait command output might already be showing but I need to check. Let me try pressing Enter more forcefully.",
+  "plan": "Send Enter and then check if jobs finished.",
+  "commands": [
+    {
+      "keystrokes": "\n",
+      "duration": 3.0
+    },
+    {
+      "keystrokes": "\n",
+      "duration": 3.0
+    }
+  ]
+}

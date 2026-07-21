@@ -1,0 +1,31 @@
+{
+  "analysis": "DELETE behavior matches contract: 200 {\"status\":\"deleted\"} and subsequent delete returns 404 {\"error\":\"not found\"}. Body size limit enforcement works: POST with 70029 bytes returns 413 with JSON error. Pagination limit capping works (limit=999 still returns ok). We didn't capture outputs for GET /api/notes/1, /api/notes/99999, and PUT tests, but likely they worked; still, we should quickly re-run those specific checks to confirm the exact not-found JSON and PUT validation. If those pass, API work is complete. Also note auth.c and routes/static microhttpd files are unused; fine. Concurrency: db.c uses WAL, busy_timeout, BEGIN IMMEDIATE, and mutex, suitable for burst POSTs.",
+  "plan": "Re-run: create a note, GET by id, GET missing, PUT blank title (400), PUT missing id (404 not found), then confirm list includes row. If all good, declare API complete and stop before any browser script.",
+  "commands": [
+    {
+      "keystrokes": "curl -si -X POST http://127.0.0.1:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{\"title\":\"t2\",\"content\":\"c2\"}' | head -n 40\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -si http://127.0.0.1:8080/api/notes/2 | head -n 40\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -si http://127.0.0.1:8080/api/notes/99999 | head -n 40\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -si -X PUT http://127.0.0.1:8080/api/notes/2 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{\"title\":\" \",\"content\":\"x\"}' | head -n 40\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -si -X PUT http://127.0.0.1:8080/api/notes/99999 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{\"title\":\"ok\",\"content\":\"x\"}' | head -n 40\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -si http://127.0.0.1:8080/api/notes | head -n 40\n",
+      "duration": 1.0
+    }
+  ],
+  "task_complete": false
+}

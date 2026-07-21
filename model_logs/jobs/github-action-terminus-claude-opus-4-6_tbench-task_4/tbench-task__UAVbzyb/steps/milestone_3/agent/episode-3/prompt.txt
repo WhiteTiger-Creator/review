@@ -1,0 +1,41 @@
+Current Terminal Screen:
+        body: JSON.stringify({ title: title, content: content })
+    });
+
+    fetchNotes();
+});
+
+fetchNotes();
+root@1ebded0d6da5:/app# cat /app/www/index.html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Notes App</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Notes</h1>
+        <form id="note-form">
+            <input type="text" id="note-title" placeholder="Title" required>
+            <textarea id="note-content" placeholder="Content"></textarea>
+            <button type="submit" id="btn-submit">Save</button>
+        </form>
+        <div id="notes-list"></div>
+    </div>
+    <script src="/app.js"></script>
+</body>
+</html>
+root@1ebded0d6da5:/app# cat /app/src/static.c
+#include "static.h"
+
+enum MHD_Result serve_static_file(struct MHD_Connection *connection, const char *url) {
+    (void)connection;
+    (void)url;
+    return MHD_NO;
+}
+root@1ebded0d6da5:/app# ps aux | grep notes_server
+bash: ps: command not found
+root@1ebded0d6da5:/app#

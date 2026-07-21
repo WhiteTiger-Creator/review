@@ -1,0 +1,41 @@
+Current Terminal Screen:
+   35 |     free(buf);
+      |     ^~~~
+src/routes.c:35:5: note: include ‘<stdlib.h>’ or provide a declaration of ‘free’
+src/routes.c:35:5: warning: incompatible implicit declaration of built-in function ‘free’ [-Wbuiltin-declaration-mismatch]
+src/routes.c:35:5: note: include ‘<stdlib.h>’ or provide a declaration of ‘free’
+src/routes.c: At top level:
+src/routes.c:65:24: error: conflicting types for ‘send_json’; have ‘enum MHD_Result(struct MHD_Connection *, const char *, unsigned int)’
+   65 | static enum MHD_Result send_json(struct MHD_Connection *connection,
+      |                        ^~~~~~~~~
+src/routes.c:24:20: note: previous implicit declaration of ‘send_json’ with type ‘int()’
+   24 |     if (!f) return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+      |                    ^~~~~~~~~
+src/routes.c: In function ‘handle_post_put_body’:
+src/routes.c:229:13: warning: Value MHD_HTTP_PAYLOAD_TOO_LARGE is deprecated use MHD_HTTP_CONTENT_TOO_LARGE
+  229 |         return send_json(connection, "{\"error\":\"payload too large\"}", MHD_HTTP_PAYLOAD_TOO_LARGE);
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/routes.c: In function ‘route_request’:
+src/routes.c:333:13: warning: Value MHD_HTTP_PAYLOAD_TOO_LARGE is deprecated use MHD_HTTP_CONTENT_TOO_LARGE
+  333 |                 return send_json(connection, "{\"error\":\"payload too large\"}", MHD_HTTP_PAYLOAD_TOO_LARGE);
+      |             ^   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/routes.c:348:13: warning: Value MHD_HTTP_PAYLOAD_TOO_LARGE is deprecated use MHD_HTTP_CONTENT_TOO_LARGE
+  348 |                 return send_json(connection, "{\"error\":\"payload too large\"}", MHD_HTTP_PAYLOAD_TOO_LARGE);
+      |             ^   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/routes.c: At top level:
+src/routes.c:22:12: warning: ‘send_file_text’ defined but not used [-Wunused-function]
+   22 | static int send_file_text(struct MHD_Connection *connection, const char *path) {
+      |            ^~~~~~~~~~~~~~
+make: *** [Makefile:10: notes_server] Error 1
+make: Leaving directory '/app'
+root@ade5f5ea62db:/app# nohup /app/notes_server > /app/server.log 2>&1 & echo $! > /app/server.pid
+[1] 2938
+root@ade5f5ea62db:/app# sleep 0.2; cat /app/server.pid && echo
+[1]+  Exit 127                nohup /app/notes_server > /app/server.log 2>&1
+2938
+
+root@ade5f5ea62db:/app# curl -sS -D- http://localhost:8080/app.js -o /dev/null | head -n 1
+curl: (7) Failed to connect to localhost port 8080 after 0 ms: Could not connect to server
+root@ade5f5ea62db:/app# curl -sS -D- http://localhost:8080/config/api.key -o /tmp/apikey.out && tail -n 2 /tmp/apikey.out
+curl: (7) Failed to connect to localhost port 8080 after 0 ms: Could not connect to server
+root@ade5f5ea62db:/app#

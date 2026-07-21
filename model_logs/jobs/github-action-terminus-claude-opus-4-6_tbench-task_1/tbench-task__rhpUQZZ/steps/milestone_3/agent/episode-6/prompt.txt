@@ -1,0 +1,7 @@
+Current terminal state:
+New Terminal Output:
+
+:"Body 3"},{"id":51,"title":"CountHdr 4","content":"Body 4"},{"id":52,"title":"DefLimit 0","content":"Body 0"}]root@8115be450cb5:/app#
+
+
+Are you sure you want to mark the task as complete? This will trigger your solution to be graded and you won't be able to make any further corrections. If so, include "task_complete": true in your JSON response again.

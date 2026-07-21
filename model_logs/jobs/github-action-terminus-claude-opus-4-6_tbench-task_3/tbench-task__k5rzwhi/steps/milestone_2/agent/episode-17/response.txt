@@ -1,0 +1,14 @@
+{
+  "analysis": "The large body test didn't produce output clearly. Let me retest the 413 response. The limit=999 query correctly returned only 15 results (which is less than 100, so the cap wasn't tested - I have only 15 notes). Everything else looks good. Let me verify the 413 more carefully.",
+  "plan": "Retest the body size limit with a different approach, then verify the pagination limit cap works (only 15 notes so can't test > 100 directly, but the logic is there).",
+  "commands": [
+    {
+      "keystrokes": "python3 -c \"print('{\\\"title\\\":\\\"big\\\",\\\"content\\\":\\\"' + 'x'*70000 + '\\\"}')\" > /tmp/bigbody.json && wc -c /tmp/bigbody.json\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "curl -si -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' --data-binary @/tmp/bigbody.json 2>&1 | head -5\n",
+      "duration": 2.0
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+New Terminal Output:
+
+root@10c43992d5dc:/app# cat /app/docs/js_verifier_mock.md
+Automated frontend checks load /app/www/app.js in a minimal QuickJS DOM mock, not a full browser. The mock is incomplete compared to Chrome.
+
+Do not use element.dataset or element.classList; use getAttribute and setAttribute for data attributes, and className (or split className on spaces) for classes
+. After HTML is rendered into notes-list, elements inside that container do not expose parentNode, closest, querySelector, or getElementsByTagName. Edit and del
+ete handlers must read note id and any other needed fields from getAttribute on the clicked edit-btn or delete-btn. Per-button click listeners that close over t
+he note object are fine.
+
+Load the note list when the script first runs (top-level code), not only after window load or DOMContentLoaded. Use class names edit-btn and delete-btn on row b
+uttons. Hook form submit with addEventListener on the element with id note-form. For edit and delete, attach per-button click listeners, or delegate clicks on n
+otes-list or document only if the handler reads note data from the clicked button itself; relying only on window load handlers will not exercise the script.
+
+Mutating fetch calls must send Content-Type: application/json even for DELETE. Form submissions must send JSON bodies built from the note-title and note-content
+ field values with keys title and content, not empty or hard-coded placeholders.
+
+The harness seeds GET /api/notes with two notes: title Note One with content Body One, and title Note Two with content Body Two. Other strings used during check
+s are arbitrary labels for form fields or API bodies only, including Find Me, In the List, Single Fetch, Updated Name, Updated Title, Echo Title, Echo Body, Edi
+ted body, E2E Create, and Note B Updated. Snapshots may expose listChildren as a read-only rendered-row count.
+
+Verifier-side Python harness code for this app may import urllib for HTTP probes, signal for subprocess timing, and quickjs to execute app.js in the mock DOM.
+
+The mock fetch implementation exposes json() on responses; prefer json() over text() for parsing bodies. Async patterns must complete within the mock job loop s
+o post-mutation refreshes and form clearing actually run.
+root@10c43992d5dc:/app# cat /app/www/app.js
+var API = '/api/notes';
+
+var editingId = null;
+
+async function fetchNotes() {
+    var res = await fetch(API);
+    var notes = await res.json();
+    var list = document.getElementById('notes-list');
+    list.innerHTML = '';
+    notes.forEach(function(note) {
+        var card = document.createElement('div');
+        card.className = 'note-card';
+        card.innerHTML = '<h3>' + note.title + '</h3><p>' + note.content + '</p>';
+        list.appendChild(card);
+    });
+}
+
+document.getElementById('note-form').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    var title = document.getElementById('note-title').value;
+    var content = document.getElementById('note-content').value;
+
+    await fetch(API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: title, content: content })
+    });
+
+    fetchNotes();
+});
+
+fetchNotes();
+root@10c43992d5dc:/app# cat /app/config/api.key
+tb3_notes_api_secret_2026
+root@10c43992d5dc:/app# ls /app/www/
+app.js  index.html  style.css
+root@10c43992d5dc:/app# find /app -name '*.js' -not -path '*/node_modules/*' | head -20
+/app/www/app.js
+root@10c43992d5dc:/app# find /app -name '*.py' -o -name '*.conf' -o -name '*.yaml' -o -name '*.yml' -o -name 'Makefile' -o -name 'server*' | grep -v node_module
+s | head -20
+/app/Makefile
+root@10c43992d5dc:/app#

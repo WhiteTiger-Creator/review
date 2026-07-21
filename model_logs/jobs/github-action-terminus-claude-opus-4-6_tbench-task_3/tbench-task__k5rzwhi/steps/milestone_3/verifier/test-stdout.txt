@@ -1,0 +1,41 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.13, pytest-8.4.1, pluggy-1.6.0
+cachedir: /tmp/pytest_cache
+rootdir: /tests
+plugins: json-ctrf-0.3.5, timeout-2.3.1
+timeout: 120.0s
+timeout method: signal
+timeout func_only: False
+collected 22 items
+
+../tests/test_m3.py ......................                               [100%]
+
+==================================== PASSES ====================================
+_________________ TestMilestone3.test_js_fetches_notes_on_load _________________
+---------------------------- Captured stderr setup -----------------------------
+SQL error: disk I/O error
+Failed to initialize database
+=========================== short test summary info ============================
+PASSED ../tests/test_m3.py::TestMilestone3::test_js_fetches_notes_on_load
+PASSED ../tests/test_m3.py::TestMilestone3::test_js_renders_note_cards
+PASSED ../tests/test_m3.py::TestMilestone3::test_js_renders_edit_and_delete_buttons
+PASSED ../tests/test_m3.py::TestMilestone3::test_js_form_submit_posts_to_api
+PASSED ../tests/test_m3.py::TestMilestone3::test_js_form_clears_after_create
+PASSED ../tests/test_m3.py::TestMilestone3::test_js_refreshes_list_after_create
+PASSED ../tests/test_m3.py::TestMilestone3::test_js_refreshes_list_after_update
+PASSED ../tests/test_m3.py::TestMilestone3::test_js_refreshes_list_after_delete
+PASSED ../tests/test_m3.py::TestMilestone3::test_js_delete_calls_delete_api
+PASSED ../tests/test_m3.py::TestMilestone3::test_js_get_requests_omit_api_key_header
+PASSED ../tests/test_m3.py::TestMilestone3::test_js_post_includes_api_key_header
+PASSED ../tests/test_m3.py::TestMilestone3::test_js_post_includes_json_content_type_header
+PASSED ../tests/test_m3.py::TestMilestone3::test_js_delete_includes_api_key_header
+PASSED ../tests/test_m3.py::TestMilestone3::test_js_delete_includes_json_content_type_header
+PASSED ../tests/test_m3.py::TestMilestone3::test_js_put_includes_api_key_header
+PASSED ../tests/test_m3.py::TestMilestone3::test_js_put_includes_json_content_type_header
+PASSED ../tests/test_m3.py::TestMilestone3::test_js_edit_button_loads_note_into_form
+PASSED ../tests/test_m3.py::TestMilestone3::test_js_form_clears_after_update
+PASSED ../tests/test_m3.py::TestMilestone3::test_e2e_create_and_retrieve_note
+PASSED ../tests/test_m3.py::TestMilestone3::test_e2e_update_and_verify_persistence
+PASSED ../tests/test_m3.py::TestMilestone3::test_e2e_delete_and_verify_gone
+PASSED ../tests/test_m3.py::TestMilestone3::test_e2e_full_crud_cycle
+============================== 22 passed in 0.14s ==============================

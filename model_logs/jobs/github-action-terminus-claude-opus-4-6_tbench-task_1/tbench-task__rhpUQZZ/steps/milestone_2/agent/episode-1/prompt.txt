@@ -1,0 +1,56 @@
+New Terminal Output:
+
+root@8115be450cb5:/app# find /app -type f | head -50
+/app/Makefile
+/app/README.md
+/app/config/api.key
+/app/config/defaults.env
+/app/data/notes.db
+/app/deps/versions.txt
+/app/docs/api_contract.md
+/app/docs/build_notes.md
+/app/docs/js_verifier_mock.md
+/app/docs/runtime_layout.md
+/app/include/common.h
+/app/include/notes.h
+/app/sql/init.sql
+/app/src/auth.c
+/app/src/auth.h
+/app/src/db.c
+/app/src/db.h
+/app/src/main.c
+/app/src/routes.c
+/app/src/routes.h
+/app/src/static.c
+/app/src/static.h
+/app/www/app.js
+/app/www/index.html
+/app/www/style.css
+/app/notes_server
+[1]+  Done                    /app/notes_server
+root@8115be450cb5:/app# cat /app/docs/api_contract.md
+This document is the normative REST contract for the notes API. Automated checks use arbitrary title and content strings in requests; only the behaviors, status
+ codes, headers, and JSON field names here matter.
+
+Store notes in /app/data/notes.db. Read the shared secret from /app/config/api.key and trim surrounding whitespace before comparing it to the X-API-Key header o
+n mutating requests. The stock api.key file ships with tb3_notes_api_secret_2026. POST, PUT, and DELETE require a matching key or the server responds unauthoriz
+ed. GET never requires the key; a bad or missing key on a mutating call is unauthorized.
+
+Every JSON response must use a JSON content type and include an access-control header that allows any origin. OPTIONS preflight must advertise GET, POST, PUT, D
+ELETE, and OPTIONS, and must allow Content-Type and X-API-Key as request headers. Preflight may return empty or non-empty success.
+
+POST /api/notes accepts JSON with string title and content. Title must be present and non-empty; an empty object or missing or blank title is a client error. Su
+ccess is HTTP 201 with a body containing numeric id plus stored title and content. GET /api/notes returns a JSON array of objects with id, title, and content. O
+ptional limit and offset query parameters are integers: default limit 50, maximum 100, default offset 0. /api/notes?limit=100 returns at most one hundred rows;
+/api/notes?limit=999 is capped the same way. The total row count before paging goes in the X-Total-Count header.
+
+GET /api/notes/{id} returns that object. A missing id returns HTTP 404 with JSON {"error":"not found"} using that exact lowercase message string, including for
+ids such as /api/notes/99999 on GET, PUT, or DELETE. PUT uses the same field rules as POST, returns HTTP 200 with saved fields when the row exists, or the same
+not-found JSON when it does not. Successful DELETE returns HTTP 200 with JSON {"status":"deleted"}; deleting a missing id returns the same not-found JSON as GET
+. Reject POST or PUT bodies larger than 65536 bytes with HTTP 413 and a JSON error body.
+
+SQLite access must remain correct under concurrent requests. Verifiers may reset /app/data/notes.db and send bursts of about fifteen parallel POST requests; eve
+ry stored row must still appear in responses afterward.
+root@8115be450cb5:/app# cat /app/config/api.key
+tb3_notes_api_secret_2026
+root@8115be450cb5:/app#

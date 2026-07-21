@@ -1,0 +1,15 @@
+Current terminal state:
+New Terminal Output:
+
+root@78f42a19e0d4:/app# kill %1 2>/dev/null; wait 2>/dev/null
+root@78f42a19e0d4:/app# grep -oE 'id="(note-form|note-title|note-content|btn-submit|notes-list)"' /app/www/index.html
+id="note-form"
+id="note-title"
+id="note-content"
+id="btn-submit"
+id="notes-list"
+root@78f42a19e0d4:/app# curl -s -I http://127.0.0.1:8080/ 2>&1 | head -1
+root@78f42a19e0d4:/app#
+
+
+Are you sure you want to mark the task as complete? This will trigger your solution to be graded and you won't be able to make any further corrections. If so, include "task_complete": true in your JSON response again.

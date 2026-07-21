@@ -1,0 +1,7 @@
+New Terminal Output:
+al-Count: 15
+root@1b06f1f3df22:/app# python3 -c "print('{\"title\":\"big\",\"content\":\"' + 'x'*70000 + '\"}')" > /tmp/bigbody.json && wc -c /tmp/bigbody.json
+70029 /tmp/bigbody.json
+root@1b06f1f3df22:/app# curl -si -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' --data-bi
+nary @/tmp/bigbody.json 2>&1 | head -5
+root@1b06f1f3df22:/app#

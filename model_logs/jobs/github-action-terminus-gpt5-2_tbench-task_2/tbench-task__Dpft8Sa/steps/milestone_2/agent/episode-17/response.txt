@@ -1,0 +1,19 @@
+{
+  "analysis": "Build failed because auth.c still references libmicrohttpd symbol MHD_lookup_connection_value. We no longer use MicroHTTPD at all, so auth.c should be rewritten to a plain function that validates a raw header value, or removed from build. Since main.c already implements api_key_ok_from_raw by reading /app/config/api.key directly, simplest is to stop compiling auth.c and remove auth.h include, or rewrite auth.c/auth.h to be independent. We'll remove auth usage from main.c and stop building auth.c.",
+  "plan": "1) Edit /app/src/main.c to remove include of auth.h (and any mention of MHD types). 2) Leave api_key_ok_from_raw in main.c as the key validator. 3) Rebuild linking only main.c and db.c with sqlite3/pthread. 4) Run basic smoke tests with curl once built.",
+  "commands": [
+    {
+      "keystrokes": "grep -n \"auth.h\" -n /app/src/main.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -i 's/^#include \"auth.h\"\\n//' /app/src/main.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "gcc -O2 -Wall -Wextra -o /app/notes_server /app/src/main.c /app/src/db.c -lsqlite3 -lpthread\n",
+      "duration": 1.0
+    }
+  ],
+  "task_complete": false
+}

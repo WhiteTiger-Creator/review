@@ -1,0 +1,77 @@
+New Terminal Output:
+
+root@08d5c4164ec3:/app# cat > Makefile <<'EOF'
+> CC = gcc
+> CFLAGS = -Wall -Wextra -O2 -Iinclude
+> LDFLAGS = -lmicrohttpd -lsqlite3
+>
+> SOURCES = src/main.c src/routes.c src/static.c src/db.c src/auth.c
+> TARGET = notes_server
+>
+> $(TARGET): $(SOURCES)
+> $(CC) $(CFLAGS) -o $(TARGET) $(SOURCES) $(LDFLAGS)
+>
+> clean:
+> rm -f $(TARGET)
+> EOF
+root@08d5c4164ec3:/app# sed -n '1,120p' Makefile
+CC = gcc
+CFLAGS = -Wall -Wextra -O2 -Iinclude
+LDFLAGS = -lmicrohttpd -lsqlite3
+
+SOURCES = src/main.c src/routes.c src/static.c src/db.c src/auth.c
+TARGET = notes_server
+
+$(TARGET): $(SOURCES)
+$(CC) $(CFLAGS) -o $(TARGET) $(SOURCES) $(LDFLAGS)
+
+clean:
+rm -f $(TARGET)
+root@08d5c4164ec3:/app# make clean && make
+Makefile:9: *** missing separator.  Stop.
+root@08d5c4164ec3:/app# ls -la notes_server
+ls: cannot access 'notes_server': No such file or directory
+root@08d5c4164ec3:/app# file notes_server
+notes_server: cannot open `notes_server' (No such file or directory)
+root@08d5c4164ec3:/app# ./notes_server & echo $! > /tmp/notes_server.pid
+[1] 384
+bash: ./notes_server: No such file or directory
+[1]+  Exit 127                ./notes_server
+root@08d5c4164ec3:/app# curl -i http://127.0.0.1:8080/ | head -n 20
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+root@08d5c4164ec3:/app# curl -i http://127.0.0.1:8080/style.css | head -n 10
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+root@08d5c4164ec3:/app# curl -i http://127.0.0.1:8080/app.js | head -n 10
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+root@08d5c4164ec3:/app# curl -i http://127.0.0.1:8080/nonexistent.txt | head -n 20
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+root@08d5c4164ec3:/app# curl -i http://127.0.0.1:8080/../Makefile | head -n 20
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+root@08d5c4164ec3:/app# curl -i 'http://127.0.0.1:8080/%2e%2e/Makefile' | head -n 20
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+root@08d5c4164ec3:/app# curl -i http://127.0.0.1:8080/api/notes | head -n 30
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+root@08d5c4164ec3:/app# kill $(cat /tmp/notes_server.pid)
+bash: kill: (384) - No such process
+root@08d5c4164ec3:/app#

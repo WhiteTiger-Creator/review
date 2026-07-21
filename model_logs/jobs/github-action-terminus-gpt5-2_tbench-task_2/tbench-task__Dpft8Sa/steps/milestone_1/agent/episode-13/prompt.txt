@@ -1,0 +1,112 @@
+New Terminal Output:
+
+root@972cf0f30065:/app# python3 - <<'PY'
+> from pathlib import Path
+> p=Path('/app/src/main.c')
+> s=p.read_text()
+> # Remove the earlier inserted percent-encoding blanket block if present
+> s = s.replace('    /* For this service, static asset URLs never need percent-encoding.\n       Reject any encoded paths to prevent traversal bypasses. */\n
+ if (strchr(url, \'%\') != NULL) {\n        struct MHD_Response *r = MHD_create_response_from_buffer(\n            9, (void *)"Forbidden", MHD_RESPMEM_PERSISTEN
+T);\n        enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_FORBIDDEN, r);\n        MHD_destroy_response(r);\n        return ret;\n    }\n\n','')
+> # Patch daemon flags: add optional MHD_USE_NO_URI_DECODE
+> s = s.replace('    daemon_handle = MHD_start_daemon(\n        MHD_USE_THREAD_PER_CONNECTION,\n        PORT,',
+>               '    unsigned int mhd_flags = MHD_USE_THREAD_PER_CONNECTION;\n#ifdef MHD_USE_NO_URI_DECODE\n    mhd_flags |= MHD_USE_NO_URI_DECODE;\n#endif\n\n
+   daemon_handle = MHD_start_daemon(\n        mhd_flags,\n        PORT,')
+> p.write_text(s)
+> print('patched main.c for MHD_USE_NO_URI_DECODE')
+> PY
+patched main.c for MHD_USE_NO_URI_DECODE
+root@972cf0f30065:/app# make -j"$(nproc)"
+gcc -Wall -Wextra -O2 -Iinclude -c -o src/main.o src/main.c
+src/main.c: In function ‘serve_static_file’:
+src/main.c:108:45: warning: ‘%s’ directive output may be truncated writing up to 1023 bytes into a region of size 504 [-Wformat-truncation=]
+  108 |     snprintf(filepath, sizeof(filepath), "%s%s", WWW_DIR, path);
+      |                                             ^~
+src/main.c:108:5: note: ‘snprintf’ output between 9 and 1032 bytes into a destination of size 512
+  108 |     snprintf(filepath, sizeof(filepath), "%s%s", WWW_DIR, path);
+      |     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+gcc -Wall -Wextra -O2 -Iinclude -o notes_server src/main.o src/routes.o src/static.o src/db.o src/auth.o -lmicrohttpd -lsqlite3
+root@972cf0f30065:/app# ./notes_server >/tmp/notes_server.log 2>&1 & echo $! > /tmp/notes_server.pid
+[1] 1082
+root@972cf0f30065:/app# curl -i 'http://127.0.0.1:8080/%2E%2E/%2e%2E/' | head -n 25
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100   643  100   643    0     0   534k      0 --:--:-- --:--:-- --:--:--  627k
+HTTP/1.1 200 OK
+Date: Tue, 26 May 2026 12:45:39 GMT
+Connection: close
+Content-Type: text/html
+Content-Length: 643
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Notes App</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Notes</h1>
+        <form id="note-form">
+            <input type="text" id="note-title" placeholder="Title" required>
+            <textarea id="note-content" placeholder="Content"></textarea>
+            <button type="submit" id="btn-submit">Save</button>
+        </form>
+        <div id="notes-list"></div>
+    </div>
+    <script src="/app.js"></script>
+root@972cf0f30065:/app# curl -i 'http://127.0.0.1:8080/%2e%2e/%2e%2e/etc/passwd' | head -n 25
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100     9  100     9    0     0   7563      0 --:--:-- --:--:-- --:--:--  9000
+HTTP/1.1 404 Not Found
+Date: Tue, 26 May 2026 12:45:40 GMT
+Connection: close
+Content-Length: 9
+
+Not Foundroot@972cf0f30065:/app# curl -i http://127.0.0.1:8080/ | head -n 10
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100   643  100   643    0     0   702k      0 --:--:-- --:--:-- --:--:--  627k
+HTTP/1.1 200 OK
+Date: Tue, 26 May 2026 12:45:41 GMT
+Connection: close
+Content-Type: text/html
+Content-Length: 643
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+root@972cf0f30065:/app# curl -i http://127.0.0.1:8080/style.css | head -n 8
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100  1009  100  1009    0     0   882k      0 --:--:-- --:--:-- --:--:--  985k
+HTTP/1.1 200 OK
+Date: Tue, 26 May 2026 12:45:42 GMT
+Connection: close
+Content-Type: text/css
+Content-Length: 1009
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: sans-serif; background: #f5f5f5; padding: 2rem; }
+root@972cf0f30065:/app# curl -i http://127.0.0.1:8080/api/notes | head -n 20
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100     2  100     2    0     0   2439      0 --:--:-- --:--:-- --:--:--  2000
+HTTP/1.1 200 OK
+Date: Tue, 26 May 2026 12:45:43 GMT
+Connection: close
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+X-Total-Count: 0
+Content-Length: 2
+
+[]root@972cf0f30065:/app# kill -TERM "$(cat /tmp/notes_server.pid)"; sleep 0.2; tail -n 80 /tmp/notes_server.log
+[1]+  Done                    ./notes_server > /tmp/notes_server.log 2>&1
+Server running on port 8080
+root@972cf0f30065:/app#

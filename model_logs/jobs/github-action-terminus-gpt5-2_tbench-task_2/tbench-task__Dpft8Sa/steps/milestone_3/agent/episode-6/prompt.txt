@@ -1,0 +1,41 @@
+Current Terminal Screen:
+        }
+        const char *amp = strchr(p, '&');
+        if (!amp) break;
+        p = amp + 1;
+    }
+    return 0;
+}
+
+static int is_blank_title(const char *s) {
+    if (!s) return 1;
+    while (*s) {
+        if (!isspace((unsigned char)*s)) return 0;
+        s++;
+    }
+    return 1;
+}
+
+static char *json_extract_string(const char *json, const char *field) {
+    if (!json || !field) return NULL;
+    char pat[128];
+    snprintf(pat, sizeof(pat), "\"%s\"", field);
+    const char *p = strstr(json, pat);
+    if (!p) return NULL;
+    p += strlen(pat);
+    while (*p && isspace((unsigned char)*p)) p++;
+    if (*p != ':') return NULL;
+root@972cf0f30065:/app# grep -RInE "\bHEAD\b|\bGET\b|\bPOST\b|405|Method Not Allowed" /app/src | head -n 200
+/app/src/main.c:80:                     "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
+/app/src/main.c:97:                     "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
+/app/src/main.c:399:    if (is_api && (strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0)) {
+/app/src/main.c:441:    if (strcmp(path, "/api/notes") == 0 && strcmp(method, "GET") == 0) {
+/app/src/main.c:460:    if (parse_note_id(path, &note_id) && strcmp(method, "GET") == 0) {
+/app/src/main.c:472:    if (strcmp(path, "/api/notes") == 0 && strcmp(method, "POST") == 0) {
+/app/src/main.c:598:    // Static serving only supports GET
+/app/src/main.c:599:    if (strcmp(method, "GET") != 0) {
+/app/src/main.c:600:        send_simple(fd, 405, "Method Not Allowed", "text/plain", "Method Not Allowed");
+/app/src/routes.c:15:                            "GET, POST, PUT, DELETE, OPTIONS");
+/app/src/routes.c:31:                            "GET, POST, PUT, DELETE, OPTIONS");
+/app/src/routes.c:66:    if (strcmp(url, "/api/notes") == 0 && strcmp(method, "GET") == 0) {
+root@972cf0f30065:/app#

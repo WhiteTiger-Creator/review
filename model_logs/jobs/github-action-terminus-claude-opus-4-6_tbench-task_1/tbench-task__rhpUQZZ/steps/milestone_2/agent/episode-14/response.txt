@@ -1,0 +1,18 @@
+{
+  "analysis": "The original server (PID 866) is still running - it wasn't successfully killed earlier. The new server couldn't start because port 8080 was already bound. I can see from the curl output that the concurrent writes from earlier DID work perfectly - all 15 notes plus the original note are there (16 total). I need to kill the old server and restart with a fresh db for the clean concurrent test.",
+  "plan": "Kill the existing server properly, remove the db, and restart fresh.",
+  "commands": [
+    {
+      "keystrokes": "kill 866 2>/dev/null; kill $(lsof -t -i:8080 2>/dev/null) 2>/dev/null; sleep 1\n",
+      "duration": 2.0
+    },
+    {
+      "keystrokes": "kill -9 $(ps aux | grep notes_server | grep -v grep | awk '{print $2}') 2>/dev/null; sleep 1\n",
+      "duration": 2.0
+    },
+    {
+      "keystrokes": "ps aux | grep notes_server\n",
+      "duration": 0.5
+    }
+  ]
+}

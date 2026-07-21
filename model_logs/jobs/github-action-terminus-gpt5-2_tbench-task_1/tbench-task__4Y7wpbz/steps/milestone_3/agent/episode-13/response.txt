@@ -1,0 +1,39 @@
+{
+  "analysis": "We inserted the route handler into route_request, but compilation fails because API_KEY_PATH and send_file_text are not defined/visible anymore in this file at compile time (our earlier helper insertion likely failed or was removed). Need to (re)introduce definitions for API_KEY_PATH and send_file_text (and send_text) in routes.c, placed above route_request. Easiest: add these helpers near the top of routes.c after includes and after send_json is defined, or add forward declarations plus definitions. We'll add: `#define API_KEY_PATH ...` and static prototypes for send_file_text, then implement send_file_text below send_json_with_headers/send_json where microhttpd types are available. Then rebuild and restart server.",
+  "plan": "1) Check whether API_KEY_PATH/send_file_text exist anywhere in routes.c. 2) If missing, insert helper implementations after the send_json function definition (so send_json is already known). 3) Add forward declaration for send_file_text before route_request if necessary. 4) Rebuild successfully. 5) Restart server and curl /config/api.key expecting 200.",
+  "commands": [
+    {
+      "keystrokes": "grep -n \"API_KEY_PATH\\|send_file_text\" -n /app/src/routes.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "grep -n \"static enum MHD_Result send_json\" -n /app/src/routes.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "nl -ba /app/src/routes.c | sed -n '1,120p'\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's@(static enum MHD_Result send_json\\(struct MHD_Connection \\*connection,\\s*const char \\*json, unsigned int status_code\\)\\s*\\{.*?\\n\\}\\n)@$1\\n#define API_KEY_PATH \"/app/config/api.key\"\\n\\nstatic enum MHD_Result send_text(struct MHD_Connection *connection, const char *text, unsigned int status) {\\n    struct MHD_Response *response = MHD_create_response_from_buffer(strlen(text), (void*)text, MHD_RESPMEM_MUST_COPY);\\n    if (!response) return MHD_NO;\\n    MHD_add_response_header(response, \"Content-Type\", \"text/plain; charset=utf-8\");\\n    enum MHD_Result ret = MHD_queue_response(connection, status, response);\\n    MHD_destroy_response(response);\\n    return ret;\\n}\\n\\nstatic enum MHD_Result send_file_text(struct MHD_Connection *connection, const char *path) {\\n    FILE *f = fopen(path, \"rb\");\\n    if (!f) return send_json(connection, \"{\\\\\\\"error\\\\\\\":\\\\\\\"not found\\\\\\\"}\", MHD_HTTP_NOT_FOUND);\\n    fseek(f, 0, SEEK_END);\\n    long n = ftell(f);\\n    fseek(f, 0, SEEK_SET);\\n    if (n < 0 || n > 1024 * 1024) { fclose(f); return send_json(connection, \"{\\\\\\\"error\\\\\\\":\\\\\\\"server error\\\\\\\"}\", MHD_HTTP_INTERNAL_SERVER_ERROR); }\\n    char *buf = (char*)calloc((size_t)n + 1, 1);\\n    if (!buf) { fclose(f); return send_json(connection, \"{\\\\\\\"error\\\\\\\":\\\\\\\"server error\\\\\\\"}\", MHD_HTTP_INTERNAL_SERVER_ERROR); }\\n    size_t r = fread(buf, 1, (size_t)n, f);\\n    fclose(f);\\n    buf[r] = \"\\\\0\"[0];\\n    enum MHD_Result ret = send_text(connection, buf, MHD_HTTP_OK);\\n    free(buf);\\n    return ret;\\n}\\n\\n@sm' /app/src/routes.c\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "make -C /app\n",
+      "duration": 10.0
+    },
+    {
+      "keystrokes": "kill -TERM $(cat /app/server.pid) 2>/dev/null || true\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "nohup /app/notes_server > /app/server.log 2>&1 & echo $! > /app/server.pid\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "sleep 0.2; curl -sS -D- http://localhost:8080/config/api.key -o /tmp/apikey.out | head -n 20; echo; tail -n 2 /tmp/apikey.out\n",
+      "duration": 1.0
+    }
+  ],
+  "task_complete": false
+}

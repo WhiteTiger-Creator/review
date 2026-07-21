@@ -1,0 +1,47 @@
+New Terminal Output:
+=100
+root@bb40ba43d60f:/app# kill -0 $(cat /tmp/notes_server.pid) 2>/dev/null && echo 'server alive' || echo 'server dead'
+server alive
+root@bb40ba43d60f:/app# wc -c /tmp/server.log || true
+0 /tmp/server.log
+root@bb40ba43d60f:/app# sed -n '1,200p' /tmp/server.log || true
+root@bb40ba43d60f:/app# tail -n 200 /tmp/server.log || true
+root@bb40ba43d60f:/app# grep -n "POST\"\)" -n /app/src/routes.c || true
+grep: Unmatched ) or \)
+root@bb40ba43d60f:/app# perl -0777 -i -pe 's/if \(strcmp\(url, "\\/api\\/notes"\) == 0 && strcmp\(method, "POST"\) == 0\) \{/if (strcmp(url, "\\/api\\/notes") =
+= 0 && strcmp(method, "POST") == 0) {\n        fprintf(stderr, "POST \\/api\\/notes start\\n");\n        fflush(stderr);/s' /app/src/routes.c
+Backslash found where operator expected (Missing operator before "\"?) at -e line 1, near "api\"
+Unknown regexp modifier "/t" at -e line 1, at end of line
+syntax error at -e line 1, near "api\"
+Execution of -e aborted due to compilation errors.
+root@bb40ba43d60f:/app# make clean && make
+rm -f notes_server
+gcc -Wall -Wextra -O2 -Iinclude -o notes_server src/main.c src/routes.c src/static.c src/db.c src/auth.c -lmicrohttpd -lsqlite3
+src/routes.c: In function ‘too_large’:
+src/routes.c:129:13: warning: Value MHD_HTTP_REQUEST_ENTITY_TOO_LARGE is deprecated, use MHD_HTTP_CONTENT_TOO_LARGE
+  129 |     return send_json(connection, "{\"error\":\"payload too large\"}", MHD_HTTP_REQUEST_ENTITY_TOO_LARGE);
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+root@bb40ba43d60f:/app# kill $(cat /tmp/notes_server.pid) 2>/dev/null || true
+root@bb40ba43d60f:/app# rm -f /tmp/server.log
+[1]+  Done                    ./notes_server > /tmp/server.log 2>&1
+root@bb40ba43d60f:/app# ./notes_server > /tmp/server.log 2>&1 & echo $! > /tmp/notes_server.pid
+[1] 3140
+root@bb40ba43d60f:/app# curl -v -H 'X-API-Key: tb3_notes_api_secret_2026' -H 'Content-Type: application/json' -d '{"title":"t1","content":"c1"}' http://127.0.0.
+1:8080/api/notes || true
+*   Trying 127.0.0.1:8080...
+* Connected to 127.0.0.1 (127.0.0.1) port 8080
+* using HTTP/1.x
+> POST /api/notes HTTP/1.1
+> Host: 127.0.0.1:8080
+> User-Agent: curl/8.14.1
+> Accept: */*
+> X-API-Key: tb3_notes_api_secret_2026
+> Content-Type: application/json
+> Content-Length: 29
+>
+* upload completely sent off: 29 bytes
+* Empty reply from server
+* shutting down connection #0
+curl: (52) Empty reply from server
+root@bb40ba43d60f:/app# tail -n 200 /tmp/server.log || true
+root@bb40ba43d60f:/app#

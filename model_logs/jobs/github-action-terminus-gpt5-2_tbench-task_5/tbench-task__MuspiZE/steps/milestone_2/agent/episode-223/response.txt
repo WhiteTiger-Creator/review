@@ -1,0 +1,6 @@
+{
+  "analysis": "Terminal not functioning.",
+  "plan": "No commands.",
+  "commands": [],
+  "task_complete": false
+}

@@ -1,0 +1,45 @@
+New Terminal Output:
+ver
+
+root@ade5f5ea62db:/app# sed -n '1,200p' /app/src/static.h
+#ifndef STATIC_H
+#define STATIC_H
+
+#include <microhttpd.h>
+
+enum MHD_Result serve_static_file(struct MHD_Connection *connection, const char *url);
+
+#endif
+root@ade5f5ea62db:/app# sed -n '1,260p' /app/src/static.c
+#include "static.h"
+
+enum MHD_Result serve_static_file(struct MHD_Connection *connection, const char *url) {
+    (void)connection;
+    (void)url;
+    return MHD_NO;
+}
+root@ade5f5ea62db:/app# perl -i -pe 's/serve_static\(connection, url\)/serve_static_file(connection, url)/g' /app/src/routes.c
+root@ade5f5ea62db:/app# grep -n "serve_static" -n /app/src/routes.c
+284:        enum MHD_Result r = serve_static_file(connection, url);
+root@ade5f5ea62db:/app# make -C /app
+make: Entering directory '/app'
+gcc -Wall -Wextra -Iinclude -Isrc -o notes_server src/main.c src/routes.c src/db.c src/static.c src/auth.c -lmicrohttpd -lsqlite3
+make: Leaving directory '/app'
+root@ade5f5ea62db:/app# nohup /app/notes_server > /app/server.log 2>&1 & echo $! > /app/server.pid
+[1] 4086
+root@ade5f5ea62db:/app# sleep 0.2; curl -sS -D- http://localhost:8080/app.js -o /dev/null | head -n 1
+HTTP/1.1 200 OK
+root@ade5f5ea62db:/app# curl -sS -D- http://localhost:8080/config/api.key -o /tmp/apikey.out | head -n 10; echo; tail -n 2 /tmp/apikey.out
+HTTP/1.1 404 Not Found
+Date: Tue, 26 May 2026 12:57:56 GMT
+Connection: close
+Content-Length: 9
+
+
+Not Foundroot@ade5f5ea62db:/app# curl -sS -D- http://localhost:8080/api/notes -o /tmp/notes.json | head -n 5
+HTTP/1.1 200 OK
+Date: Tue, 26 May 2026 12:57:57 GMT
+Connection: close
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+root@ade5f5ea62db:/app#

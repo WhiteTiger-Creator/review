@@ -1,0 +1,74 @@
+New Terminal Output:
+
+root@ade5f5ea62db:/app# perl -0777 -i -pe 's/static int url_contains_encoded_dotdot\(const char \*url\) \{.*?\}\n\nstatic enum MHD_Result serve_static_file/stat
+ic int hexval(char c){if(c>='\''0'\''&&c<='\''9'\'')return c-\''0'\'';if(c>='\''a'\''&&c<='\''f'\'')return 10+c-\''a'\'';if(c>='\''A'\''&&c<='\''F'\'')return 10
++c-\''A'\'';return -1;}\n\nstatic int url_decode(const char *in, char *out, size_t outsz){size_t oi=0;for(size_t i=0;in[i];i++){char c=in[i];if(c=='\''%'\'' &&
+in[i+1] && in[i+2]){int h1=hexval(in[i+1]);int h2=hexval(in[i+2]);if(h1>=0 && h2>=0){c=(char)((h1<<4)|h2);i+=2;}}else if(c=='\''+'\''){c='\'' '\'';}if(oi+1>=out
+sz) return -1;out[oi++]=c;}out[oi]=0;return 0;}\n\nstatic int path_has_dotdot_segment(const char *path){/* path is decoded URL path */\n    const char *p = path
+;\n    while(*p){\n        while(*p=='\''/'\'') p++;\n        const char *seg = p;\n        while(*p && *p!='\''/'\'') p++;\n        size_t len = (size_t)(p - s
+eg);\n        if(len==2 && seg[0]=='\''.'\'' && seg[1]=='\''.'\'') return 1;\n    }\n    return 0;\n}\n\nstatic enum MHD_Result serve_static_file/sms' src/main.
+c
+Unknown '(*...)' construct 'p' in regex; marked by <-- HERE in m/\n    const char *p = path;\n    while(*p) <-- HERE {\n        while(*p=='/ at -e line 1.
+[1]+  Done                    ./notes_server > server.log 2>&1
+root@ade5f5ea62db:/app# grep -n "url_decode\|path_has_dotdot_segment\|serve_static_file" -n src/main.c | head -n 50
+42:static enum MHD_Result serve_static_file(struct MHD_Connection *connection,
+99:        enum MHD_Result ret = serve_static_file(connection, url);
+root@ade5f5ea62db:/app# perl -0777 -i -pe 's/if \(strstr\(url, "\\.\\."\) != NULL \|\| url_contains_encoded_dotdot\(url\)\) \{\n        struct MHD_Response \*r
+= MHD_create_response_from_buffer\(\n            9, \(void \*\)"Forbidden", MHD_RESPMEM_PERSISTENT\);\n        enum MHD_Result ret = MHD_queue_response\(connect
+ion, MHD_HTTP_FORBIDDEN, r\);\n        MHD_destroy_response\(r\);\n        return ret;\n    \}\n\n    char filepath\[512\];\n    const char \*path = strcmp\(url
+, "\/"\) == 0 \? "\/index\\.html" : url;\n    snprintf\(filepath, sizeof\(filepath\), "%s%s", WWW_DIR, path\);/char decoded_url[512];\n    if(url_decode(url, de
+coded_url, sizeof(decoded_url))!=0){\n        struct MHD_Response *r = MHD_create_response_from_buffer(9,(void*)"Forbidden",MHD_RESPMEM_PERSISTENT);\n        en
+um MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_FORBIDDEN, r);\n        MHD_destroy_response(r);\n        return ret;\n    }\n    if(path_has_dotdot
+_segment(decoded_url)) {\n        struct MHD_Response *r = MHD_create_response_from_buffer(9,(void*)"Forbidden",MHD_RESPMEM_PERSISTENT);\n        enum MHD_Resul
+t ret = MHD_queue_response(connection, MHD_HTTP_FORBIDDEN, r);\n        MHD_destroy_response(r);\n        return ret;\n    }\n\n    char filepath[512];\n    con
+st char *path = strcmp(decoded_url, "/") == 0 ? "/index.html" : decoded_url;\n    snprintf(filepath, sizeof(filepath), "%s%s", WWW_DIR, path);/s' src/main.c
+String found where operator expected (Missing operator before "") == 0 ? ""?) at -e line 1, near "") == 0 ? ""
+syntax error at -e line 1, near "") == 0 ? ""
+Execution of -e aborted due to compilation errors.
+root@ade5f5ea62db:/app# perl -0777 -i -pe 's/    struct stat st;\n    if \(stat\(filepath, &st\) != 0\) return MHD_NO;\n/    struct stat st;\n    if (stat(filep
+ath, &st) != 0) return MHD_NO;\n\n    /* realpath containment check: ensure resolved path stays within WWW_DIR */\n    char real_www[512];\n    char real_file[5
+12];\n    if (!realpath(WWW_DIR, real_www) || !realpath(filepath, real_file)) {\n        return MHD_NO;\n    }\n    size_t wwwlen = strlen(real_www);\n    if (s
+trncmp(real_file, real_www, wwwlen) != 0 || (real_file[wwwlen] != '\''/'\'' && real_file[wwwlen] != '\''\\0'\'')) {\n        struct MHD_Response *r = MHD_create
+_response_from_buffer(9,(void*)"Forbidden",MHD_RESPMEM_PERSISTENT);\n        enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_FORBIDDEN, r);\n
+   MHD_destroy_response(r);\n        return ret;\n    }\n/s' src/main.c
+syntax error at -e line 1, near "check:"
+Execution of -e aborted due to compilation errors.
+root@ade5f5ea62db:/app# make clean && make -j"$(nproc)"
+rm -f notes_server
+gcc -Wall -Wextra -Iinclude -Isrc -o notes_server src/main.c src/routes.c src/db.c src/static.c src/auth.c -lmicrohttpd -lsqlite3
+src/routes.c:42:13: warning: ‘request_completed’ defined but not used [-Wunused-function]
+   42 | static void request_completed(void *cls, struct MHD_Connection *connection,
+      |             ^~~~~~~~~~~~~~~~~
+root@ade5f5ea62db:/app# ./notes_server >server.log 2>&1 & echo $! > server.pid
+[1] 719
+root@ade5f5ea62db:/app# curl -si --path-as-is http://127.0.0.1:8080/../README.md | head -n 20
+HTTP/1.1 403 Forbidden
+Date: Tue, 26 May 2026 12:43:53 GMT
+Connection: close
+Content-Length: 9
+
+Forbiddenroot@ade5f5ea62db:/app# curl -si --path-as-is 'http://127.0.0.1:8080/%2e%2e/README.md' | head -n 20
+HTTP/1.1 403 Forbidden
+Date: Tue, 26 May 2026 12:43:54 GMT
+Connection: close
+Content-Length: 9
+
+Forbiddenroot@ade5f5ea62db:/app# curl -si http://127.0.0.1:8080/ | head -n 5
+HTTP/1.1 200 OK
+Date: Tue, 26 May 2026 12:43:55 GMT
+Connection: close
+Content-Type: text/html
+Content-Length: 643
+root@ade5f5ea62db:/app# curl -si http://127.0.0.1:8080/api/notes | head -n 20
+HTTP/1.1 200 OK
+Date: Tue, 26 May 2026 12:43:56 GMT
+Connection: close
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+X-Total-Count: 0
+Content-Length: 2
+
+[]root@ade5f5ea62db:/app# kill $(cat server.pid) || true
+root@ade5f5ea62db:/app#

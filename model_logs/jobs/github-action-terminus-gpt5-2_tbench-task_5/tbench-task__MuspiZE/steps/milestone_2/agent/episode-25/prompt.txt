@@ -1,0 +1,18 @@
+New Terminal Output:
+
+root@bb40ba43d60f:/app# kill $(cat /tmp/notes_server.pid) 2>/dev/null || true
+root@bb40ba43d60f:/app# perl -i -pe 's/\/\/ First call: allocate per-connection storage and return immediately\./\/\/ First call: allocate per-connection storag
+e./' /app/src/routes.c
+root@bb40ba43d60f:/app# perl -0777 -i -pe 's/if \(\*con_cls == NULL\) \{\n        struct connection_info \*ci = calloc\(1, sizeof\(\*ci\)\);\n        if \(!ci\)
+ return MHD_NO;\n        \*con_cls = ci;\n        return MHD_YES;\n    \}/if (*con_cls == NULL) {\n        struct connection_info *ci = calloc(1, sizeof(*ci));\
+n        if (!ci) return MHD_NO;\n        *con_cls = ci;\n    }/s' /app/src/routes.c
+root@bb40ba43d60f:/app# make clean && make
+rm -f notes_server
+gcc -Wall -Wextra -O2 -Iinclude -o notes_server src/main.c src/routes.c src/static.c src/db.c src/auth.c -lmicrohttpd -lsqlite3
+src/routes.c: In function ‘too_large’:
+src/routes.c:129:13: warning: Value MHD_HTTP_REQUEST_ENTITY_TOO_LARGE is deprecated, use MHD_HTTP_CONTENT_TOO_LARGE
+  129 |     return send_json(connection, "{\"error\":\"payload too large\"}", MHD_HTTP_REQUEST_ENTITY_TOO_LARGE);
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+root@bb40ba43d60f:/app# ./notes_server
+Server running on port 8080
+

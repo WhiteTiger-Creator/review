@@ -1,0 +1,41 @@
+Current Terminal Screen:
+>   sqlite3* db=NULL;
+>   if(sqlite3_open_v2(path,&db,SQLITE_OPEN_READONLY,NULL)!=SQLITE_OK){
+>     fprintf(stderr,"open failed: %s\n", sqlite3_errmsg(db));
+>     return 2;
+>   }
+>   char* err=NULL;
+>   sqlite3_exec(db,"PRAGMA user_version;",cb,NULL,&err);
+>   if(err){ fprintf(stderr,"err: %s\n", err); sqlite3_free(err); err=NULL; }
+>   sqlite3_exec(db,"SELECT name, sql FROM sqlite_master WHERE type IN ('table','index','trigger') ORDER BY type,name;",cb,NULL,&err);
+>   if(err){ fprintf(stderr,"err: %s\n", err); sqlite3_free(err); err=NULL; }
+>   sqlite3_close(db);
+>   return 0;
+> }
+> EOF
+root@bb40ba43d60f:/app# cc -O2 -Wall -Wextra /tmp/inspect_db.c -lsqlite3 -o /tmp/inspect_db
+root@bb40ba43d60f:/app# /tmp/inspect_db /app/data/notes.db
+user_version=0
+---
+name=notes
+sql=CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,content TEXT DEFAULT '')
+---
+name=sqlite_sequence
+sql=CREATE TABLE sqlite_sequence(name,seq)
+---
+root@bb40ba43d60f:/app# ls -la /app/src
+total 40
+drwxr-xr-x  2 root root  136 May 26 12:44 .
+drwxr-xr-x 10 root root  157 May 26 12:44 ..
+-rw-r--r--  1 root root  112 May 26 12:40 auth.c
+-rw-r--r--  1 root root  118 May 26 12:40 auth.h
+-rw-r--r--  1 root root 1598 May 26 12:40 db.c
+-rw-r--r--  1 root root  408 May 26 12:40 db.h
+-rw-r--r--  1 root root 5437 May 26 12:44 main.c
+-rw-r--r--  1 root root 3243 May 26 12:44 routes.c
+-rw-r--r--  1 root root  317 May 26 12:44 routes.h
+-rw-r--r--  1 root root  167 May 26 12:40 static.c
+-rw-r--r--  1 root root  155 May 26 12:40 static.h
+root@bb40ba43d60f:/app# ls -la /app | grep -E 'Makefile|makefile|build|compile' || true
+-rw-r--r--  1 root root   309 May 26 12:42 Makefile
+root@bb40ba43d60f:/app#

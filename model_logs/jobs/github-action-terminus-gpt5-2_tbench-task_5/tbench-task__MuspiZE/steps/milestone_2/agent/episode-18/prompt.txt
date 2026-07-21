@@ -1,0 +1,110 @@
+New Terminal Output:
+
+root@bb40ba43d60f:/app# apply_patch<<'PATCH'
+> *** Begin Patch
+> *** Update File: /app/src/routes.c
+> @@
+> -static void request_completed(void *cls, struct MHD_Connection *connection,
+> -                              void **con_cls, enum MHD_RequestTerminationCode toe) {
+> -    (void)cls;
+> -    (void)connection;
+> -    (void)toe;
+> -    if (con_cls && *con_cls) {
+> -        struct connection_info *ci = *con_cls;
+> -        if (ci->data)
+> -            free(ci->data);
+> -        free(ci);
+> -        *con_cls = NULL;
+> -    }
+> -}
+> -
+>  enum MHD_Result route_request(struct MHD_Connection *connection, const char *url,
+>                                const char *method, const char *upload_data,
+>                                size_t *upload_data_size, void **con_cls) {
+> +    // libmicrohttpd calls the handler multiple times per request.
+> +    // First call must initialize per-connection state and return.
+> +    if (*con_cls == NULL) {
+> +        struct connection_info *ci = calloc(1, sizeof(*ci));
+> +        if (!ci) return MHD_NO;
+> +        *con_cls = ci;
+> +        return MHD_YES;
+> +    }
+> +
+>      if (strcmp(method, "OPTIONS") == 0)
+>          return send_json(connection, "", MHD_HTTP_OK);
+> @@
+> -    // Handle upload (POST/PUT)
+> +    // Handle upload (POST/PUT)
+>      int is_write = (strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0 || strcmp(method, "DELETE") == 0);
+>      if (is_write && !api_key_valid(connection)) {
+>          return unauthorized(connection);
+>      }
+> @@
+> -    if ((strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0) && *upload_data_size) {
+> -        struct connection_info *ci = *con_cls;
+> -        if (!ci) {
+> -            ci = calloc(1, sizeof(*ci));
+> -            if (!ci) return MHD_NO;
+> -            *con_cls = ci;
+> -        }
+> +    if ((strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0) && *upload_data_size) {
+> +        struct connection_info *ci = *con_cls;
+>          if (ci->data_size + *upload_data_size > NOTES_MAX_BODY_BYTES) {
+>              *upload_data_size = 0;
+>              return too_large(connection);
+>          }
+> @@
+>          *upload_data_size = 0;
+>          return MHD_YES;
+>      }
+> *** End Patch
+> PATCH
+bash: apply_patch: command not found
+root@bb40ba43d60f:/app# make clean && make
+rm -f notes_server
+gcc -Wall -Wextra -O2 -Iinclude -o notes_server src/main.c src/routes.c src/static.c src/db.c src/auth.c -lmicrohttpd -lsqlite3
+src/routes.c:42:13: warning: ‘request_completed’ defined but not used [-Wunused-function]
+   42 | static void request_completed(void *cls, struct MHD_Connection *connection,
+      |             ^~~~~~~~~~~~~~~~~
+root@bb40ba43d60f:/app# kill $(cat /tmp/notes_server.pid) 2>/dev/null || true
+root@bb40ba43d60f:/app# ./notes_server & echo $! > /tmp/notes_server.pid
+[2] 2739
+root@bb40ba43d60f:/app# Server running on port 8080
+curl -sS -D- -H 'X-API-Key: tb3_notes_api_secret_2026' -H 'Content-Type: application/json' -d '{"title":"t1","content":"c1"}' http://127.0.0.1:8080/api/notes
+HTTP/1.1 404 Not Found
+Date: Tue, 26 May 2026 12:49:15 GMT
+Connection: close
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+Content-Length: 21
+
+{"error":"not found"}[1]-  Done                    ./notes_server
+root@bb40ba43d60f:/app# curl -sS -D- 'http://127.0.0.1:8080/api/notes?limit=100&offset=0' | head -n 20
+HTTP/1.1 200 OK
+Date: Tue, 26 May 2026 12:49:16 GMT
+Connection: close
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+X-Total-Count: 0
+Content-Length: 2
+
+[]root@bb40ba43d60f:/app# seq 1 15 | xargs -P 15 -I{} curl -sS -H 'X-API-Key: tb3_notes_api_secret_2026' -H 'Content-Type: application/json' -d '{"title":"bulk{
+}","content":"x"}' http://127.0.0.1:8080/api/notes > /tmp/bulk_out.json
+root@bb40ba43d60f:/app# wc -l /tmp/bulk_out.json
+0 /tmp/bulk_out.json
+root@bb40ba43d60f:/app# curl -sS -D- 'http://127.0.0.1:8080/api/notes?limit=100&offset=0' | sed -n '1,12p'
+HTTP/1.1 200 OK
+Date: Tue, 26 May 2026 12:49:17 GMT
+Connection: close
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+X-Total-Count: 0
+Content-Length: 2
+
+[]root@bb40ba43d60f:/app#

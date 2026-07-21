@@ -1,0 +1,30 @@
+{
+    "id": "8033a41a-29d6-4ffb-9bd1-90e4860b3250",
+    "started_at": "2026-05-26T12:40:18.354093",
+    "finished_at": "2026-05-26T12:54:15.789128",
+    "n_total_trials": 1,
+    "stats": {
+        "n_trials": 1,
+        "n_errors": 0,
+        "evals": {
+            "terminus-2__@anthropic/claude-opus-4-6__adhoc": {
+                "n_trials": 1,
+                "n_errors": 0,
+                "metrics": [
+                    {
+                        "mean": 1.0
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "1.0": [
+                            "tbench-task__rhpUQZZ"
+                        ]
+                    }
+                },
+                "exception_stats": {}
+            }
+        }
+    }
+}

@@ -1,0 +1,10 @@
+{
+  "analysis": "The terminal seems completely stuck. Perhaps there's a deadlock in the server when handling concurrent requests, or the shell is stuck waiting for background processes. Let me try to forcefully interrupt.",
+  "plan": "Try Ctrl+C and wait, then try to get a working prompt.",
+  "commands": [
+    {
+      "keystrokes": "C-c",
+      "duration": 3.0
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "analysis": "All basic API tests pass perfectly:\n- POST creates with 201, returns id/title/content\n- GET by ID works with 200\n- Unauthorized without key (401)\n- Unauthorized with wrong key (401)\n- Missing/empty title returns 400\n- PUT updates correctly with 200\n- 404 for non-existent notes\n- DELETE returns {\"status\":\"deleted\"} with 200\n- X-Total-Count header present\n- Static files still served\n\nNow I need to test pagination and concurrent writes.",
+  "plan": "Test pagination with multiple notes, test PUT with empty title, test DELETE on non-existent, and test concurrent writes.",
+  "commands": [
+    {
+      "keystrokes": "for i in $(seq 1 5); do curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d \"{\\\"title\\\":\\\"Note $i\\\",\\\"content\\\":\\\"Content $i\\\"}\"; done\n",
+      "duration": 3.0
+    },
+    {
+      "keystrokes": "curl -s -D - 'http://localhost:8080/api/notes?limit=2&offset=0' 2>&1 | grep -E '(X-Total-Count|HTTP|\\[|\\{)'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s -D - 'http://localhost:8080/api/notes?limit=2&offset=2' 2>&1 | grep -E '(X-Total-Count|HTTP|\\[|\\{)'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s -w '\\n%{http_code}' -X PUT http://localhost:8080/api/notes/99999 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{\"title\":\"test\",\"content\":\"test\"}'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s -w '\\n%{http_code}' -X DELETE http://localhost:8080/api/notes/99999 -H 'X-API-Key: tb3_notes_api_secret_2026'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s -w '\\n%{http_code}' -X PUT http://localhost:8080/api/notes/2 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{\"title\":\"\",\"content\":\"empty title on put\"}'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "# Test concurrent writes\nrm -f /app/data/notes.db && kill -HUP 1167 2>/dev/null; kill 1167 2>/dev/null; sleep 1\n",
+      "duration": 2.0
+    },
+    {
+      "keystrokes": "/app/notes_server &\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "sleep 1 && for i in $(seq 1 15); do curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d \"{\\\"title\\\":\\\"Concurrent $i\\\",\\\"content\\\":\\\"Body $i\\\"}\" & done; wait\n",
+      "duration": 5.0
+    },
+    {
+      "keystrokes": "curl -s -D - http://localhost:8080/api/notes?limit=100 2>&1 | grep X-Total-Count\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s http://localhost:8080/api/notes?limit=100 | grep -o '\"id\"' | wc -l\n",
+      "duration": 1.0
+    }
+  ]
+}

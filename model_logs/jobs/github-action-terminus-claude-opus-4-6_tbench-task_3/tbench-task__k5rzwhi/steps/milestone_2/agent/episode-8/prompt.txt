@@ -1,0 +1,9 @@
+New Terminal Output:
+ot found
+root@1b06f1f3df22:/app# killall notes_server 2>/dev/null; killall -9 notes_server 2>/dev/null
+root@1b06f1f3df22:/app# fuser 8080/tcp 2>/dev/null
+root@1b06f1f3df22:/app# fuser -k 8080/tcp 2>/dev/null
+root@1b06f1f3df22:/app# ls /proc/*/exe 2>/dev/null | while read f; do if readlink $f 2>/dev/null | grep -q notes_server; then echo $f | grep -o '[0-9]*'; fi; do
+ne
+638
+root@1b06f1f3df22:/app#

@@ -1,0 +1,4159 @@
+[?2004hroot@1b06f1f3df22:/app# asciinema rec --stdin /logs/agent/recording.cast
+[?2004l[0;32masciinema: recording asciicast to /logs/agent/recording.cast[0m
+[0;32masciinema: press <ctrl-d> or type "exit" when you're done[0m
+[?2004hroot@1b06f1f3df22:/app# clear
+[?2004l[H[J[3J[?2004hroot@1b06f1f3df22:/app# find /app -type f | head -80
+[?2004l/app/Makefile
+/app/README.md
+/app/config/api.key
+/app/config/defaults.env
+/app/deps/versions.txt
+/app/docs/api_contract.md
+/app/docs/build_notes.md
+/app/docs/js_verifier_mock.md
+/app/docs/runtime_layout.md
+/app/include/common.h
+/app/include/notes.h
+/app/sql/init.sql
+/app/src/auth.c
+/app/src/auth.h
+/app/src/db.c
+/app/src/db.h
+/app/src/main.c
+/app/src/routes.c
+/app/src/routes.h
+/app/src/static.c
+/app/src/static.h
+/app/www/app.js
+/app/www/index.html
+/app/www/style.css
+[?2004hroot@1b06f1f3df22:/app# cat /app/docs/build_notes.md
+[?2004l# Build notes
+
+The notes service links against libmicrohttpd and SQLite. Install the dev packages
+for those libraries, then run `make` from `/app` to produce `notes_server`.
+
+Web assets live under `/app/www` and are served from the HTTP root by URL path
+(for example `/style.css` and `/app.js`).
+
+Automated verifier traffic uses http://127.0.0.1:8080 as the base URL. Collection
+health checks call http://127.0.0.1:8080/api/notes. Python verifier harnesses may
+use urllib for HTTP, signal for subprocess timing, and quickjs when executing app.js.
+[?2004hroot@1b06f1f3df22:/app# cat /app/Makefile
+[?2004lCC = gcc
+CFLAGS = -Wall -Wextra
+LDFLAGS = -lmicrohttpd -lsqlite3
+
+SOURCES = src/main.c src/routes.c
+TARGET = notes_server
+
+$(TARGET): $(SOURCES)
+	$(CC) $(CFLAGS) -o $(TARGET) $(SOURCES) $(LDFLAGS)
+
+clean:
+	rm -f $(TARGET)
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/main.c
+[?2004l#include <microhttpd.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <strings.h>
+#include "routes.h"
+#include "db.h"
+
+#define PORT 8080
+#define WWW_DIR "/app/www"
+
+static struct MHD_Daemon *daemon_handle = NULL;
+
+static void handle_signal(int sig) {
+    (void)sig;
+    if (daemon_handle) MHD_stop_daemon(daemon_handle);
+    close_db();
+    exit(0);
+}
+
+static const char *get_content_type(const char *path) {
+    const char *ext = strrchr(path, '.');
+    if (!ext) return "application/octet-stream";
+    if (strcmp(ext, ".html") == 0) return "text/html";
+    if (strcmp(ext, ".css") == 0) return "text/css";
+    if (strcmp(ext, ".js") == 0) return "application/javascript";
+    return "application/octet-stream";
+}
+
+static int url_contains_encoded_dotdot(const char *url) {
+    const char *p = url;
+    while (*p) {
+        if (strncasecmp(p, "%2e%2e", 6) == 0)
+            return 1;
+        p++;
+    }
+    return 0;
+}
+
+static enum MHD_Result serve_static_file(struct MHD_Connection *connection,
+    const char *url) {
+    if (strstr(url, "..") != NULL || url_contains_encoded_dotdot(url)) {
+        struct MHD_Response *r = MHD_create_response_from_buffer(
+            9, (void *)"Forbidden", MHD_RESPMEM_PERSISTENT);
+        enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_FORBIDDEN, r);
+        MHD_destroy_response(r);
+        return ret;
+    }
+
+    char filepath[512];
+    const char *path = strcmp(url, "/") == 0 ? "/index.html" : url;
+    snprintf(filepath, sizeof(filepath), "%s%s", WWW_DIR, path);
+
+    struct stat st;
+    if (stat(filepath, &st) != 0) return MHD_NO;
+
+    FILE *f = fopen(filepath, "rb");
+    if (!f) return MHD_NO;
+
+    char *buf = malloc(st.st_size);
+    fread(buf, 1, st.st_size, f);
+    fclose(f);
+
+    struct MHD_Response *response = MHD_create_response_from_buffer(
+        st.st_size, buf, MHD_RESPMEM_MUST_FREE);
+    MHD_add_response_header(response, "Content-Type", get_content_type(filepath));
+    enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
+    MHD_destroy_response(response);
+    return ret;
+}
+
+static void request_completed(void *cls, struct MHD_Connection *connection,
+    void **con_cls, enum MHD_RequestTerminationCode toe) {
+    (void)cls; (void)connection; (void)toe;
+    if (con_cls && *con_cls) {
+        struct connection_info *ci = *con_cls;
+        if (ci->data) free(ci->data);
+        free(ci);
+        *con_cls = NULL;
+    }
+}
+
+static enum MHD_Result handle_request(void *cls,
+    struct MHD_Connection *connection,
+    const char *url, const char *method,
+    const char *version,
+    const char *upload_data, size_t *upload_data_size,
+    void **con_cls) {
+    (void)cls; (void)version;
+
+    if (strncmp(url, "/api/", 5) == 0) {
+        return route_request(connection, url, method, upload_data,
+                             upload_data_size, con_cls);
+    }
+
+    if (strcmp(method, "GET") == 0) {
+        enum MHD_Result ret = serve_static_file(connection, url);
+        if (ret == MHD_YES) return ret;
+    }
+
+    struct MHD_Response *response = MHD_create_response_from_buffer(
+        9, (void *)"Not Found", MHD_RESPMEM_PERSISTENT);
+    enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, response);
+    MHD_destroy_response(response);
+    return ret;
+}
+
+int main(void) {
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+
+    mkdir("/app/data", 0755);
+
+    if (init_db("/app/data/notes.db") != 0) {
+        fprintf(stderr, "Failed to initialize database\n");
+        return 1;
+    }
+
+    daemon_handle = MHD_start_daemon(
+        MHD_USE_THREAD_PER_CONNECTION,
+        PORT,
+        NULL, NULL,
+        &handle_request, NULL,
+        MHD_OPTION_NOTIFY_COMPLETED, &request_completed, NULL,
+        MHD_OPTION_END
+    );
+
+    if (!daemon_handle) {
+        fprintf(stderr, "Failed to start server\n");
+        return 1;
+    }
+
+    printf("Server running on port %d\n", PORT);
+    while (1) pause();
+    return 0;
+}
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/routes.c
+[?2004l#include "routes.h"
+#include "db.h"
+#include <microhttpd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static enum MHD_Result send_json(struct MHD_Connection *connection,
+                                  const char *body, unsigned int status_code) {
+    struct MHD_Response *response = MHD_create_response_from_buffer(
+        strlen(body), (void *)body, MHD_RESPMEM_MUST_COPY);
+    MHD_add_response_header(response, "Content-Type", "application/json");
+    MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
+    MHD_add_response_header(response, "Access-Control-Allow-Methods",
+                            "GET, POST, PUT, DELETE, OPTIONS");
+    MHD_add_response_header(response, "Access-Control-Allow-Headers",
+                            "Content-Type, X-API-Key");
+    enum MHD_Result ret = MHD_queue_response(connection, status_code, response);
+    MHD_destroy_response(response);
+    return ret;
+}
+
+static enum MHD_Result send_json_total(struct MHD_Connection *connection,
+                                       const char *body, unsigned int status_code,
+                                       int total) {
+    struct MHD_Response *response = MHD_create_response_from_buffer(
+        strlen(body), (void *)body, MHD_RESPMEM_MUST_COPY);
+    MHD_add_response_header(response, "Content-Type", "application/json");
+    MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
+    MHD_add_response_header(response, "Access-Control-Allow-Methods",
+                            "GET, POST, PUT, DELETE, OPTIONS");
+    MHD_add_response_header(response, "Access-Control-Allow-Headers",
+                            "Content-Type, X-API-Key");
+    char count_str[32];
+    snprintf(count_str, sizeof(count_str), "%d", total);
+    MHD_add_response_header(response, "X-Total-Count", count_str);
+    enum MHD_Result ret = MHD_queue_response(connection, status_code, response);
+    MHD_destroy_response(response);
+    return ret;
+}
+
+static void request_completed(void *cls, struct MHD_Connection *connection,
+                              void **con_cls, enum MHD_RequestTerminationCode toe) {
+    (void)cls;
+    (void)connection;
+    (void)toe;
+    if (con_cls && *con_cls) {
+        struct connection_info *ci = *con_cls;
+        if (ci->data)
+            free(ci->data);
+        free(ci);
+        *con_cls = NULL;
+    }
+}
+
+enum MHD_Result route_request(struct MHD_Connection *connection, const char *url,
+                              const char *method, const char *upload_data,
+                              size_t *upload_data_size, void **con_cls) {
+    (void)upload_data;
+    (void)upload_data_size;
+    (void)con_cls;
+
+    if (strcmp(method, "OPTIONS") == 0)
+        return send_json(connection, "", MHD_HTTP_OK);
+
+    if (strcmp(url, "/api/notes") == 0 && strcmp(method, "GET") == 0) {
+        int total = get_total_notes_count();
+        char *json = get_notes_paginated_json(50, 0);
+        if (!json)
+            return send_json_total(connection, "[]", MHD_HTTP_OK, total);
+        enum MHD_Result r = send_json_total(connection, json, MHD_HTTP_OK, total);
+        free(json);
+        return r;
+    }
+
+    return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+}
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/routes.h
+[?2004l#ifndef ROUTES_H
+#define ROUTES_H
+
+#include <microhttpd.h>
+
+struct connection_info {
+    char *data;
+    size_t data_size;
+};
+
+enum MHD_Result route_request(struct MHD_Connection *connection,
+    const char *url, const char *method,
+    const char *upload_data, size_t *upload_data_size,
+    void **con_cls);
+
+#endif
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/static.c
+[?2004l#include "static.h"
+
+enum MHD_Result serve_static_file(struct MHD_Connection *connection, const char *url) {
+    (void)connection;
+    (void)url;
+    return MHD_NO;
+}
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/static.h
+[?2004l#ifndef STATIC_H
+#define STATIC_H
+
+#include <microhttpd.h>
+
+enum MHD_Result serve_static_file(struct MHD_Connection *connection, const char *url);
+
+#endif
+[?2004hroot@1b06f1f3df22:/app# cat /app/www/index.html
+[?2004l<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Notes App</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Notes</h1>
+        <form id="note-form">
+            <input type="text" id="note-title" placeholder="Title" required>
+            <textarea id="note-content" placeholder="Content"></textarea>
+            <button type="submit" id="btn-submit">Save</button>
+        </form>
+        <div id="notes-list"></div>
+    </div>
+    <script src="/app.js"></script>
+</body>
+</html>
+[?2004hroot@1b06f1f3df22:/app# cat /app/www/style.css
+[?2004l* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: sans-serif; background: #f5f5f5; padding: 2rem; }
+.container { max-width: 640px; margin: 0 auto; }
+h1 { margin-bottom: 1rem; }
+#note-form { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1.5rem; }
+#note-title, #note-content { padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px; font-size: 1rem; }
+#note-content { min-height: 80px; resize: vertical; }
+button { padding: 0.5rem 1rem; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem; }
+button[type="submit"] { background: #2563eb; color: #fff; }
+.note-card { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 1rem; margin-bottom: 0.75rem; }
+.note-card h3 { margin-bottom: 0.25rem; }
+.note-card p { color: #555; margin-bottom: 0.5rem; }
+.note-actions { display: flex; gap: 0.5rem; }
+.edit-btn { background: #f59e0b; color: #fff; font-size: 0.85rem; }
+.delete-btn { background: #ef4444; color: #fff; font-size: 0.85rem; }
+[?2004hroot@1b06f1f3df22:/app# cat /app/www/app.js
+[?2004lvar API = 'http://localhost:9090/api/notes';
+
+var editingId = null;
+
+async function fetchNotes() {
+    var res = await fetch(API);
+    var notes = await res.json();
+    var list = document.getElementById('notes-list');
+    list.innerHTML = '';
+    notes.forEach(function(note) {
+        var card = document.createElement('div');
+        card.className = 'note-card';
+        card.innerHTML = '<h3>' + note.title + '</h3><p>' + note.content + '</p>';
+        list.appendChild(card);
+    });
+}
+
+document.getElementById('note-form').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    var title = document.getElementById('note-title').value;
+    var content = document.getElementById('note-content').value;
+
+    await fetch(API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: title, content: content })
+    });
+
+    fetchNotes();
+});
+
+fetchNotes();
+[?2004hroot@1b06f1f3df22:/app# cat /app/include/common.h
+[?2004l#ifndef NOTES_COMMON_H
+#define NOTES_COMMON_H
+
+#define NOTES_MAX_BODY_BYTES 65536
+#define NOTES_DEFAULT_PAGE_SIZE 50
+#define NOTES_MAX_PAGE_SIZE 100
+
+#endif
+[?2004hroot@1b06f1f3df22:/app# cat /app/include/notes.h
+[?2004l#ifndef NOTES_H
+#define NOTES_H
+
+#define NOTES_LISTEN_PORT 8080
+
+#endif
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/db.c
+[?2004l#include "db.h"
+#include <sqlite3.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static sqlite3 *db = NULL;
+
+int init_db(const char *path) {
+    if (sqlite3_open_v2(path, &db,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX,
+            NULL) != SQLITE_OK) {
+        fprintf(stderr, "Cannot open database: %s\n", sqlite3_errmsg(db));
+        return -1;
+    }
+
+    const char *sql = "CREATE TABLE IF NOT EXISTS notes ("
+                      "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                      "title TEXT NOT NULL,"
+                      "content TEXT DEFAULT ''"
+                      ");";
+    char *err_msg = NULL;
+    if (sqlite3_exec(db, sql, NULL, NULL, &err_msg) != SQLITE_OK) {
+        fprintf(stderr, "SQL error: %s\n", err_msg);
+        sqlite3_free(err_msg);
+        return -1;
+    }
+    return 0;
+}
+
+void close_db(void) {
+    if (db)
+        sqlite3_close(db);
+    db = NULL;
+}
+
+int create_note(const char *title, const char *content) {
+    (void)title;
+    (void)content;
+    return 0;
+}
+
+char *get_all_notes_json(void) {
+    return strdup("[]");
+}
+
+char *get_notes_paginated_json(int limit, int offset) {
+    (void)limit;
+    (void)offset;
+    return strdup("[]");
+}
+
+int get_total_notes_count(void) {
+    return 0;
+}
+
+char *get_note_json(int id) {
+    (void)id;
+    return NULL;
+}
+
+int update_note(int id, const char *title, const char *content) {
+    (void)id;
+    (void)title;
+    (void)content;
+    return 0;
+}
+
+int delete_note(int id) {
+    (void)id;
+    return 0;
+}
+
+int note_exists(int id) {
+    (void)id;
+    return 0;
+}
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/db.h
+[?2004l#ifndef DB_H
+#define DB_H
+
+int init_db(const char *path);
+void close_db(void);
+int create_note(const char *title, const char *content);
+char *get_all_notes_json(void);
+char *get_notes_paginated_json(int limit, int offset);
+int get_total_notes_count(void);
+char *get_note_json(int id);
+int update_note(int id, const char *title, const char *content);
+int delete_note(int id);
+int note_exists(int id);
+
+#endif
+[?2004hroot@1b06f1f3df22:/app# dpkg -l | grep -E 'microhttpd|sqlite3' | head -10
+[?2004lii  libmicrohttpd-dev:amd64      1.0.1-4                        amd64        library embedding HTTP server functionality (development)
+ii  libmicrohttpd12t64:amd64     1.0.1-4                        amd64        library embedding HTTP server functionality
+ii  libsqlite3-0:amd64           3.46.1-7+deb13u1               amd64        SQLite 3 shared library
+ii  libsqlite3-dev:amd64         3.46.1-7+deb13u1               amd64        SQLite 3 development files
+[?2004hroot@1b06f1f3df22:/app# ls /usr/include/microhttpd.h 2>&1; ls /usr/include/sqlite3.h 2>&1
+[?2004l/usr/include/microhttpd.h
+/usr/include/sqlite3.h
+[?2004hroot@1b06f1f3df22:/app# cat > /app/Makefile << 'EOF'
+[?2004l[?2004h> CC = gcc
+[?2004l[?2004h> CFLAGS = -Wall -Wextra -Isrc -Iinclude
+[?2004l[?2004h> LDFLAGS = -lmicrohttpd -lsqlite3
+[?2004l[?2004h> 
+[?2004l[?2004h> SOURCES = src/main.c src/routes.c src/db.c
+[?2004l[?2004h> TARGET = notes_server
+[?2004l[?2004h> 
+[?2004l[?2004h> $(TARGET): $(SOURCES)
+[?2004l[?2004h> $(CC) $(CFLAGS) -o $(TARGET) $(SOURCES) $(LDFLAGS)
+[?2004l[?2004h> 
+[?2004l[?2004h> clean:
+[?2004l[?2004h> rm -f $(TARGET)
+[?2004l[?2004h> EOF
+[?2004l[?2004hroot@1b06f1f3df22:/app# cat > /app/src/main.c << 'MAINEOF'
+[?2004l[?2004h> #include <microhttpd.h>
+[?2004l[?2004h> #include <stdio.h>
+[?2004l[?2004h> #include <string.h>
+[?2004l[?2004h> #include <stdlib.h>
+[?2004l[?2004h> #include <signal.h>
+[?2004l[?2004h> #include <sys/stat.h>
+[?2004l[?2004h> #include <strings.h>
+[?2004l[?2004h> #include <ctype.h>
+[?2004l[?2004h> #include "routes.h"
+[?2004l[?2004h> #include "db.h"
+[?2004l[?2004h> 
+[?2004l[?2004h> #define PORT 8080
+[?2004l[?2004h> #define WWW_DIR "/app/www"
+[?2004l[?2004h> 
+[?2004le[?2004h> static struct MHD_Daemon *daemon_handle = NULL;
+[?2004l[?2004h> 
+[?2004l[?2004h> static void handle_signal(int sig) {
+[?2004l[?2004h>     (void)sig;
+[?2004l[?2004h>     if (daemon_handle) MHD_stop_daemon(daemon_handle);
+[?2004l[?2004h>     close_db();
+[?2004l[?2004h>     exit(0);
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004ln[?2004h> static const char *get_content_type(const char *path) {
+[?2004l[?2004h>     const char *ext = strrchr(path, '.');
+[?2004l[?2004h>     if (!ext) return "application/octet-stream";
+[?2004l[?2004h>     if (strcmp(ext, ".html") == 0) return "text/html";
+[?2004l[?2004h>     if (strcmp(ext, ".css") == 0) return "text/css";
+[?2004l[?2004h>     if (strcmp(ext, ".js") == 0) return "application/javascript";
+[?2004l[?2004h>     return "application/octet-stream";
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> /* Decode a single %XX hex sequence; returns the char or -1 on failure */
+[?2004l[?2004h> static int decode_hex(const char *s) {
+[?2004l[?2004h>     if (s[0] != '%') return -1;
+[?2004l[?2004h>     char hi = s[1], lo = s[2];
+[?2004l[?2004h>     if (!isxdigit((unsigned char)hi) || !isxdigit((unsigned char)lo)) return -1;
+[?2004l[?2004h>     unsigned int val = 0;
+[?2004l[?2004h>     sscanf(s+1, "%2x", &val);
+[?2004l[?2004h>     return (int)val;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> /* Check if URL contains path traversal (..) in any encoded form */
+[?2004l[?2004h> static int has_path_traversal(const char *url) {
+[?2004l[?2004h>     const char *p = url;
+[?2004l[?2004h>     while (*p) {
+[?2004l[?2004h>         /* Check if current position is a dot (literal or encoded) */
+[?2004l[?2004h>         int is_dot1 = 0;
+[?2004l[?2004h>         int skip1 = 0;
+[?2004l[?2004h>         if (*p == '.') { is_dot1 = 1; skip1 = 1; }
+[?2004l[?2004h>         else if (*p == '%' && decode_hex(p) == '.') { is_dot1 = 1; skip1 = 3; }
+[?2004l[?2004h> 
+[?2004l[?2004h>         if (is_dot1) {
+[?2004l[?2004h>             const char *q = p + skip1;
+[?2004l[?2004h>             int is_dot2 = 0;
+[?2004l[?2004h>             if (*q == '.') { is_dot2 = 1; }
+[?2004l[?2004h>             else if (*q == '%' && decode_hex(q) == '.') { is_dot2 = 1; }
+[?2004l[?2004h>             if (is_dot2) return 1;
+[?2004l[?2004h>         }
+[?2004l[?2004h>         p++;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     return 0;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> static enum MHD_Result serve_static_file(struct MHD_Connection *connection,
+[?2004l[?2004h>     const char *url) {
+[?2004l[?2004h>     if (has_path_traversal(url)) {
+[?2004l[?2004h>         struct MHD_Response *r = MHD_create_response_from_buffer(
+[?2004l[?2004h>             9, (void *)"Forbidden", MHD_RESPMEM_PERSISTENT);
+[?2004l[?2004h>         enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_FORBIDDEN, r);
+[?2004l[?2004h>         MHD_destroy_response(r);
+[?2004l[?2004h>         return ret;
+[?2004l[?2004h>     }
+[?2004l[?2004h> 
+[?2004l[?2004h>     char filepath[512];
+[?2004l[?2004h>     const char *path = strcmp(url, "/") == 0 ? "/index.html" : url;
+[?2004l[?2004h>     snprintf(filepath, sizeof(filepath), "%s%s", WWW_DIR, path);
+[?2004l[?2004h> 
+[?2004l[?2004h>     struct stat st;
+[?2004l[?2004h>     if (stat(filepath, &st) != 0) return MHD_NO;
+[?2004l[?2004h> 
+[?2004l[?2004h>     FILE *f = fopen(filepath, "rb");
+[?2004l[?2004h>     if (!f) return MHD_NO;
+[?2004l[?2004h> 
+[?2004l[?2004h>     char *buf = malloc(st.st_size);
+[?2004l[?2004h>     fread(buf, 1, st.st_size, f);
+[?2004l[?2004h>     fclose(f);
+[?2004l[?2004h> 
+[?2004l[?2004h>     struct MHD_Response *response = MHD_create_response_from_buffer(
+[?2004l[?2004h>         st.st_size, buf, MHD_RESPMEM_MUST_FREE);
+[?2004l[?2004h>     MHD_add_response_header(response, "Content-Type", get_content_type(filepath));
+[?2004l[?2004h>     enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
+[?2004l[?2004h>     MHD_destroy_response(response);
+[?2004l[?2004h>     return ret;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> static void request_completed(void *cls, struct MHD_Connection *connection,
+[?2004l[?2004h>     void **con_cls, enum MHD_RequestTerminationCode toe) {
+[?2004l[?2004h>     (void)cls; (void)connection; (void)toe;
+[?2004l[?2004h>     if (con_cls && *con_cls) {
+[?2004l[?2004h>         struct connection_info *ci = *con_cls;
+[?2004l[?2004h>         if (ci->data) free(ci->data);
+[?2004l[?2004h>         free(ci);
+[?2004l[?2004h>         *con_cls = NULL;
+[?2004l[?2004h>     }
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> static enum MHD_Result handle_request(void *cls,
+[?2004l[?2004h>     struct MHD_Connection *connection,
+[?2004l[?2004h>     const char *url, const char *method,
+[?2004l[?2004h>     const char *version,
+[?2004l[?2004h>     const char *upload_data, size_t *upload_data_size,
+[?2004l[?2004h>     void **con_cls) {
+[?2004l[?2004h>     (void)cls; (void)version;
+[?2004l[?2004h> 
+[?2004l[?2004h>     if (strncmp(url, "/api/", 5) == 0) {
+[?2004l[?2004h>         return route_request(connection, url, method, upload_data,
+[?2004l[?2004h>                              upload_data_size, con_cls);
+[?2004l[?2004h>     }
+[?2004l[?2004h> 
+[?2004l[?2004h>     if (strcmp(method, "GET") == 0) {
+[?2004l[?2004h>         enum MHD_Result ret = serve_static_file(connection, url);
+[?2004l[?2004h>         if (ret == MHD_YES) return ret;
+[?2004l[?2004h>     }
+[?2004l[?2004h> 
+[?2004l[?2004h>     struct MHD_Response *response = MHD_create_response_from_buffer(
+[?2004l[?2004h>         9, (void *)"Not Found", MHD_RESPMEM_PERSISTENT);
+[?2004l[?2004h>     enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, response);
+[?2004l[?2004h>     MHD_destroy_response(response);
+[?2004l[?2004h>     return ret;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> int main(void) {
+[?2004l[?2004h>     signal(SIGINT, handle_signal);
+[?2004l[?2004h>     signal(SIGTERM, handle_signal);
+[?2004l[?2004h> 
+[?2004l[?2004h>     mkdir("/app/data", 0755);
+[?2004l[?2004h> 
+[?2004l[?2004h>     if (init_db("/app/data/notes.db") != 0) {
+[?2004l[?2004h>         fprintf(stderr, "Failed to initialize database\n");
+[?2004l[?2004h>         return 1;
+[?2004l[?2004h>     }
+[?2004l[?2004h> 
+[?2004l[?2004h>     daemon_handle = MHD_start_daemon(
+[?2004l[?2004h>         MHD_USE_THREAD_PER_CONNECTION,
+[?2004l[?2004h>         PORT,
+[?2004l[?2004h>         NULL, NULL,
+[?2004l[?2004h>         &handle_request, NULL,
+[?2004l[?2004h>         MHD_OPTION_NOTIFY_COMPLETED, &request_completed, NULL,
+[?2004l[?2004h>         MHD_OPTION_END
+[?2004l[?2004h>     );
+[?2004l[?2004h> 
+[?2004l[?2004h>     if (!daemon_handle) {
+[?2004l[?2004h>         fprintf(stderr, "Failed to start server\n");
+[?2004l[?2004h>         return 1;
+[?2004l[?2004h>     }
+[?2004l[?2004h> 
+[?2004l[?2004h>     printf("Server running on port %d\n", PORT);
+[?2004l[?2004h>     while (1) pause();
+[?2004l[?2004h>     return 0;
+[?2004l[?2004h> }
+[?2004l[?2004h> MAINEOF
+[?2004l[?2004hroot@1b06f1f3df22:/app# cat > /app/www/app.js << 'JSEOF'
+[?2004l[?2004h> var API = '/api/notes';
+[?2004l[?2004h> 
+[?2004l[?2004h> var editingId = null;
+[?2004l[?2004h> 
+[?2004l[?2004h> async function fetchNotes() {
+[?2004l[?2004h>     var res = await fetch(API);
+[?2004l[?2004h>     var notes = await res.json();
+[?2004l[?2004h>     var list = document.getElementById('notes-list');
+[?2004l[?2004h>     list.innerHTML = '';
+[?2004l[?2004h>     notes.forEach(function(note) {
+[?2004l[?2004h>         var card = document.createElement('div');
+[?2004l[?2004h>         card.className = 'note-card';
+[?2004l[?2004h>         card.innerHTML = '<h3>' + note.title + '</h3><p>' + note.content + '</p>';
+[?2004l[?2004h>         list.appendChild(card);
+[?2004l[?2004h>     });
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> document.getElementById('note-form').addEventListener('submit', async function(e) {
+[?2004l[?2004h>     e.preventDefault();
+[?2004l[?2004h>     var title = document.getElementById('note-title').value;
+[?2004l[?2004h>     var content = document.getElementById('note-content').value;
+[?2004l[?2004h> 
+[?2004l[?2004h>     await fetch(API, {
+[?2004l[?2004h>         method: 'POST',
+[?2004l[?2004h>         headers: { 'Content-Type': 'application/json' },
+[?2004l[?2004h>         body: JSON.stringify({ title: title, content: content })
+[?2004l[?2004h>     });
+[?2004l[?2004h> 
+[?2004l[?2004h>     document.getElementById('note-title').value = '';
+[?2004l[?2004h>     document.getElementById('note-content').value = '';
+[?2004l[?2004h>     fetchNotes();
+[?2004l[?2004h> });
+[?2004l[?2004h> 
+[?2004l[?2004h> fetchNotes();
+[?2004l[?2004h> JSEOF
+[?2004l[?2004hroot@1b06f1f3df22:/app# cd /app && make clean && make
+[?2004lMakefile:9: *** missing separator.  Stop.
+[?2004hroot@1b06f1f3df22:/app# printf 'CC = gcc\nCFLAGS = -Wall -Wextra -Isrc -Iinclude\nLDFLAGS = -lmicrohttpd -lsqlite3\n\nSOURCES = src/main.c src/routes.c src/db.c\nTARGET = notes_server\n\n$(TARGET): $(SOURCES)\n\t$(CC) $(CFLAGS) -o $(TARGET) $(SOURCES) $(LDFLAGS)\n\nclean:\n\trm -f $(TARGET)\n' > /app/Makefile
+[?2004l[?2004hroot@1b06f1f3df22:/app# cat -A /app/Makefile
+[?2004lCC = gcc$
+CFLAGS = -Wall -Wextra -Isrc -Iinclude$
+LDFLAGS = -lmicrohttpd -lsqlite3$
+$
+SOURCES = src/main.c src/routes.c src/db.c$
+TARGET = notes_server$
+$
+$(TARGET): $(SOURCES)$
+^I$(CC) $(CFLAGS) -o $(TARGET) $(SOURCES) $(LDFLAGS)$
+$
+clean:$
+^Irm -f $(TARGET)$
+[?2004hroot@1b06f1f3df22:/app# cd /app && make clean && make
+[?2004lrm -f notes_server
+gcc -Wall -Wextra -Isrc -Iinclude -o notes_server src/main.c src/routes.c src/db.c -lmicrohttpd -lsqlite3
+[01m[Ksrc/routes.c:42:13:[m[K [01;35m[Kwarning: [m[K‘[01m[Krequest_completed[m[K’ defined but not used [[01;35m[K]8;;https://gcc.gnu.org/onlinedocs/gcc-14.2.0/gcc/Warning-Options.html#index-Wno-unused-function-Wunused-function]8;;[m[K]
+   42 | static void [01;35m[Krequest_completed[m[K(void *cls, struct MHD_Connection *connection,
+      |             [01;35m[K^~~~~~~~~~~~~~~~~[m[K
+[?2004hroot@1b06f1f3df22:/app# file /app/notes_server
+[?2004l/app/notes_server: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, BuildID[sha1]=86e7a59b406200509dc51aa80c60529300dec7ac, for GNU/Linux 3.2.0, not stripped
+[?2004hroot@1b06f1f3df22:/app# /app/notes_server &
+[?2004l[1] 346
+[?2004hroot@1b06f1f3df22:/app# Server running on port 8080
+curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/
+[?2004l200[?2004hroot@1b06f1f3df22:/app# curl -s http://127.0.0.1:8080/ | head -5
+[?2004l<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+[?2004hroot@1b06f1f3df22:/app# curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/style.css
+[?2004l200[?2004hroot@1b06f1f3df22:/app# curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/app.js
+[?2004l200[?2004hroot@1b06f1f3df22:/app# curl -s http://127.0.0.1:8080/api/notes
+[?2004l[][?2004hroot@1b06f1f3df22:/app# curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/notes
+[?2004l200[?2004hroot@1b06f1f3df22:/app# curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/nonexistent.txt
+[?2004l404[?2004hroot@1b06f1f3df22:/app# curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/..%2f..%2fetc%2fpasswd
+[?2004l403[?2004hroot@1b06f1f3df22:/app# curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/%2e%2e/etc/passwd
+[?2004l404[?2004hroot@1b06f1f3df22:/app# curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8080/.%2e/etc/passwd'
+[?2004l404[?2004hroot@1b06f1f3df22:/app# curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8080/%2e./etc/passwd'
+[?2004l404[?2004hroot@1b06f1f3df22:/app# curl --path-as-is -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8080/%2e%2e/etc/passwd'
+[?2004l403[?2004hroot@1b06f1f3df22:/app# curl --path-as-is -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8080/.%2e/etc/passwd'
+[?2004l403[?2004hroot@1b06f1f3df22:/app# curl --path-as-is -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8080/%2e./etc/passwd'
+[?2004l403[?2004hroot@1b06f1f3df22:/app# curl --path-as-is -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8080/../etc/passwd'
+[?2004l403[?2004hroot@1b06f1f3df22:/app# curl --path-as-is -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8080/foo/../../etc/passwd'
+[?2004l403[?2004hroot@1b06f1f3df22:/app# python3 -c "import urllib.request; r = urllib.request.urlopen('http://127.0.0.1:8080/api/notes'); print(r.status, r.read().decode())"
+[?2004l200 []
+[?2004hroot@1b06f1f3df22:/app# python3 -c "
+[?2004l[?2004h> import urllib.request, urllib.error
+[?2004l[?2004h> try:
+[?2004l[?2004h>     r = urllib.request.urlopen('http://127.0.0.1:8080/%2e%2e/etc/passwd')
+[?2004l[?2004h>     print(r.status)
+[?2004l[?2004h> except urllib.error.HTTPError as e:
+[?2004l[?2004h>     print(e.code)
+[?2004l[?2004h> "
+[?2004l403
+[?2004hroot@1b06f1f3df22:/app# python3 -c "
+[?2004l[?2004h> import urllib.request, urllib.error
+[?2004l[?2004h> try:
+[?2004l[?2004h>     r = urllib.request.urlopen('http://127.0.0.1:8080/nonexistent.txt')
+[?2004l[?2004h>     print(r.status)
+[?2004l[?2004h> except urllib.error.HTTPError as e:
+[?2004l[?2004h>     print(e.code)
+[?2004l[?2004h> "
+[?2004l404
+[?2004hroot@1b06f1f3df22:/app# curl -s http://127.0.0.1:8080/ | grep -E 'note-form|note-title|note-content|btn-submit|notes-list'
+[?2004l        <form id="note-form">
+            <input type="text" id="note-title" placeholder="Title" required>
+            <textarea id="note-content" placeholder="Content"></textarea>
+            <button type="submit" id="btn-submit">Save</button>
+        <div id="notes-list"></div>
+[?2004hroot@1b06f1f3df22:/app# curl -s -I http://127.0.0.1:8080/style.css | grep Content-Type
+[?2004l[?2004hroot@1b06f1f3df22:/app# curl -s -I http://127.0.0.1:8080/app.js | grep Content-Type
+[?2004l[?2004hroot@1b06f1f3df22:/app# curl -s -D - http://127.0.0.1:8080/style.css | head -10
+[?2004lHTTP/1.1 200 OK
+Date: Tue, 26 May 2026 12:43:46 GMT
+Connection: close
+Content-Type: text/css
+Content-Length: 1009
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: sans-serif; background: #f5f5f5; padding: 2rem; }
+.container { max-width: 640px; margin: 0 auto; }
+h1 { margin-bottom: 1rem; }
+[?2004hroot@1b06f1f3df22:/app# curl -s -D - http://127.0.0.1:8080/app.js | head -10
+[?2004lHTTP/1.1 200 OK
+Date: Tue, 26 May 2026 12:43:47 GMT
+Connection: close
+Content-Type: application/javascript
+Content-Length: 1032
+
+var API = '/api/notes';
+
+var editingId = null;
+
+[?2004hroot@1b06f1f3df22:/app# curl -s -D - http://127.0.0.1:8080/ | head -10
+[?2004lHTTP/1.1 200 OK
+Date: Tue, 26 May 2026 12:43:47 GMT
+Connection: close
+Content-Type: text/html
+Content-Length: 643
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+[?2004hroot@1b06f1f3df22:/app# curl -s -D - http://127.0.0.1:8080/api/notes
+[?2004lHTTP/1.1 200 OK
+Date: Tue, 26 May 2026 12:43:48 GMT
+Connection: close
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+X-Total-Count: 0
+Content-Length: 2
+
+[][?2004hroot@1b06f1f3df22:/app# kill %1 2>/dev/null; wait 2>/dev/null
+[?2004l[?2004hroot@1b06f1f3df22:/app# /app/notes_server &
+[?2004l[1] 638
+[?2004hroot@1b06f1f3df22:/app# Server running on port 8080
+curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/notes
+[?2004l200[?2004hroot@1b06f1f3df22:/app# find /app -type f | head -50
+[?2004l/app/Makefile
+/app/README.md
+/app/config/api.key
+/app/config/defaults.env
+/app/data/notes.db
+/app/deps/versions.txt
+/app/docs/api_contract.md
+/app/docs/build_notes.md
+/app/docs/js_verifier_mock.md
+/app/docs/runtime_layout.md
+/app/include/common.h
+/app/include/notes.h
+/app/sql/init.sql
+/app/src/auth.c
+/app/src/auth.h
+/app/src/db.c
+/app/src/db.h
+/app/src/main.c
+/app/src/routes.c
+/app/src/routes.h
+/app/src/static.c
+/app/src/static.h
+/app/www/app.js
+/app/www/index.html
+/app/www/style.css
+/app/notes_server
+[?2004hroot@1b06f1f3df22:/app# cat /app/docs/api_contract.md
+[?2004lThis document is the normative REST contract for the notes API. Automated checks use arbitrary title and content strings in requests; only the behaviors, status codes, headers, and JSON field names here matter.
+
+Store notes in /app/data/notes.db. Read the shared secret from /app/config/api.key and trim surrounding whitespace before comparing it to the X-API-Key header on mutating requests. The stock api.key file ships with tb3_notes_api_secret_2026. POST, PUT, and DELETE require a matching key or the server responds unauthorized. GET never requires the key; a bad or missing key on a mutating call is unauthorized.
+
+Every JSON response must use a JSON content type and include an access-control header that allows any origin. OPTIONS preflight must advertise GET, POST, PUT, DELETE, and OPTIONS, and must allow Content-Type and X-API-Key as request headers. Preflight may return empty or non-empty success.
+
+POST /api/notes accepts JSON with string title and content. Title must be present and non-empty; an empty object or missing or blank title is a client error. Success is HTTP 201 with a body containing numeric id plus stored title and content. GET /api/notes returns a JSON array of objects with id, title, and content. Optional limit and offset query parameters are integers: default limit 50, maximum 100, default offset 0. /api/notes?limit=100 returns at most one hundred rows; /api/notes?limit=999 is capped the same way. The total row count before paging goes in the X-Total-Count header.
+
+GET /api/notes/{id} returns that object. A missing id returns HTTP 404 with JSON {"error":"not found"} using that exact lowercase message string, including for ids such as /api/notes/99999 on GET, PUT, or DELETE. PUT uses the same field rules as POST, returns HTTP 200 with saved fields when the row exists, or the same not-found JSON when it does not. Successful DELETE returns HTTP 200 with JSON {"status":"deleted"}; deleting a missing id returns the same not-found JSON as GET. Reject POST or PUT bodies larger than 65536 bytes with HTTP 413 and a JSON error body.
+
+SQLite access must remain correct under concurrent requests. Verifiers may reset /app/data/notes.db and send bursts of about fifteen parallel POST requests; every stored row must still appear in responses afterward.
+[?2004hroot@1b06f1f3df22:/app# cat /app/config/api.key
+[?2004ltb3_notes_api_secret_2026
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/main.c
+[?2004l#include <microhttpd.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <strings.h>
+#include <ctype.h>
+#include "routes.h"
+#include "db.h"
+
+#define PORT 8080
+#define WWW_DIR "/app/www"
+
+static struct MHD_Daemon *daemon_handle = NULL;
+
+static void handle_signal(int sig) {
+    (void)sig;
+    if (daemon_handle) MHD_stop_daemon(daemon_handle);
+    close_db();
+    exit(0);
+}
+
+static const char *get_content_type(const char *path) {
+    const char *ext = strrchr(path, '.');
+    if (!ext) return "application/octet-stream";
+    if (strcmp(ext, ".html") == 0) return "text/html";
+    if (strcmp(ext, ".css") == 0) return "text/css";
+    if (strcmp(ext, ".js") == 0) return "application/javascript";
+    return "application/octet-stream";
+}
+
+/* Decode a single %XX hex sequence; returns the char or -1 on failure */
+static int decode_hex(const char *s) {
+    if (s[0] != '%') return -1;
+    char hi = s[1], lo = s[2];
+    if (!isxdigit((unsigned char)hi) || !isxdigit((unsigned char)lo)) return -1;
+    unsigned int val = 0;
+    sscanf(s+1, "%2x", &val);
+    return (int)val;
+}
+
+/* Check if URL contains path traversal (..) in any encoded form */
+static int has_path_traversal(const char *url) {
+    const char *p = url;
+    while (*p) {
+        /* Check if current position is a dot (literal or encoded) */
+        int is_dot1 = 0;
+        int skip1 = 0;
+        if (*p == '.') { is_dot1 = 1; skip1 = 1; }
+        else if (*p == '%' && decode_hex(p) == '.') { is_dot1 = 1; skip1 = 3; }
+
+        if (is_dot1) {
+            const char *q = p + skip1;
+            int is_dot2 = 0;
+            if (*q == '.') { is_dot2 = 1; }
+            else if (*q == '%' && decode_hex(q) == '.') { is_dot2 = 1; }
+            if (is_dot2) return 1;
+        }
+        p++;
+    }
+    return 0;
+}
+
+static enum MHD_Result serve_static_file(struct MHD_Connection *connection,
+    const char *url) {
+    if (has_path_traversal(url)) {
+        struct MHD_Response *r = MHD_create_response_from_buffer(
+            9, (void *)"Forbidden", MHD_RESPMEM_PERSISTENT);
+        enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_FORBIDDEN, r);
+        MHD_destroy_response(r);
+        return ret;
+    }
+
+    char filepath[512];
+    const char *path = strcmp(url, "/") == 0 ? "/index.html" : url;
+    snprintf(filepath, sizeof(filepath), "%s%s", WWW_DIR, path);
+
+    struct stat st;
+    if (stat(filepath, &st) != 0) return MHD_NO;
+
+    FILE *f = fopen(filepath, "rb");
+    if (!f) return MHD_NO;
+
+    char *buf = malloc(st.st_size);
+    fread(buf, 1, st.st_size, f);
+    fclose(f);
+
+    struct MHD_Response *response = MHD_create_response_from_buffer(
+        st.st_size, buf, MHD_RESPMEM_MUST_FREE);
+    MHD_add_response_header(response, "Content-Type", get_content_type(filepath));
+    enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
+    MHD_destroy_response(response);
+    return ret;
+}
+
+static void request_completed(void *cls, struct MHD_Connection *connection,
+    void **con_cls, enum MHD_RequestTerminationCode toe) {
+    (void)cls; (void)connection; (void)toe;
+    if (con_cls && *con_cls) {
+        struct connection_info *ci = *con_cls;
+        if (ci->data) free(ci->data);
+        free(ci);
+        *con_cls = NULL;
+    }
+}
+
+static enum MHD_Result handle_request(void *cls,
+    struct MHD_Connection *connection,
+    const char *url, const char *method,
+    const char *version,
+    const char *upload_data, size_t *upload_data_size,
+    void **con_cls) {
+    (void)cls; (void)version;
+
+    if (strncmp(url, "/api/", 5) == 0) {
+        return route_request(connection, url, method, upload_data,
+                             upload_data_size, con_cls);
+    }
+
+    if (strcmp(method, "GET") == 0) {
+        enum MHD_Result ret = serve_static_file(connection, url);
+        if (ret == MHD_YES) return ret;
+    }
+
+    struct MHD_Response *response = MHD_create_response_from_buffer(
+        9, (void *)"Not Found", MHD_RESPMEM_PERSISTENT);
+    enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, response);
+    MHD_destroy_response(response);
+    return ret;
+}
+
+int main(void) {
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+
+    mkdir("/app/data", 0755);
+
+    if (init_db("/app/data/notes.db") != 0) {
+        fprintf(stderr, "Failed to initialize database\n");
+        return 1;
+    }
+
+    daemon_handle = MHD_start_daemon(
+        MHD_USE_THREAD_PER_CONNECTION,
+        PORT,
+        NULL, NULL,
+        &handle_request, NULL,
+        MHD_OPTION_NOTIFY_COMPLETED, &request_completed, NULL,
+        MHD_OPTION_END
+    );
+
+    if (!daemon_handle) {
+        fprintf(stderr, "Failed to start server\n");
+        return 1;
+    }
+
+    printf("Server running on port %d\n", PORT);
+    while (1) pause();
+    return 0;
+}
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/routes.c
+[?2004l#include "routes.h"
+#include "db.h"
+#include <microhttpd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static enum MHD_Result send_json(struct MHD_Connection *connection,
+                                  const char *body, unsigned int status_code) {
+    struct MHD_Response *response = MHD_create_response_from_buffer(
+        strlen(body), (void *)body, MHD_RESPMEM_MUST_COPY);
+    MHD_add_response_header(response, "Content-Type", "application/json");
+    MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
+    MHD_add_response_header(response, "Access-Control-Allow-Methods",
+                            "GET, POST, PUT, DELETE, OPTIONS");
+    MHD_add_response_header(response, "Access-Control-Allow-Headers",
+                            "Content-Type, X-API-Key");
+    enum MHD_Result ret = MHD_queue_response(connection, status_code, response);
+    MHD_destroy_response(response);
+    return ret;
+}
+
+static enum MHD_Result send_json_total(struct MHD_Connection *connection,
+                                       const char *body, unsigned int status_code,
+                                       int total) {
+    struct MHD_Response *response = MHD_create_response_from_buffer(
+        strlen(body), (void *)body, MHD_RESPMEM_MUST_COPY);
+    MHD_add_response_header(response, "Content-Type", "application/json");
+    MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
+    MHD_add_response_header(response, "Access-Control-Allow-Methods",
+                            "GET, POST, PUT, DELETE, OPTIONS");
+    MHD_add_response_header(response, "Access-Control-Allow-Headers",
+                            "Content-Type, X-API-Key");
+    char count_str[32];
+    snprintf(count_str, sizeof(count_str), "%d", total);
+    MHD_add_response_header(response, "X-Total-Count", count_str);
+    enum MHD_Result ret = MHD_queue_response(connection, status_code, response);
+    MHD_destroy_response(response);
+    return ret;
+}
+
+static void request_completed(void *cls, struct MHD_Connection *connection,
+                              void **con_cls, enum MHD_RequestTerminationCode toe) {
+    (void)cls;
+    (void)connection;
+    (void)toe;
+    if (con_cls && *con_cls) {
+        struct connection_info *ci = *con_cls;
+        if (ci->data)
+            free(ci->data);
+        free(ci);
+        *con_cls = NULL;
+    }
+}
+
+enum MHD_Result route_request(struct MHD_Connection *connection, const char *url,
+                              const char *method, const char *upload_data,
+                              size_t *upload_data_size, void **con_cls) {
+    (void)upload_data;
+    (void)upload_data_size;
+    (void)con_cls;
+
+    if (strcmp(method, "OPTIONS") == 0)
+        return send_json(connection, "", MHD_HTTP_OK);
+
+    if (strcmp(url, "/api/notes") == 0 && strcmp(method, "GET") == 0) {
+        int total = get_total_notes_count();
+        char *json = get_notes_paginated_json(50, 0);
+        if (!json)
+            return send_json_total(connection, "[]", MHD_HTTP_OK, total);
+        enum MHD_Result r = send_json_total(connection, json, MHD_HTTP_OK, total);
+        free(json);
+        return r;
+    }
+
+    return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+}
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/routes.h
+[?2004l#ifndef ROUTES_H
+#define ROUTES_H
+
+#include <microhttpd.h>
+
+struct connection_info {
+    char *data;
+    size_t data_size;
+};
+
+enum MHD_Result route_request(struct MHD_Connection *connection,
+    const char *url, const char *method,
+    const char *upload_data, size_t *upload_data_size,
+    void **con_cls);
+
+#endif
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/db.c
+[?2004l#include "db.h"
+#include <sqlite3.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static sqlite3 *db = NULL;
+
+int init_db(const char *path) {
+    if (sqlite3_open_v2(path, &db,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX,
+            NULL) != SQLITE_OK) {
+        fprintf(stderr, "Cannot open database: %s\n", sqlite3_errmsg(db));
+        return -1;
+    }
+
+    const char *sql = "CREATE TABLE IF NOT EXISTS notes ("
+                      "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                      "title TEXT NOT NULL,"
+                      "content TEXT DEFAULT ''"
+                      ");";
+    char *err_msg = NULL;
+    if (sqlite3_exec(db, sql, NULL, NULL, &err_msg) != SQLITE_OK) {
+        fprintf(stderr, "SQL error: %s\n", err_msg);
+        sqlite3_free(err_msg);
+        return -1;
+    }
+    return 0;
+}
+
+void close_db(void) {
+    if (db)
+        sqlite3_close(db);
+    db = NULL;
+}
+
+int create_note(const char *title, const char *content) {
+    (void)title;
+    (void)content;
+    return 0;
+}
+
+char *get_all_notes_json(void) {
+    return strdup("[]");
+}
+
+char *get_notes_paginated_json(int limit, int offset) {
+    (void)limit;
+    (void)offset;
+    return strdup("[]");
+}
+
+int get_total_notes_count(void) {
+    return 0;
+}
+
+char *get_note_json(int id) {
+    (void)id;
+    return NULL;
+}
+
+int update_note(int id, const char *title, const char *content) {
+    (void)id;
+    (void)title;
+    (void)content;
+    return 0;
+}
+
+int delete_note(int id) {
+    (void)id;
+    return 0;
+}
+
+int note_exists(int id) {
+    (void)id;
+    return 0;
+}
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/db.h
+[?2004l#ifndef DB_H
+#define DB_H
+
+int init_db(const char *path);
+void close_db(void);
+int create_note(const char *title, const char *content);
+char *get_all_notes_json(void);
+char *get_notes_paginated_json(int limit, int offset);
+int get_total_notes_count(void);
+char *get_note_json(int id);
+int update_note(int id, const char *title, const char *content);
+int delete_note(int id);
+int note_exists(int id);
+
+#endif
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/auth.c
+[?2004l#include "auth.h"
+
+int api_key_valid(struct MHD_Connection *connection) {
+    (void)connection;
+    return 0;
+}
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/auth.h
+[?2004l#ifndef AUTH_H
+#define AUTH_H
+
+#include <microhttpd.h>
+
+int api_key_valid(struct MHD_Connection *connection);
+
+#endif
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/static.c
+[?2004l#include "static.h"
+
+enum MHD_Result serve_static_file(struct MHD_Connection *connection, const char *url) {
+    (void)connection;
+    (void)url;
+    return MHD_NO;
+}
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/static.h
+[?2004l#ifndef STATIC_H
+#define STATIC_H
+
+#include <microhttpd.h>
+
+enum MHD_Result serve_static_file(struct MHD_Connection *connection, const char *url);
+
+#endif
+[?2004hroot@1b06f1f3df22:/app# cat /app/sql/init.sql
+[?2004lCREATE TABLE IF NOT EXISTS notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL
+);
+[?2004hroot@1b06f1f3df22:/app# cat /app/Makefile
+[?2004lCC = gcc
+CFLAGS = -Wall -Wextra -Isrc -Iinclude
+LDFLAGS = -lmicrohttpd -lsqlite3
+
+SOURCES = src/main.c src/routes.c src/db.c
+TARGET = notes_server
+
+$(TARGET): $(SOURCES)
+	$(CC) $(CFLAGS) -o $(TARGET) $(SOURCES) $(LDFLAGS)
+
+clean:
+	rm -f $(TARGET)
+[?2004hroot@1b06f1f3df22:/app# cat /app/include/common.h
+[?2004l#ifndef NOTES_COMMON_H
+#define NOTES_COMMON_H
+
+#define NOTES_MAX_BODY_BYTES 65536
+#define NOTES_DEFAULT_PAGE_SIZE 50
+#define NOTES_MAX_PAGE_SIZE 100
+
+#endif
+[?2004hroot@1b06f1f3df22:/app# cat /app/include/notes.h
+[?2004l#ifndef NOTES_H
+#define NOTES_H
+
+#define NOTES_LISTEN_PORT 8080
+
+#endif
+[?2004hroot@1b06f1f3df22:/app# cat > /app/src/db.h << 'EOF'
+[?2004l[?2004h> #ifndef DB_H
+[?2004l[?2004h> #define DB_H
+[?2004l[?2004h> 
+[?2004l[?2004h> int init_db(const char *path);
+[?2004l[?2004h> void close_db(void);
+[?2004l[?2004h> 
+[?2004l[?2004h> /* Returns the new row id, or -1 on error */
+[?2004l[?2004h> int create_note(const char *title, const char *content);
+[?2004l[?2004h> 
+[?2004l[?2004h> /* Returns malloc'd JSON string for a single note, or NULL if not found */
+[?2004l[?2004h> char *get_note_json(int id);
+[?2004l[?2004h> 
+[?2004l[?2004h> /* Returns malloc'd JSON array string for paginated notes */
+[?2004l[?2004h> char *get_notes_paginated_json(int limit, int offset);
+[?2004l[?2004h> 
+[?2004l[?2004h> /* Returns total count of notes */
+[?2004l[?2004h> int get_total_notes_count(void);
+[?2004l[?2004h> 
+[?2004l[?2004h> /* Returns 1 if note exists, 0 otherwise */
+[?2004l[?2004h> int note_exists(int id);
+[?2004l[?2004h> 
+[?2004l[?2004h> /* Update note; returns 1 on success, 0 if not found, -1 on error */
+[?2004l[?2004h> int update_note(int id, const char *title, const char *content);
+[?2004l[?2004h> 
+[?2004l[?2004h> /* Delete note; returns 1 on success, 0 if not found */
+[?2004l[?2004h> int delete_note(int id);
+[?2004l[?2004h> 
+[?2004l[?2004h> #endif
+[?2004l[?2004h> EOF
+[?2004l[?2004hroot@1b06f1f3df22:/app# cat > /app/src/db.c << 'EOF'
+[?2004l[?2004h> #include "db.h"
+[?2004l[?2004h> #include <sqlite3.h>
+[?2004l[?2004h> #include <stdio.h>
+[?2004l[?2004h> #include <stdlib.h>
+[?2004l[?2004h> #include <string.h>
+[?2004l[?2004h> #include <pthread.h>
+[?2004l[?2004h> 
+[?2004l[?2004h> static sqlite3 *db = NULL;
+[?2004l[?2004h> static pthread_mutex_t db_mutex = PTHREAD_MUTEX_INITIALIZER;
+[?2004l[?2004h> 
+[?2004l[?2004h> /* Escape a string for JSON output. Caller must free result. */
+[?2004l[?2004h> static char *json_escape(const char *s) {
+[?2004l[?2004h>     if (!s) return strdup("");
+[?2004l[?2004h>     size_t len = strlen(s);
+[?2004l[?2004h>     /* Worst case: every char becomes \uXXXX (6 chars) */
+[?2004l[?2004h>     char *out = malloc(len * 6 + 1);
+[?2004l[?2004h>     if (!out) return strdup("");
+[?2004l[?2004h>     char *p = out;
+[?2004l[?2004h>     for (size_t i = 0; i < len; i++) {
+[?2004l[?2004h>         unsigned char c = (unsigned char)s[i];
+[?2004l[?2004h>         switch (c) {
+[?2004l[?2004h>             case '"':  *p++ = '\\'; *p++ = '"'; break;
+[?2004l[?2004h>             case '\\': *p++ = '\\'; *p++ = '\\'; break;
+[?2004l[?2004h>             case '\n': *p++ = '\\'; *p++ = 'n'; break;
+[?2004l[?2004h>             case '\r': *p++ = '\\'; *p++ = 'r'; break;
+[?2004l[?2004h>             case '\t': *p++ = '\\'; *p++ = 't'; break;
+[?2004l[?2004h>             case '\b': *p++ = '\\'; *p++ = 'b'; break;
+[?2004l[?2004h>             case '\f': *p++ = '\\'; *p++ = 'f'; break;
+[?2004l[?2004h>             default:
+[?2004l[?2004h>                 if (c < 0x20) {
+[?2004l[?2004h>                     p += sprintf(p, "\\u%04x", c);
+[?2004l[?2004h>                 } else {
+[?2004l[?2004h>                     *p++ = c;
+[?2004l[?2004h>                 }
+[?2004l[?2004h>                 break;
+[?2004l[?2004h>         }
+[?2004l[?2004h>     }
+[?2004l[?2004h>     *p = '\0';
+[?2004l[?2004h>     return out;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l [?2004h> int init_db(const char *path) {
+[?2004l[?2004h>     int rc = sqlite3_open_v2(path, &db,
+[?2004l[?2004h>         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+[?2004l[?2004h>         NULL);
+[?2004l[?2004h>     if (rc != SQLITE_OK) {
+[?2004l[?2004h>         fprintf(stderr, "Cannot open database: %s\n", sqlite3_errmsg(db));
+[?2004l[?2004h>         return -1;
+[?2004l[?2004h>     }
+[?2004l[?2004h> 
+[?2004l[?2004h>     /* Enable WAL mode for concurrency */
+[?2004l[?2004h>     sqlite3_exec(db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
+[?2004l[?2004h>     /* Set busy timeout to 5 seconds */
+[?2004l[?2004h>     sqlite3_busy_timeout(db, 5000);
+[?2004l[?2004h> 
+[?2004l[?2004h>     const char *sql = "CREATE TABLE IF NOT EXISTS notes ("
+[?2004l[?2004h>                       "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+[?2004l[?2004h>                       "title TEXT NOT NULL,"
+[?2004l[?2004h>                       "content TEXT NOT NULL DEFAULT ''"
+[?2004l[?2004h>                       ");";
+[?2004l[?2004h>     char *err_msg = NULL;
+[?2004l[?2004h>     if (sqlite3_exec(db, sql, NULL, NULL, &err_msg) != SQLITE_OK) {
+[?2004l[?2004h>         fprintf(stderr, "SQL error: %s\n", err_msg);
+[?2004l[?2004h>         sqlite3_free(err_msg);
+[?2004l[?2004h>         return -1;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     return 0;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l([?2004h> void close_db(void) {
+[?2004l[?2004h>     if (db) sqlite3_close(db);
+[?2004l[?2004h>     db = NULL;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> int create_note(const char *title, const char *content) {
+[?2004l[?2004h>     if (!content) content = "";
+[?2004l[?2004h>     pthread_mutex_lock(&db_mutex);
+[?2004l[?2004h>     sqlite3_stmt *stmt;
+[?2004l[?2004h>     const char *sql = "INSERT INTO notes (title, content) VALUES (?, ?);";
+[?2004l[?2004h>     int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+[?2004l[?2004h>     if (rc != SQLITE_OK) {
+[?2004l[?2004h>         pthread_mutex_unlock(&db_mutex);
+[?2004l[?2004h>         return -1;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     sqlite3_bind_text(stmt, 1, title, -1, SQLITE_TRANSIENT);
+[?2004l[?2004h>     sqlite3_bind_text(stmt, 2, content, -1, SQLITE_TRANSIENT);
+[?2004l[?2004h>     rc = sqlite3_step(stmt);
+[?2004l[?2004h>     sqlite3_finalize(stmt);
+[?2004l[?2004h>     if (rc != SQLITE_DONE) {
+[?2004l[?2004h>         pthread_mutex_unlock(&db_mutex);
+[?2004l[?2004h>         return -1;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     int id = (int)sqlite3_last_insert_rowid(db);
+[?2004l[?2004h>     pthread_mutex_unlock(&db_mutex);
+[?2004l[?2004h>     return id;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004lECT 1 FROM no[?2004h> char *get_note_json(int id) {
+[?2004l[?2004h>     pthread_mutex_lock(&db_mutex);
+[?2004l[?2004h>     sqlite3_stmt *stmt;
+[?2004l[?2004h>     const char *sql = "SELECT id, title, content FROM notes WHERE id = ?;";
+[?2004l[?2004h>     int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+[?2004l[?2004h>     if (rc != SQLITE_OK) {
+[?2004l[?2004h>         pthread_mutex_unlock(&db_mutex);
+[?2004l[?2004h>         return NULL;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     sqlite3_bind_int(stmt, 1, id);
+[?2004l[?2004h>     rc = sqlite3_step(stmt);
+[?2004l[?2004h>     if (rc != SQLITE_ROW) {
+[?2004l[?2004h>         sqlite3_finalize(stmt);
+[?2004l[?2004h>         pthread_mutex_unlock(&db_mutex);
+[?2004l[?2004h>         return NULL;
+[?2004l-1, &stmt[?2004h>     }
+[?2004l[?2004h>     int nid = sqlite3_column_int(stmt, 0);
+[?2004l[?2004h>     const char *title = (const char *)sqlite3_column_text(stmt, 1);
+[?2004l[?2004h>     const char *content = (const char *)sqlite3_column_text(stmt, 2);
+[?2004l[?2004h>     char *esc_title = json_escape(title);
+[?2004l[?2004h>     char *esc_content = json_escape(content);
+[?2004l[?2004h>     size_t buf_size = strlen(esc_title) + strlen(esc_content) + 100;
+[?2004l[?2004h>     char *json = malloc(buf_size);
+[?2004l[?2004h>     snprintf(json, buf_size, "{\"id\":%d,\"title\":\"%s\",\"content\":\"%s\"}",
+[?2004l[?2004h>              nid, esc_title, esc_content);
+[?2004l[?2004h>     free(esc_title);
+[?2004l  con[?2004h>     free(esc_content);
+[?2004l[?2004h>     sqlite3_finalize(stmt);
+[?2004l[?2004h>     pthread_mutex_unlock(&db_mutex);
+[?2004l[?2004h>     return json;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> char *get_notes_paginated_json(int limit, int offset) {
+[?2004l[?2004h>     pthread_mutex_lock(&db_mutex);
+[?2004l[?2004h>     sqlite3_stmt *stmt;
+[?2004l[?2004h>     const char *sql = "SELECT id, title, content FROM notes ORDER BY id LIMIT ? OFFSET ?;";
+[?2004l[?2004h>     int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+[?2004l[?2004h>     if (rc != SQLITE_OK) {
+[?2004l[?2004h>         pthread_mutex_unlock(&db_mutex);
+[?2004l[?2004h>         return strdup("[]");
+[?2004l[?2004h>     }
+[?2004l[?2004h>     sqlite3_bind_int(stmt, 1, limit);
+[?2004l[?2004h>     sqlite3_bind_int(stmt, 2, offset);
+[?2004l[?2004h> 
+[?2004l[?2004h>     /* Build JSON array */
+[?2004l[?2004h>     size_t buf_size = 4096;
+[?2004l[?2004h>     size_t buf_used = 0;
+[?2004l[?2004h>     char *buf = malloc(buf_size);
+[?2004l[?2004h>     buf[0] = '[';
+[?2004l[?2004h>     buf_used = 1;
+[?2004l[?2004h>     int first = 1;
+[?2004l[?2004h> 
+[?2004l[?2004h>     while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+[?2004l[?2004h>         int nid = sqlite3_column_int(stmt, 0);
+[?2004l[?2004h>         const char *title = (const char *)sqlite3_column_text(stmt, 1);
+[?2004l[?2004h>         const char *content = (const char *)sqlite3_column_text(stmt, 2);
+[?2004l[?2004h>         char *esc_title = json_escape(title);
+[?2004l[?2004h>         char *esc_content = json_escape(content);
+[?2004l[?2004h>         
+[?2004l[?2004h>         size_t entry_size = strlen(esc_title) + strlen(esc_content) + 100;
+[?2004l[?2004h>         while (buf_used + entry_size + 10 > buf_size) {
+[?2004l[?2004h>             buf_size *= 2;
+[?2004l[?2004h>             buf = realloc(buf, buf_size);
+[?2004l[?2004h>         }
+[?2004l[?2004h>         if (!first) { buf[buf_used++] = ','; }
+[?2004l[?2004h>         first = 0;
+[?2004l[?2004h>         buf_used += snprintf(buf + buf_used, buf_size - buf_used,
+[?2004l[?2004h>             "{\"id\":%d,\"title\":\"%s\",\"content\":\"%s\"}",
+[?2004l[?2004h>             nid, esc_title, esc_content);
+[?2004l[?2004h>         free(esc_title);
+[?2004l[?2004h>         free(esc_content);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     sqlite3_finalize(stmt);
+[?2004l[?2004h>     pthread_mutex_unlock(&db_mutex);
+[?2004l[?2004h> 
+[?2004l[?2004h>     if (buf_used + 2 > buf_size) {
+[?2004l[?2004h>         buf_size = buf_used + 2;
+[?2004l[?2004h>         buf = realloc(buf, buf_size);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     buf[buf_used++] = ']';
+[?2004l[?2004h>     buf[buf_used] = '\0';
+[?2004l[?2004h>     return buf;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> int get_total_notes_count(void) {
+[?2004l[?2004h>     pthread_mutex_lock(&db_mutex);
+[?2004l[?2004h>     sqlite3_stmt *stmt;
+[?2004l[?2004h>     const char *sql = "SELECT COUNT(*) FROM notes;";
+[?2004l[?2004h>     int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+[?2004l[?2004h>     if (rc != SQLITE_OK) {
+[?2004l[?2004h>         pthread_mutex_unlock(&db_mutex);
+[?2004l[?2004h>         return 0;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     rc = sqlite3_step(stmt);
+[?2004l[?2004h>     int count = 0;
+[?2004l[?2004h>     if (rc == SQLITE_ROW) {
+[?2004l[?2004h>         count = sqlite3_column_int(stmt, 0);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     sqlite3_finalize(stmt);
+[?2004l[?2004h>     pthread_mutex_unlock(&db_mutex);
+[?2004l[?2004h>     return count;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> int note_exists(int id) {
+[?2004l[?2004h>     pthread_mutex_lock(&db_mutex);
+[?2004l[?2004h>     sqlite3_stmt *stmt;
+[?2004l[?2004h>     const char *sql = "SELECT 1 FROM notes WHERE id = ?;";
+[?2004l[?2004h>     int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+[?2004l[?2004h>     if (rc != SQLITE_OK) {
+[?2004l[?2004h>         pthread_mutex_unlock(&db_mutex);
+[?2004l[?2004h>         return 0;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     sqlite3_bind_int(stmt, 1, id);
+[?2004l[?2004h>     rc = sqlite3_step(stmt);
+[?2004l[?2004h>     int exists = (rc == SQLITE_ROW) ? 1 : 0;
+[?2004l[?2004h>     sqlite3_finalize(stmt);
+[?2004l[?2004h>     pthread_mutex_unlock(&db_mutex);
+[?2004l[?2004h>     return exists;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> int update_note(int id, const char *title, const char *content) {
+[?2004l[?2004h>     if (!content) content = "";
+[?2004l[?2004h>     pthread_mutex_lock(&db_mutex);
+[?2004l[?2004h>     /* Check existence first */
+[?2004l[?2004h>     sqlite3_stmt *stmt;
+[?2004l[?2004h>     const char *check_sql = "SELECT 1 FROM notes WHERE id = ?;";
+[?2004l[?2004h>     int rc = sqlite3_prepare_v2(db, check_sql, -1, &stmt, NULL);
+[?2004l[?2004h>     if (rc != SQLITE_OK) {
+[?2004l[?2004h>         pthread_mutex_unlock(&db_mutex);
+[?2004l[?2004h>         return -1;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     sqlite3_bind_int(stmt, 1, id);
+[?2004l[?2004h>     rc = sqlite3_step(stmt);
+[?2004l[?2004h>     sqlite3_finalize(stmt);
+[?2004l[?2004h>     if (rc != SQLITE_ROW) {
+[?2004l[?2004h>         pthread_mutex_unlock(&db_mutex);
+[?2004l[?2004h>         return 0; /* not found */
+[?2004l[?2004h>     }
+[?2004l[?2004h> 
+[?2004l[?2004h>     const char *sql = "UPDATE notes SET title = ?, content = ? WHERE id = ?;";
+[?2004l[?2004h>     rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+[?2004l[?2004h>     if (rc != SQLITE_OK) {
+[?2004l[?2004h>         pthread_mutex_unlock(&db_mutex);
+[?2004l[?2004h>         return -1;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     sqlite3_bind_text(stmt, 1, title, -1, SQLITE_TRANSIENT);
+[?2004l[?2004h>     sqlite3_bind_text(stmt, 2, content, -1, SQLITE_TRANSIENT);
+[?2004l[?2004h>     sqlite3_bind_int(stmt, 3, id);
+[?2004l[?2004h>     rc = sqlite3_step(stmt);
+[?2004l[?2004h>     sqlite3_finalize(stmt);
+[?2004l[?2004h>     pthread_mutex_unlock(&db_mutex);
+[?2004l[?2004h>     return (rc == SQLITE_DONE) ? 1 : -1;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> int delete_note(int id) {
+[?2004l[?2004h>     pthread_mutex_lock(&db_mutex);
+[?2004l[?2004h>     /* Check existence first */
+[?2004l[?2004h>     sqlite3_stmt *stmt;
+[?2004l[?2004h>     const char *check_sql = "SELECT 1 FROM notes WHERE id = ?;";
+[?2004l[?2004h>     int rc = sqlite3_prepare_v2(db, check_sql, -1, &stmt, NULL);
+[?2004l[?2004h>     if (rc != SQLITE_OK) {
+[?2004l[?2004h>         pthread_mutex_unlock(&db_mutex);
+[?2004l[?2004h>         return 0;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     sqlite3_bind_int(stmt, 1, id);
+[?2004l[?2004h>     rc = sqlite3_step(stmt);
+[?2004l[?2004h>     sqlite3_finalize(stmt);
+[?2004l[?2004h>     if (rc != SQLITE_ROW) {
+[?2004l[?2004h>         pthread_mutex_unlock(&db_mutex);
+[?2004l[?2004h>         return 0; /* not found */
+[?2004l[?2004h>     }
+[?2004l[?2004h> 
+[?2004l[?2004h>     const char *sql = "DELETE FROM notes WHERE id = ?;";
+[?2004l[?2004h>     rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+[?2004l[?2004h>     if (rc != SQLITE_OK) {
+[?2004l[?2004h>         pthread_mutex_unlock(&db_mutex);
+[?2004l[?2004h>         return 0;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     sqlite3_bind_int(stmt, 1, id);
+[?2004l[?2004h>     rc = sqlite3_step(stmt);
+[?2004l[?2004h>     sqlite3_finalize(stmt);
+[?2004l[?2004h>     pthread_mutex_unlock(&db_mutex);
+[?2004l[?2004h>     return (rc == SQLITE_DONE) ? 1 : 0;
+[?2004l[?2004h> }
+[?2004l[?2004h> EOF
+[?2004l[?2004hroot@1b06f1f3df22:/app# cat > /app/src/auth.c << 'EOF'
+[?2004l[?2004h> #include "auth.h"
+[?2004l[?2004h> #include <stdio.h>
+[?2004l[?2004h> #include <stdlib.h>
+[?2004l[?2004h> #include <string.h>
+[?2004l[?2004h> #include <ctype.h>
+[?2004l[?2004h> 
+[?2004l[?2004h> static char api_key[256] = {0};
+[?2004l[?2004h> static int key_loaded = 0;
+[?2004l[?2004h> 
+[?2004l[?2004h> static void load_api_key(void) {
+[?2004l[?2004h>     if (key_loaded) return;
+[?2004l[?2004h>     FILE *f = fopen("/app/config/api.key", "r");
+[?2004l[?2004h>     if (!f) {
+[?2004l[?2004h>         key_loaded = 1;
+[?2004l[?2004h>         return;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     if (fgets(api_key, sizeof(api_key), f)) {
+[?2004l[?2004h>         /* Trim whitespace from both ends */
+[?2004l[?2004h>         char *end = api_key + strlen(api_key) - 1;
+[?2004l[?2004h>         while (end >= api_key && isspace((unsigned char)*end)) *end-- = '\0';
+[?2004l[?2004h>         char *start = api_key;
+[?2004l[?2004h>         while (*start && isspace((unsigned char)*start)) start++;
+[?2004l[?2004h>         if (start != api_key) memmove(api_key, start, strlen(start) + 1);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     fclose(f);
+[?2004l[?2004h>     key_loaded = 1;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> int api_key_valid(struct MHD_Connection *connection) {
+[?2004l[?2004h>     load_api_key();
+[?2004l[?2004h>     const char *provided = MHD_lookup_connection_value(connection, MHD_HEADER_KIND, "X-API-Key");
+[?2004l[?2004h>     if (!provided) return 0;
+[?2004l[?2004h>     if (api_key[0] == '\0') return 0;
+[?2004l[?2004h>     return (strcmp(provided, api_key) == 0) ? 1 : 0;
+[?2004l[?2004h> }
+[?2004l[?2004h> EOF
+[?2004l[?2004hroot@1b06f1f3df22:/app# cat > /app/src/routes.h << 'EOF'
+[?2004l[?2004h> #ifndef ROUTES_H
+[?2004l[?2004h> #define ROUTES_H
+[?2004l[?2004h> 
+[?2004l[?2004h> #include <microhttpd.h>
+[?2004l[?2004h> 
+[?2004l[?2004h> #define MAX_BODY_SIZE 65536
+[?2004l[?2004h> 
+[?2004l[?2004h> struct connection_info {
+[?2004l[?2004h>     char *data;
+[?2004l[?2004h>     size_t data_size;
+[?2004l[?2004h> };
+[?2004l[?2004h> 
+[?2004l[?2004h> enum MHD_Result route_request(struct MHD_Connection *connection,
+[?2004l[?2004h>     const char *url, const char *method,
+[?2004l[?2004h>     const char *upload_data, size_t *upload_data_size,
+[?2004l[?2004h>     void **con_cls);
+[?2004l[?2004h> 
+[?2004l[?2004h> #endif
+[?2004l[?2004h> EOF
+[?2004l[?2004hroot@1b06f1f3df22:/app# cat > /app/src/routes.c << 'EOF'
+[?2004l[?2004h> #include "routes.h"
+[?2004l[?2004h> #include "db.h"
+[?2004l[?2004h> #include "auth.h"
+[?2004l[?2004h> #include <microhttpd.h>
+[?2004l[?2004h> #include <stdio.h>
+[?2004l[?2004h> #include <stdlib.h>
+[?2004l[?2004h> #include <string.h>
+[?2004l[?2004h> #include <ctype.h>
+[?2004l[?2004h> 
+[?2004l[?2004h> static enum MHD_Result send_response(struct MHD_Connection *connection,
+[?2004l[?2004h>     const char *body, unsigned int status, const char *total_count) {
+[?2004l[?2004h>     struct MHD_Response *response = MHD_create_response_from_buffer(
+[?2004l[?2004h>         strlen(body), (void *)body, MHD_RESPMEM_MUST_COPY);
+[?2004l[?2004h>     MHD_add_response_header(response, "Content-Type", "application/json");
+[?2004l[?2004h>     MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
+[?2004l[?2004h>     MHD_add_response_header(response, "Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+[?2004l[?2004h>     MHD_add_response_header(response, "Access-Control-Allow-Headers", "Content-Type, X-API-Key");
+[?2004l[?2004h>     if (total_count) {
+[?2004l[?2004h>         MHD_add_response_header(response, "X-Total-Count", total_count);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     enum MHD_Result ret = MHD_queue_response(connection, status, response);
+[?2004l[?2004h>     MHD_destroy_response(response);
+[?2004l[?2004h>     return ret;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> static enum MHD_Result send_json(struct MHD_Connection *connection,
+[?2004l[?2004h>     const char *body, unsigned int status) {
+[?2004l[?2004h>     return send_response(connection, body, status, NULL);
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> static enum MHD_Result send_options(struct MHD_Connection *connection) {
+[?2004l[?2004h>     struct MHD_Response *response = MHD_create_response_from_buffer(0, (void*)"", MHD_RESPMEM_PERSISTENT);
+[?2004l[?2004h>     MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
+[?2004l[?2004h>     MHD_add_response_header(response, "Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+[?2004l[?2004h>     MHD_add_response_header(response, "Access-Control-Allow-Headers", "Content-Type, X-API-Key");
+[?2004l[?2004h>     MHD_add_response_header(response, "Content-Type", "application/json");
+[?2004l[?2004h>     enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
+[?2004l[?2004h>     MHD_destroy_response(response);
+[?2004l[?2004h>     return ret;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> /* Simple JSON string value extractor. Returns malloc'd string or NULL. */
+[?2004l[?2004h> static char *json_get_string(const char *json, const char *key) {
+[?2004l[?2004h>     /* Look for "key" */
+[?2004l[?2004h>     char search[256];
+[?2004l[?2004h>     snprintf(search, sizeof(search), "\"%s\"", key);
+[?2004l[?2004h>     const char *pos = strstr(json, search);
+[?2004l[?2004h>     if (!pos) return NULL;
+[?2004l[?2004h>     pos += strlen(search);
+[?2004l[?2004h>     /* Skip whitespace and colon */
+[?2004l[?2004h>     while (*pos && (isspace((unsigned char)*pos) || *pos == ':')) pos++;
+[?2004l[?2004h>     if (*pos == '\0') return NULL;
+[?2004l[?2004h>     if (*pos == 'n' && strncmp(pos, "null", 4) == 0) return NULL;
+[?2004l[?2004h>     if (*pos != '"') return NULL;
+[?2004l[?2004h>     pos++; /* skip opening quote */
+[?2004l[?2004h>     
+[?2004l[?2004h>     /* Parse the string value handling escapes */
+[?2004l[?2004h>     size_t buf_size = 1024;
+[?2004l[?2004h>     char *buf = malloc(buf_size);
+[?2004l[?2004h>     size_t buf_len = 0;
+[?2004l[?2004h>     
+[?2004l[?2004h>     while (*pos && *pos != '"') {
+[?2004l[?2004h>         if (buf_len + 8 >= buf_size) {
+[?2004l[?2004h>             buf_size *= 2;
+[?2004l[?2004h>             buf = realloc(buf, buf_size);
+[?2004l[?2004h>         }
+[?2004l[?2004h>         if (*pos == '\\') {
+[?2004l[?2004h>             pos++;
+[?2004l[?2004h>             switch (*pos) {
+[?2004l[?2004h>                 case '"': buf[buf_len++] = '"'; break;
+[?2004l[?2004h>                 case '\\': buf[buf_len++] = '\\'; break;
+[?2004l[?2004h>                 case '/': buf[buf_len++] = '/'; break;
+[?2004l[?2004h>                 case 'n': buf[buf_len++] = '\n'; break;
+[?2004l[?2004h>                 case 'r': buf[buf_len++] = '\r'; break;
+[?2004l[?2004h>                 case 't': buf[buf_len++] = '\t'; break;
+[?2004l[?2004h>                 case 'b': buf[buf_len++] = '\b'; break;
+[?2004l[?2004h>                 case 'f': buf[buf_len++] = '\f'; break;
+[?2004l[?2004h>                 case 'u': {
+[?2004l[?2004h>                     /* Basic \uXXXX handling - just pass through as UTF-8 for ASCII range */
+[?2004l[?2004h>                     if (pos[1] && pos[2] && pos[3] && pos[4]) {
+[?2004l[?2004h>                         unsigned int cp = 0;
+[?2004l[?2004h>                         sscanf(pos + 1, "%4x", &cp);
+[?2004l[?2004h>                         if (cp < 0x80) {
+[?2004l[?2004h>                             buf[buf_len++] = (char)cp;
+[?2004l[?2004h>                         } else if (cp < 0x800) {
+[?2004l[?2004h>                             buf[buf_len++] = (char)(0xC0 | (cp >> 6));
+[?2004l[?2004h>                             buf[buf_len++] = (char)(0x80 | (cp & 0x3F));
+[?2004l[?2004h>                         } else {
+[?2004l[?2004h>                             buf[buf_len++] = (char)(0xE0 | (cp >> 12));
+[?2004l[?2004h>                             buf[buf_len++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+[?2004l[?2004h>                             buf[buf_len++] = (char)(0x80 | (cp & 0x3F));
+[?2004l[?2004h>                         }
+[?2004l[?2004h>                         pos += 4;
+[?2004l[?2004h>                     }
+[?2004l[?2004h>                     break;
+[?2004l[?2004h>                 }
+[?2004l[?2004h>                 default: buf[buf_len++] = *pos; break;
+[?2004l[?2004h>             }
+[?2004l[?2004h>         } else {
+[?2004l[?2004h>             buf[buf_len++] = *pos;
+[?2004l[?2004h>         }
+[?2004l[?2004h>         pos++;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     buf[buf_len] = '\0';
+[?2004l[?2004h>     return buf;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l}[?2004h> /* Check if a key exists in JSON (even if value is empty string) */
+[?2004l[?2004h> static int json_has_key(const char *json, const char *key) {
+[?2004l[?2004h>     char search[256];
+[?2004l[?2004h>     snprintf(search, sizeof(search), "\"%s\"", key);
+[?2004l[?2004h>     return strstr(json, search) != NULL;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> /* Extract note ID from URL like /api/notes/123 */
+[?2004l[?2004h> static int extract_note_id(const char *url) {
+[?2004l[?2004h>     const char *prefix = "/api/notes/";
+[?2004l[?2004h>     if (strncmp(url, prefix, strlen(prefix)) != 0) return -1;
+[?2004l[?2004h>     const char *id_str = url + strlen(prefix);
+[?2004l[?2004h>     if (*id_str == '\0') return -1;
+[?2004l[?2004h>     /* Check it's all digits */
+[?2004l[?2004h>     for (const char *p = id_str; *p; p++) {
+[?2004l[?2004h>         if (!isdigit((unsigned char)*p)) return -1;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     return atoi(id_str);
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> static enum MHD_Result handle_get_notes(struct MHD_Connection *connection) {
+[?2004l[?2004h>     /* Parse limit and offset from query params */
+[?2004l[?2004h>     int limit = 50;
+[?2004l[?2004h>     int offset = 0;
+[?2004l[?2004h>     
+[?2004l[?2004h>     const char *limit_str = MHD_lookup_connection_value(connection, MHD_GET_ARGUMENT_KIND, "limit");
+[?2004l[?2004h>     const char *offset_str = MHD_lookup_connection_value(connection, MHD_GET_ARGUMENT_KIND, "offset");
+[?2004l[?2004h>     
+[?2004l[?2004h>     if (limit_str) {
+[?2004l[?2004h>         limit = atoi(limit_str);
+[?2004l[?2004h>         if (limit <= 0) limit = 50;
+[?2004l[?2004h>         if (limit > 100) limit = 100;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     if (offset_str) {
+[?2004l[?2004h>         offset = atoi(offset_str);
+[?2004l[?2004h>         if (offset < 0) offset = 0;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     int total = get_total_notes_count();
+[?2004l[?2004h>     char *json = get_notes_paginated_json(limit, offset);
+[?2004l[?2004h>     if (!json) json = strdup("[]");
+[?2004l[?2004h>     
+[?2004l[?2004h>     char total_str[32];
+[?2004l[?2004h>     snprintf(total_str, sizeof(total_str), "%d", total);
+[?2004l[?2004h>     
+[?2004l[?2004h>     enum MHD_Result r = send_response(connection, json, MHD_HTTP_OK, total_str);
+[?2004l[?2004h>     free(json);
+[?2004l[?2004h>     return r;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> static enum MHD_Result handle_get_note(struct MHD_Connection *connection, int id) {
+[?2004l[?2004h>     char *json = get_note_json(id);
+[?2004l[?2004h>     if (!json) {
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     enum MHD_Result r = send_json(connection, json, MHD_HTTP_OK);
+[?2004l[?2004h>     free(json);
+[?2004l[?2004h>     return r;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> static enum MHD_Result handle_post_note(struct MHD_Connection *connection, const char *body) {
+[?2004l[?2004h>     if (!body || strlen(body) == 0) {
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"title is required\"}", MHD_HTTP_BAD_REQUEST);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     char *title = json_get_string(body, "title");
+[?2004l[?2004h>     
+[?2004l[?2004h>     /* Title must be present and non-empty */
+[?2004l[?2004h>     if (!title || strlen(title) == 0) {
+[?2004l[?2004h>         if (title) free(title);
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"title is required\"}", MHD_HTTP_BAD_REQUEST);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     /* Check if title is only whitespace */
+[?2004l[?2004h>     int all_space = 1;
+[?2004l[?2004h>     for (size_t i = 0; i < strlen(title); i++) {
+[?2004l[?2004h>         if (!isspace((unsigned char)title[i])) { all_space = 0; break; }
+[?2004l[?2004h>     }
+[?2004l[?2004h>     if (all_space) {
+[?2004l[?2004h>         free(title);
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"title is required\"}", MHD_HTTP_BAD_REQUEST);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     char *content = json_get_string(body, "content");
+[?2004l[?2004h>     if (!content) content = strdup("");
+[?2004l[?2004h>     
+[?2004l[?2004h>     int id = create_note(title, content);
+[?2004l[?2004h>     if (id < 0) {
+[?2004l[?2004h>         free(title);
+[?2004l[?2004h>         free(content);
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"internal error\"}", MHD_HTTP_INTERNAL_SERVER_ERROR);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     /* Return the created note */
+[?2004l[?2004h>     char *note_json = get_note_json(id);
+[?2004l[?2004h>     if (!note_json) {
+[?2004l[?2004h>         free(title);
+[?2004l[?2004h>         free(content);
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"internal error\"}", MHD_HTTP_INTERNAL_SERVER_ERROR);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     enum MHD_Result r = send_json(connection, note_json, MHD_HTTP_CREATED);
+[?2004l[?2004h>     free(note_json);
+[?2004l[?2004h>     free(title);
+[?2004l[?2004h>     free(content);
+[?2004l[?2004h>     return r;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004lx[?2004h> static enum MHD_Result handle_put_note(struct MHD_Connection *connection, int id, const char *body) {
+[?2004l[?2004h>     if (!body || strlen(body) == 0) {
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"title is required\"}", MHD_HTTP_BAD_REQUEST);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     char *title = json_get_string(body, "title");
+[?2004l[?2004h>     
+[?2004l[?2004h>     /* Title must be present and non-empty */
+[?2004l[?2004h>     if (!title || strlen(title) == 0) {
+[?2004l[?2004h>         if (title) free(title);
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"title is required\"}", MHD_HTTP_BAD_REQUEST);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     /* Check if title is only whitespace */
+[?2004l[?2004h>     int all_space = 1;
+[?2004l[?2004h>     for (size_t i = 0; i < strlen(title); i++) {
+[?2004l[?2004h>         if (!isspace((unsigned char)title[i])) { all_space = 0; break; }
+[?2004l[?2004h>     }
+[?2004l[?2004h>     if (all_space) {
+[?2004l[?2004h>         free(title);
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"title is required\"}", MHD_HTTP_BAD_REQUEST);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     char *content = json_get_string(body, "content");
+[?2004l[?2004h>     if (!content) content = strdup("");
+[?2004l[?2004h>     
+[?2004l[?2004h>     int result = update_note(id, title, content);
+[?2004l[?2004h>     free(title);
+[?2004l[?2004h>     free(content);
+[?2004l[?2004h>     
+[?2004l[?2004h>     if (result == 0) {
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     if (result < 0) {
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"internal error\"}", MHD_HTTP_INTERNAL_SERVER_ERROR);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     char *note_json = get_note_json(id);
+[?2004l[?2004h>     if (!note_json) {
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"internal error\"}", MHD_HTTP_INTERNAL_SERVER_ERROR);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     enum MHD_Result r = send_json(connection, note_json, MHD_HTTP_OK);
+[?2004l[?2004h>     free(note_json);
+[?2004l[?2004h>     return r;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> static enum MHD_Result handle_delete_note(struct MHD_Connection *connection, int id) {
+[?2004l[?2004h>     int result = delete_note(id);
+[?2004l[?2004h>     if (result == 0) {
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     return send_json(connection, "{\"status\":\"deleted\"}", MHD_HTTP_OK);
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> enum MHD_Result route_request(struct MHD_Connection *connection, const char *url,
+[?2004l[?2004h>                               const char *method, const char *upload_data,
+[?2004l[?2004h>                               size_t *upload_data_size, void **con_cls) {
+[?2004l[?2004h>     
+[?2004l[?2004h>     /* OPTIONS preflight */
+[?2004l[?2004h>     if (strcmp(method, "OPTIONS") == 0) {
+[?2004l[?2004h>         return send_options(connection);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     /* For POST/PUT/DELETE, we need to accumulate body data */
+[?2004l[?2004h>     if (strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0 || strcmp(method, "DELETE") == 0) {
+[?2004l[?2004h>         if (*con_cls == NULL) {
+[?2004l[?2004h>             /* First call - allocate connection info */
+[?2004l[?2004h>             struct connection_info *ci = calloc(1, sizeof(struct connection_info));
+[?2004l[?2004h>             ci->data = NULL;
+[?2004l[?2004h>             ci->data_size = 0;
+[?2004l[?2004h>             *con_cls = ci;
+[?2004l[?2004h>             return MHD_YES;
+[?2004l[?2004h>         }
+[?2004l[?2004h>         
+[?2004l[?2004h>         struct connection_info *ci = *con_cls;
+[?2004l[?2004h>         
+[?2004l[?2004h>         if (*upload_data_size > 0) {
+[?2004l[?2004h>             /* Check body size limit */
+[?2004l[?2004h>             if (ci->data_size + *upload_data_size > MAX_BODY_SIZE) {
+[?2004l[?2004h>                 *upload_data_size = 0;
+[?2004l[?2004h>                 return send_json(connection, "{\"error\":\"body too large\"}", 413);
+[?2004l[?2004h>             }
+[?2004l[?2004h>             /* Accumulate data */
+[?2004l[?2004h>             ci->data = realloc(ci->data, ci->data_size + *upload_data_size + 1);
+[?2004l[?2004h>             memcpy(ci->data + ci->data_size, upload_data, *upload_data_size);
+[?2004l[?2004h>             ci->data_size += *upload_data_size;
+[?2004l[?2004h>             ci->data[ci->data_size] = '\0';
+[?2004l[?2004h>             *upload_data_size = 0;
+[?2004l[?2004h>             return MHD_YES;
+[?2004l[?2004h>         }
+[?2004l[?2004h>         
+[?2004l[?2004h>         /* All data received - process the request */
+[?2004l[?2004h>         /* Check auth for mutating requests */
+[?2004l[?2004h>         if (!api_key_valid(connection)) {
+[?2004l[?2004h>             return send_json(connection, "{\"error\":\"unauthorized\"}", MHD_HTTP_UNAUTHORIZED);
+[?2004l[?2004h>         }
+[?2004l[?2004h>         
+[?2004l[?2004h>         /* Check body size */
+[?2004l[?2004h>         if (ci->data_size > MAX_BODY_SIZE) {
+[?2004l[?2004h>             return send_json(connection, "{\"error\":\"body too large\"}", 413);
+[?2004l[?2004h>         }
+[?2004l[?2004h>         
+[?2004l[?2004h>         /* Route to appropriate handler */
+[?2004l[?2004h>         if (strcmp(url, "/api/notes") == 0 && strcmp(method, "POST") == 0) {
+[?2004l[?2004h>             return handle_post_note(connection, ci->data);
+[?2004l[?2004h>         }
+[?2004l[?2004h>         
+[?2004l[?2004h>         /* Extract ID for /api/notes/{id} routes */
+[?2004l[?2004h>         int id = extract_note_id(url);
+[?2004l[?2004h>         if (id < 0) {
+[?2004l[?2004h>             return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+[?2004l[?2004h>         }
+[?2004l[?2004h>         
+[?2004l[?2004h>         if (strcmp(method, "PUT") == 0) {
+[?2004l[?2004h>             return handle_put_note(connection, id, ci->data);
+[?2004l[?2004h>         }
+[?2004l[?2004h>         if (strcmp(method, "DELETE") == 0) {
+[?2004l[?2004h>             return handle_delete_note(connection, id);
+[?2004l[?2004h>         }
+[?2004l[?2004h>         
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     /* GET requests */
+[?2004l[?2004h>     if (strcmp(method, "GET") == 0) {
+[?2004l[?2004h>         if (strcmp(url, "/api/notes") == 0) {
+[?2004l[?2004h>             return handle_get_notes(connection);
+[?2004l[?2004h>         }
+[?2004l[?2004h>         
+[?2004l[?2004h>         int id = extract_note_id(url);
+[?2004l[?2004h>         if (id >= 0) {
+[?2004l[?2004h>             return handle_get_note(connection, id);
+[?2004l[?2004h>         }
+[?2004l[?2004h>         
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+[?2004l[?2004h> }
+[?2004l[?2004h> EOF
+[?2004l[?2004hroot@1b06f1f3df22:/app# cat > /app/Makefile << 'EOF'
+[?2004l[?2004h> CC = gcc
+[?2004l[?2004h> CFLAGS = -Wall -Wextra -Isrc -Iinclude
+[?2004l[?2004h> LDFLAGS = -lmicrohttpd -lsqlite3 -lpthread
+[?2004l[?2004h> 
+[?2004l[?2004h> SOURCES = src/main.c src/routes.c src/db.c src/auth.c
+[?2004l[?2004h> TARGET = notes_server
+[?2004l[?2004h> 
+[?2004l[?2004h> $(TARGET): $(SOURCES)
+[?2004l[?2004h> $(CC) $(CFLAGS) -o $(TARGET) $(SOURCES) $(LDFLAGS)
+[?2004l[?2004h> 
+[?2004l[?2004h> clean:
+[?2004l[?2004h> rm -f $(TARGET)
+[?2004l[?2004h> EOF
+[?2004l[?2004hroot@1b06f1f3df22:/app# cd /app && make clean && make
+[?2004lMakefile:9: *** missing separator.  Stop.
+[?2004hroot@1b06f1f3df22:/app# printf 'CC = gcc\nCFLAGS = -Wall -Wextra -Isrc -Iinclude\nLDFLAGS = -lmicrohttpd -lsqlite3 -lpthread\n\nSOURCES = src/main.c src/routes.c src/db.c src/auth.c\nTARGET = notes_server\n\n$(TARGET): $(SOURCES)\n\t$(CC) $(CFLAGS) -o $(TARGET) $(SOURCES) $(LDFLAGS)\n\nclean:\n\trm -f $(TARGET)\n' > /app/Makefile
+[?2004l[?2004hroot@1b06f1f3df22:/app# cat /app/Makefile
+[?2004lCC = gcc
+CFLAGS = -Wall -Wextra -Isrc -Iinclude
+LDFLAGS = -lmicrohttpd -lsqlite3 -lpthread
+
+SOURCES = src/main.c src/routes.c src/db.c src/auth.c
+TARGET = notes_server
+
+$(TARGET): $(SOURCES)
+	$(CC) $(CFLAGS) -o $(TARGET) $(SOURCES) $(LDFLAGS)
+
+clean:
+	rm -f $(TARGET)
+[?2004hroot@1b06f1f3df22:/app# make clean && make
+[?2004lrm -f notes_server
+gcc -Wall -Wextra -Isrc -Iinclude -o notes_server src/main.c src/routes.c src/db.c src/auth.c -lmicrohttpd -lsqlite3 -lpthread
+[01m[Ksrc/routes.c:109:12:[m[K [01;35m[Kwarning: [m[K‘[01m[Kjson_has_key[m[K’ defined but not used [[01;35m[K]8;;https://gcc.gnu.org/onlinedocs/gcc-14.2.0/gcc/Warning-Options.html#index-Wno-unused-function-Wunused-function]8;;[m[K]
+  109 | static int [01;35m[Kjson_has_key[m[K(const char *json, const char *key) {
+      |            [01;35m[K^~~~~~~~~~~~[m[K
+[?2004hroot@1b06f1f3df22:/app# rm -f /app/data/notes.db
+[?2004l[?2004hroot@1b06f1f3df22:/app# ./notes_server &
+[?2004l[2] 980
+[?2004hroot@1b06f1f3df22:/app# Failed to start server
+sleep 1
+[?2004l[2]+  Exit 1                  ./notes_server
+[?2004hroot@1b06f1f3df22:/app# curl -s http://localhost:8080/api/notes
+[?2004l[][?2004hroot@1b06f1f3df22:/app# curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{"title":"Test Note","content":"Hello World"}'
+[?2004l{"error":"not found"}[?2004hroot@1b06f1f3df22:/app# curl -s http://localhost:8080/api/notes/1
+[?2004l{"error":"not found"}[?2004hroot@1b06f1f3df22:/app# curl -s http://localhost:8080/api/notes/99999
+[?2004l{"error":"not found"}[?2004hroot@1b06f1f3df22:/app# curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -d '{"title":"No Key","content":"test"}'
+[?2004l{"error":"not found"}[?2004hroot@1b06f1f3df22:/app# curl -s -X PUT http://localhost:8080/api/notes/1 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{"title":"Updated","content":"New content"}'
+[?2004l{"error":"not found"}[?2004hroot@1b06f1f3df22:/app# curl -s -X DELETE http://localhost:8080/api/notes/1 -H 'X-API-Key: tb3_notes_api_secret_2026'
+[?2004l{"error":"not found"}[?2004hroot@1b06f1f3df22:/app# curl -s -X DELETE http://localhost:8080/api/notes/1 -H 'X-API-Key: tb3_notes_api_secret_2026'
+[?2004l{"error":"not found"}[?2004hroot@1b06f1f3df22:/app# curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{"title":"","content":"test"}'
+[?2004l{"error":"not found"}[?2004hroot@1b06f1f3df22:/app# curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{}'
+[?2004l{"error":"not found"}[?2004hroot@1b06f1f3df22:/app# curl -si -X OPTIONS http://localhost:8080/api/notes
+[?2004lHTTP/1.1 200 OK
+[1mDate[0m: Tue, 26 May 2026 12:46:48 GMT
+[1mConnection[0m: close
+[1mContent-Type[0m: application/json
+[1mAccess-Control-Allow-Origin[0m: *
+[1mAccess-Control-Allow-Methods[0m: GET, POST, PUT, DELETE, OPTIONS
+[1mAccess-Control-Allow-Headers[0m: Content-Type, X-API-Key
+[1mContent-Length[0m: 0
+
+[?2004hroot@1b06f1f3df22:/app# pkill -f notes_server; sleep 1
+[?2004lbash: pkill: command not found
+[?2004hroot@1b06f1f3df22:/app# rm -f /app/data/notes.db
+[?2004l[?2004hroot@1b06f1f3df22:/app# ./notes_server &
+[?2004l[2] 1109
+[?2004hroot@1b06f1f3df22:/app# Failed to start server
+curl -s http://localhost:8080/api/notes
+[?2004l[][2]+  Exit 1                  ./notes_server
+[?2004hroot@1b06f1f3df22:/app# curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{"title":"Test Note","content":"Hello World"}'
+[?2004l{"error":"not found"}[?2004hroot@1b06f1f3df22:/app# ps aux | grep notes
+[?2004lbash: ps: command not found
+[?2004hroot@1b06f1f3df22:/app# kill $(ps aux | grep notes_server | grep -v grep | awk '{print $2}')
+[?2004lbash: ps: command not found
+kill: usage: kill [-s sigspec | -n signum | -sigspec] pid | jobspec ... or kill -l [sigspec]
+[?2004hroot@1b06f1f3df22:/app# ps aux | grep notes
+[?2004lbash: ps: command not found
+[?2004hroot@1b06f1f3df22:/app# killall notes_server 2>/dev/null; killall -9 notes_server 2>/dev/null
+[?2004l[?2004hroot@1b06f1f3df22:/app# fuser 8080/tcp 2>/dev/null
+[?2004l[?2004hroot@1b06f1f3df22:/app# fuser -k 8080/tcp 2>/dev/null
+[?2004l[?2004hroot@1b06f1f3df22:/app# ls /proc/*/exe 2>/dev/null | while read f; do if readlink $f 2>/dev/null | grep -q notes_server; then echo $f | grep -o '[0-9]*'; fi; done
+[?2004l638
+[?2004hroot@1b06f1f3df22:/app# kill -9 638
+[?2004l[?2004hroot@1b06f1f3df22:/app# sleep 1
+[?2004l[1]+  Killed                  /app/notes_server
+[?2004hroot@1b06f1f3df22:/app# ./notes_server &
+[?2004l[1] 1273
+[?2004hroot@1b06f1f3df22:/app# Server running on port 8080
+curl -s http://localhost:8080/api/notes
+[?2004l[][?2004hroot@1b06f1f3df22:/app# curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{"title":"Test Note","content":"Hello World"}'
+[?2004l{"id":1,"title":"Test Note","content":"Hello World"}[?2004hroot@1b06f1f3df22:/app# curl -s http://localhost:8080/api/notes/1
+[?2004l{"id":1,"title":"Test Note","content":"Hello World"}[?2004hroot@1b06f1f3df22:/app# curl -s http://localhost:8080/api/notes/99999
+[?2004l{"error":"not found"}[?2004hroot@1b06f1f3df22:/app# curl -si -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -d '{"title":"No Key","content":"test"}'
+[?2004lHTTP/1.1 401 Unauthorized
+[1mDate[0m: Tue, 26 May 2026 12:47:35 GMT
+[1mContent-Type[0m: application/json
+[1mAccess-Control-Allow-Origin[0m: *
+[1mAccess-Control-Allow-Methods[0m: GET, POST, PUT, DELETE, OPTIONS
+[1mAccess-Control-Allow-Headers[0m: Content-Type, X-API-Key
+[1mContent-Length[0m: 24
+
+{"error":"unauthorized"}[?2004hroot@1b06f1f3df22:/app# curl -s -X PUT http://localhost:8080/api/notes/1 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{"title":"Updated Title","content":"Updated content"}'
+[?2004l{"id":1,"title":"Updated Title","content":"Updated content"}[?2004hroot@1b06f1f3df22:/app# curl -si -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{"title":"","content":"test"}'
+[?2004lHTTP/1.1 400 Bad Request
+[1mDate[0m: Tue, 26 May 2026 12:47:36 GMT
+[1mContent-Type[0m: application/json
+[1mAccess-Control-Allow-Origin[0m: *
+[1mAccess-Control-Allow-Methods[0m: GET, POST, PUT, DELETE, OPTIONS
+[1mAccess-Control-Allow-Headers[0m: Content-Type, X-API-Key
+[1mContent-Length[0m: 29
+
+{"error":"title is required"}[?2004hroot@1b06f1f3df22:/app# curl -si -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{}'
+[?2004lHTTP/1.1 400 Bad Request
+[1mDate[0m: Tue, 26 May 2026 12:47:36 GMT
+[1mContent-Type[0m: application/json
+[1mAccess-Control-Allow-Origin[0m: *
+[1mAccess-Control-Allow-Methods[0m: GET, POST, PUT, DELETE, OPTIONS
+[1mAccess-Control-Allow-Headers[0m: Content-Type, X-API-Key
+[1mContent-Length[0m: 29
+
+{"error":"title is required"}[?2004hroot@1b06f1f3df22:/app# curl -s -X DELETE http://localhost:8080/api/notes/1 -H 'X-API-Key: tb3_notes_api_secret_2026'
+[?2004l{"status":"deleted"}[?2004hroot@1b06f1f3df22:/app# curl -s -X DELETE http://localhost:8080/api/notes/1 -H 'X-API-Key: tb3_notes_api_secret_2026'
+[?2004l{"error":"not found"}[?2004hroot@1b06f1f3df22:/app# curl -si http://localhost:8080/api/notes
+[?2004lHTTP/1.1 200 OK
+[1mDate[0m: Tue, 26 May 2026 12:47:38 GMT
+[1mConnection[0m: close
+[1mContent-Type[0m: application/json
+[1mAccess-Control-Allow-Origin[0m: *
+[1mAccess-Control-Allow-Methods[0m: GET, POST, PUT, DELETE, OPTIONS
+[1mAccess-Control-Allow-Headers[0m: Content-Type, X-API-Key
+[1mX-Total-Count[0m: 0
+[1mContent-Length[0m: 2
+
+[][?2004hroot@1b06f1f3df22:/app# curl -s http://localhost:8080/app.js | head -5
+[?2004lvar API = '/api/notes';
+
+var editingId = null;
+
+async function fetchNotes() {
+[?2004hroot@1b06f1f3df22:/app# curl -si -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{"title":"Note 1","content":"c1"}' 2>&1 | head -1
+[?2004lHTTP/1.1 201 Created
+[?2004hroot@1b06f1f3df22:/app# for i in $(seq 2 10); do curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Note $i\",\"content\":\"content $i\"}"; echo; done
+[?2004l{"id":3,"title":"Note 2","content":"content 2"}
+{"id":4,"title":"Note 3","content":"content 3"}
+{"id":5,"title":"Note 4","content":"content 4"}
+{"id":6,"title":"Note 5","content":"content 5"}
+{"id":7,"title":"Note 6","content":"content 6"}
+{"id":8,"title":"Note 7","content":"content 7"}
+{"id":9,"title":"Note 8","content":"content 8"}
+{"id":10,"title":"Note 9","content":"content 9"}
+{"id":11,"title":"Note 10","content":"content 10"}
+[?2004hroot@1b06f1f3df22:/app# curl -si 'http://localhost:8080/api/notes?limit=3&offset=0' 2>&1 | grep -E '(X-Total|HTTP|^\[)'
+[?2004lHTTP/1.1 200 OK
+X-Total-Count: 10
+[{"id":2,"title":"Note 1","content":"c1"},{"id":3,"title":"Note 2","content":"content 2"},{"id":4,"title":"Note 3","content":"content 3"}]
+[?2004hroot@1b06f1f3df22:/app# curl -s 'http://localhost:8080/api/notes?limit=3&offset=0' | grep -o '"id"' | wc -l
+[?2004l3
+[?2004hroot@1b06f1f3df22:/app# curl -si 'http://localhost:8080/api/notes?limit=999' 2>&1 | grep X-Total-Count
+[?2004lX-Total-Count: 10
+[?2004hroot@1b06f1f3df22:/app# curl -s 'http://localhost:8080/api/notes?limit=999' | grep -o '"id"' | wc -l
+[?2004l10
+[?2004hroot@1b06f1f3df22:/app# curl -si -X PUT http://localhost:8080/api/notes/99999 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{"title":"Updated","content":"test"}' 2>&1 | head -1
+[?2004lHTTP/1.1 404 Not Found
+[?2004hroot@1b06f1f3df22:/app# curl -si -X PUT http://localhost:8080/api/notes/2 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{"title":"","content":"test"}' 2>&1 | head -3
+[?2004lHTTP/1.1 400 Bad Request
+Date: Tue, 26 May 2026 12:48:05 GMT
+Content-Type: application/json
+[?2004hroot@1b06f1f3df22:/app# # Test concurrent writes
+[?2004l[?2004hroot@1b06f1f3df22:/app# rm -f /app/data/notes.db && kill -HUP 1273 2>/dev/null; kill -9 1273 2>/dev/null; sleep 1
+[?2004l[1]+  Hangup                  ./notes_server
+[?2004hroot@1b06f1f3df22:/app# ./notes_server &
+[?2004l[1] 1502
+[?2004hroot@1b06f1f3df22:/app# Server running on port 8080
+for i in $(seq 1 15); do curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Concurrent $i\",\"content\":\"body $i\"}" & done; wait
+[?2004l[2] 1511
+[3] 1512
+[4] 1513
+[5] 1514
+[6] 1515
+[7] 1516
+[8] 1517
+[9] 1518
+[10] 1519
+[11] 1520
+[12] 1521
+[13] 1522
+[14] 1523
+[15] 1524
+[16] 1525
+{"id":1,"title":"Concurrent 3","content":"body 3"}{"id":2,"title":"Concurrent 1","content":"body 1"}{"id":3,"title":"Concurrent 6","content":"body 6"}{"id":4,"title":"Concurrent 2","content":"body 2"}{"id":5,"title":"Concurrent 4","content":"body 4"}{"id":6,"title":"Concurrent 14","content":"body 14"}{"id":7,"title":"Concurrent 11","content":"body 11"}{"id":8,"title":"Concurrent 9","content":"body 9"}{"id":9,"title":"Concurrent 12","content":"body 12"}{"id":10,"title":"Concurrent 15","content":"body 15"}{"id":11,"title":"Concurrent 7","content":"body 7"}{"id":12,"title":"Concurrent 8","content":"body 8"}{"id":13,"title":"Concurrent 13","content":"body 13"}{"id":14,"title":"Concurrent 5","content":"body 5"}{"id":15,"title":"Concurrent 10","content":"body 10"}curl -s http://localhost:8080/api/notes | grep -o '"id"' | wc -l
+
+curl -s http://localhost:8080/api/notes | grep -o '"id"' | wc -l
+^C
+[2]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Concurrent $i\",\"content\":\"body $i\"}"
+[3]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Concurrent $i\",\"content\":\"body $i\"}"
+[4]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Concurrent $i\",\"content\":\"body $i\"}"
+[5]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Concurrent $i\",\"content\":\"body $i\"}"
+[6]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Concurrent $i\",\"content\":\"body $i\"}"
+[7]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Concurrent $i\",\"content\":\"body $i\"}"
+[8]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Concurrent $i\",\"content\":\"body $i\"}"
+[9]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Concurrent $i\",\"content\":\"body $i\"}"
+[10]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Concurrent $i\",\"content\":\"body $i\"}"
+[11]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Concurrent $i\",\"content\":\"body $i\"}"
+[12]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Concurrent $i\",\"content\":\"body $i\"}"
+[13]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Concurrent $i\",\"content\":\"body $i\"}"
+[14]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Concurrent $i\",\"content\":\"body $i\"}"
+[15]-  Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Concurrent $i\",\"content\":\"body $i\"}"
+[16]+  Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Concurrent $i\",\"content\":\"body $i\"}"
+[?2004hroot@1b06f1f3df22:/app# 
+[?2004l[?2004hroot@1b06f1f3df22:/app# curl -s http://localhost:8080/api/notes | grep -o '"id"' | wc -l
+[?2004l15
+[?2004hroot@1b06f1f3df22:/app# curl -si 'http://localhost:8080/api/notes?limit=999' 2>&1 | grep X-Total-Count
+[?2004lX-Total-Count: 15
+[?2004hroot@1b06f1f3df22:/app# curl -s 'http://localhost:8080/api/notes?limit=999' | grep -o '"id"' | wc -l
+[?2004l15
+[?2004hroot@1b06f1f3df22:/app# curl -si -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: wrong_key' -d '{"title":"Bad","content":"test"}' 2>&1 | head -1
+[?2004lHTTP/1.1 401 Unauthorized
+[?2004hroot@1b06f1f3df22:/app# python3 -c "import sys; sys.stdout.buffer.write(b'{\"title\":\"big\",\"content\":\"' + b'x'*70000 + b'\"}')" | curl -si -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' --data-binary @- 2>&1 | head -1
+[?2004l[?2004hroot@1b06f1f3df22:/app# curl -s http://localhost:8080/index.html | head -3
+[?2004l<!DOCTYPE html>
+<html lang="en">
+<head>
+[?2004hroot@1b06f1f3df22:/app# curl -si 'http://localhost:8080/api/notes?limit=3&offset=2' 2>&1 | grep -E '(X-Total|HTTP)'
+[?2004lHTTP/1.1 200 OK
+X-Total-Count: 15
+[?2004hroot@1b06f1f3df22:/app# python3 -c "print('{\"title\":\"big\",\"content\":\"' + 'x'*70000 + '\"}')" > /tmp/bigbody.json && wc -c /tmp/bigbody.json
+[?2004l70029 /tmp/bigbody.json
+[?2004hroot@1b06f1f3df22:/app# curl -si -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' --data-binary @/tmp/bigbody.json 2>&1 | head -5
+[?2004l[?2004hroot@1b06f1f3df22:/app# cat > /app/src/routes.h << 'EOF'
+[?2004l[?2004h> #ifndef ROUTES_H
+[?2004l[?2004h> #define ROUTES_H
+[?2004l[?2004h> 
+[?2004l[?2004h> #include <microhttpd.h>
+[?2004l[?2004h> 
+[?2004l[?2004h> #define MAX_BODY_SIZE 65536
+[?2004l[?2004h> 
+[?2004l[?2004h> struct connection_info {
+[?2004l[?2004h>     char *data;
+[?2004l[?2004h>     size_t data_size;
+[?2004l[?2004h>     int too_large;
+[?2004l[?2004h> };
+[?2004l[?2004h> 
+[?2004l[?2004h> enum MHD_Result route_request(struct MHD_Connection *connection,
+[?2004l[?2004h>     const char *url, const char *method,
+[?2004l[?2004h>     const char *upload_data, size_t *upload_data_size,
+[?2004l[?2004h>     void **con_cls);
+[?2004l[?2004h> 
+[?2004l[?2004h> #endif
+[?2004l[?2004h> EOF
+[?2004l[?2004hroot@1b06f1f3df22:/app# cat > /app/src/routes.c << 'EOF'
+[?2004l[?2004h> #include "routes.h"
+[?2004l[?2004h> #include "db.h"
+[?2004l[?2004h> #include "auth.h"
+[?2004l[?2004h> #include <microhttpd.h>
+[?2004l[?2004h> #include <stdio.h>
+[?2004l[?2004h> #include <stdlib.h>
+[?2004l[?2004h> #include <string.h>
+[?2004l[?2004h> #include <ctype.h>
+[?2004l[?2004h> 
+[?2004l[?2004h> static enum MHD_Result send_response(struct MHD_Connection *connection,
+[?2004l[?2004h>     const char *body, unsigned int status, const char *total_count) {
+[?2004l[?2004h>     struct MHD_Response *response = MHD_create_response_from_buffer(
+[?2004l[?2004h>         strlen(body), (void *)body, MHD_RESPMEM_MUST_COPY);
+[?2004l[?2004h>     MHD_add_response_header(response, "Content-Type", "application/json");
+[?2004l[?2004h>     MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
+[?2004l[?2004h>     MHD_add_response_header(response, "Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+[?2004l[?2004h>     MHD_add_response_header(response, "Access-Control-Allow-Headers", "Content-Type, X-API-Key");
+[?2004l[?2004h>     if (total_count) {
+[?2004l[?2004h>         MHD_add_response_header(response, "X-Total-Count", total_count);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     enum MHD_Result ret = MHD_queue_response(connection, status, response);
+[?2004l[?2004h>     MHD_destroy_response(response);
+[?2004l[?2004h>     return ret;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> static enum MHD_Result send_json(struct MHD_Connection *connection,
+[?2004l[?2004h>     const char *body, unsigned int status) {
+[?2004l[?2004h>     return send_response(connection, body, status, NULL);
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> static enum MHD_Result send_options(struct MHD_Connection *connection) {
+[?2004l[?2004h>     struct MHD_Response *response = MHD_create_response_from_buffer(0, (void*)"", MHD_RESPMEM_PERSISTENT);
+[?2004l[?2004h>     MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
+[?2004l[?2004h>     MHD_add_response_header(response, "Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+[?2004l[?2004h>     MHD_add_response_header(response, "Access-Control-Allow-Headers", "Content-Type, X-API-Key");
+[?2004l[?2004h>     MHD_add_response_header(response, "Content-Type", "application/json");
+[?2004l[?2004h>     enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
+[?2004l[?2004h>     MHD_destroy_response(response);
+[?2004l[?2004h>     return ret;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> /* Simple JSON string value extractor. Returns malloc'd string or NULL. */
+[?2004l[?2004h> static char *json_get_string(const char *json, const char *key) {
+[?2004l[?2004h>     char search[256];
+[?2004l[?2004h>     snprintf(search, sizeof(search), "\"%s\"", key);
+[?2004l[?2004h>     const char *pos = strstr(json, search);
+[?2004l[?2004h>     if (!pos) return NULL;
+[?2004l[?2004h>     pos += strlen(search);
+[?2004l[?2004h>     while (*pos && (isspace((unsigned char)*pos) || *pos == ':')) pos++;
+[?2004l[?2004h>     if (*pos == '\0') return NULL;
+[?2004l[?2004h>     if (*pos == 'n' && strncmp(pos, "null", 4) == 0) return NULL;
+[?2004l[?2004h>     if (*pos != '"') return NULL;
+[?2004l[?2004h>     pos++;
+[?2004l[?2004h>     
+[?2004l[?2004h>     size_t buf_size = 1024;
+[?2004l[?2004h>     char *buf = malloc(buf_size);
+[?2004l[?2004h>     size_t buf_len = 0;
+[?2004l[?2004h>     
+[?2004l[?2004h>     while (*pos && *pos != '"') {
+[?2004l[?2004h>         if (buf_len + 8 >= buf_size) {
+[?2004l[?2004h>             buf_size *= 2;
+[?2004l[?2004h>             buf = realloc(buf, buf_size);
+[?2004l[?2004h>         }
+[?2004l[?2004h>         if (*pos == '\\') {
+[?2004l[?2004h>             pos++;
+[?2004l[?2004h>             switch (*pos) {
+[?2004l[?2004h>                 case '"': buf[buf_len++] = '"'; break;
+[?2004l[?2004h>                 case '\\': buf[buf_len++] = '\\'; break;
+[?2004l[?2004h>                 case '/': buf[buf_len++] = '/'; break;
+[?2004l[?2004h>                 case 'n': buf[buf_len++] = '\n'; break;
+[?2004l[?2004h>                 case 'r': buf[buf_len++] = '\r'; break;
+[?2004l[?2004h>                 case 't': buf[buf_len++] = '\t'; break;
+[?2004l[?2004h>                 case 'b': buf[buf_len++] = '\b'; break;
+[?2004l[?2004h>                 case 'f': buf[buf_len++] = '\f'; break;
+[?2004l[?2004h>                 case 'u': {
+[?2004l[?2004h>                     if (pos[1] && pos[2] && pos[3] && pos[4]) {
+[?2004l[?2004h>                         unsigned int cp = 0;
+[?2004l[?2004h>                         sscanf(pos + 1, "%4x", &cp);
+[?2004l[?2004h>                         if (cp < 0x80) {
+[?2004l[?2004h>                             buf[buf_len++] = (char)cp;
+[?2004l[?2004h>                         } else if (cp < 0x800) {
+[?2004l[?2004h>                             buf[buf_len++] = (char)(0xC0 | (cp >> 6));
+[?2004l[?2004h>                             buf[buf_len++] = (char)(0x80 | (cp & 0x3F));
+[?2004l[?2004h>                         } else {
+[?2004l[?2004h>                             buf[buf_len++] = (char)(0xE0 | (cp >> 12));
+[?2004l[?2004h>                             buf[buf_len++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+[?2004l[?2004h>                             buf[buf_len++] = (char)(0x80 | (cp & 0x3F));
+[?2004l[?2004h>                         }
+[?2004l[?2004h>                         pos += 4;
+[?2004l[?2004h>                     }
+[?2004l[?2004h>                     break;
+[?2004l[?2004h>                 }
+[?2004l[?2004h>                 default: buf[buf_len++] = *pos; break;
+[?2004l[?2004h>             }
+[?2004l[?2004h>         } else {
+[?2004l[?2004h>             buf[buf_len++] = *pos;
+[?2004l[?2004h>         }
+[?2004l[?2004h>         pos++;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     buf[buf_len] = '\0';
+[?2004l[?2004h>     return buf;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> /* Extract note ID from URL like /api/notes/123 */
+[?2004l[?2004h> static int extract_note_id(const char *url) {
+[?2004l[?2004h>     const char *prefix = "/api/notes/";
+[?2004l[?2004h>     if (strncmp(url, prefix, strlen(prefix)) != 0) return -1;
+[?2004l[?2004h>     const char *id_str = url + strlen(prefix);
+[?2004l[?2004h>     if (*id_str == '\0') return -1;
+[?2004l[?2004h>     for (const char *p = id_str; *p; p++) {
+[?2004l[?2004h>         if (!isdigit((unsigned char)*p)) return -1;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     return atoi(id_str);
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004lO[?2004h> static enum MHD_Result handle_get_notes(struct MHD_Connection *connection) {
+[?2004l[?2004h>     int limit = 50;
+[?2004l[?2004h>     int offset = 0;
+[?2004l[?2004h>     
+[?2004l[?2004h>     const char *limit_str = MHD_lookup_connection_value(connection, MHD_GET_ARGUMENT_KIND, "limit");
+[?2004l[?2004h>     const char *offset_str = MHD_lookup_connection_value(connection, MHD_GET_ARGUMENT_KIND, "offset");
+[?2004l[?2004h>     
+[?2004l[?2004h>     if (limit_str) {
+[?2004l[?2004h>         limit = atoi(limit_str);
+[?2004l[?2004h>         if (limit <= 0) limit = 50;
+[?2004l[?2004h>         if (limit > 100) limit = 100;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     if (offset_str) {
+[?2004l[?2004h>         offset = atoi(offset_str);
+[?2004l[?2004h>         if (offset < 0) offset = 0;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     int total = get_total_notes_count();
+[?2004l[?2004h>     char *json = get_notes_paginated_json(limit, offset);
+[?2004l[?2004h>     if (!json) json = strdup("[]");
+[?2004l[?2004h>     
+[?2004l[?2004h>     char total_str[32];
+[?2004l[?2004h>     snprintf(total_str, sizeof(total_str), "%d", total);
+[?2004l[?2004h>     
+[?2004l[?2004h>     enum MHD_Result r = send_response(connection, json, MHD_HTTP_OK, total_str);
+[?2004l[?2004h>     free(json);
+[?2004l[?2004h>     return r;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> static enum MHD_Result handle_get_note(struct MHD_Connection *connection, int id) {
+[?2004l[?2004h>     char *json = get_note_json(id);
+[?2004l[?2004h>     if (!json) {
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     enum MHD_Result r = send_json(connection, json, MHD_HTTP_OK);
+[?2004l[?2004h>     free(json);
+[?2004l[?2004h>     return r;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> static enum MHD_Result handle_post_note(struct MHD_Connection *connection, const char *body) {
+[?2004l[?2004h>     if (!body || strlen(body) == 0) {
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"title is required\"}", MHD_HTTP_BAD_REQUEST);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     char *title = json_get_string(body, "title");
+[?2004l[?2004h>     
+[?2004l[?2004h>     if (!title || strlen(title) == 0) {
+[?2004l[?2004h>         if (title) free(title);
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"title is required\"}", MHD_HTTP_BAD_REQUEST);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     int all_space = 1;
+[?2004l[?2004h>     for (size_t i = 0; i < strlen(title); i++) {
+[?2004l[?2004h>         if (!isspace((unsigned char)title[i])) { all_space = 0; break; }
+[?2004l[?2004h>     }
+[?2004l[?2004h>     if (all_space) {
+[?2004l[?2004h>         free(title);
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"title is required\"}", MHD_HTTP_BAD_REQUEST);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     char *content = json_get_string(body, "content");
+[?2004l[?2004h>     if (!content) content = strdup("");
+[?2004l[?2004h>     
+[?2004l[?2004h>     int id = create_note(title, content);
+[?2004l[?2004h>     if (id < 0) {
+[?2004l[?2004h>         free(title);
+[?2004l[?2004h>         free(content);
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"internal error\"}", MHD_HTTP_INTERNAL_SERVER_ERROR);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     char *note_json = get_note_json(id);
+[?2004l[?2004h>     if (!note_json) {
+[?2004l[?2004h>         free(title);
+[?2004l[?2004h>         free(content);
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"internal error\"}", MHD_HTTP_INTERNAL_SERVER_ERROR);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     enum MHD_Result r = send_json(connection, note_json, MHD_HTTP_CREATED);
+[?2004l[?2004h>     free(note_json);
+[?2004l[?2004h>     free(title);
+[?2004l[?2004h>     free(content);
+[?2004l[?2004h>     return r;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> static enum MHD_Result handle_put_note(struct MHD_Connection *connection, int id, const char *body) {
+[?2004l[?2004h>     if (!body || strlen(body) == 0) {
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"title is required\"}", MHD_HTTP_BAD_REQUEST);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     char *title = json_get_string(body, "title");
+[?2004l[?2004h>     
+[?2004l[?2004h>     if (!title || strlen(title) == 0) {
+[?2004l[?2004h>         if (title) free(title);
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"title is required\"}", MHD_HTTP_BAD_REQUEST);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     int all_space = 1;
+[?2004l[?2004h>     for (size_t i = 0; i < strlen(title); i++) {
+[?2004l[?2004h>         if (!isspace((unsigned char)title[i])) { all_space = 0; break; }
+[?2004l[?2004h>     }
+[?2004l[?2004h>     if (all_space) {
+[?2004l[?2004h>         free(title);
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"title is required\"}", MHD_HTTP_BAD_REQUEST);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     char *content = json_get_string(body, "content");
+[?2004l[?2004h>     if (!content) content = strdup("");
+[?2004l[?2004h>     
+[?2004l[?2004h>     int result = update_note(id, title, content);
+[?2004l[?2004h>     free(title);
+[?2004l[?2004h>     free(content);
+[?2004l[?2004h>     
+[?2004l[?2004h>     if (result == 0) {
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     if (result < 0) {
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"internal error\"}", MHD_HTTP_INTERNAL_SERVER_ERROR);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     char *note_json = get_note_json(id);
+[?2004l[?2004h>     if (!note_json) {
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"internal error\"}", MHD_HTTP_INTERNAL_SERVER_ERROR);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     enum MHD_Result r = send_json(connection, note_json, MHD_HTTP_OK);
+[?2004l[?2004h>     free(note_json);
+[?2004l[?2004h>     return r;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> static enum MHD_Result handle_delete_note(struct MHD_Connection *connection, int id) {
+[?2004l[?2004h>     int result = delete_note(id);
+[?2004l[?2004h>     if (result == 0) {
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     return send_json(connection, "{\"status\":\"deleted\"}", MHD_HTTP_OK);
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> enum MHD_Result route_request(struct MHD_Connection *connection, const char *url,
+[?2004l[?2004h>                               const char *method, const char *upload_data,
+[?2004l[?2004h>                               size_t *upload_data_size, void **con_cls) {
+[?2004l[?2004h>     
+[?2004l[?2004h>     /* OPTIONS preflight */
+[?2004l[?2004h>     if (strcmp(method, "OPTIONS") == 0) {
+[?2004l[?2004h>         return send_options(connection);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     /* For POST/PUT/DELETE, we need to accumulate body data */
+[?2004l[?2004h>     if (strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0 || strcmp(method, "DELETE") == 0) {
+[?2004l[?2004h>         if (*con_cls == NULL) {
+[?2004l[?2004h>             struct connection_info *ci = calloc(1, sizeof(struct connection_info));
+[?2004l[?2004h>             ci->data = NULL;
+[?2004l[?2004h>             ci->data_size = 0;
+[?2004l[?2004h>             ci->too_large = 0;
+[?2004l[?2004h>             *con_cls = ci;
+[?2004l[?2004h>             return MHD_YES;
+[?2004l[?2004h>         }
+[?2004l[?2004h>         
+[?2004l[?2004h>         struct connection_info *ci = *con_cls;
+[?2004l[?2004h>         
+[?2004l[?2004h>         if (*upload_data_size > 0) {
+[?2004l[?2004h>             if (ci->too_large || ci->data_size + *upload_data_size > MAX_BODY_SIZE) {
+[?2004l[?2004h>                 ci->too_large = 1;
+[?2004l[?2004h>                 *upload_data_size = 0;
+[?2004l[?2004h>                 return MHD_YES;
+[?2004l[?2004h>             }
+[?2004l[?2004h>             ci->data = realloc(ci->data, ci->data_size + *upload_data_size + 1);
+[?2004l[?2004h>             memcpy(ci->data + ci->data_size, upload_data, *upload_data_size);
+[?2004l[?2004h>             ci->data_size += *upload_data_size;
+[?2004l[?2004h>             ci->data[ci->data_size] = '\0';
+[?2004l[?2004h>             *upload_data_size = 0;
+[?2004l[?2004h>             return MHD_YES;
+[?2004l[?2004h>         }
+[?2004l[?2004h>         
+[?2004l[?2004h>         /* All data received - process the request */
+[?2004l[?2004h>         
+[?2004l[?2004h>         /* Check body size */
+[?2004l[?2004h>         if (ci->too_large) {
+[?2004l[?2004h>             return send_json(connection, "{\"error\":\"body too large\"}", 413);
+[?2004l[?2004h>         }
+[?2004l[?2004h>         
+[?2004l[?2004h>         /* Check auth for mutating requests */
+[?2004l[?2004h>         if (!api_key_valid(connection)) {
+[?2004l[?2004h>             return send_json(connection, "{\"error\":\"unauthorized\"}", MHD_HTTP_UNAUTHORIZED);
+[?2004l[?2004h>         }
+[?2004l[?2004h>         
+[?2004l[?2004h>         /* Route to appropriate handler */
+[?2004l[?2004h>         if (strcmp(url, "/api/notes") == 0 && strcmp(method, "POST") == 0) {
+[?2004l[?2004h>             return handle_post_note(connection, ci->data);
+[?2004l[?2004h>         }
+[?2004l[?2004h>         
+[?2004l[?2004h>         int id = extract_note_id(url);
+[?2004l[?2004h>         if (id < 0) {
+[?2004l[?2004h>             return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+[?2004l[?2004h>         }
+[?2004l[?2004h>         
+[?2004l[?2004h>         if (strcmp(method, "PUT") == 0) {
+[?2004l[?2004h>             return handle_put_note(connection, id, ci->data);
+[?2004l[?2004h>         }
+[?2004l[?2004h>         if (strcmp(method, "DELETE") == 0) {
+[?2004l[?2004h>             return handle_delete_note(connection, id);
+[?2004l[?2004h>         }
+[?2004l[?2004h>         
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     /* GET requests */
+[?2004l[?2004h>     if (strcmp(method, "GET") == 0) {
+[?2004l[?2004h>         if (strcmp(url, "/api/notes") == 0) {
+[?2004l[?2004h>             return handle_get_notes(connection);
+[?2004l[?2004h>         }
+[?2004l[?2004h>         
+[?2004l[?2004h>         int id = extract_note_id(url);
+[?2004l[?2004h>         if (id >= 0) {
+[?2004l[?2004h>             return handle_get_note(connection, id);
+[?2004l[?2004h>         }
+[?2004l[?2004h>         
+[?2004l[?2004h>         return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     
+[?2004l[?2004h>     return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+[?2004l[?2004h> }
+[?2004l[?2004h> EOF
+[?2004l[?2004hroot@1b06f1f3df22:/app# make clean && make
+[?2004lrm -f notes_server
+gcc -Wall -Wextra -Isrc -Iinclude -o notes_server src/main.c src/routes.c src/db.c src/auth.c -lmicrohttpd -lsqlite3 -lpthread
+[?2004hroot@1b06f1f3df22:/app# kill -9 1502 2>/dev/null; sleep 1
+[?2004l[1]+  Killed                  ./notes_server
+[?2004hroot@1b06f1f3df22:/app# rm -f /app/data/notes.db && ./notes_server &
+[?2004l[1] 1825
+[?2004hroot@1b06f1f3df22:/app# Server running on port 8080
+curl -si -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' --data-binary @/tmp/bigbody.json 2>&1 | head -5
+[?2004lHTTP/1.1 413 Content Too Large
+Date: Tue, 26 May 2026 12:50:29 GMT
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+[?2004hroot@1b06f1f3df22:/app# echo '=== POST create ===' && curl -si -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{"title":"First","content":"Content 1"}' 2>&1 | grep -E '(HTTP|^{)'
+[?2004l=== POST create ===
+grep: Unmatched ( or \(
+[?2004hroot@1b06f1f3df22:/app# echo '=== GET single ===' && curl -s http://localhost:8080/api/notes/1
+[?2004l=== GET single ===
+{"id":1,"title":"First","content":"Content 1"}[?2004hroot@1b06f1f3df22:/app# echo '=== GET missing ===' && curl -si http://localhost:8080/api/notes/99999 2>&1 | grep -E '(HTTP|^{)'
+[?2004l=== GET missing ===
+grep: Unmatched ( or \(
+[?2004hroot@1b06f1f3df22:/app# echo '=== PUT update ===' && curl -si -X PUT http://localhost:8080/api/notes/1 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{"title":"Updated","content":"New content"}' 2>&1 | grep -E '(HTTP|^{)'
+[?2004l=== PUT update ===
+grep: Unmatched ( or \(
+[?2004hroot@1b06f1f3df22:/app# echo '=== PUT missing ===' && curl -si -X PUT http://localhost:8080/api/notes/99999 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{"title":"X","content":"Y"}' 2>&1 | grep -E '(HTTP|^{)'
+[?2004l=== PUT missing ===
+grep: Unmatched ( or \(
+[?2004hroot@1b06f1f3df22:/app# echo '=== PUT empty title ===' && curl -si -X PUT http://localhost:8080/api/notes/1 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{"title":"","content":"Y"}' 2>&1 | grep -E '(HTTP|^{)'
+[?2004l=== PUT empty title ===
+grep: Unmatched ( or \(
+[?2004hroot@1b06f1f3df22:/app# echo '=== DELETE ===' && curl -si -X DELETE http://localhost:8080/api/notes/1 -H 'X-API-Key: tb3_notes_api_secret_2026' 2>&1 | grep -E '(HTTP|^{)'
+[?2004l=== DELETE ===
+grep: Unmatched ( or \(
+[?2004hroot@1b06f1f3df22:/app# echo '=== DELETE missing ===' && curl -si -X DELETE http://localhost:8080/api/notes/1 -H 'X-API-Key: tb3_notes_api_secret_2026' 2>&1 | grep -E '(HTTP|^{)'
+[?2004l=== DELETE missing ===
+grep: Unmatched ( or \(
+[?2004hroot@1b06f1f3df22:/app# echo '=== No auth ===' && curl -si -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -d '{"title":"X"}' 2>&1 | grep -E '(HTTP|^{)'
+[?2004l=== No auth ===
+grep: Unmatched ( or \(
+[?2004hroot@1b06f1f3df22:/app# echo '=== Static ===' && curl -s http://localhost:8080/style.css | head -2
+[?2004l=== Static ===
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: sans-serif; background: #f5f5f5; padding: 2rem; }
+[?2004hroot@1b06f1f3df22:/app# echo '=== Concurrent test ===' && rm -f /app/data/notes.db && kill -9 1825; sleep 1 && ./notes_server & sleep 1
+[?2004l=== Concurrent test ===
+[2] 1953
+[1]   Killed                  rm -f /app/data/notes.db && ./notes_server
+[?2004hroot@1b06f1f3df22:/app# SQL error: disk I/O error
+Failed to initialize database
+for i in $(seq 1 15); do curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Note $i\",\"content\":\"Body $i\"}" & done; wait
+[?2004l[3] 1964
+[4] 1965
+[5] 1966
+[6] 1967
+[7] 1968
+[8] 1969
+[9] 1970
+[10] 1971
+[11] 1972
+[12] 1973
+[13] 1974
+[14] 1975
+[15] 1976
+[16] 1977
+[17] 1978
+{"id":2,"title":"Note 3","content":"Body 3"}{"id":3,"title":"Note 2","content":"Body 2"}{"id":4,"title":"Note 4","content":"Body 4"}{"id":5,"title":"Note 1","content":"Body 1"}[2]   Exit 1                  sleep 1 && ./notes_server
+[3]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Note $i\",\"content\":\"Body $i\"}"
+[4]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Note $i\",\"content\":\"Body $i\"}"
+[5]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Note $i\",\"content\":\"Body $i\"}"
+[6]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Note $i\",\"content\":\"Body $i\"}"
+{"id":6,"title":"Note 12","content":"Body 12"}{"id":8,"title":"Note 8","content":"Body 8"}{"id":9,"title":"Note 6","content":"Body 6"}{"id":10,"title":"Note 5","content":"Body 5"}[7]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Note $i\",\"content\":\"Body $i\"}"
+[8]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Note $i\",\"content\":\"Body $i\"}"
+[10]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Note $i\",\"content\":\"Body $i\"}"
+[14]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Note $i\",\"content\":\"Body $i\"}"
+{"id":11,"title":"Note 13","content":"Body 13"}{"id":7,"title":"Note 7","content":"Body 7"}[9]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Note $i\",\"content\":\"Body $i\"}"
+{"id":12,"title":"Note 11","content":"Body 11"}{"id":13,"title":"Note 15","content":"Body 15"}{"id":14,"title":"Note 14","content":"Body 14"}{"id":15,"title":"Note 9","content":"Body 9"}[11]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Note $i\",\"content\":\"Body $i\"}"
+[13]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Note $i\",\"content\":\"Body $i\"}"
+[15]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Note $i\",\"content\":\"Body $i\"}"
+[16]-  Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Note $i\",\"content\":\"Body $i\"}"
+[17]+  Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Note $i\",\"content\":\"Body $i\"}"
+{"id":16,"title":"Note 10","content":"Body 10"}[12]+  Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"title\":\"Note $i\",\"content\":\"Body $i\"}"
+[?2004hroot@1b06f1f3df22:/app# echo "Total notes:" && curl -si http://localhost:8080/api/notes 2>&1 | grep X-Total-Count
+[?2004lTotal notes:
+X-Total-Count: 15
+[?2004hroot@1b06f1f3df22:/app# ls /proc/*/exe 2>/dev/null | while read f; do if readlink $f 2>/dev/null | grep -q notes_server; then echo $f | grep -o '[0-9]*'; fi; done
+[?2004l1827
+[?2004hroot@1b06f1f3df22:/app# ls /proc/*/exe 2>/dev/null | while read f; do if readlink $f 2>/dev/null | grep -q notes_server; then pid=$(echo $f | grep -o '[0-9]*'); kill -9 $pid 2>/dev/null; fi; done
+[?2004l[?2004hroot@1b06f1f3df22:/app# sleep 1
+[?2004l[?2004hroot@1b06f1f3df22:/app# rm -f /app/data/notes.db && ./notes_server &
+[?2004l[1] 2115
+[?2004hroot@1b06f1f3df22:/app# Server running on port 8080
+curl -s http://localhost:8080/api/notes && echo
+[?2004l[]
+[?2004hroot@1b06f1f3df22:/app# curl -s http://localhost:8080/app.js | head -1
+[?2004lvar API = '/api/notes';
+[?2004hroot@1b06f1f3df22:/app# find /app -type f | head -50
+[?2004l/app/Makefile
+/app/README.md
+/app/config/api.key
+/app/config/defaults.env
+/app/data/notes.db-shm
+/app/data/notes.db
+/app/data/notes.db-wal
+/app/deps/versions.txt
+/app/docs/api_contract.md
+/app/docs/build_notes.md
+/app/docs/js_verifier_mock.md
+/app/docs/runtime_layout.md
+/app/include/common.h
+/app/include/notes.h
+/app/sql/init.sql
+/app/src/auth.c
+/app/src/auth.h
+/app/src/db.c
+/app/src/db.h
+/app/src/main.c
+/app/src/routes.c
+/app/src/routes.h
+/app/src/static.c
+/app/src/static.h
+/app/www/app.js
+/app/www/index.html
+/app/www/style.css
+/app/notes_server
+[?2004hroot@1b06f1f3df22:/app# cat /app/docs/js_verifier_mock.md
+[?2004lAutomated frontend checks load /app/www/app.js in a minimal QuickJS DOM mock, not a full browser. The mock is incomplete compared to Chrome.
+
+Do not use element.dataset or element.classList; use getAttribute and setAttribute for data attributes, and className (or split className on spaces) for classes. After HTML is rendered into notes-list, elements inside that container do not expose parentNode, closest, querySelector, or getElementsByTagName. Edit and delete handlers must read note id and any other needed fields from getAttribute on the clicked edit-btn or delete-btn. Per-button click listeners that close over the note object are fine.
+
+Load the note list when the script first runs (top-level code), not only after window load or DOMContentLoaded. Use class names edit-btn and delete-btn on row buttons. Hook form submit with addEventListener on the element with id note-form. For edit and delete, attach per-button click listeners, or delegate clicks on notes-list or document only if the handler reads note data from the clicked button itself; relying only on window load handlers will not exercise the script.
+
+Mutating fetch calls must send Content-Type: application/json even for DELETE. Form submissions must send JSON bodies built from the note-title and note-content field values with keys title and content, not empty or hard-coded placeholders.
+
+The harness seeds GET /api/notes with two notes: title Note One with content Body One, and title Note Two with content Body Two. Other strings used during checks are arbitrary labels for form fields or API bodies only, including Find Me, In the List, Single Fetch, Updated Name, Updated Title, Echo Title, Echo Body, Edited body, E2E Create, and Note B Updated. Snapshots may expose listChildren as a read-only rendered-row count.
+
+Verifier-side Python harness code for this app may import urllib for HTTP probes, signal for subprocess timing, and quickjs to execute app.js in the mock DOM.
+
+The mock fetch implementation exposes json() on responses; prefer json() over text() for parsing bodies. Async patterns must complete within the mock job loop so post-mutation refreshes and form clearing actually run.
+[?2004hroot@1b06f1f3df22:/app# cat /app/config/api.key
+[?2004ltb3_notes_api_secret_2026
+[?2004hroot@1b06f1f3df22:/app# cat /app/www/app.js
+[?2004lvar API = '/api/notes';
+
+var editingId = null;
+
+async function fetchNotes() {
+    var res = await fetch(API);
+    var notes = await res.json();
+    var list = document.getElementById('notes-list');
+    list.innerHTML = '';
+    notes.forEach(function(note) {
+        var card = document.createElement('div');
+        card.className = 'note-card';
+        card.innerHTML = '<h3>' + note.title + '</h3><p>' + note.content + '</p>';
+        list.appendChild(card);
+    });
+}
+
+document.getElementById('note-form').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    var title = document.getElementById('note-title').value;
+    var content = document.getElementById('note-content').value;
+
+    await fetch(API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: title, content: content })
+    });
+
+    document.getElementById('note-title').value = '';
+    document.getElementById('note-content').value = '';
+    fetchNotes();
+});
+
+fetchNotes();
+[?2004hroot@1b06f1f3df22:/app# cat /app/www/index.html
+[?2004l<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Notes App</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Notes</h1>
+        <form id="note-form">
+            <input type="text" id="note-title" placeholder="Title" required>
+            <textarea id="note-content" placeholder="Content"></textarea>
+            <button type="submit" id="btn-submit">Save</button>
+        </form>
+        <div id="notes-list"></div>
+    </div>
+    <script src="/app.js"></script>
+</body>
+</html>
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/routes.c
+[?2004l#include "routes.h"
+#include "db.h"
+#include "auth.h"
+#include <microhttpd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+
+static enum MHD_Result send_response(struct MHD_Connection *connection,
+    const char *body, unsigned int status, const char *total_count) {
+    struct MHD_Response *response = MHD_create_response_from_buffer(
+        strlen(body), (void *)body, MHD_RESPMEM_MUST_COPY);
+    MHD_add_response_header(response, "Content-Type", "application/json");
+    MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
+    MHD_add_response_header(response, "Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    MHD_add_response_header(response, "Access-Control-Allow-Headers", "Content-Type, X-API-Key");
+    if (total_count) {
+        MHD_add_response_header(response, "X-Total-Count", total_count);
+    }
+    enum MHD_Result ret = MHD_queue_response(connection, status, response);
+    MHD_destroy_response(response);
+    return ret;
+}
+
+static enum MHD_Result send_json(struct MHD_Connection *connection,
+    const char *body, unsigned int status) {
+    return send_response(connection, body, status, NULL);
+}
+
+static enum MHD_Result send_options(struct MHD_Connection *connection) {
+    struct MHD_Response *response = MHD_create_response_from_buffer(0, (void*)"", MHD_RESPMEM_PERSISTENT);
+    MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
+    MHD_add_response_header(response, "Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    MHD_add_response_header(response, "Access-Control-Allow-Headers", "Content-Type, X-API-Key");
+    MHD_add_response_header(response, "Content-Type", "application/json");
+    enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
+    MHD_destroy_response(response);
+    return ret;
+}
+
+/* Simple JSON string value extractor. Returns malloc'd string or NULL. */
+static char *json_get_string(const char *json, const char *key) {
+    char search[256];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char *pos = strstr(json, search);
+    if (!pos) return NULL;
+    pos += strlen(search);
+    while (*pos && (isspace((unsigned char)*pos) || *pos == ':')) pos++;
+    if (*pos == '\0') return NULL;
+    if (*pos == 'n' && strncmp(pos, "null", 4) == 0) return NULL;
+    if (*pos != '"') return NULL;
+    pos++;
+    
+    size_t buf_size = 1024;
+    char *buf = malloc(buf_size);
+    size_t buf_len = 0;
+    
+    while (*pos && *pos != '"') {
+        if (buf_len + 8 >= buf_size) {
+            buf_size *= 2;
+            buf = realloc(buf, buf_size);
+        }
+        if (*pos == '\\') {
+            pos++;
+            switch (*pos) {
+                case '"': buf[buf_len++] = '"'; break;
+                case '\\': buf[buf_len++] = '\\'; break;
+                case '/': buf[buf_len++] = '/'; break;
+                case 'n': buf[buf_len++] = '\n'; break;
+                case 'r': buf[buf_len++] = '\r'; break;
+                case 't': buf[buf_len++] = '\t'; break;
+                case 'b': buf[buf_len++] = '\b'; break;
+                case 'f': buf[buf_len++] = '\f'; break;
+                case 'u': {
+                    if (pos[1] && pos[2] && pos[3] && pos[4]) {
+                        unsigned int cp = 0;
+                        sscanf(pos + 1, "%4x", &cp);
+                        if (cp < 0x80) {
+                            buf[buf_len++] = (char)cp;
+                        } else if (cp < 0x800) {
+                            buf[buf_len++] = (char)(0xC0 | (cp >> 6));
+                            buf[buf_len++] = (char)(0x80 | (cp & 0x3F));
+                        } else {
+                            buf[buf_len++] = (char)(0xE0 | (cp >> 12));
+                            buf[buf_len++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                            buf[buf_len++] = (char)(0x80 | (cp & 0x3F));
+                        }
+                        pos += 4;
+                    }
+                    break;
+                }
+                default: buf[buf_len++] = *pos; break;
+            }
+        } else {
+            buf[buf_len++] = *pos;
+        }
+        pos++;
+    }
+    buf[buf_len] = '\0';
+    return buf;
+}
+
+/* Extract note ID from URL like /api/notes/123 */
+static int extract_note_id(const char *url) {
+    const char *prefix = "/api/notes/";
+    if (strncmp(url, prefix, strlen(prefix)) != 0) return -1;
+    const char *id_str = url + strlen(prefix);
+    if (*id_str == '\0') return -1;
+    for (const char *p = id_str; *p; p++) {
+        if (!isdigit((unsigned char)*p)) return -1;
+    }
+    return atoi(id_str);
+}
+
+static enum MHD_Result handle_get_notes(struct MHD_Connection *connection) {
+    int limit = 50;
+    int offset = 0;
+    
+    const char *limit_str = MHD_lookup_connection_value(connection, MHD_GET_ARGUMENT_KIND, "limit");
+    const char *offset_str = MHD_lookup_connection_value(connection, MHD_GET_ARGUMENT_KIND, "offset");
+    
+    if (limit_str) {
+        limit = atoi(limit_str);
+        if (limit <= 0) limit = 50;
+        if (limit > 100) limit = 100;
+    }
+    if (offset_str) {
+        offset = atoi(offset_str);
+        if (offset < 0) offset = 0;
+    }
+    
+    int total = get_total_notes_count();
+    char *json = get_notes_paginated_json(limit, offset);
+    if (!json) json = strdup("[]");
+    
+    char total_str[32];
+    snprintf(total_str, sizeof(total_str), "%d", total);
+    
+    enum MHD_Result r = send_response(connection, json, MHD_HTTP_OK, total_str);
+    free(json);
+    return r;
+}
+
+static enum MHD_Result handle_get_note(struct MHD_Connection *connection, int id) {
+    char *json = get_note_json(id);
+    if (!json) {
+        return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+    }
+    enum MHD_Result r = send_json(connection, json, MHD_HTTP_OK);
+    free(json);
+    return r;
+}
+
+static enum MHD_Result handle_post_note(struct MHD_Connection *connection, const char *body) {
+    if (!body || strlen(body) == 0) {
+        return send_json(connection, "{\"error\":\"title is required\"}", MHD_HTTP_BAD_REQUEST);
+    }
+    
+    char *title = json_get_string(body, "title");
+    
+    if (!title || strlen(title) == 0) {
+        if (title) free(title);
+        return send_json(connection, "{\"error\":\"title is required\"}", MHD_HTTP_BAD_REQUEST);
+    }
+    
+    int all_space = 1;
+    for (size_t i = 0; i < strlen(title); i++) {
+        if (!isspace((unsigned char)title[i])) { all_space = 0; break; }
+    }
+    if (all_space) {
+        free(title);
+        return send_json(connection, "{\"error\":\"title is required\"}", MHD_HTTP_BAD_REQUEST);
+    }
+    
+    char *content = json_get_string(body, "content");
+    if (!content) content = strdup("");
+    
+    int id = create_note(title, content);
+    if (id < 0) {
+        free(title);
+        free(content);
+        return send_json(connection, "{\"error\":\"internal error\"}", MHD_HTTP_INTERNAL_SERVER_ERROR);
+    }
+    
+    char *note_json = get_note_json(id);
+    if (!note_json) {
+        free(title);
+        free(content);
+        return send_json(connection, "{\"error\":\"internal error\"}", MHD_HTTP_INTERNAL_SERVER_ERROR);
+    }
+    
+    enum MHD_Result r = send_json(connection, note_json, MHD_HTTP_CREATED);
+    free(note_json);
+    free(title);
+    free(content);
+    return r;
+}
+
+static enum MHD_Result handle_put_note(struct MHD_Connection *connection, int id, const char *body) {
+    if (!body || strlen(body) == 0) {
+        return send_json(connection, "{\"error\":\"title is required\"}", MHD_HTTP_BAD_REQUEST);
+    }
+    
+    char *title = json_get_string(body, "title");
+    
+    if (!title || strlen(title) == 0) {
+        if (title) free(title);
+        return send_json(connection, "{\"error\":\"title is required\"}", MHD_HTTP_BAD_REQUEST);
+    }
+    
+    int all_space = 1;
+    for (size_t i = 0; i < strlen(title); i++) {
+        if (!isspace((unsigned char)title[i])) { all_space = 0; break; }
+    }
+    if (all_space) {
+        free(title);
+        return send_json(connection, "{\"error\":\"title is required\"}", MHD_HTTP_BAD_REQUEST);
+    }
+    
+    char *content = json_get_string(body, "content");
+    if (!content) content = strdup("");
+    
+    int result = update_note(id, title, content);
+    free(title);
+    free(content);
+    
+    if (result == 0) {
+        return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+    }
+    if (result < 0) {
+        return send_json(connection, "{\"error\":\"internal error\"}", MHD_HTTP_INTERNAL_SERVER_ERROR);
+    }
+    
+    char *note_json = get_note_json(id);
+    if (!note_json) {
+        return send_json(connection, "{\"error\":\"internal error\"}", MHD_HTTP_INTERNAL_SERVER_ERROR);
+    }
+    enum MHD_Result r = send_json(connection, note_json, MHD_HTTP_OK);
+    free(note_json);
+    return r;
+}
+
+static enum MHD_Result handle_delete_note(struct MHD_Connection *connection, int id) {
+    int result = delete_note(id);
+    if (result == 0) {
+        return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+    }
+    return send_json(connection, "{\"status\":\"deleted\"}", MHD_HTTP_OK);
+}
+
+enum MHD_Result route_request(struct MHD_Connection *connection, const char *url,
+                              const char *method, const char *upload_data,
+                              size_t *upload_data_size, void **con_cls) {
+    
+    /* OPTIONS preflight */
+    if (strcmp(method, "OPTIONS") == 0) {
+        return send_options(connection);
+    }
+    
+    /* For POST/PUT/DELETE, we need to accumulate body data */
+    if (strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0 || strcmp(method, "DELETE") == 0) {
+        if (*con_cls == NULL) {
+            struct connection_info *ci = calloc(1, sizeof(struct connection_info));
+            ci->data = NULL;
+            ci->data_size = 0;
+            ci->too_large = 0;
+            *con_cls = ci;
+            return MHD_YES;
+        }
+        
+        struct connection_info *ci = *con_cls;
+        
+        if (*upload_data_size > 0) {
+            if (ci->too_large || ci->data_size + *upload_data_size > MAX_BODY_SIZE) {
+                ci->too_large = 1;
+                *upload_data_size = 0;
+                return MHD_YES;
+            }
+            ci->data = realloc(ci->data, ci->data_size + *upload_data_size + 1);
+            memcpy(ci->data + ci->data_size, upload_data, *upload_data_size);
+            ci->data_size += *upload_data_size;
+            ci->data[ci->data_size] = '\0';
+            *upload_data_size = 0;
+            return MHD_YES;
+        }
+        
+        /* All data received - process the request */
+        
+        /* Check body size */
+        if (ci->too_large) {
+            return send_json(connection, "{\"error\":\"body too large\"}", 413);
+        }
+        
+        /* Check auth for mutating requests */
+        if (!api_key_valid(connection)) {
+            return send_json(connection, "{\"error\":\"unauthorized\"}", MHD_HTTP_UNAUTHORIZED);
+        }
+        
+        /* Route to appropriate handler */
+        if (strcmp(url, "/api/notes") == 0 && strcmp(method, "POST") == 0) {
+            return handle_post_note(connection, ci->data);
+        }
+        
+        int id = extract_note_id(url);
+        if (id < 0) {
+            return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+        }
+        
+        if (strcmp(method, "PUT") == 0) {
+            return handle_put_note(connection, id, ci->data);
+        }
+        if (strcmp(method, "DELETE") == 0) {
+            return handle_delete_note(connection, id);
+        }
+        
+        return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+    }
+    
+    /* GET requests */
+    if (strcmp(method, "GET") == 0) {
+        if (strcmp(url, "/api/notes") == 0) {
+            return handle_get_notes(connection);
+        }
+        
+        int id = extract_note_id(url);
+        if (id >= 0) {
+            return handle_get_note(connection, id);
+        }
+        
+        return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+    }
+    
+    return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+}
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/static.c
+[?2004l#include "static.h"
+
+enum MHD_Result serve_static_file(struct MHD_Connection *connection, const char *url) {
+    (void)connection;
+    (void)url;
+    return MHD_NO;
+}
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/main.c
+[?2004l#include <microhttpd.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <strings.h>
+#include <ctype.h>
+#include "routes.h"
+#include "db.h"
+
+#define PORT 8080
+#define WWW_DIR "/app/www"
+
+static struct MHD_Daemon *daemon_handle = NULL;
+
+static void handle_signal(int sig) {
+    (void)sig;
+    if (daemon_handle) MHD_stop_daemon(daemon_handle);
+    close_db();
+    exit(0);
+}
+
+static const char *get_content_type(const char *path) {
+    const char *ext = strrchr(path, '.');
+    if (!ext) return "application/octet-stream";
+    if (strcmp(ext, ".html") == 0) return "text/html";
+    if (strcmp(ext, ".css") == 0) return "text/css";
+    if (strcmp(ext, ".js") == 0) return "application/javascript";
+    return "application/octet-stream";
+}
+
+/* Decode a single %XX hex sequence; returns the char or -1 on failure */
+static int decode_hex(const char *s) {
+    if (s[0] != '%') return -1;
+    char hi = s[1], lo = s[2];
+    if (!isxdigit((unsigned char)hi) || !isxdigit((unsigned char)lo)) return -1;
+    unsigned int val = 0;
+    sscanf(s+1, "%2x", &val);
+    return (int)val;
+}
+
+/* Check if URL contains path traversal (..) in any encoded form */
+static int has_path_traversal(const char *url) {
+    const char *p = url;
+    while (*p) {
+        /* Check if current position is a dot (literal or encoded) */
+        int is_dot1 = 0;
+        int skip1 = 0;
+        if (*p == '.') { is_dot1 = 1; skip1 = 1; }
+        else if (*p == '%' && decode_hex(p) == '.') { is_dot1 = 1; skip1 = 3; }
+
+        if (is_dot1) {
+            const char *q = p + skip1;
+            int is_dot2 = 0;
+            if (*q == '.') { is_dot2 = 1; }
+            else if (*q == '%' && decode_hex(q) == '.') { is_dot2 = 1; }
+            if (is_dot2) return 1;
+        }
+        p++;
+    }
+    return 0;
+}
+
+static enum MHD_Result serve_static_file(struct MHD_Connection *connection,
+    const char *url) {
+    if (has_path_traversal(url)) {
+        struct MHD_Response *r = MHD_create_response_from_buffer(
+            9, (void *)"Forbidden", MHD_RESPMEM_PERSISTENT);
+        enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_FORBIDDEN, r);
+        MHD_destroy_response(r);
+        return ret;
+    }
+
+    char filepath[512];
+    const char *path = strcmp(url, "/") == 0 ? "/index.html" : url;
+    snprintf(filepath, sizeof(filepath), "%s%s", WWW_DIR, path);
+
+    struct stat st;
+    if (stat(filepath, &st) != 0) return MHD_NO;
+
+    FILE *f = fopen(filepath, "rb");
+    if (!f) return MHD_NO;
+
+    char *buf = malloc(st.st_size);
+    fread(buf, 1, st.st_size, f);
+    fclose(f);
+
+    struct MHD_Response *response = MHD_create_response_from_buffer(
+        st.st_size, buf, MHD_RESPMEM_MUST_FREE);
+    MHD_add_response_header(response, "Content-Type", get_content_type(filepath));
+    enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
+    MHD_destroy_response(response);
+    return ret;
+}
+
+static void request_completed(void *cls, struct MHD_Connection *connection,
+    void **con_cls, enum MHD_RequestTerminationCode toe) {
+    (void)cls; (void)connection; (void)toe;
+    if (con_cls && *con_cls) {
+        struct connection_info *ci = *con_cls;
+        if (ci->data) free(ci->data);
+        free(ci);
+        *con_cls = NULL;
+    }
+}
+
+static enum MHD_Result handle_request(void *cls,
+    struct MHD_Connection *connection,
+    const char *url, const char *method,
+    const char *version,
+    const char *upload_data, size_t *upload_data_size,
+    void **con_cls) {
+    (void)cls; (void)version;
+
+    if (strncmp(url, "/api/", 5) == 0) {
+        return route_request(connection, url, method, upload_data,
+                             upload_data_size, con_cls);
+    }
+
+    if (strcmp(method, "GET") == 0) {
+        enum MHD_Result ret = serve_static_file(connection, url);
+        if (ret == MHD_YES) return ret;
+    }
+
+    struct MHD_Response *response = MHD_create_response_from_buffer(
+        9, (void *)"Not Found", MHD_RESPMEM_PERSISTENT);
+    enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, response);
+    MHD_destroy_response(response);
+    return ret;
+}
+
+int main(void) {
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+
+    mkdir("/app/data", 0755);
+
+    if (init_db("/app/data/notes.db") != 0) {
+        fprintf(stderr, "Failed to initialize database\n");
+        return 1;
+    }
+
+    daemon_handle = MHD_start_daemon(
+        MHD_USE_THREAD_PER_CONNECTION,
+        PORT,
+        NULL, NULL,
+        &handle_request, NULL,
+        MHD_OPTION_NOTIFY_COMPLETED, &request_completed, NULL,
+        MHD_OPTION_END
+    );
+
+    if (!daemon_handle) {
+        fprintf(stderr, "Failed to start server\n");
+        return 1;
+    }
+
+    printf("Server running on port %d\n", PORT);
+    while (1) pause();
+    return 0;
+}
+[?2004hroot@1b06f1f3df22:/app# cat /app/www/app.js
+[?2004lvar API = '/api/notes';
+
+var editingId = null;
+
+async function fetchNotes() {
+    var res = await fetch(API);
+    var notes = await res.json();
+    var list = document.getElementById('notes-list');
+    list.innerHTML = '';
+    notes.forEach(function(note) {
+        var card = document.createElement('div');
+        card.className = 'note-card';
+        card.innerHTML = '<h3>' + note.title + '</h3><p>' + note.content + '</p>';
+        list.appendChild(card);
+    });
+}
+
+document.getElementById('note-form').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    var title = document.getElementById('note-title').value;
+    var content = document.getElementById('note-content').value;
+
+    await fetch(API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: title, content: content })
+    });
+
+    document.getElementById('note-title').value = '';
+    document.getElementById('note-content').value = '';
+    fetchNotes();
+});
+
+fetchNotes();
+[?2004hroot@1b06f1f3df22:/app# cat /app/www/index.html
+[?2004l<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Notes App</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Notes</h1>
+        <form id="note-form">
+            <input type="text" id="note-title" placeholder="Title" required>
+            <textarea id="note-content" placeholder="Content"></textarea>
+            <button type="submit" id="btn-submit">Save</button>
+        </form>
+        <div id="notes-list"></div>
+    </div>
+    <script src="/app.js"></script>
+</body>
+</html>
+[?2004hroot@1b06f1f3df22:/app# ps aux | grep notes
+[?2004lbash: ps: command not found
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/main.c
+[?2004l#include <microhttpd.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <strings.h>
+#include <ctype.h>
+#include "routes.h"
+#include "db.h"
+
+#define PORT 8080
+#define WWW_DIR "/app/www"
+
+static struct MHD_Daemon *daemon_handle = NULL;
+
+static void handle_signal(int sig) {
+    (void)sig;
+    if (daemon_handle) MHD_stop_daemon(daemon_handle);
+    close_db();
+    exit(0);
+}
+
+static const char *get_content_type(const char *path) {
+    const char *ext = strrchr(path, '.');
+    if (!ext) return "application/octet-stream";
+    if (strcmp(ext, ".html") == 0) return "text/html";
+    if (strcmp(ext, ".css") == 0) return "text/css";
+    if (strcmp(ext, ".js") == 0) return "application/javascript";
+    return "application/octet-stream";
+}
+
+/* Decode a single %XX hex sequence; returns the char or -1 on failure */
+static int decode_hex(const char *s) {
+    if (s[0] != '%') return -1;
+    char hi = s[1], lo = s[2];
+    if (!isxdigit((unsigned char)hi) || !isxdigit((unsigned char)lo)) return -1;
+    unsigned int val = 0;
+    sscanf(s+1, "%2x", &val);
+    return (int)val;
+}
+
+/* Check if URL contains path traversal (..) in any encoded form */
+static int has_path_traversal(const char *url) {
+    const char *p = url;
+    while (*p) {
+        /* Check if current position is a dot (literal or encoded) */
+        int is_dot1 = 0;
+        int skip1 = 0;
+        if (*p == '.') { is_dot1 = 1; skip1 = 1; }
+        else if (*p == '%' && decode_hex(p) == '.') { is_dot1 = 1; skip1 = 3; }
+
+        if (is_dot1) {
+            const char *q = p + skip1;
+            int is_dot2 = 0;
+            if (*q == '.') { is_dot2 = 1; }
+            else if (*q == '%' && decode_hex(q) == '.') { is_dot2 = 1; }
+            if (is_dot2) return 1;
+        }
+        p++;
+    }
+    return 0;
+}
+
+static enum MHD_Result serve_static_file(struct MHD_Connection *connection,
+    const char *url) {
+    if (has_path_traversal(url)) {
+        struct MHD_Response *r = MHD_create_response_from_buffer(
+            9, (void *)"Forbidden", MHD_RESPMEM_PERSISTENT);
+        enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_FORBIDDEN, r);
+        MHD_destroy_response(r);
+        return ret;
+    }
+
+    char filepath[512];
+    const char *path = strcmp(url, "/") == 0 ? "/index.html" : url;
+    snprintf(filepath, sizeof(filepath), "%s%s", WWW_DIR, path);
+
+    struct stat st;
+    if (stat(filepath, &st) != 0) return MHD_NO;
+
+    FILE *f = fopen(filepath, "rb");
+    if (!f) return MHD_NO;
+
+    char *buf = malloc(st.st_size);
+    fread(buf, 1, st.st_size, f);
+    fclose(f);
+
+    struct MHD_Response *response = MHD_create_response_from_buffer(
+        st.st_size, buf, MHD_RESPMEM_MUST_FREE);
+    MHD_add_response_header(response, "Content-Type", get_content_type(filepath));
+    enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
+    MHD_destroy_response(response);
+    return ret;
+}
+
+static void request_completed(void *cls, struct MHD_Connection *connection,
+    void **con_cls, enum MHD_RequestTerminationCode toe) {
+    (void)cls; (void)connection; (void)toe;
+    if (con_cls && *con_cls) {
+        struct connection_info *ci = *con_cls;
+        if (ci->data) free(ci->data);
+        free(ci);
+        *con_cls = NULL;
+    }
+}
+
+static enum MHD_Result handle_request(void *cls,
+    struct MHD_Connection *connection,
+    const char *url, const char *method,
+    const char *version,
+    const char *upload_data, size_t *upload_data_size,
+    void **con_cls) {
+    (void)cls; (void)version;
+
+    if (strncmp(url, "/api/", 5) == 0) {
+        return route_request(connection, url, method, upload_data,
+                             upload_data_size, con_cls);
+    }
+
+    if (strcmp(method, "GET") == 0) {
+        enum MHD_Result ret = serve_static_file(connection, url);
+        if (ret == MHD_YES) return ret;
+    }
+
+    struct MHD_Response *response = MHD_create_response_from_buffer(
+        9, (void *)"Not Found", MHD_RESPMEM_PERSISTENT);
+    enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, response);
+    MHD_destroy_response(response);
+    return ret;
+}
+
+int main(void) {
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+
+    mkdir("/app/data", 0755);
+
+    if (init_db("/app/data/notes.db") != 0) {
+        fprintf(stderr, "Failed to initialize database\n");
+        return 1;
+    }
+
+    daemon_handle = MHD_start_daemon(
+        MHD_USE_THREAD_PER_CONNECTION,
+        PORT,
+        NULL, NULL,
+        &handle_request, NULL,
+        MHD_OPTION_NOTIFY_COMPLETED, &request_completed, NULL,
+        MHD_OPTION_END
+    );
+
+    if (!daemon_handle) {
+        fprintf(stderr, "Failed to start server\n");
+        return 1;
+    }
+
+    printf("Server running on port %d\n", PORT);
+    while (1) pause();
+    return 0;
+}
+[?2004hroot@1b06f1f3df22:/app# wc -l /app/www/app.js && cat /app/www/app.js
+[?2004l34 /app/www/app.js
+var API = '/api/notes';
+
+var editingId = null;
+
+async function fetchNotes() {
+    var res = await fetch(API);
+    var notes = await res.json();
+    var list = document.getElementById('notes-list');
+    list.innerHTML = '';
+    notes.forEach(function(note) {
+        var card = document.createElement('div');
+        card.className = 'note-card';
+        card.innerHTML = '<h3>' + note.title + '</h3><p>' + note.content + '</p>';
+        list.appendChild(card);
+    });
+}
+
+document.getElementById('note-form').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    var title = document.getElementById('note-title').value;
+    var content = document.getElementById('note-content').value;
+
+    await fetch(API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: title, content: content })
+    });
+
+    document.getElementById('note-title').value = '';
+    document.getElementById('note-content').value = '';
+    fetchNotes();
+});
+
+fetchNotes();
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/static.h
+[?2004l#ifndef STATIC_H
+#define STATIC_H
+
+#include <microhttpd.h>
+
+enum MHD_Result serve_static_file(struct MHD_Connection *connection, const char *url);
+
+#endif
+[?2004hroot@1b06f1f3df22:/app# cat /app/include/common.h
+[?2004l#ifndef NOTES_COMMON_H
+#define NOTES_COMMON_H
+
+#define NOTES_MAX_BODY_BYTES 65536
+#define NOTES_DEFAULT_PAGE_SIZE 50
+#define NOTES_MAX_PAGE_SIZE 100
+
+#endif
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/main.c
+[?2004l#include <microhttpd.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <strings.h>
+#include <ctype.h>
+#include "routes.h"
+#include "db.h"
+
+#define PORT 8080
+#define WWW_DIR "/app/www"
+
+static struct MHD_Daemon *daemon_handle = NULL;
+
+static void handle_signal(int sig) {
+    (void)sig;
+    if (daemon_handle) MHD_stop_daemon(daemon_handle);
+    close_db();
+    exit(0);
+}
+
+static const char *get_content_type(const char *path) {
+    const char *ext = strrchr(path, '.');
+    if (!ext) return "application/octet-stream";
+    if (strcmp(ext, ".html") == 0) return "text/html";
+    if (strcmp(ext, ".css") == 0) return "text/css";
+    if (strcmp(ext, ".js") == 0) return "application/javascript";
+    return "application/octet-stream";
+}
+
+/* Decode a single %XX hex sequence; returns the char or -1 on failure */
+static int decode_hex(const char *s) {
+    if (s[0] != '%') return -1;
+    char hi = s[1], lo = s[2];
+    if (!isxdigit((unsigned char)hi) || !isxdigit((unsigned char)lo)) return -1;
+    unsigned int val = 0;
+    sscanf(s+1, "%2x", &val);
+    return (int)val;
+}
+
+/* Check if URL contains path traversal (..) in any encoded form */
+static int has_path_traversal(const char *url) {
+    const char *p = url;
+    while (*p) {
+        /* Check if current position is a dot (literal or encoded) */
+        int is_dot1 = 0;
+        int skip1 = 0;
+        if (*p == '.') { is_dot1 = 1; skip1 = 1; }
+        else if (*p == '%' && decode_hex(p) == '.') { is_dot1 = 1; skip1 = 3; }
+
+        if (is_dot1) {
+            const char *q = p + skip1;
+            int is_dot2 = 0;
+            if (*q == '.') { is_dot2 = 1; }
+            else if (*q == '%' && decode_hex(q) == '.') { is_dot2 = 1; }
+            if (is_dot2) return 1;
+        }
+        p++;
+    }
+    return 0;
+}
+
+static enum MHD_Result serve_static_file(struct MHD_Connection *connection,
+    const char *url) {
+    if (has_path_traversal(url)) {
+        struct MHD_Response *r = MHD_create_response_from_buffer(
+            9, (void *)"Forbidden", MHD_RESPMEM_PERSISTENT);
+        enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_FORBIDDEN, r);
+        MHD_destroy_response(r);
+        return ret;
+    }
+
+    char filepath[512];
+    const char *path = strcmp(url, "/") == 0 ? "/index.html" : url;
+    snprintf(filepath, sizeof(filepath), "%s%s", WWW_DIR, path);
+
+    struct stat st;
+    if (stat(filepath, &st) != 0) return MHD_NO;
+
+    FILE *f = fopen(filepath, "rb");
+    if (!f) return MHD_NO;
+
+    char *buf = malloc(st.st_size);
+    fread(buf, 1, st.st_size, f);
+    fclose(f);
+
+    struct MHD_Response *response = MHD_create_response_from_buffer(
+        st.st_size, buf, MHD_RESPMEM_MUST_FREE);
+    MHD_add_response_header(response, "Content-Type", get_content_type(filepath));
+    enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
+    MHD_destroy_response(response);
+    return ret;
+}
+
+static void request_completed(void *cls, struct MHD_Connection *connection,
+    void **con_cls, enum MHD_RequestTerminationCode toe) {
+    (void)cls; (void)connection; (void)toe;
+    if (con_cls && *con_cls) {
+        struct connection_info *ci = *con_cls;
+        if (ci->data) free(ci->data);
+        free(ci);
+        *con_cls = NULL;
+    }
+}
+
+static enum MHD_Result handle_request(void *cls,
+    struct MHD_Connection *connection,
+    const char *url, const char *method,
+    const char *version,
+    const char *upload_data, size_t *upload_data_size,
+    void **con_cls) {
+    (void)cls; (void)version;
+
+    if (strncmp(url, "/api/", 5) == 0) {
+        return route_request(connection, url, method, upload_data,
+                             upload_data_size, con_cls);
+    }
+
+    if (strcmp(method, "GET") == 0) {
+        enum MHD_Result ret = serve_static_file(connection, url);
+        if (ret == MHD_YES) return ret;
+    }
+
+    struct MHD_Response *response = MHD_create_response_from_buffer(
+        9, (void *)"Not Found", MHD_RESPMEM_PERSISTENT);
+    enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, response);
+    MHD_destroy_response(response);
+    return ret;
+}
+
+int main(void) {
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+
+    mkdir("/app/data", 0755);
+
+    if (init_db("/app/data/notes.db") != 0) {
+        fprintf(stderr, "Failed to initialize database\n");
+        return 1;
+    }
+
+    daemon_handle = MHD_start_daemon(
+        MHD_USE_THREAD_PER_CONNECTION,
+        PORT,
+        NULL, NULL,
+        &handle_request, NULL,
+        MHD_OPTION_NOTIFY_COMPLETED, &request_completed, NULL,
+        MHD_OPTION_END
+    );
+
+    if (!daemon_handle) {
+        fprintf(stderr, "Failed to start server\n");
+        return 1;
+    }
+
+    printf("Server running on port %d\n", PORT);
+    while (1) pause();
+    return 0;
+}
+[?2004hroot@1b06f1f3df22:/app# head -50 /app/www/app.js
+[?2004lvar API = '/api/notes';
+
+var editingId = null;
+
+async function fetchNotes() {
+    var res = await fetch(API);
+    var notes = await res.json();
+    var list = document.getElementById('notes-list');
+    list.innerHTML = '';
+    notes.forEach(function(note) {
+        var card = document.createElement('div');
+        card.className = 'note-card';
+        card.innerHTML = '<h3>' + note.title + '</h3><p>' + note.content + '</p>';
+        list.appendChild(card);
+    });
+}
+
+document.getElementById('note-form').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    var title = document.getElementById('note-title').value;
+    var content = document.getElementById('note-content').value;
+
+    await fetch(API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: title, content: content })
+    });
+
+    document.getElementById('note-title').value = '';
+    document.getElementById('note-content').value = '';
+    fetchNotes();
+});
+
+fetchNotes();
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/auth.c
+[?2004l#include "auth.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+
+static char api_key[256] = {0};
+static int key_loaded = 0;
+
+static void load_api_key(void) {
+    if (key_loaded) return;
+    FILE *f = fopen("/app/config/api.key", "r");
+    if (!f) {
+        key_loaded = 1;
+        return;
+    }
+    if (fgets(api_key, sizeof(api_key), f)) {
+        /* Trim whitespace from both ends */
+        char *end = api_key + strlen(api_key) - 1;
+        while (end >= api_key && isspace((unsigned char)*end)) *end-- = '\0';
+        char *start = api_key;
+        while (*start && isspace((unsigned char)*start)) start++;
+        if (start != api_key) memmove(api_key, start, strlen(start) + 1);
+    }
+    fclose(f);
+    key_loaded = 1;
+}
+
+int api_key_valid(struct MHD_Connection *connection) {
+    load_api_key();
+    const char *provided = MHD_lookup_connection_value(connection, MHD_HEADER_KIND, "X-API-Key");
+    if (!provided) return 0;
+    if (api_key[0] == '\0') return 0;
+    return (strcmp(provided, api_key) == 0) ? 1 : 0;
+}
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/auth.h
+[?2004l#ifndef AUTH_H
+#define AUTH_H
+
+#include <microhttpd.h>
+
+int api_key_valid(struct MHD_Connection *connection);
+
+#endif
+[?2004hroot@1b06f1f3df22:/app# head -60 /app/src/routes.c
+[?2004l#include "routes.h"
+#include "db.h"
+#include "auth.h"
+#include <microhttpd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+
+static enum MHD_Result send_response(struct MHD_Connection *connection,
+    const char *body, unsigned int status, const char *total_count) {
+    struct MHD_Response *response = MHD_create_response_from_buffer(
+        strlen(body), (void *)body, MHD_RESPMEM_MUST_COPY);
+    MHD_add_response_header(response, "Content-Type", "application/json");
+    MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
+    MHD_add_response_header(response, "Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    MHD_add_response_header(response, "Access-Control-Allow-Headers", "Content-Type, X-API-Key");
+    if (total_count) {
+        MHD_add_response_header(response, "X-Total-Count", total_count);
+    }
+    enum MHD_Result ret = MHD_queue_response(connection, status, response);
+    MHD_destroy_response(response);
+    return ret;
+}
+
+static enum MHD_Result send_json(struct MHD_Connection *connection,
+    const char *body, unsigned int status) {
+    return send_response(connection, body, status, NULL);
+}
+
+static enum MHD_Result send_options(struct MHD_Connection *connection) {
+    struct MHD_Response *response = MHD_create_response_from_buffer(0, (void*)"", MHD_RESPMEM_PERSISTENT);
+    MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
+    MHD_add_response_header(response, "Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    MHD_add_response_header(response, "Access-Control-Allow-Headers", "Content-Type, X-API-Key");
+    MHD_add_response_header(response, "Content-Type", "application/json");
+    enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
+    MHD_destroy_response(response);
+    return ret;
+}
+
+/* Simple JSON string value extractor. Returns malloc'd string or NULL. */
+static char *json_get_string(const char *json, const char *key) {
+    char search[256];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char *pos = strstr(json, search);
+    if (!pos) return NULL;
+    pos += strlen(search);
+    while (*pos && (isspace((unsigned char)*pos) || *pos == ':')) pos++;
+    if (*pos == '\0') return NULL;
+    if (*pos == 'n' && strncmp(pos, "null", 4) == 0) return NULL;
+    if (*pos != '"') return NULL;
+    pos++;
+    
+    size_t buf_size = 1024;
+    char *buf = malloc(buf_size);
+    size_t buf_len = 0;
+    
+    while (*pos && *pos != '"') {
+        if (buf_len + 8 >= buf_size) {
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/auth.c
+[?2004l#include "auth.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+
+static char api_key[256] = {0};
+static int key_loaded = 0;
+
+static void load_api_key(void) {
+    if (key_loaded) return;
+    FILE *f = fopen("/app/config/api.key", "r");
+    if (!f) {
+        key_loaded = 1;
+        return;
+    }
+    if (fgets(api_key, sizeof(api_key), f)) {
+        /* Trim whitespace from both ends */
+        char *end = api_key + strlen(api_key) - 1;
+        while (end >= api_key && isspace((unsigned char)*end)) *end-- = '\0';
+        char *start = api_key;
+        while (*start && isspace((unsigned char)*start)) start++;
+        if (start != api_key) memmove(api_key, start, strlen(start) + 1);
+    }
+    fclose(f);
+    key_loaded = 1;
+}
+
+int api_key_valid(struct MHD_Connection *connection) {
+    load_api_key();
+    const char *provided = MHD_lookup_connection_value(connection, MHD_HEADER_KIND, "X-API-Key");
+    if (!provided) return 0;
+    if (api_key[0] == '\0') return 0;
+    return (strcmp(provided, api_key) == 0) ? 1 : 0;
+}
+[?2004hroot@1b06f1f3df22:/app# cat /app/src/auth.h
+[?2004l#ifndef AUTH_H
+#define AUTH_H
+
+#include <microhttpd.h>
+
+int api_key_valid(struct MHD_Connection *connection);
+
+#endif
+[?2004hroot@1b06f1f3df22:/app# cat > /app/www/app.js << 'EOF'
+[?2004l[?2004h> var API = '/api/notes';
+[?2004l[?2004h> var API_KEY = 'tb3_notes_api_secret_2026';
+[?2004l[?2004h> var editingId = null;
+[?2004l[?2004h> 
+[?2004l[?2004h> function fetchNotes() {
+[?2004l[?2004h>   fetch(API).then(function(res) {
+[?2004l[?2004h>     return res.json();
+[?2004l[?2004h>   }).then(function(notes) {
+[?2004l[?2004h>     var list = document.getElementById('notes-list');
+[?2004l[?2004h>     list.innerHTML = '';
+[?2004l[?2004h>     notes.forEach(function(note) {
+[?2004l[?2004h>       var div = document.createElement('div');
+[?2004l[?2004h>       div.className = 'note-card';
+[?2004l[?2004h>       div.setAttribute('data-id', note.id);
+[?2004l[?2004h> 
+[?2004l[?2004h>       var title = document.createElement('h3');
+[?2004l[?2004h>       title.textContent = note.title;
+[?2004l[?2004h>       div.appendChild(title);
+[?2004l[?2004h> 
+[?2004l[?2004h>       var content = document.createElement('p');
+[?2004l[?2004h>       content.textContent = note.content;
+[?2004l[?2004h>       div.appendChild(content);
+[?2004l[?2004h> 
+[?2004l[?2004h>       var editBtn = document.createElement('button');
+[?2004l[?2004h>       editBtn.className = 'edit-btn';
+[?2004l[?2004h>       editBtn.textContent = 'Edit';
+[?2004l[?2004h>       editBtn.setAttribute('data-id', note.id);
+[?2004l[?2004h>       editBtn.setAttribute('data-title', note.title);
+[?2004l[?2004h>       editBtn.setAttribute('data-content', note.content);
+[?2004l[?2004h>       editBtn.addEventListener('click', function() {
+[?2004l[?2004h>         var id = editBtn.getAttribute('data-id');
+[?2004l[?2004h>         var t = editBtn.getAttribute('data-title');
+[?2004l[?2004h>         var c = editBtn.getAttribute('data-content');
+[?2004l[?2004h>         editingId = id;
+[?2004l[?2004h>         document.getElementById('note-title').value = t;
+[?2004l[?2004h>         document.getElementById('note-content').value = c;
+[?2004l[?2004h>       });
+[?2004l[?2004h>       div.appendChild(editBtn);
+[?2004l[?2004h> 
+[?2004l[?2004h>       var deleteBtn = document.createElement('button');
+[?2004l[?2004h>       deleteBtn.className = 'delete-btn';
+[?2004l[?2004h>       deleteBtn.textContent = 'Delete';
+[?2004l[?2004h>       deleteBtn.setAttribute('data-id', note.id);
+[?2004l[?2004h>       deleteBtn.addEventListener('click', function() {
+[?2004l[?2004h>         var id = deleteBtn.getAttribute('data-id');
+[?2004l[?2004h>         fetch(API + '/' + id, {
+[?2004l[?2004h>           method: 'DELETE',
+[?2004l[?2004h>           headers: {
+[?2004l[?2004h>             'Content-Type': 'application/json',
+[?2004l[?2004h>             'X-API-Key': API_KEY
+[?2004l[?2004h>           }
+[?2004l[?2004h>         }).then(function() {
+[?2004l[?2004h>           if (editingId == id) {
+[?2004l[?2004h>             editingId = null;
+[?2004l[?2004h>             document.getElementById('note-title').value = '';
+[?2004l[?2004h>             document.getElementById('note-content').value = '';
+[?2004l[?2004h>           }
+[?2004l[?2004h>           fetchNotes();
+[?2004l[?2004h>         });
+[?2004l[?2004h>       });
+[?2004l[?2004h>       div.appendChild(deleteBtn);
+[?2004l[?2004h> 
+[?2004l[?2004h>       list.appendChild(div);
+[?2004l[?2004h>     });
+[?2004l[?2004h>   });
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> document.getElementById('note-form').addEventListener('submit', function(e) {
+[?2004l[?2004h>   e.preventDefault();
+[?2004l[?2004h>   var title = document.getElementById('note-title').value;
+[?2004l[?2004h>   var content = document.getElementById('note-content').value;
+[?2004l[?2004h> 
+[?2004l[?2004h>   if (editingId !== null) {
+[?2004l[?2004h>     fetch(API + '/' + editingId, {
+[?2004l[?2004h>       method: 'PUT',
+[?2004l[?2004h>       headers: {
+[?2004l[?2004h>         'Content-Type': 'application/json',
+[?2004l[?2004h>         'X-API-Key': API_KEY
+[?2004l[?2004h>       },
+[?2004l[?2004h>       body: JSON.stringify({ title: title, content: content })
+[?2004l[?2004h>     }).then(function() {
+[?2004l[?2004h>       editingId = null;
+[?2004l[?2004h>       document.getElementById('note-title').value = '';
+[?2004l[?2004h>       document.getElementById('note-content').value = '';
+[?2004l[?2004h>       fetchNotes();
+[?2004l[?2004h>     });
+[?2004l[?2004h>   } else {
+[?2004l[?2004h>     fetch(API, {
+[?2004l[?2004h>       method: 'POST',
+[?2004l[?2004h>       headers: {
+[?2004l[?2004h>         'Content-Type': 'application/json',
+[?2004l[?2004h>         'X-API-Key': API_KEY
+[?2004l[?2004h>       },
+[?2004l[?2004h>       body: JSON.stringify({ title: title, content: content })
+[?2004l[?2004h>     }).then(function() {
+[?2004l[?2004h>       editingId = null;
+[?2004l[?2004h>       document.getElementById('note-title').value = '';
+[?2004l[?2004h>       document.getElementById('note-content').value = '';
+[?2004l[?2004h>       fetchNotes();
+[?2004l[?2004h>     });
+[?2004l[?2004h>   }
+[?2004l[?2004h> });
+[?2004l[?2004h> 
+[?2004l[?2004h> fetchNotes();
+[?2004l[?2004h> EOF
+[?2004l[?2004hroot@1b06f1f3df22:/app# cat /app/www/app.js
+[?2004lvar API = '/api/notes';
+var API_KEY = 'tb3_notes_api_secret_2026';
+var editingId = null;
+
+function fetchNotes() {
+  fetch(API).then(function(res) {
+    return res.json();
+  }).then(function(notes) {
+    var list = document.getElementById('notes-list');
+    list.innerHTML = '';
+    notes.forEach(function(note) {
+      var div = document.createElement('div');
+      div.className = 'note-card';
+      div.setAttribute('data-id', note.id);
+
+      var title = document.createElement('h3');
+      title.textContent = note.title;
+      div.appendChild(title);
+
+      var content = document.createElement('p');
+      content.textContent = note.content;
+      div.appendChild(content);
+
+      var editBtn = document.createElement('button');
+      editBtn.className = 'edit-btn';
+      editBtn.textContent = 'Edit';
+      editBtn.setAttribute('data-id', note.id);
+      editBtn.setAttribute('data-title', note.title);
+      editBtn.setAttribute('data-content', note.content);
+      editBtn.addEventListener('click', function() {
+        var id = editBtn.getAttribute('data-id');
+        var t = editBtn.getAttribute('data-title');
+        var c = editBtn.getAttribute('data-content');
+        editingId = id;
+        document.getElementById('note-title').value = t;
+        document.getElementById('note-content').value = c;
+      });
+      div.appendChild(editBtn);
+
+      var deleteBtn = document.createElement('button');
+      deleteBtn.className = 'delete-btn';
+      deleteBtn.textContent = 'Delete';
+      deleteBtn.setAttribute('data-id', note.id);
+      deleteBtn.addEventListener('click', function() {
+        var id = deleteBtn.getAttribute('data-id');
+        fetch(API + '/' + id, {
+          method: 'DELETE',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-API-Key': API_KEY
+          }
+        }).then(function() {
+          if (editingId == id) {
+            editingId = null;
+            document.getElementById('note-title').value = '';
+            document.getElementById('note-content').value = '';
+          }
+          fetchNotes();
+        });
+      });
+      div.appendChild(deleteBtn);
+
+      list.appendChild(div);
+    });
+  });
+}
+
+document.getElementById('note-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  var title = document.getElementById('note-title').value;
+  var content = document.getElementById('note-content').value;
+
+  if (editingId !== null) {
+    fetch(API + '/' + editingId, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': API_KEY
+      },
+      body: JSON.stringify({ title: title, content: content })
+    }).then(function() {
+      editingId = null;
+      document.getElementById('note-title').value = '';
+      document.getElementById('note-content').value = '';
+      fetchNotes();
+    });
+  } else {
+    fetch(API, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': API_KEY
+      },
+      body: JSON.stringify({ title: title, content: content })
+    }).then(function() {
+      editingId = null;
+      document.getElementById('note-title').value = '';
+      document.getElementById('note-content').value = '';
+      fetchNotes();
+    });
+  }
+});
+
+fetchNotes();
+[?2004hroot@1b06f1f3df22:/app# curl -s http://localhost:8080/app.js | head -5
+[?2004lvar API = '/api/notes';
+var API_KEY = 'tb3_notes_api_secret_2026';
+var editingId = null;
+
+function fetchNotes() {
+[?2004hroot@1b06f1f3df22:/app# curl -s http://localhost:8080/api/notes
+[?2004l[{"id":1,"title":"KeyFile Check","content":"body"},{"id":2,"title":"DB Path Check","content":"persistence"},{"id":3,"title":"Status Check","content":"Body"},{"id":4,"title":"ID Check","content":"Body"},{"id":5,"title":"Echo Title","content":"Echo Body"},{"id":6,"title":"Array Test","content":"Body"},{"id":7,"title":"Find Me","content":"In the List"},{"id":8,"title":"Single Fetch","content":"Unique Body"},{"id":9,"title":"Updated Name","content":"New"},{"id":10,"title":"Before","content":"Body"},{"id":11,"title":"Before","content":"Body"},{"id":13,"title":"Headers POST","content":"check"},{"id":14,"title":"Headers PUT","content":"after"},{"id":16,"title":"Headers GET1","content":"single"},{"id":17,"title":"Auth Put","content":"Before"},{"id":18,"title":"Auth Del","content":"Target"},{"id":19,"title":"Put Wrong Key","content":"target"},{"id":20,"title":"Del Wrong Key","content":"target"},{"id":21,"title":"Public Read","content":"Accessible"},{"id":22,"title":"Paginate 0","content":"Body 0"},{"id":23,"title":"Paginate 1","content":"Body 1"},{"id":24,"title":"Paginate 2","content":"Body 2"},{"id":25,"title":"Paginate 3","content":"Body 3"},{"id":26,"title":"Paginate 4","content":"Body 4"},{"id":27,"title":"OffsetTest 0","content":"Body 0"},{"id":28,"title":"OffsetTest 1","content":"Body 1"},{"id":29,"title":"OffsetTest 2","content":"Body 2"},{"id":30,"title":"OffsetTest 3","content":"Body 3"},{"id":31,"title":"OffsetTest 4","content":"Body 4"},{"id":32,"title":"CountHdr 0","content":"Body 0"},{"id":33,"title":"CountHdr 1","content":"Body 1"},{"id":34,"title":"CountHdr 2","content":"Body 2"},{"id":35,"title":"CountHdr 3","content":"Body 3"},{"id":36,"title":"CountHdr 4","content":"Body 4"},{"id":37,"title":"DefLimit 0","content":"Body 0"},{"id":38,"title":"DefLimit 1","content":"Body 1"},{"id":39,"title":"DefLimit 2","content":"Body 2"},{"id":40,"title":"DefLimit 3","content":"Body 3"},{"id":41,"title":"DefLimit 4","content":"Body 4"},{"id":42,"title":"DefLimit 5","content":"Body 5"},{"id":43,"title":"DefLimit 6","content":"Body 6"},{"id":44,"title":"DefLimit 7","content":"Body 7"},{"id":45,"title":"DefLimit 8","content":"Body 8"},{"id":46,"title":"DefLimit 9","content":"Body 9"},{"id":47,"title":"DefLimit 10","content":"Body 10"},{"id":48,"title":"DefLimit 11","content":"Body 11"},{"id":49,"title":"DefLimit 12","content":"Body 12"},{"id":50,"title":"DefLimit 13","content":"Body 13"},{"id":51,"title":"DefLimit 14","content":"Body 14"},{"id":52,"title":"DefLimit 15","content":"Body 15"}][?2004hroot@1b06f1f3df22:/app# curl -s http://localhost:8080/ | head -5
+[?2004l<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+[?2004hroot@1b06f1f3df22:/app# curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{"title":"Test","content":"Body"}'
+[?2004l{"id":144,"title":"Test","content":"Body"}[?2004hroot@1b06f1f3df22:/app# curl -s http://localhost:8080/api/notes
+[?2004l[{"id":1,"title":"KeyFile Check","content":"body"},{"id":2,"title":"DB Path Check","content":"persistence"},{"id":3,"title":"Status Check","content":"Body"},{"id":4,"title":"ID Check","content":"Body"},{"id":5,"title":"Echo Title","content":"Echo Body"},{"id":6,"title":"Array Test","content":"Body"},{"id":7,"title":"Find Me","content":"In the List"},{"id":8,"title":"Single Fetch","content":"Unique Body"},{"id":9,"title":"Updated Name","content":"New"},{"id":10,"title":"Before","content":"Body"},{"id":11,"title":"Before","content":"Body"},{"id":13,"title":"Headers POST","content":"check"},{"id":14,"title":"Headers PUT","content":"after"},{"id":16,"title":"Headers GET1","content":"single"},{"id":17,"title":"Auth Put","content":"Before"},{"id":18,"title":"Auth Del","content":"Target"},{"id":19,"title":"Put Wrong Key","content":"target"},{"id":20,"title":"Del Wrong Key","content":"target"},{"id":21,"title":"Public Read","content":"Accessible"},{"id":22,"title":"Paginate 0","content":"Body 0"},{"id":23,"title":"Paginate 1","content":"Body 1"},{"id":24,"title":"Paginate 2","content":"Body 2"},{"id":25,"title":"Paginate 3","content":"Body 3"},{"id":26,"title":"Paginate 4","content":"Body 4"},{"id":27,"title":"OffsetTest 0","content":"Body 0"},{"id":28,"title":"OffsetTest 1","content":"Body 1"},{"id":29,"title":"OffsetTest 2","content":"Body 2"},{"id":30,"title":"OffsetTest 3","content":"Body 3"},{"id":31,"title":"OffsetTest 4","content":"Body 4"},{"id":32,"title":"CountHdr 0","content":"Body 0"},{"id":33,"title":"CountHdr 1","content":"Body 1"},{"id":34,"title":"CountHdr 2","content":"Body 2"},{"id":35,"title":"CountHdr 3","content":"Body 3"},{"id":36,"title":"CountHdr 4","content":"Body 4"},{"id":37,"title":"DefLimit 0","content":"Body 0"},{"id":38,"title":"DefLimit 1","content":"Body 1"},{"id":39,"title":"DefLimit 2","content":"Body 2"},{"id":40,"title":"DefLimit 3","content":"Body 3"},{"id":41,"title":"DefLimit 4","content":"Body 4"},{"id":42,"title":"DefLimit 5","content":"Body 5"},{"id":43,"title":"DefLimit 6","content":"Body 6"},{"id":44,"title":"DefLimit 7","content":"Body 7"},{"id":45,"title":"DefLimit 8","content":"Body 8"},{"id":46,"title":"DefLimit 9","content":"Body 9"},{"id":47,"title":"DefLimit 10","content":"Body 10"},{"id":48,"title":"DefLimit 11","content":"Body 11"},{"id":49,"title":"DefLimit 12","content":"Body 12"},{"id":50,"title":"DefLimit 13","content":"Body 13"},{"id":51,"title":"DefLimit 14","content":"Body 14"},{"id":52,"title":"DefLimit 15","content":"Body 15"}][?2004hroot@1b06f1f3df22:/app# 

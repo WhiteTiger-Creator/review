@@ -1,0 +1,4 @@
+Previous response had parsing errors:
+ERROR: Invalid JSON: Invalid \escape: line 6 column 139 (char 631) | Content preview: '{\n  "analysis": "The new Makefile failed with “missing separator” because Make requires tabs before '...
+
+Please fix these issues and provide a proper JSON response.

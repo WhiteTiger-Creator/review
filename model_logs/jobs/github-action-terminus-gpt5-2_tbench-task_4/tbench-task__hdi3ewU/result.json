@@ -1,0 +1,227 @@
+{
+    "id": "5914de63-598b-41cb-bb84-d01714f45215",
+    "task_name": "tbench-task",
+    "trial_name": "tbench-task__hdi3ewU",
+    "trial_uri": "file:///root/jobs/github-action-terminus-gpt5-2_tbench-task_4/tbench-task__hdi3ewU",
+    "task_id": {
+        "path": "harbor_tasks/tbench-task"
+    },
+    "source": null,
+    "task_checksum": "48b7d2e04c3beca89448d1dbd41e90160f1ac5b9dd7c9460fdd66e69035caff9",
+    "config": {
+        "task": {
+            "path": "harbor_tasks/tbench-task",
+            "git_url": null,
+            "git_commit_id": null,
+            "name": null,
+            "ref": null,
+            "overwrite": false,
+            "download_dir": null,
+            "source": null
+        },
+        "trial_name": "tbench-task__hdi3ewU",
+        "trials_dir": "jobs/github-action-terminus-gpt5-2_tbench-task_4",
+        "timeout_multiplier": 1.0,
+        "agent_timeout_multiplier": null,
+        "verifier_timeout_multiplier": null,
+        "agent_setup_timeout_multiplier": null,
+        "environment_build_timeout_multiplier": null,
+        "agent": {
+            "name": "terminus-2",
+            "import_path": null,
+            "model_name": "openai/@openai/gpt-5.2",
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "kwargs": {},
+            "env": {}
+        },
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "suppress_override_warnings": false,
+            "mounts_json": null,
+            "env": {},
+            "kwargs": {}
+        },
+        "verifier": {
+            "override_timeout_sec": null,
+            "max_timeout_sec": null,
+            "env": {},
+            "disable": false
+        },
+        "artifacts": [],
+        "job_id": "9f192f2c-5bd0-41cf-85c5-1542fe5e6938"
+    },
+    "agent_info": {
+        "name": "terminus-2",
+        "version": "2.0.0",
+        "model_info": {
+            "name": "@openai/gpt-5.2",
+            "provider": "openai"
+        }
+    },
+    "agent_result": null,
+    "verifier_result": {
+        "rewards": {
+            "reward": 0.3333333333333333
+        }
+    },
+    "exception_info": null,
+    "started_at": "2026-05-26T12:40:11.102178Z",
+    "finished_at": "2026-05-26T12:56:05.726224Z",
+    "environment_setup": {
+        "started_at": "2026-05-26T12:40:11.173951Z",
+        "finished_at": "2026-05-26T12:40:57.791818Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-05-26T12:40:57.791862Z",
+        "finished_at": "2026-05-26T12:40:59.560134Z"
+    },
+    "agent_execution": null,
+    "verifier": null,
+    "step_results": [
+        {
+            "step_name": "milestone_1",
+            "agent_result": {
+                "n_input_tokens": 167616,
+                "n_cache_tokens": 90112,
+                "n_output_tokens": 10231,
+                "cost_usd": 0.5892711999999999,
+                "rollout_details": [],
+                "metadata": {
+                    "n_episodes": 14,
+                    "api_request_times_msec": [
+                        7675.809144973755,
+                        6277.580976486206,
+                        5691.463232040405,
+                        4146.912574768066,
+                        4844.410181045532,
+                        6108.810901641846,
+                        13627.933740615845,
+                        5550.466775894165,
+                        15817.527294158936,
+                        9727.403402328491,
+                        19044.850826263428,
+                        6137.341260910034,
+                        2312.775135040283,
+                        2053.1485080718994
+                    ],
+                    "summarization_count": 0
+                }
+            },
+            "verifier_result": {
+                "rewards": {
+                    "reward": 1.0
+                }
+            },
+            "exception_info": null,
+            "agent_execution": {
+                "started_at": "2026-05-26T12:40:59.671845Z",
+                "finished_at": "2026-05-26T12:44:56.316353Z"
+            },
+            "verifier": {
+                "started_at": "2026-05-26T12:44:56.446789Z",
+                "finished_at": "2026-05-26T12:44:57.277855Z"
+            }
+        },
+        {
+            "step_name": "milestone_2",
+            "agent_result": {
+                "n_input_tokens": 1180364,
+                "n_cache_tokens": 933248,
+                "n_output_tokens": 52930,
+                "cost_usd": 2.6735827999999997,
+                "rollout_details": [],
+                "metadata": {
+                    "n_episodes": 25,
+                    "api_request_times_msec": [
+                        9217.124462127686,
+                        5770.91383934021,
+                        7360.893249511719,
+                        71963.32240104675,
+                        59292.85717010498,
+                        24903.212308883667,
+                        31181.427001953125,
+                        41128.25965881348,
+                        43843.18399429321,
+                        7557.262420654297,
+                        37943.91369819641,
+                        43138.3740901947,
+                        10360.185146331787,
+                        8502.949953079224,
+                        9195.540189743042,
+                        7036.5705490112305,
+                        7529.721975326538,
+                        9562.056303024292,
+                        9699.386835098267,
+                        5831.764936447144,
+                        11378.388166427612,
+                        9952.179908752441,
+                        13904.468059539795,
+                        5442.267179489136,
+                        3640.4361724853516
+                    ],
+                    "summarization_count": 0
+                }
+            },
+            "verifier_result": {
+                "rewards": {
+                    "reward": 0.0
+                }
+            },
+            "exception_info": null,
+            "agent_execution": {
+                "started_at": "2026-05-26T12:44:57.391927Z",
+                "finished_at": "2026-05-26T12:54:34.872605Z"
+            },
+            "verifier": {
+                "started_at": "2026-05-26T12:54:34.999621Z",
+                "finished_at": "2026-05-26T12:54:36.525247Z"
+            }
+        },
+        {
+            "step_name": "milestone_3",
+            "agent_result": {
+                "n_input_tokens": 35370,
+                "n_cache_tokens": 14080,
+                "n_output_tokens": 5067,
+                "cost_usd": 0.221319,
+                "rollout_details": [],
+                "metadata": {
+                    "n_episodes": 7,
+                    "api_request_times_msec": [
+                        7831.806182861328,
+                        6035.00509262085,
+                        7233.450889587402,
+                        17554.816722869873,
+                        5655.184030532837,
+                        8521.862745285034,
+                        5115.452289581299
+                    ],
+                    "summarization_count": 0
+                }
+            },
+            "verifier_result": {
+                "rewards": {
+                    "reward": 0.0
+                }
+            },
+            "exception_info": null,
+            "agent_execution": {
+                "started_at": "2026-05-26T12:54:36.642820Z",
+                "finished_at": "2026-05-26T12:55:53.598223Z"
+            },
+            "verifier": {
+                "started_at": "2026-05-26T12:55:53.718045Z",
+                "finished_at": "2026-05-26T12:55:54.571326Z"
+            }
+        }
+    ]
+}

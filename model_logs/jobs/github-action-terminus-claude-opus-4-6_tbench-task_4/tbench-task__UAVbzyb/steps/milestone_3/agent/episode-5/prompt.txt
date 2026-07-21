@@ -1,0 +1,41 @@
+Current Terminal Screen:
+#ifndef ROUTES_H
+#define ROUTES_H
+
+#include <microhttpd.h>
+
+struct connection_info {
+    char *data;
+    size_t data_size;
+    int too_large;
+};
+
+enum MHD_Result route_request(struct MHD_Connection *connection,
+    const char *url, const char *method,
+    const char *upload_data, size_t *upload_data_size,
+    void **con_cls);
+
+#endif
+root@1ebded0d6da5:/app# cat /app/src/static.h
+#ifndef STATIC_H
+#define STATIC_H
+
+#include <microhttpd.h>
+
+enum MHD_Result serve_static_file(struct MHD_Connection *connection, const char *url);
+
+#endif
+root@1ebded0d6da5:/app# cat /app/Makefile
+CC = gcc
+CFLAGS = -Wall -Wextra -Iinclude -Isrc
+LDFLAGS = -lmicrohttpd -lsqlite3 -lpthread
+
+SOURCES = src/main.c src/routes.c src/db.c src/auth.c
+TARGET = notes_server
+
+$(TARGET): $(SOURCES)
+        $(CC) $(CFLAGS) -o $(TARGET) $(SOURCES) $(LDFLAGS)
+
+clean:
+        rm -f $(TARGET)
+root@1ebded0d6da5:/app#

@@ -1,0 +1,31 @@
+New Terminal Output:
+
+root@27e807e19559:/app# cat > Makefile <<'EOF'
+> CC ?= gcc
+> WARNFLAGS ?= -Wall -Wextra
+> CFLAGS ?= -O2
+> CPPFLAGS ?= -Iinclude
+>
+> SRC := $(wildcard src/*.c)
+> OBJ := $(SRC:.c=.o)
+>
+> LDLIBS := -lmicrohttpd -lsqlite3
+>
+> TARGET := notes_server
+>
+> all: $(TARGET)
+>
+> $(TARGET): $(OBJ)
+> $(CC) $(WARNFLAGS) $(CFLAGS) -o $@ $(OBJ) $(LDLIBS)
+>
+> %.o: %.c
+> $(CC) $(WARNFLAGS) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
+>
+> clean:
+> rm -f $(TARGET) $(OBJ)
+> EOF
+root@27e807e19559:/app# make clean && make -j$(nproc)
+Makefile:16: *** missing separator.  Stop.
+root@27e807e19559:/app# ls -la notes_server && file notes_server
+ls: cannot access 'notes_server': No such file or directory
+root@27e807e19559:/app#

@@ -1,0 +1,7 @@
+New Terminal Output:
+l lang="en">
+root@8115be450cb5:/app# python3 -c "print('{\"title\":\"x\",\"content\":\"' + 'A'*70000 + '\"}')" | curl -s -o /dev/null -w '%{http_code}' -X POST http://localh
+ost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d @-
+413root@8115be450cb5:/app# curl -s -D- 'http://localhost:8080/api/notes?limit=100' 2>&1 | grep X-Total-Count
+X-Total-Count: 15
+root@8115be450cb5:/app#

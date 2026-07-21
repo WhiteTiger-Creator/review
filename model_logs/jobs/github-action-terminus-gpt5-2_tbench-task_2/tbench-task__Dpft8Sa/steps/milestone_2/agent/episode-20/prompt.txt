@@ -1,0 +1,41 @@
+Current Terminal Screen:
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+Content-Length: 20
+
+{"status":"deleted"}root@972cf0f30065:/app# curl -si -X DELETE http://127.0.0.1:8080/api/notes/1 -H 'X-API-Key: tb3_notes_api_secret_2026' | head -n 40
+HTTP/1.1 404 Not Found
+Connection: close
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+Content-Length: 21
+
+{"error":"not found"}root@972cf0f30065:/app# python3 - <<'PY'
+> import json,sys
+> body = json.dumps({'title':'t','content':'a'*70000})
+> print(len(body))
+> open('/tmp/big.json','w').write(body)
+> PY
+70029
+root@972cf0f30065:/app# curl -si -X POST http://127.0.0.1:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' --data-bi
+nary @/tmp/big.json | head -n 40
+HTTP/1.1 413 Payload Too Large
+Connection: close
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+Content-Length: 29
+
+{"error":"payload too large"}root@972cf0f30065:/app# curl -si 'http://127.0.0.1:8080/api/notes?limit=999&offset=0' | head -n 20
+HTTP/1.1 200 OK
+Connection: close
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+X-Total-Count: 0
+Content-Length: 2
+
+[]root@972cf0f30065:/app#

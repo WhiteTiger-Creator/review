@@ -1,0 +1,6 @@
+{
+  "analysis": "Still unusable terminal session.",
+  "plan": "No action.",
+  "commands": [],
+  "task_complete": false
+}

@@ -1,0 +1,43 @@
+{
+  "analysis": "Server still exits when handling the oversized request; curl gets no output. That implies the daemon is crashing/aborting on large request, not just failing to respond. We need to see server.log after the crash; it may contain 'malloc' errors or assertion. We'll inspect server.log fully. If no info, run notes_server in foreground and reproduce with curl to see stderr. Also, maybe libmicrohttpd is not installed with large post support unless MHD_OPTION_CONNECTION_MEMORY_LIMIT / MHD_OPTION_CONNECTION_LIMIT? But crash is concerning.\nWe can avoid crash by limiting accepted upload size via libmicrohttpd daemon options: MHD_OPTION_CONNECTION_MEMORY_LIMIT or MHD_OPTION_CONNECTION_TIMEOUT? Better: MHD_OPTION_CONNECTION_MEMORY_LIMIT sets max memory per connection used for receiving data; but not sure.\nGiven contract, easiest is to let libmicrohttpd reject before our handler by setting MHD_OPTION_CONNECTION_MEMORY_LIMIT to 65536 and MHD_OPTION_CONNECTION_MEMORY_INCREMENT maybe. But then status code? uncertain.\nLet's inspect server.log and then adjust main.c to start daemon with MHD_OPTION_CONNECTION_MEMORY_LIMIT = NOTES_MAX_BODY_BYTES to prevent crash and keep server alive; still we must return 413 JSON ourselves based on Content-Length which will trigger before reading and should prevent large uploads entirely. But crash happens even with our immediate check; perhaps because request still gets body and libmicrohttpd buffers and blows memory? Hmm.\nNeed to ensure server is actually starting; it exits after curl; so crash during request.\n",
+  "plan": "1) Inspect /app/server.log for crash message. 2) Run ./notes_server in foreground and in same shell use background curl? Not possible concurrently; instead use 'timeout 5 ./notes_server' and from another process send curl; but single terminal can background server then run curl and then wait; stderr goes to terminal.\n3) Add MHD_OPTION_CONNECTION_MEMORY_LIMIT and MHD_OPTION_CONNECTION_MEMORY_INCREMENT in main.c to cap at 65536 and avoid crashes. Also enable MHD_USE_INTERNAL_POLLING_THREAD instead of thread-per-connection? but keep.\n4) Retry oversized test; ensure server stays up and returns 413.\n",
+  "commands": [
+    {
+      "keystrokes": "echo '--- server.log ---'; cat /app/server.log || true; echo '--- end ---'\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "killall notes_server 2>/dev/null || true\npkill -f /app/notes_server 2>/dev/null || true\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "grep -n \"MHD_start_daemon\" -n /app/src/main.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/MHD_start_daemon\\(\\n\\s*MHD_USE_THREAD_PER_CONNECTION,/MHD_start_daemon(\\n        MHD_USE_THREAD_PER_CONNECTION,/s; s/MHD_OPTION_NOTIFY_COMPLETED, &request_completed, NULL,\\n\\s*MHD_OPTION_END/MHD_OPTION_NOTIFY_COMPLETED, &request_completed, NULL,\\n        MHD_OPTION_CONNECTION_MEMORY_LIMIT, (unsigned int)65536,\\n        MHD_OPTION_END/s' /app/src/main.c\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "make\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "./notes_server 2>&1 | tee /tmp/fg.log & echo $! > /tmp/fg.pid\n",
+      "duration": 0.2
+    },
+    {
+      "keystrokes": "python3 - <<'PY'\nimport json, os, subprocess, tempfile, time\npayload=json.dumps({'title':'t','content':'x'*70000}).encode()\nfd, path = tempfile.mkstemp()\nos.write(fd, payload)\nos.close(fd)\ncmd=['curl','-i','-s','-X','POST','http://127.0.0.1:8080/api/notes','-H','Content-Type: application/json','-H','X-API-Key: tb3_notes_api_secret_2026','--data-binary','@'+path]\nprint(subprocess.run(cmd, text=True, capture_output=True).stdout[:300])\nos.unlink(path)\ntime.sleep(0.2)\nPY\n",
+      "duration": 2.0
+    },
+    {
+      "keystrokes": "kill $(cat /tmp/fg.pid) 2>/dev/null || true\n",
+      "duration": 0.2
+    },
+    {
+      "keystrokes": "tail -n 100 /tmp/fg.log || true\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

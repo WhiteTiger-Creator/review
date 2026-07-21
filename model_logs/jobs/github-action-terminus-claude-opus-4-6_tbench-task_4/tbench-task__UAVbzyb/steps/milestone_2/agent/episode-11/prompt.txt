@@ -1,0 +1,48 @@
+New Terminal Output:
+ = null;
+root@1ebded0d6da5:/app# curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_no
+tes_api_secret_2026' -d '{"title":"Note A","content":"a"}'
+201root@1ebded0d6da5:/app# curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3
+_notes_api_secret_2026' -d '{"title":"Note B","content":"b"}'
+201root@1ebded0d6da5:/app# curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3
+_notes_api_secret_2026' -d '{"title":"Note C","content":"c"}'
+201root@1ebded0d6da5:/app# curl -s -D- 'http://localhost:8080/api/notes?limit=2&offset=0' 2>&1 | grep -E 'X-Total-Count|^\['
+X-Total-Count: 3
+[{"id":2,"title":"Note A","content":"a"},{"id":3,"title":"Note B","content":"b"}]
+root@1ebded0d6da5:/app# curl -s 'http://localhost:8080/api/notes?limit=2&offset=1'
+[{"id":3,"title":"Note B","content":"b"},{"id":4,"title":"Note C","content":"c"}]root@1ebded0d6da5:/app# curl -s -D- 'http://localhost:8080/api/notes?limit=999'
+ 2>&1 | grep 'X-Total-Count'
+X-Total-Count: 3
+root@1ebded0d6da5:/app# python3 -c "import sys; sys.stdout.buffer.write(b'{\"title\":\"big\",\"content\":\"' + b'x'*70000 + b'\"}')" | curl -s -o /dev/null -w '
+%{http_code}' -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d @-
+000root@1ebded0d6da5:/app# # Test concurrent writes
+root@1ebded0d6da5:/app# rm -f /app/data/notes.db && kill -9 $(cat /proc/*/comm 2>/dev/null | grep -l notes 2>/dev/null | sed 's|/proc/||;s|/comm||') 2>/dev/null
+; for pid in $(ls /proc | grep '^[0-9]'); do if cat /proc/$pid/comm 2>/dev/null | grep -q notes_server; then kill -9 $pid; fi; done; sleep 1
+[1]+  Killed                  ./notes_server
+root@1ebded0d6da5:/app# ./notes_server &
+[1] 1639
+root@1ebded0d6da5:/app# Server running on port 8080
+for i in $(seq 1 15); do curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"ti
+tle\":\"Note $i\",\"content\":\"Content $i\"}" & done; wait
+[2] 1648
+[3] 1649
+[4] 1650
+[5] 1651
+[6] 1652
+[7] 1653
+[8] 1654
+[9] 1655
+[10] 1656
+[11] 1657
+[12] 1658
+[13] 1659
+[14] 1660
+[15] 1661
+[16] 1662
+{"id":1,"title":"Note 1","content":"Content 1"}{"id":2,"title":"Note 3","content":"Content 3"}{"id":3,"title":"Note 2","content":"Content 2"}{"id":4,"title":"No
+te 8","content":"Content 8"}{"id":5,"title":"Note 4","content":"Content 4"}{"id":6,"title":"Note 14","content":"Content 14"}{"id":7,"title":"Note 13","content":
+"Content 13"}{"id":8,"title":"Note 12","content":"Content 12"}{"id":9,"title":"Note 5","content":"Content 5"}{"id":10,"title":"Note 11","content":"Content 11"}{
+"id":11,"title":"Note 7","content":"Content 7"}{"id":12,"title":"Note 15","content":"Content 15"}{"id":13,"title":"Note 6","content":"Content 6"}{"id":14,"title
+":"Note 9","content":"Content 9"}{"id":15,"title":"Note 10","content":"Content 10"}curl -s -D- http://localhost:8080/api/notes?limit=100 2>&1 | grep X-Total-Cou
+nt
+

@@ -1,0 +1,39 @@
+{
+  "analysis": "Build and basic serving work, but path traversal protection is incorrect for mixed-case percent-encoded dot-dot: request to '/%2E%2E/%2e%2E/' returned 200 OK instead of 403. Another encoded traversal returned 404 instead of 403. The current check only matches the exact substring \"%2e%2e\" and misses mixed-case/variant encodings, so we need more robust traversal detection by percent-decoding and rejecting any '.' or '..' path segments (and backslashes) in either raw or decoded path.",
+  "plan": "Patch src/main.c to add a percent-decoder and a function that detects dot/dotdot path segments. In serve_static_file, percent-decode the URL and forbid if either raw or decoded contains a '.' or '..' segment or backslash. Rebuild with make, run the server, and re-test the previously failing traversal URLs plus normal / and /api/notes, then stop the server.",
+  "commands": [
+    {
+      "keystrokes": "apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: src/main.c\n@@\n-static int url_contains_encoded_dotdot(const char *url) {\n-    const char *p = url;\n-    while (*p) {\n-        if (strncasecmp(p, \"%2e%2e\", 6) == 0)\n-            return 1;\n-        p++;\n-    }\n-    return 0;\n-}\n+static int hexval(char c) {\n+    if (c >= '0' && c <= '9') return c - '0';\n+    if (c >= 'a' && c <= 'f') return 10 + (c - 'a');\n+    if (c >= 'A' && c <= 'F') return 10 + (c - 'A');\n+    return -1;\n+}\n+\n+/* Percent-decode into dst, NUL-terminated. Returns 0 on success. */\n+static int percent_decode(const char *src, char *dst, size_t dstsz) {\n+    size_t di = 0;\n+    for (size_t si = 0; src[si] != '\\0'; si++) {\n+        if (di + 1 >= dstsz)\n+            return -1;\n+        if (src[si] == '%' && src[si + 1] && src[si + 2]) {\n+            int hi = hexval(src[si + 1]);\n+            int lo = hexval(src[si + 2]);\n+            if (hi >= 0 && lo >= 0) {\n+                dst[di++] = (char)((hi << 4) | lo);\n+                si += 2;\n+                continue;\n+            }\n+        }\n+        dst[di++] = src[si];\n+    }\n+    dst[di] = '\\0';\n+    return 0;\n+}\n+\n+/* Reject any '.' or '..' path segments to prevent escaping WWW_DIR.\n+   Also reject backslashes.\n+*/\n+static int has_dot_segments_or_backslash(const char *path) {\n+    if (strchr(path, '\\\\') != NULL)\n+        return 1;\n+\n+    const char *p = path;\n+    while (*p) {\n+        while (*p == '/') p++;\n+        const char *seg = p;\n+        while (*p && *p != '/') p++;\n+        size_t len = (size_t)(p - seg);\n+        if (len == 1 && seg[0] == '.')\n+            return 1;\n+        if (len == 2 && seg[0] == '.' && seg[1] == '.')\n+            return 1;\n+    }\n+    return 0;\n+}\n@@\n static enum MHD_Result serve_static_file(struct MHD_Connection *connection,\n     const char *url) {\n-    if (strstr(url, \"..\") != NULL || url_contains_encoded_dotdot(url)) {\n+    /* Handle mixed-case percent encodings by decoding and checking dot-segments\n+       in both raw and decoded forms. */\n+    char decoded[1024];\n+    if (percent_decode(url, decoded, sizeof(decoded)) != 0) {\n+        struct MHD_Response *r = MHD_create_response_from_buffer(\n+            9, (void *)\"Forbidden\", MHD_RESPMEM_PERSISTENT);\n+        enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_FORBIDDEN, r);\n+        MHD_destroy_response(r);\n+        return ret;\n+    }\n+\n+    if (has_dot_segments_or_backslash(url) || has_dot_segments_or_backslash(decoded)) {\n         struct MHD_Response *r = MHD_create_response_from_buffer(\n             9, (void *)\"Forbidden\", MHD_RESPMEM_PERSISTENT);\n         enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_FORBIDDEN, r);\n         MHD_destroy_response(r);\n         return ret;\n     }\n*** End Patch\nPATCH\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "make -j\"$(nproc)\"\n",
+      "duration": 5.0
+    },
+    {
+      "keystrokes": "./notes_server >/tmp/notes_server.log 2>&1 & echo $! > /tmp/notes_server.pid\n",
+      "duration": 0.3
+    },
+    {
+      "keystrokes": "curl -i 'http://127.0.0.1:8080/%2E%2E/%2e%2E/' | head -n 30\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -i 'http://127.0.0.1:8080/%2e%2e/%2e%2e/etc/passwd' | head -n 30\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -i http://127.0.0.1:8080/ | head -n 12\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -i http://127.0.0.1:8080/api/notes | head -n 40\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "kill -TERM \"$(cat /tmp/notes_server.pid)\"; sleep 0.2; tail -n 60 /tmp/notes_server.log\n",
+      "duration": 1.0
+    }
+  ],
+  "task_complete": false
+}

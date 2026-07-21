@@ -1,0 +1,25 @@
+Current terminal state:
+New Terminal Output:
+t
+root@972cf0f30065:/app# curl -sS http://localhost:8080/api/notes
+[]root@972cf0f30065:/app# API_KEY="$(cat /app/config/api.key | tr -d '\r\n' | sed 's/[[:space:]]*$//')"; \
+> resp=$(curl -sS -w "\n%{http_code}\n" -H "Content-Type: application/json" -H "x-api-key: $API_KEY" -d '{"title":"tmp","content":"tmp"}' http://localhost:8080/
+api/notes); \
+> echo "$resp"
+{"id":1,"title":"tmp","content":"tmp"}
+201
+root@972cf0f30065:/app# ID=$(curl -sS http://localhost:8080/api/notes | python3 -c 'import sys, json; a=json.load(sys.stdin); print(max([n["id"] for n in a]) if
+ a else "")'); echo "ID=$ID"
+ID=1
+root@972cf0f30065:/app# API_KEY="$(cat /app/config/api.key | tr -d '\r\n' | sed 's/[[:space:]]*$//')"; \
+> ID=$(curl -sS http://localhost:8080/api/notes | python3 -c 'import sys, json; a=json.load(sys.stdin); print(max([n["id"] for n in a]) if a else "")'); \
+> if [ -n "$ID" ]; then curl -sS -o /dev/null -w "%{http_code}\n" -X DELETE -H "Content-Type: application/json" -H "x-api-key: $API_KEY" http://localhost:8080/a
+pi/notes/$ID; fi
+200
+root@972cf0f30065:/app# grep -n "edit-btn\|delete-btn" /app/www/app.js | head
+62:      editBtn.className = 'edit-btn';
+77:      deleteBtn.className = 'delete-btn';
+root@972cf0f30065:/app#
+
+
+Are you sure you want to mark the task as complete? This will trigger your solution to be graded and you won't be able to make any further corrections. If so, include "task_complete": true in your JSON response again.

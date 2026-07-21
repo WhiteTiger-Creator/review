@@ -1,0 +1,15 @@
+{
+  "analysis": "Only a solitary '+' was returned, which strongly suggests the terminal/session is currently stuck in a continued input state (e.g., an unclosed heredoc/apply_patch, an open quote, or a pager) rather than running the requested commands. We need to regain a normal shell prompt before proceeding.",
+  "plan": "Send Ctrl+C to cancel any pending multiline input and return to the shell prompt. Then run a trivial command to confirm the shell is responsive.",
+  "commands": [
+    {
+      "keystrokes": "C-c",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "echo shell_ok\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

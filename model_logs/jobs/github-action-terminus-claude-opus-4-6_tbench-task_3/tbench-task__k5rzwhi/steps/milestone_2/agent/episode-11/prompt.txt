@@ -1,0 +1,41 @@
+Current Terminal Screen:
+root@1b06f1f3df22:/app# curl -s 'http://localhost:8080/api/notes?limit=999' | grep -o '"id"' | wc -l
+10
+root@1b06f1f3df22:/app# curl -si -X PUT http://localhost:8080/api/notes/99999 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '
+{"title":"Updated","content":"test"}' 2>&1 | head -1
+HTTP/1.1 404 Not Found
+root@1b06f1f3df22:/app# curl -si -X PUT http://localhost:8080/api/notes/2 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{"ti
+tle":"","content":"test"}' 2>&1 | head -3
+HTTP/1.1 400 Bad Request
+Date: Tue, 26 May 2026 12:48:05 GMT
+Content-Type: application/json
+root@1b06f1f3df22:/app# # Test concurrent writes
+root@1b06f1f3df22:/app# rm -f /app/data/notes.db && kill -HUP 1273 2>/dev/null; kill -9 1273 2>/dev/null; sleep 1
+[1]+  Hangup                  ./notes_server
+root@1b06f1f3df22:/app# ./notes_server &
+[1] 1502
+root@1b06f1f3df22:/app# Server running on port 8080
+for i in $(seq 1 15); do curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"ti
+tle\":\"Concurrent $i\",\"content\":\"body $i\"}" & done; wait
+[2] 1511
+[3] 1512
+[4] 1513
+[5] 1514
+[6] 1515
+[7] 1516
+[8] 1517
+[9] 1518
+[10] 1519
+[11] 1520
+[12] 1521
+[13] 1522
+[14] 1523
+[15] 1524
+[16] 1525
+{"id":1,"title":"Concurrent 3","content":"body 3"}{"id":2,"title":"Concurrent 1","content":"body 1"}{"id":3,"title":"Concurrent 6","content":"body 6"}{"id":4,"t
+itle":"Concurrent 2","content":"body 2"}{"id":5,"title":"Concurrent 4","content":"body 4"}{"id":6,"title":"Concurrent 14","content":"body 14"}{"id":7,"title":"C
+oncurrent 11","content":"body 11"}{"id":8,"title":"Concurrent 9","content":"body 9"}{"id":9,"title":"Concurrent 12","content":"body 12"}{"id":10,"title":"Concur
+rent 15","content":"body 15"}{"id":11,"title":"Concurrent 7","content":"body 7"}{"id":12,"title":"Concurrent 8","content":"body 8"}{"id":13,"title":"Concurrent
+13","content":"body 13"}{"id":14,"title":"Concurrent 5","content":"body 5"}{"id":15,"title":"Concurrent 10","content":"body 10"}curl -s http://localhost:8080/ap
+i/notes | grep -o '"id"' | wc -l
+

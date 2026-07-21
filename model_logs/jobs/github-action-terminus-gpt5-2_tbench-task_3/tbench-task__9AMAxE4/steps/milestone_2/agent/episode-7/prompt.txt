@@ -1,0 +1,41 @@
+Current Terminal Screen:
+>             free(content);
+>             if (!ok) return send_json(connection, "{\"error\":\"server error\"}",
+>                                       MHD_HTTP_INTERNAL_SERVER_ERROR);
+>
+>             char *row = get_note_json(id);
+>             if (!row) return send_json(connection, "{\"error\":\"server error\"}",
+>                                        MHD_HTTP_INTERNAL_SERVER_ERROR);
+>             enum MHD_Result rr = send_json(connection, row, MHD_HTTP_OK);
+>             free(row);
+>             return rr;
+>         }
+>
+>         if (strcmp(method, "DELETE") == 0) {
+>             if (!api_key_valid(connection)) return unauthorized(connection);
+>             if (!note_exists(id)) return not_found(connection);
+>
+>             int ok = delete_note(id);
+>             if (!ok) return send_json(connection, "{\"error\":\"server error\"}",
+>                                       MHD_HTTP_INTERNAL_SERVER_ERROR);
+>             return send_json(connection, "{\"status\":\"deleted\"}",
+>                              MHD_HTTP_OK);
+>         }
+>
+>         return not_found(connection);
+>     }
+>
+>     return not_found(connection);
+> }
+> EOF
+root@08d5c4164ec3:/app# grep -RIn "#include \"common.h\"" /app/src/routes.c && head -n 20 /app/include/common.h
+12:#include "common.h"
+#ifndef NOTES_COMMON_H
+#define NOTES_COMMON_H
+
+#define NOTES_MAX_BODY_BYTES 65536
+#define NOTES_DEFAULT_PAGE_SIZE 50
+#define NOTES_MAX_PAGE_SIZE 100
+
+#endif
+root@08d5c4164ec3:/app#

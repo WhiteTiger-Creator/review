@@ -1,0 +1,11 @@
+New Terminal Output:
+
+root@8115be450cb5:/app# curl -s http://localhost:8080/app.js | head -5
+var API_BASE = '/api/notes';
+var API_KEY = 'tb3_notes_api_secret_2026';
+
+var editingId = null;
+
+root@8115be450cb5:/app# ls -la /app/notes_server
+-rwxr-xr-x 1 root root 32232 May 26 12:46 /app/notes_server
+root@8115be450cb5:/app#

@@ -1,0 +1,41 @@
+Current Terminal Screen:
+    41  }
+    42
+    43  char *get_all_notes_json(void) {
+    44      return strdup("[]");
+    45  }
+    46
+    47  char *get_notes_paginated_json(int limit, int offset) {
+    48      (void)limit;
+    49      (void)offset;
+    50      return strdup("[]");
+    51  }
+    52
+    53  int get_total_notes_count(void) {
+    54      return 0;
+    55  }
+    56
+    57  char *get_note_json(int id) {
+    58      (void)id;
+    59      return NULL;
+    60  }
+    61
+    62  int update_note(int id, const char *title, const char *content) {
+    63      (void)id;
+    64      (void)title;
+    65      (void)content;
+    66      return 0;
+    67  }
+    68
+    69  int delete_note(int id) {
+    70      (void)id;
+    71      return 0;
+    72  }
+    73
+    74  int note_exists(int id) {
+    75      (void)id;
+    76      return 0;
+    77  }
+root@bb40ba43d60f:/app# echo '=== db.c (200-420) ===' && nl -ba /app/src/db.c | sed -n '200,420p'
+=== db.c (200-420) ===
+root@bb40ba43d60f:/app#

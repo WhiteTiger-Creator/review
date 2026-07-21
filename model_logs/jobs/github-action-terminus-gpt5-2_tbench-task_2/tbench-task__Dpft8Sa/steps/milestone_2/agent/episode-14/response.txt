@@ -1,0 +1,15 @@
+{
+  "analysis": "We can see main.c routes everything except an /api/notes GET: it percent-decodes URL, blocks path traversal, maps to /app/www and serves static files. That implies API handling is earlier in handle_client, before this static logic. We still need lines 1-176 to see HTTP parsing and the /api/notes logic and how headers/body are handled. Then we can extend that API router for POST/PUT/DELETE, OPTIONS, query params, auth, and 413 size checks.",
+  "plan": "Print main.c lines 1-176 (in smaller pieces if needed) focusing on handle_client beginning and existing API handling. Then implement modifications in main.c and db.c.",
+  "commands": [
+    {
+      "keystrokes": "nl -ba /app/src/main.c | sed -n '1,80p'\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "nl -ba /app/src/main.c | sed -n '80,176p'\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

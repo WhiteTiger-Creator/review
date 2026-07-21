@@ -1,0 +1,23 @@
+New Terminal Output:
+
+root@8115be450cb5:/app# file /app/notes_server
+/app/notes_server: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, BuildID[sha1]=f35d84795
+28627e0c64a26b032b70e3e164159f8, for GNU/Linux 3.2.0, not stripped
+root@8115be450cb5:/app# /app/notes_server &
+[1] 334
+root@8115be450cb5:/app# Server running on port 8080
+curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/
+200root@8115be450cb5:/app# curl -s http://127.0.0.1:8080/ | head -5
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+root@8115be450cb5:/app# curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/style.css
+200root@8115be450cb5:/app# curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/app.js
+200root@8115be450cb5:/app# curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/notes
+200root@8115be450cb5:/app# curl -s http://127.0.0.1:8080/api/notes
+[]root@8115be450cb5:/app# curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/nonexistent.txt
+404root@8115be450cb5:/app# curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8080/../etc/passwd'
+404root@8115be450cb5:/app# curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8080/%2e%2e/etc/passwd'
+404root@8115be450cb5:/app#

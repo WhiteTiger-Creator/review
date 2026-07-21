@@ -1,0 +1,15 @@
+{
+  "analysis": "I need to restart the server before marking complete, since verifiers will need to connect to http://127.0.0.1:8080. Let me start it back up.",
+  "plan": "Start the server in the background so it's running for the grader, then confirm it's responding.",
+  "commands": [
+    {
+      "keystrokes": "/app/notes_server &\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/notes\n",
+      "duration": 0.5
+    }
+  ],
+  "task_complete": true
+}

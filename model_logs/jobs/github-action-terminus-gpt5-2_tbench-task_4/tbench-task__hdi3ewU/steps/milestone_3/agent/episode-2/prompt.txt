@@ -1,0 +1,41 @@
+Current Terminal Screen:
+
+    int id = (int)sqlite3_last_insert_rowid(db);
+    if (commit_tx() != 0)
+        return -1;
+    return id;
+}
+
+char *get_all_notes_json(void) {
+    return get_notes_paginated_json(1000000, 0);
+}
+
+char *get_notes_paginated_json(int limit, int offset) {
+    if (!db)
+        return NULL;
+
+    sqlite3_stmt *stmt = NULL;
+    const char *sql = "SELECT id, title, content FROM notes ORDER BY id ASC LIMIT ? OFFSET ?;";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
+        return NULL;
+    sqlite3_bind_int(stmt, 1, limit);
+    sqlite3_bind_int(stmt, 2, offset);
+
+root@27e807e19559:/app# grep -RIn "api" /app/src | head
+/app/src/auth.c:8:#define API_KEY_PATH "/app/config/api.key"
+/app/src/auth.c:10:static char *g_api_key = NULL;
+/app/src/auth.c:20:static char *load_api_key(void) {
+/app/src/auth.c:37:    if (!g_api_key)
+/app/src/auth.c:38:        g_api_key = load_api_key();
+/app/src/auth.c:39:    return g_api_key;
+/app/src/auth.c:42:int api_key_valid(struct MHD_Connection *connection) {
+/app/src/auth.h:6:int api_key_valid(struct MHD_Connection *connection);
+/app/src/main.c:173:    if (strncmp(url, "/api/", 5) == 0)
+/app/src/routes.c:233:    const char *prefix = "/api/notes/";
+root@27e807e19559:/app# grep -RIn "API" /app/src | head -n 50
+/app/src/auth.c:8:#define API_KEY_PATH "/app/config/api.key"
+/app/src/auth.c:21:    FILE *f = fopen(API_KEY_PATH, "rb");
+/app/src/auth.c:46:    const char *provided = MHD_lookup_connection_value(connection, MHD_HEADER_KIND, "X-API-Key");
+/app/src/routes.c:22:                            "Content-Type, X-API-Key");
+/app/src/routes.c:39:                            "Content-Type, X-API-Key");
+root@27e807e19559:/app#

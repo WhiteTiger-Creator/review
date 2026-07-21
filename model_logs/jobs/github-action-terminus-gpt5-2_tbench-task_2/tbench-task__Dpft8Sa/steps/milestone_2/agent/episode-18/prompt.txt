@@ -1,0 +1,7 @@
+New Terminal Output:
+atus
+root@972cf0f30065:/app# grep -n "auth.h" -n /app/src/main.c
+3:#include "auth.h"
+root@972cf0f30065:/app# sed -i 's/^#include "auth.h"\n//' /app/src/main.c
+root@972cf0f30065:/app# gcc -O2 -Wall -Wextra -o /app/notes_server /app/src/main.c /app/src/db.c -lsqlite3 -lpthread
+root@972cf0f30065:/app#

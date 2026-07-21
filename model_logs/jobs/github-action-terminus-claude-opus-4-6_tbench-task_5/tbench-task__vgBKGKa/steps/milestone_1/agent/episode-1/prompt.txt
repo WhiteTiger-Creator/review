@@ -1,0 +1,72 @@
+New Terminal Output:
+root@78f42a19e0d4:/app# find /app -type f | head -60
+/app/Makefile
+/app/README.md
+/app/config/api.key
+/app/config/defaults.env
+/app/deps/versions.txt
+/app/docs/api_contract.md
+/app/docs/build_notes.md
+/app/docs/js_verifier_mock.md
+/app/docs/runtime_layout.md
+/app/include/common.h
+/app/include/notes.h
+/app/sql/init.sql
+/app/src/auth.c
+/app/src/auth.h
+/app/src/db.c
+/app/src/db.h
+/app/src/main.c
+/app/src/routes.c
+/app/src/routes.h
+/app/src/static.c
+/app/src/static.h
+/app/www/app.js
+/app/www/index.html
+/app/www/style.css
+root@78f42a19e0d4:/app# cat /app/docs/build_notes.md
+# Build notes
+
+The notes service links against libmicrohttpd and SQLite. Install the dev packages
+for those libraries, then run `make` from `/app` to produce `notes_server`.
+
+Web assets live under `/app/www` and are served from the HTTP root by URL path
+(for example `/style.css` and `/app.js`).
+
+Automated verifier traffic uses http://127.0.0.1:8080 as the base URL. Collection
+health checks call http://127.0.0.1:8080/api/notes. Python verifier harnesses may
+use urllib for HTTP, signal for subprocess timing, and quickjs when executing app.js.
+root@78f42a19e0d4:/app# cat /app/Makefile
+CC = gcc
+CFLAGS = -Wall -Wextra
+LDFLAGS = -lmicrohttpd -lsqlite3
+
+SOURCES = src/main.c src/routes.c
+TARGET = notes_server
+
+$(TARGET): $(SOURCES)
+        $(CC) $(CFLAGS) -o $(TARGET) $(SOURCES) $(LDFLAGS)
+
+clean:
+        rm -f $(TARGET)
+root@78f42a19e0d4:/app# ls -la /app/src/
+total 36
+drwxr-xr-x  2 root root  136 May 26 12:40 .
+drwxr-xr-x 10 root root  137 May 26 12:40 ..
+-rw-r--r--  1 root root  112 May 26 12:40 auth.c
+-rw-r--r--  1 root root  118 May 26 12:40 auth.h
+-rw-r--r--  1 root root 1598 May 26 12:40 db.c
+-rw-r--r--  1 root root  408 May 26 12:40 db.h
+-rw-r--r--  1 root root 4024 May 26 12:40 main.c
+-rw-r--r--  1 root root 3243 May 26 12:40 routes.c
+-rw-r--r--  1 root root  317 May 26 12:40 routes.h
+-rw-r--r--  1 root root  167 May 26 12:40 static.c
+-rw-r--r--  1 root root  155 May 26 12:40 static.h
+root@78f42a19e0d4:/app# ls -la /app/www/
+total 12
+drwxr-xr-x  2 root root   55 May 26 12:40 .
+drwxr-xr-x 10 root root  137 May 26 12:40 ..
+-rw-r--r--  1 root root  943 May 26 12:40 app.js
+-rw-r--r--  1 root root  643 May 26 12:40 index.html
+-rw-r--r--  1 root root 1009 May 26 12:40 style.css
+root@78f42a19e0d4:/app#

@@ -1,0 +1,41 @@
+Current Terminal Screen:
+   214          perror("socket");
+   215          return 1;
+   216      }
+   217
+   218      int one = 1;
+   219      setsockopt(g_listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+   220
+   221      struct sockaddr_in addr;
+   222      memset(&addr, 0, sizeof(addr));
+   223      addr.sin_family = AF_INET;
+   224      addr.sin_port = htons(PORT);
+   225      addr.sin_addr.s_addr = htonl(INADDR_ANY);
+   226
+   227      if (bind(g_listen_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+   228          perror("bind");
+   229          return 1;
+   230      }
+   231
+   232      if (listen(g_listen_fd, 128) != 0) {
+   233          perror("listen");
+   234          return 1;
+   235      }
+   236
+   237      printf("Server running on port %d\n", PORT);
+   238
+   239      while (!g_stop) {
+   240          int cfd = accept(g_listen_fd, NULL, NULL);
+   241          if (cfd < 0) {
+   242              if (errno == EINTR) continue;
+   243              break;
+   244          }
+   245          handle_client(cfd);
+   246          close(cfd);
+   247      }
+   248
+   249      if (g_listen_fd >= 0) close(g_listen_fd);
+   250      close_db();
+   251      return 0;
+   252  }
+root@972cf0f30065:/app#

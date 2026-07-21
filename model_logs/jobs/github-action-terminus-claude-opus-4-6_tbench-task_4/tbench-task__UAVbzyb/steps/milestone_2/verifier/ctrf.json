@@ -1,0 +1,407 @@
+{
+    "results": {
+        "tool": {
+            "name": "pytest",
+            "version": "8.4.1"
+        },
+        "summary": {
+            "tests": 43,
+            "passed": 43,
+            "failed": 0,
+            "skipped": 0,
+            "pending": 0,
+            "other": 0,
+            "start": 1779800039.3508103,
+            "stop": 1779800039.8042552
+        },
+        "tests": [
+            {
+                "name": "test_m2.py::TestMilestone2::test_api_key_file_exists",
+                "status": "passed",
+                "duration": 0.012665771999877506,
+                "start": 1779800039.4166644,
+                "stop": 1779800039.4295697,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_api_key_read_from_file",
+                "status": "passed",
+                "duration": 0.0026368840000259297,
+                "start": 1779800039.4298315,
+                "stop": 1779800039.43262,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_database_file_at_expected_path",
+                "status": "passed",
+                "duration": 0.0026213390000293657,
+                "start": 1779800039.4328318,
+                "stop": 1779800039.4355907,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_create_note_returns_201",
+                "status": "passed",
+                "duration": 0.0024853049999364885,
+                "start": 1779800039.4357975,
+                "stop": 1779800039.4384198,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_create_note_returns_id_field",
+                "status": "passed",
+                "duration": 0.0024957269999958953,
+                "start": 1779800039.438627,
+                "stop": 1779800039.4412618,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_create_note_echoes_title_and_content",
+                "status": "passed",
+                "duration": 0.0026513450001175443,
+                "start": 1779800039.441467,
+                "stop": 1779800039.444259,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_create_note_missing_title_returns_400",
+                "status": "passed",
+                "duration": 0.0007262970000283531,
+                "start": 1779800039.444469,
+                "stop": 1779800039.4453335,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_create_note_empty_body_returns_400",
+                "status": "passed",
+                "duration": 0.0007108499999048945,
+                "start": 1779800039.4455426,
+                "stop": 1779800039.4464033,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_get_all_notes_returns_array",
+                "status": "passed",
+                "duration": 0.0028988830000571397,
+                "start": 1779800039.4466095,
+                "stop": 1779800039.4496474,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_get_all_notes_includes_created_note",
+                "status": "passed",
+                "duration": 0.00281118099997002,
+                "start": 1779800039.44987,
+                "stop": 1779800039.4528198,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_get_single_note_by_id",
+                "status": "passed",
+                "duration": 0.0027582500001699373,
+                "start": 1779800039.453026,
+                "stop": 1779800039.4559238,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_get_nonexistent_note_returns_404",
+                "status": "passed",
+                "duration": 0.0006870449999496486,
+                "start": 1779800039.456132,
+                "stop": 1779800039.4569554,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_update_note_changes_fields",
+                "status": "passed",
+                "duration": 0.004919018000009601,
+                "start": 1779800039.4571717,
+                "stop": 1779800039.4622295,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_update_note_empty_title_returns_400",
+                "status": "passed",
+                "duration": 0.002918215999898166,
+                "start": 1779800039.4624374,
+                "stop": 1779800039.465496,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_update_note_missing_title_returns_400",
+                "status": "passed",
+                "duration": 0.002769444999898951,
+                "start": 1779800039.4657123,
+                "stop": 1779800039.468637,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_update_nonexistent_note_returns_404",
+                "status": "passed",
+                "duration": 0.0007181470001569323,
+                "start": 1779800039.4688475,
+                "stop": 1779800039.4697032,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_delete_note_removes_it",
+                "status": "passed",
+                "duration": 0.005597885000156566,
+                "start": 1779800039.4699218,
+                "stop": 1779800039.4756696,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_delete_nonexistent_note_returns_404",
+                "status": "passed",
+                "duration": 0.0007023460001391868,
+                "start": 1779800039.4758818,
+                "stop": 1779800039.4767222,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_api_get_response_content_type_is_json",
+                "status": "passed",
+                "duration": 0.0006758130000434903,
+                "start": 1779800039.4769306,
+                "stop": 1779800039.4777431,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_api_get_response_has_cors_header",
+                "status": "passed",
+                "duration": 0.0006942869998738388,
+                "start": 1779800039.4779513,
+                "stop": 1779800039.4787827,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_api_options_preflight_returns_cors_allowlist",
+                "status": "passed",
+                "duration": 0.0006225020000556469,
+                "start": 1779800039.479032,
+                "stop": 1779800039.479794,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_api_post_response_content_type_and_cors",
+                "status": "passed",
+                "duration": 0.002649691999863535,
+                "start": 1779800039.4800034,
+                "stop": 1779800039.482794,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_api_put_response_content_type_and_cors",
+                "status": "passed",
+                "duration": 0.004816689000108454,
+                "start": 1779800039.48303,
+                "stop": 1779800039.487989,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_api_delete_response_content_type_and_cors",
+                "status": "passed",
+                "duration": 0.004788861000065481,
+                "start": 1779800039.4881978,
+                "stop": 1779800039.4931276,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_api_get_single_response_content_type_and_cors",
+                "status": "passed",
+                "duration": 0.0028939620000301147,
+                "start": 1779800039.493337,
+                "stop": 1779800039.4963713,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_error_responses_have_json_and_cors_headers",
+                "status": "passed",
+                "duration": 0.0018839370000023337,
+                "start": 1779800039.4965775,
+                "stop": 1779800039.4985983,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_post_without_api_key_returns_401",
+                "status": "passed",
+                "duration": 0.0006616299999677722,
+                "start": 1779800039.4988077,
+                "stop": 1779800039.4996312,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_put_without_api_key_returns_401",
+                "status": "passed",
+                "duration": 0.0028960580000330083,
+                "start": 1779800039.499838,
+                "stop": 1779800039.5028737,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_delete_without_api_key_returns_401",
+                "status": "passed",
+                "duration": 0.0028290819998346706,
+                "start": 1779800039.5031111,
+                "stop": 1779800039.5060835,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_wrong_api_key_returns_401",
+                "status": "passed",
+                "duration": 0.0006516220000776229,
+                "start": 1779800039.5062897,
+                "stop": 1779800039.5071037,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_put_wrong_api_key_returns_401",
+                "status": "passed",
+                "duration": 0.002860839000049964,
+                "start": 1779800039.5073266,
+                "stop": 1779800039.5103288,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_delete_wrong_api_key_returns_401",
+                "status": "passed",
+                "duration": 0.0028007240000533784,
+                "start": 1779800039.510538,
+                "stop": 1779800039.5134814,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_get_without_api_key_succeeds",
+                "status": "passed",
+                "duration": 0.0007330109999656997,
+                "start": 1779800039.513705,
+                "stop": 1779800039.5145786,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_get_single_note_without_api_key_succeeds",
+                "status": "passed",
+                "duration": 0.002785223999921982,
+                "start": 1779800039.514791,
+                "stop": 1779800039.5177555,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_pagination_limit_returns_correct_count",
+                "status": "passed",
+                "duration": 0.011823148999951627,
+                "start": 1779800039.5179696,
+                "stop": 1779800039.5299366,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_pagination_offset_skips_notes",
+                "status": "passed",
+                "duration": 0.012285675000043739,
+                "start": 1779800039.530149,
+                "stop": 1779800039.5425925,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_pagination_x_total_count_header",
+                "status": "passed",
+                "duration": 0.012506038000083208,
+                "start": 1779800039.542819,
+                "stop": 1779800039.5554872,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_pagination_default_limit_is_50",
+                "status": "passed",
+                "duration": 0.1247108999999682,
+                "start": 1779800039.5557234,
+                "stop": 1779800039.6806376,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_pagination_max_limit_capped_at_100",
+                "status": "passed",
+                "duration": 0.037296247000085714,
+                "start": 1779800039.6809201,
+                "stop": 1779800039.7184103,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_oversized_post_body_returns_413",
+                "status": "passed",
+                "duration": 0.0010825519999571043,
+                "start": 1779800039.718687,
+                "stop": 1779800039.7199347,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_oversized_put_body_returns_413",
+                "status": "passed",
+                "duration": 0.0034157549999918047,
+                "start": 1779800039.7201684,
+                "stop": 1779800039.7237427,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_concurrent_creates_all_succeed",
+                "status": "passed",
+                "duration": 0.041268617000014274,
+                "start": 1779800039.7239635,
+                "stop": 1779800039.7654164,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_concurrent_creates_no_data_loss",
+                "status": "passed",
+                "duration": 0.038191322000102446,
+                "start": 1779800039.7656784,
+                "stop": 1779800039.804049,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            }
+        ]
+    }
+}

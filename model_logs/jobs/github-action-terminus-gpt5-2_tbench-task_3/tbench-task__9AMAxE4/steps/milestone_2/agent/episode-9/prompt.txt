@@ -1,0 +1,56 @@
+New Terminal Output:
+
+root@08d5c4164ec3:/app# pkill -f ./notes_server || true
+bash: pkill: command not found
+root@08d5c4164ec3:/app# perl -0777 -i -pe 's/static enum MHD_Result ensure_body_collected[\s\S]*?return MHD_YES;\n}\n\n/static void append_body_or_mark_oversize
+(const char *method, const char *upload_data, size_t *upload_data_size, struct connection_info *ci) {\n    if (*upload_data_size == 0) return;\n    if ((strcmp(
+method, "POST") == 0 || strcmp(method, "PUT") == 0) &&\n        ci->data_size + *upload_data_size > NOTES_MAX_BODY_BYTES) {\n        ci->data_size = NOTES_MAX_B
+ODY_BYTES + 1;\n        *upload_data_size = 0;\n        return;\n    }\n    char *nb = realloc(ci->data, ci->data_size + *upload_data_size + 1);\n    if (!nb) {
+\n        *upload_data_size = 0;\n        return;\n    }\n    ci->data = nb;\n    memcpy(ci->data + ci->data_size, upload_data, *upload_data_size);\n    ci->dat
+a_size += *upload_data_size;\n    ci->data[ci->data_size] = "\\0"[0];\n    *upload_data_size = 0;\n}\n\n/sm' /app/src/routes.c
+root@08d5c4164ec3:/app# perl -0777 -i -pe 's/\n    \/* Collect request body for POST\/PUT\.\*\/\n    if \(\(strcmp\(method, "POST"\) == 0 \|\| strcmp\(method, "
+PUT"\) == 0\)\) \{[\s\S]*?struct connection_info \*ci = \*con_cls;\n/\n    if (*con_cls == NULL) {\n        struct connection_info *ci0 = calloc(1, sizeof(struc
+t connection_info));\n        if (!ci0) return MHD_NO;\n        *con_cls = ci0;\n        return MHD_YES;\n    }\n\n    struct connection_info *ci = *con_cls;\n\
+n    if ((strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0) && *upload_data_size > 0) {\n        append_body_or_mark_oversize(method, upload_data, uplo
+ad_data_size, ci);\n        return MHD_YES;\n    }\n\n/sm' /app/src/routes.c
+root@08d5c4164ec3:/app# grep -n "append_body_or_mark_oversize\|con_cls == NULL\|upload_data_size > 0" -n /app/src/routes.c | sed -n '1,120p'
+155:static void append_body_or_mark_oversize(const char *method, const char *upload_data, size_t *upload_data_size, struct connection_info *ci) {
+220:        if (*con_cls == NULL) {
+root@08d5c4164ec3:/app# make clean && make
+rm -f notes_server
+gcc -Wall -Wextra -O2 -Iinclude -o notes_server src/main.c src/routes.c src/static.c src/db.c src/auth.c -lmicrohttpd -lsqlite3
+src/routes.c: In function ‘too_large’:
+src/routes.c:182:13: warning: Value MHD_HTTP_REQUEST_ENTITY_TOO_LARGE is deprecated, use MHD_HTTP_CONTENT_TOO_LARGE
+  182 |                      MHD_HTTP_REQUEST_ENTITY_TOO_LARGE);
+      |             ^        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/routes.c: In function ‘route_request’:
+src/routes.c:214:29: error: implicit declaration of function ‘ensure_body_collected’ [-Wimplicit-function-declaration]
+  214 |         enum MHD_Result r = ensure_body_collected(method, upload_data,
+      |                             ^~~~~~~~~~~~~~~~~~~~~
+src/routes.c: At top level:
+src/routes.c:155:13: warning: ‘append_body_or_mark_oversize’ defined but not used [-Wunused-function]
+  155 | static void append_body_or_mark_oversize(const char *method, const char *upload_data, size_t *upload_data_size, struct connection_info *ci) {
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+make: *** [Makefile:9: notes_server] Error 1
+root@08d5c4164ec3:/app# ./notes_server &
+[2] 1414
+bash: ./notes_server: No such file or directory
+root@08d5c4164ec3:/app# KEY=$(cat /app/config/api.key | tr -d ' \t\r\n')
+[2]+  Exit 127                ./notes_server
+root@08d5c4164ec3:/app# curl -si -X POST http://127.0.0.1:8080/api/notes -H "X-API-Key: $KEY" -H 'Content-Type: application/json' -d '{"title":"t1","content":"c
+1"}' | sed -n '1,40p'
+HTTP/1.1 400 Bad Request
+Date: Tue, 26 May 2026 12:46:27 GMT
+Connection: close
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+Content-Length: 23
+
+{"error":"bad request"}root@08d5c4164ec3:/app# seq 1 15 | xargs -I{} -P15 sh -c "curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/api/note
+s -H \"X-API-Key: $KEY\" -H 'Content-Type: application/json' -d '{\"title\":\"p{}\",\"content\":\"c\"}'" | sort | uniq -c
+     15 400
+root@08d5c4164ec3:/app# curl -si http://127.0.0.1:8080/api/notes | grep -i '^X-Total-Count:'
+X-Total-Count: 0
+root@08d5c4164ec3:/app#

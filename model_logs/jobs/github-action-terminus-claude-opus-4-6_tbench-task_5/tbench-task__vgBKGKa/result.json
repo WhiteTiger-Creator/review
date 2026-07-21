@@ -1,0 +1,220 @@
+{
+    "id": "fabe6538-6bd8-4a8a-acac-7d4389641eee",
+    "task_name": "tbench-task",
+    "trial_name": "tbench-task__vgBKGKa",
+    "trial_uri": "file:///root/jobs/github-action-terminus-claude-opus-4-6_tbench-task_5/tbench-task__vgBKGKa",
+    "task_id": {
+        "path": "harbor_tasks/tbench-task"
+    },
+    "source": null,
+    "task_checksum": "48b7d2e04c3beca89448d1dbd41e90160f1ac5b9dd7c9460fdd66e69035caff9",
+    "config": {
+        "task": {
+            "path": "harbor_tasks/tbench-task",
+            "git_url": null,
+            "git_commit_id": null,
+            "name": null,
+            "ref": null,
+            "overwrite": false,
+            "download_dir": null,
+            "source": null
+        },
+        "trial_name": "tbench-task__vgBKGKa",
+        "trials_dir": "jobs/github-action-terminus-claude-opus-4-6_tbench-task_5",
+        "timeout_multiplier": 1.0,
+        "agent_timeout_multiplier": null,
+        "verifier_timeout_multiplier": null,
+        "agent_setup_timeout_multiplier": null,
+        "environment_build_timeout_multiplier": null,
+        "agent": {
+            "name": "terminus-2",
+            "import_path": null,
+            "model_name": "openai/@anthropic/claude-opus-4-6",
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "kwargs": {
+                "model_info": {
+                    "max_input_tokens": 200000,
+                    "max_output_tokens": 16384
+                }
+            },
+            "env": {}
+        },
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "suppress_override_warnings": false,
+            "mounts_json": null,
+            "env": {},
+            "kwargs": {}
+        },
+        "verifier": {
+            "override_timeout_sec": null,
+            "max_timeout_sec": null,
+            "env": {},
+            "disable": false
+        },
+        "artifacts": [],
+        "job_id": "74453ced-1982-46bc-aede-7532258ef9ae"
+    },
+    "agent_info": {
+        "name": "terminus-2",
+        "version": "2.0.0",
+        "model_info": {
+            "name": "@anthropic/claude-opus-4-6",
+            "provider": "openai"
+        }
+    },
+    "agent_result": null,
+    "verifier_result": {
+        "rewards": {
+            "reward": 1.0
+        }
+    },
+    "exception_info": null,
+    "started_at": "2026-05-26T12:40:18.054583Z",
+    "finished_at": "2026-05-26T12:51:38.615384Z",
+    "environment_setup": {
+        "started_at": "2026-05-26T12:40:18.118333Z",
+        "finished_at": "2026-05-26T12:41:04.981843Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-05-26T12:41:04.981892Z",
+        "finished_at": "2026-05-26T12:41:06.749570Z"
+    },
+    "agent_execution": null,
+    "verifier": null,
+    "step_results": [
+        {
+            "step_name": "milestone_1",
+            "agent_result": {
+                "n_input_tokens": 102523,
+                "n_cache_tokens": 0,
+                "n_output_tokens": 9589,
+                "cost_usd": null,
+                "rollout_details": [],
+                "metadata": {
+                    "n_episodes": 9,
+                    "api_request_times_msec": [
+                        6999.066591262817,
+                        6127.547740936279,
+                        13205.72543144226,
+                        56298.75326156616,
+                        10283.55860710144,
+                        13251.775026321411,
+                        13024.005889892578,
+                        9596.607208251953,
+                        12040.555953979492
+                    ],
+                    "summarization_count": 0
+                }
+            },
+            "verifier_result": {
+                "rewards": {
+                    "reward": 1.0
+                }
+            },
+            "exception_info": null,
+            "agent_execution": {
+                "started_at": "2026-05-26T12:41:06.861313Z",
+                "finished_at": "2026-05-26T12:44:08.372526Z"
+            },
+            "verifier": {
+                "started_at": "2026-05-26T12:44:08.490345Z",
+                "finished_at": "2026-05-26T12:44:09.303000Z"
+            }
+        },
+        {
+            "step_name": "milestone_2",
+            "agent_result": {
+                "n_input_tokens": 387409,
+                "n_cache_tokens": 0,
+                "n_output_tokens": 18875,
+                "cost_usd": null,
+                "rollout_details": [],
+                "metadata": {
+                    "n_episodes": 18,
+                    "api_request_times_msec": [
+                        6284.069061279297,
+                        8113.077163696289,
+                        91949.58853721619,
+                        5695.383310317993,
+                        12341.970443725586,
+                        7179.936170578003,
+                        5970.215559005737,
+                        10102.283000946045,
+                        3706.568956375122,
+                        11617.908954620361,
+                        16636.83819770813,
+                        4285.479545593262,
+                        4232.774972915649,
+                        4776.128053665161,
+                        7766.608953475952,
+                        18147.58253097534,
+                        11788.132190704346,
+                        13733.57892036438
+                    ],
+                    "summarization_count": 0
+                }
+            },
+            "verifier_result": {
+                "rewards": {
+                    "reward": 1.0
+                }
+            },
+            "exception_info": null,
+            "agent_execution": {
+                "started_at": "2026-05-26T12:44:09.417979Z",
+                "finished_at": "2026-05-26T12:50:03.033394Z"
+            },
+            "verifier": {
+                "started_at": "2026-05-26T12:50:03.145464Z",
+                "finished_at": "2026-05-26T12:50:04.270935Z"
+            }
+        },
+        {
+            "step_name": "milestone_3",
+            "agent_result": {
+                "n_input_tokens": 27330,
+                "n_cache_tokens": 0,
+                "n_output_tokens": 4312,
+                "cost_usd": null,
+                "rollout_details": [],
+                "metadata": {
+                    "n_episodes": 7,
+                    "api_request_times_msec": [
+                        6951.356649398804,
+                        10321.458339691162,
+                        5640.670537948608,
+                        16735.71515083313,
+                        5135.163068771362,
+                        8792.406797409058,
+                        18652.74977684021
+                    ],
+                    "summarization_count": 0
+                }
+            },
+            "verifier_result": {
+                "rewards": {
+                    "reward": 1.0
+                }
+            },
+            "exception_info": null,
+            "agent_execution": {
+                "started_at": "2026-05-26T12:50:04.386085Z",
+                "finished_at": "2026-05-26T12:51:26.528378Z"
+            },
+            "verifier": {
+                "started_at": "2026-05-26T12:51:26.644583Z",
+                "finished_at": "2026-05-26T12:51:27.474249Z"
+            }
+        }
+    ]
+}

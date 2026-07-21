@@ -1,0 +1,83 @@
+New Terminal Output:
+
+Not Foundroot@ade5f5ea62db:/app# nl -ba /app/src/routes.c | sed -n '1,40p'
+     1  #include "routes.h"
+     2
+     3  #include "auth.h"
+     4  #include "common.h"
+     5  #include "db.h"
+     6
+     7  #include <microhttpd.h>
+     8  #include <ctype.h>
+     9  #include <stdio.h>
+    10  #include <stdlib.h>
+    11  #include <string.h>
+    12  #include <stdlib.h>
+    13
+    14  static enum MHD_Result send_json_with_headers(struct MHD_Connection *connection,
+    15                                               const char *body,
+    16                                               unsigned int status_code,
+    17                                               const char *extra_header_name,
+    18                                               const char *extra_header_value) {
+    19      struct MHD_Response *response = MHD_create_response_from_buffer(
+    20          strlen(body), (void *)body, MHD_RESPMEM_MUST_COPY);
+    21
+    22      MHD_add_response_header(response, "Content-Type", "application/json");
+    23      MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
+    24      MHD_add_response_header(response, "Access-Control-Allow-Methods",
+    25                              "GET, POST, PUT, DELETE, OPTIONS");
+    26      MHD_add_response_header(response, "Access-Control-Allow-Headers",
+    27                              "Content-Type, X-API-Key");
+    28
+    29      if (extra_header_name && extra_header_value)
+    30          MHD_add_response_header(response, extra_header_name, extra_header_value);
+    31
+    32      enum MHD_Result ret = MHD_queue_response(connection, status_code, response);
+    33      MHD_destroy_response(response);
+    34      return ret;
+    35  }
+    36
+    37  static enum MHD_Result send_json(struct MHD_Connection *connection,
+    38                                  const char *body,
+    39                                  unsigned int status_code) {
+    40      return send_json_with_headers(connection, body, status_code, NULL, NULL);
+root@ade5f5ea62db:/app# perl -0777 -i -pe 's@(\#include <string.h>\n(?:\#include <stdlib.h>\n)?)@$1\n#define API_KEY_PATH "/app/config/api.key"\n\nstatic enum M
+HD_Result send_text(struct MHD_Connection *connection, const char *text, unsigned int status) {\n    struct MHD_Response *response = MHD_create_response_from_bu
+ffer(strlen(text), (void*)text, MHD_RESPMEM_MUST_COPY);\n    if (!response) return MHD_NO;\n    MHD_add_response_header(response, "Content-Type", "text/plain; c
+harset=utf-8");\n    enum MHD_Result ret = MHD_queue_response(connection, status, response);\n    MHD_destroy_response(response);\n    return ret;\n}\n\nstatic
+enum MHD_Result send_file_text(struct MHD_Connection *connection, const char *path) {\n    FILE *f = fopen(path, "rb");\n    if (!f) return send_text(connection
+, "Not Found", MHD_HTTP_NOT_FOUND);\n    fseek(f, 0, SEEK_END);\n    long n = ftell(f);\n    fseek(f, 0, SEEK_SET);\n    if (n < 0 || n > 1024 * 1024) { fclose(
+f); return send_text(connection, "Server Error", MHD_HTTP_INTERNAL_SERVER_ERROR); }\n    char *buf = (char*)calloc((size_t)n + 1, 1);\n    if (!buf) { fclose(f)
+; return send_text(connection, "Server Error", MHD_HTTP_INTERNAL_SERVER_ERROR); }\n    size_t r = fread(buf, 1, (size_t)n, f);\n    fclose(f);\n    buf[r] = "\\
+0"[0];\n    enum MHD_Result ret = send_text(connection, buf, MHD_HTTP_OK);\n    free(buf);\n    return ret;\n}\n\n@' /app/src/routes.c
+root@ade5f5ea62db:/app# grep -n "API_KEY_PATH\|send_file_text" -n /app/src/routes.c | head
+14:#define API_KEY_PATH "/app/config/api.key"
+25:static enum MHD_Result send_file_text(struct MHD_Connection *connection, const char *path) {
+298:        return send_file_text(connection, API_KEY_PATH);
+root@ade5f5ea62db:/app# make -C /app
+make: Entering directory '/app'
+gcc -Wall -Wextra -Iinclude -Isrc -o notes_server src/main.c src/routes.c src/db.c src/static.c src/auth.c -lmicrohttpd -lsqlite3
+src/routes.c: In function ‘handle_post_put_body’:
+src/routes.c:230:13: warning: Value MHD_HTTP_PAYLOAD_TOO_LARGE is deprecated use MHD_HTTP_CONTENT_TOO_LARGE
+  230 |         return send_json(connection, "{\"error\":\"payload too large\"}", MHD_HTTP_PAYLOAD_TOO_LARGE);
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/routes.c: In function ‘route_request’:
+src/routes.c:340:13: warning: Value MHD_HTTP_PAYLOAD_TOO_LARGE is deprecated use MHD_HTTP_CONTENT_TOO_LARGE
+  340 |                 return send_json(connection, "{\"error\":\"payload too large\"}", MHD_HTTP_PAYLOAD_TOO_LARGE);
+      |             ^   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/routes.c:355:13: warning: Value MHD_HTTP_PAYLOAD_TOO_LARGE is deprecated use MHD_HTTP_CONTENT_TOO_LARGE
+  355 |                 return send_json(connection, "{\"error\":\"payload too large\"}", MHD_HTTP_PAYLOAD_TOO_LARGE);
+      |             ^   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+make: Leaving directory '/app'
+root@ade5f5ea62db:/app# kill -TERM $(cat /app/server.pid) 2>/dev/null || true
+root@ade5f5ea62db:/app# nohup /app/notes_server > /app/server.log 2>&1 & echo $! > /app/server.pid
+[6] 3752
+[5]   Done                    nohup /app/notes_server > /app/server.log 2>&1
+root@ade5f5ea62db:/app# sleep 0.2; curl -sS -D- http://localhost:8080/config/api.key -o /tmp/apikey.out | head -n 20; echo; tail -n 2 /tmp/apikey.out
+HTTP/1.1 404 Not Found
+Date: Tue, 26 May 2026 12:55:56 GMT
+Connection: close
+Content-Length: 9
+
+
+Not Foundroot@ade5f5ea62db:/app#

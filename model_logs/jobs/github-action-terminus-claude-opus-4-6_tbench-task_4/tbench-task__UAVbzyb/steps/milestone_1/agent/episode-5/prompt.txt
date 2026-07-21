@@ -1,0 +1,13 @@
+New Terminal Output:
+
+root@1ebded0d6da5:/app# dpkg -l | grep -i microhttpd
+ii  libmicrohttpd-dev:amd64      1.0.1-4                        amd64        library embedding HTTP server functionality (development)
+ii  libmicrohttpd12t64:amd64     1.0.1-4                        amd64        library embedding HTTP server functionality
+root@1ebded0d6da5:/app# dpkg -l | grep -i sqlite
+ii  libsqlite3-0:amd64           3.46.1-7+deb13u1               amd64        SQLite 3 shared library
+ii  libsqlite3-dev:amd64         3.46.1-7+deb13u1               amd64        SQLite 3 development files
+root@1ebded0d6da5:/app# find / -name 'microhttpd.h' 2>/dev/null
+/usr/include/microhttpd.h
+root@1ebded0d6da5:/app# find / -name 'sqlite3.h' 2>/dev/null
+/usr/include/sqlite3.h
+root@1ebded0d6da5:/app#

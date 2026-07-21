@@ -1,0 +1,47 @@
+{
+  "analysis": "Static file serving is implemented in src/main.c, not via src/static.c. main.c already blocks traversal by checking for substring \"..\" or \"%2e%2e\" (case-insensitive) and returns 403. However our curl tests for /../README.md and /%2e%2e/README.md returned 404, meaning libmicrohttpd likely normalizes the URL path before passing it to the callback (removing /../), and it may also decode/normalize %2e%2e in a way that avoids our simple checks. We need to inspect the raw, unescaped URL using MHD_get_connection_values with MHD_GET_ARGUMENT_KIND? Not; better: use MHD_lookup_connection_value for MHD_HEADER_KIND? The robust fix: parse the original request target is not exposed; instead, we can enforce a post-normalization safety check by resolving the final filesystem path with realpath() and ensuring it stays under WWW_DIR. If realpath(filepath) does not begin with realpath(WWW_DIR)+\"/\", return 403. This will catch any traversal even if normalized. Also ensure missing files return 404 (not MHD_NO leading to 404 already).",
+  "plan": "1) Modify serve_static_file in src/main.c to build the candidate path, then use realpath() on both WWW_DIR and candidate path. 2) If realpath(candidate) succeeds but is outside www root, return 403. If candidate doesn't exist, return MHD_NO (so caller returns 404). 3) Also treat any URL containing \"..\" or encoded dot-dot as immediate 403 as a fast-path. 4) Rebuild and retest traversal with variants that currently normalize away, including /a/../README.md and /%2e%2e/README.md, expecting 403.",
+  "commands": [
+    {
+      "keystrokes": "grep -n \"serve_static_file\" -n src/main.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's@#include <sys/stat.h>@#include <sys/stat.h>\\n#include <limits.h>\\n#include <errno.h>@' src/main.c\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's@\\nstatic enum MHD_Result serve_static_file\\(struct MHD_Connection \\*connection,\\n    const char \\*url\\) \\{\\n    if \\(strstr\\(url, \"\\\\.\\\\.\"\\) != NULL \\|\\| url_contains_encoded_dotdot\\(url\\)\\) \\{\\n        struct MHD_Response \\*r = MHD_create_response_from_buffer\\(\\n            9, \\(void \\*\\)\"Forbidden\", MHD_RESPMEM_PERSISTENT\\);\\n        enum MHD_Result ret = MHD_queue_response\\(connection, MHD_HTTP_FORBIDDEN, r\\);\\n        MHD_destroy_response\\(r\\);\\n        return ret;\\n    \\}\\n\\n    char filepath\\[512\\];\\n    const char \\*path = strcmp\\(url, \"/\"\\) == 0 \\? \"/index\\\\.html\" : url;\\n    snprintf\\(filepath, sizeof\\(filepath\\), \"%s%s\", WWW_DIR, path\\);\\n\\n    struct stat st;\\n    if \\(stat\\(filepath, &st\\) != 0\\) return MHD_NO;\\n@\\nstatic enum MHD_Result serve_static_file(struct MHD_Connection *connection,\\n    const char *url) {\\n    // Fast-path: obvious traversal attempts (including encoded)\\n    if (strstr(url, \"..\") != NULL || url_contains_encoded_dotdot(url)) {\\n        struct MHD_Response *r = MHD_create_response_from_buffer(\\n            9, (void *)\"Forbidden\", MHD_RESPMEM_PERSISTENT);\\n        enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_FORBIDDEN, r);\\n        MHD_destroy_response(r);\\n        return ret;\\n    }\\n\\n    char filepath[512];\\n    const char *path = strcmp(url, \"/\") == 0 ? \"/index.html\" : url;\\n    snprintf(filepath, sizeof(filepath), \"%s%s\", WWW_DIR, path);\\n\\n    struct stat st;\\n    if (stat(filepath, &st) != 0) return MHD_NO;\\n\\n    // Robust containment check: resolve real paths and ensure we stay under WWW_DIR\\n    char www_real[PATH_MAX];\\n    char file_real[PATH_MAX];\\n    if (!realpath(WWW_DIR, www_real)) {\\n        // misconfiguration; don\\x27t leak filesystem\\n        struct MHD_Response *r = MHD_create_response_from_buffer(\\n            21, (void *)\"Internal Server Error\", MHD_RESPMEM_PERSISTENT);\\n        enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_INTERNAL_SERVER_ERROR, r);\\n        MHD_destroy_response(r);\\n        return ret;\\n    }\\n    if (!realpath(filepath, file_real)) {\\n        // should not happen after stat, but treat as not found\\n        return MHD_NO;\\n    }\\n    size_t rootlen = strlen(www_real);\\n    if (!(strncmp(file_real, www_real, rootlen) == 0 &&\\n          (file_real[rootlen] == \\/0 || file_real[rootlen] == \\'/\\'))) {\\n        struct MHD_Response *r = MHD_create_response_from_buffer(\\n            9, (void *)\"Forbidden\", MHD_RESPMEM_PERSISTENT);\\n        enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_FORBIDDEN, r);\\n        MHD_destroy_response(r);\\n        return ret;\\n    }\\n@ms' src/main.c\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "make -j$(nproc)\n",
+      "duration": 10.0
+    },
+    {
+      "keystrokes": "./notes_server >server.log 2>&1 & echo $! > server.pid\n",
+      "duration": 0.2
+    },
+    {
+      "keystrokes": "curl -si http://127.0.0.1:8080/../README.md | head -n 20\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -si 'http://127.0.0.1:8080/%2e%2e/README.md' | head -n 20\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -si http://127.0.0.1:8080/a/../README.md | head -n 20\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -si http://127.0.0.1:8080/ | head -n 5\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "kill $(cat server.pid) && rm -f server.pid\n",
+      "duration": 0.2
+    }
+  ],
+  "task_complete": false
+}

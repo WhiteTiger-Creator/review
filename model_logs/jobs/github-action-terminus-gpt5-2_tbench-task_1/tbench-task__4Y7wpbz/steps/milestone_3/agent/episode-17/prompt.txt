@@ -1,0 +1,14 @@
+New Terminal Output:
+
+
+Not Foundroot@ade5f5ea62db:/app# ls -la /app/src/routes.c
+-rw-r--r-- 1 root root 0 May 26 12:56 /app/src/routes.c
+root@ade5f5ea62db:/app# head -n 80 /app/src/routes.c
+root@ade5f5ea62db:/app# tail -n 80 /app/src/routes.c
+root@ade5f5ea62db:/app# grep -RIn "route_request" /app/src | head -n 50
+/app/src/main.c:94:        return route_request(connection, url, method, upload_data,
+/app/src/routes.h:12:enum MHD_Result route_request(struct MHD_Connection *connection,
+root@ade5f5ea62db:/app# find /app -maxdepth 3 -type f -name 'routes.c*' -o -name '*routes*' | sed -n '1,200p'
+/app/src/routes.c
+/app/src/routes.h
+root@ade5f5ea62db:/app#

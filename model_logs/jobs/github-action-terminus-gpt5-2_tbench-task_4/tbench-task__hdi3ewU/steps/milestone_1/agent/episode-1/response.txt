@@ -1,0 +1,31 @@
+{
+  "analysis": "Repo has full C sources (src/db.c, src/static.c, etc.) but Makefile only links src/main.c and src/routes.c, causing undefined references to init_db/close_db and note query functions. Build fails and no notes_server is produced. Next step is to fix the build recipe to compile/link all required translation units (db, static, auth, etc.) and then rebuild to produce an ELF notes_server.",
+  "plan": "1) Inspect the current Makefile and relevant headers to identify required objects. 2) Update Makefile to compile all needed src/*.c into objects and link them with -lmicrohttpd -lsqlite3. 3) Rebuild and confirm notes_server exists and is an ELF. After that, run the server and curl endpoints to validate static serving and GET /api/notes behavior/security.",
+  "commands": [
+    {
+      "keystrokes": "sed -n '1,200p' Makefile\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "ls -la src include\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "apply_patch<<'PATCH'\n*** Begin Patch\n*** Update File: Makefile\n@@\n-notes_server: src/main.c src/routes.c\n-\tgcc -Wall -Wextra -o notes_server src/main.c src/routes.c -lmicrohttpd -lsqlite3\n+CC ?= gcc\n+CFLAGS ?= -O2\n+WARNFLAGS ?= -Wall -Wextra\n+CPPFLAGS ?= -Iinclude\n+\n+SRC := $(wildcard src/*.c)\n+OBJ := $(SRC:.c=.o)\n+\n+LDLIBS := -lmicrohttpd -lsqlite3\n+\n+notes_server: $(OBJ)\n+\t$(CC) $(WARNFLAGS) $(CFLAGS) -o $@ $(OBJ) $(LDLIBS)\n+\n+%.o: %.c\n+\t$(CC) $(WARNFLAGS) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<\n \n clean:\n-\trm -f notes_server\n+\trm -f notes_server $(OBJ)\n*** End Patch\nPATCH\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "make clean\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "make -j$(nproc)\n",
+      "duration": 10.0
+    },
+    {
+      "keystrokes": "ls -la notes_server && file notes_server\n",
+      "duration": 0.5
+    }
+  ],
+  "task_complete": false
+}

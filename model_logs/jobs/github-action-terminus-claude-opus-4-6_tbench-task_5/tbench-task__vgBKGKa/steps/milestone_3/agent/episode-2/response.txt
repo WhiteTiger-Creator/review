@@ -1,0 +1,10 @@
+{
+  "analysis": "The current app.js points to http://localhost:9090/api/notes (wrong - should be /api/notes for same-origin), doesn't send API key, doesn't have edit/delete buttons, and doesn't handle all the requirements. I need to rewrite it completely.",
+  "plan": "1. Read the full current app.js\n2. Rewrite app.js with all required functionality:\n   - Use /api/notes as API base\n   - Load list on script run\n   - Edit and delete buttons with edit-btn and delete-btn classes\n   - Send API key and Content-Type on POST/PUT/DELETE only\n   - Clear form and reset editing state after create/update\n   - Use getAttribute instead of dataset/classList\n   - Per-button click listeners\n3. Verify server is serving it correctly",
+  "commands": [
+    {
+      "keystrokes": "cat /app/www/app.js\n",
+      "duration": 0.5
+    }
+  ]
+}

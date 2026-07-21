@@ -1,0 +1,43 @@
+{
+  "analysis": "apply_patch is not available in this environment, so we must edit using sed/perl/heredoc. Also, /app/src/static.c is a stub unrelated to the actual static serving; main.c uses send_file(fd, fs_path) directly (not serve_static). So we need to patch main.c in-place: allow HEAD, and for HEAD respond with headers only (either modify send_file to accept a flag or branch before calling send_file). We should inspect send_file implementation and adjust to optionally skip body on HEAD.",
+  "plan": "1) Locate send_file() in main.c and see how it writes headers/body. 2) Implement HEAD support by: (a) allowing method HEAD in the static-method gate; (b) adding an is_head flag; (c) if is_head, send the same headers as send_file would but not the file contents. Easiest is to modify send_file to take a parameter (head_only) and conditionally not write file bytes. 3) Patch prototypes/calls accordingly (likely only one call site). 4) Rebuild with make. 5) Restart server and confirm curl -I /app.js is no longer 405.",
+  "commands": [
+    {
+      "keystrokes": "grep -n \"static serving\" -n /app/src/main.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '560,700p' /app/src/main.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "grep -n \"static void send_file\\|send_file\\(\" /app/src/main.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,140p' /app/src/main.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "perl -i -pe 's/\\bstatic void send_file\\(int fd, const char \\*path\\)/static void send_file(int fd, const char *path, int head_only)/' /app/src/main.c\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "perl -i -pe 's/\\bsend_file\\(fd, fs_path\\);/send_file(fd, fs_path, is_head);/' /app/src/main.c\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/(static void send_file\\(int fd, const char \\*path, int head_only\\) \\{)/$1\\n    \\(void\\)head_only;\\n/s' /app/src/main.c\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "grep -n \"send_file(int fd\" -n /app/src/main.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "grep -n \"head_only\" /app/src/main.c | head -n 50\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

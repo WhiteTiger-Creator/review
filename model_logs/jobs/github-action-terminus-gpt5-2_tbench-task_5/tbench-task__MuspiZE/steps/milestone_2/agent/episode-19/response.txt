@@ -1,0 +1,19 @@
+{
+  "analysis": "The parallel POST burst now yields \"Empty reply from server\", indicating the server is likely crashing or aborting during POST handling. Also we didn’t see the single POST test output in the capture, so it may also be failing. The xargs command shows the JSON got line-wrapped (bulk{\\n}) in the terminal, which may be just display wrapping but could also be sending invalid JSON if a newline is actually included. Regardless, empty reply suggests a segfault/abort in server code, likely in routes.c/body handling or db.c JSON building. We need to check if notes_server is still running, inspect dmesg/log output (if any), and reproduce with a single POST. Then fix the crash. Common culprit: using *con_cls allocation in routes.c but main.c request_completed frees it? Need to confirm main.c request_completed expects struct connection_info from routes.h and frees it; if our con_cls allocation mismatches, could crash. Also could be DB path concurrency, but less likely. Let's inspect /app/src/main.c and routes.h to confirm struct definition and request_completed.",
+  "plan": "1) Check if server process is alive; if crashed, restart in foreground to see stderr. 2) Re-run single POST with simple title to reproduce. 3) Inspect main.c request_completed and how it frees con_cls; ensure it matches our allocation. 4) If crash persists, run under gdb or use core dump/backtrace if available. 5) Fix: likely double-free or use-after-free, or improper con_cls handling with first-call return MHD_YES causing main.c to treat request as unhandled. Adjust handler to follow MHD docs: when *con_cls is set first time, return MHD_YES; but must not respond until upload finished. We'll also ensure we don't return response during upload chunks and don't access ci after response. 6) Fix the parallel test command to avoid line breaks by using printf.",
+  "commands": [
+    {
+      "keystrokes": "ps -p $(cat /tmp/notes_server.pid) -o pid,cmd || echo 'server not running'\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "kill $(cat /tmp/notes_server.pid) 2>/dev/null || true\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "./notes_server\n",
+      "duration": 0.2
+    }
+  ],
+  "task_complete": false
+}

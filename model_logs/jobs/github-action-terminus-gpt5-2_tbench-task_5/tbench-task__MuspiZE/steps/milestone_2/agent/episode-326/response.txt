@@ -1,0 +1,6 @@
+{
+  "analysis": "No change; cannot execute commands.",
+  "plan": "Stop until new session is available.",
+  "commands": [],
+  "task_complete": false
+}

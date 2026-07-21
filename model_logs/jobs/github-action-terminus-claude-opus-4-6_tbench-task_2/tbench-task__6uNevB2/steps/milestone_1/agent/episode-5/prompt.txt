@@ -1,0 +1,81 @@
+New Terminal Output:
+
+root@10c43992d5dc:/app# cat -n /app/src/routes.c
+     1  #include "routes.h"
+     2  #include "db.h"
+     3  #include <microhttpd.h>
+     4  #include <stdio.h>
+     5  #include <stdlib.h>
+     6  #include <string.h>
+     7
+     8  static enum MHD_Result send_json(struct MHD_Connection *connection,
+     9                                    const char *body, unsigned int status_code) {
+    10      struct MHD_Response *response = MHD_create_response_from_buffer(
+    11          strlen(body), (void *)body, MHD_RESPMEM_MUST_COPY);
+    12      MHD_add_response_header(response, "Content-Type", "application/json");
+    13      MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
+    14      MHD_add_response_header(response, "Access-Control-Allow-Methods",
+    15                              "GET, POST, PUT, DELETE, OPTIONS");
+    16      MHD_add_response_header(response, "Access-Control-Allow-Headers",
+    17                              "Content-Type, X-API-Key");
+    18      enum MHD_Result ret = MHD_queue_response(connection, status_code, response);
+    19      MHD_destroy_response(response);
+    20      return ret;
+    21  }
+    22
+    23  static enum MHD_Result send_json_total(struct MHD_Connection *connection,
+    24                                         const char *body, unsigned int status_code,
+    25                                         int total) {
+    26      struct MHD_Response *response = MHD_create_response_from_buffer(
+    27          strlen(body), (void *)body, MHD_RESPMEM_MUST_COPY);
+    28      MHD_add_response_header(response, "Content-Type", "application/json");
+    29      MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
+    30      MHD_add_response_header(response, "Access-Control-Allow-Methods",
+    31                              "GET, POST, PUT, DELETE, OPTIONS");
+    32      MHD_add_response_header(response, "Access-Control-Allow-Headers",
+    33                              "Content-Type, X-API-Key");
+    34      char count_str[32];
+    35      snprintf(count_str, sizeof(count_str), "%d", total);
+    36      MHD_add_response_header(response, "X-Total-Count", count_str);
+    37      enum MHD_Result ret = MHD_queue_response(connection, status_code, response);
+    38      MHD_destroy_response(response);
+    39      return ret;
+    40  }
+    41
+    42  static void request_completed(void *cls, struct MHD_Connection *connection,
+    43                                void **con_cls, enum MHD_RequestTerminationCode toe) {
+    44      (void)cls;
+    45      (void)connection;
+    46      (void)toe;
+    47      if (con_cls && *con_cls) {
+    48          struct connection_info *ci = *con_cls;
+    49          if (ci->data)
+    50              free(ci->data);
+    51          free(ci);
+    52          *con_cls = NULL;
+    53      }
+    54  }
+    55
+    56  enum MHD_Result route_request(struct MHD_Connection *connection, const char *url,
+    57                                const char *method, const char *upload_data,
+    58                                size_t *upload_data_size, void **con_cls) {
+    59      (void)upload_data;
+    60      (void)upload_data_size;
+    61      (void)con_cls;
+    62
+    63      if (strcmp(method, "OPTIONS") == 0)
+    64          return send_json(connection, "", MHD_HTTP_OK);
+    65
+    66      if (strcmp(url, "/api/notes") == 0 && strcmp(method, "GET") == 0) {
+    67          int total = get_total_notes_count();
+    68          char *json = get_notes_paginated_json(50, 0);
+    69          if (!json)
+    70              return send_json_total(connection, "[]", MHD_HTTP_OK, total);
+    71          enum MHD_Result r = send_json_total(connection, json, MHD_HTTP_OK, total);
+    72          free(json);
+    73          return r;
+    74      }
+    75
+    76      return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+    77  }
+root@10c43992d5dc:/app#

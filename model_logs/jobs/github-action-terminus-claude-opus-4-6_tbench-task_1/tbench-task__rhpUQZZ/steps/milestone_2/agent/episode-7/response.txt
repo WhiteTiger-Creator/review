@@ -1,0 +1,30 @@
+{
+  "analysis": "All the core API features are working correctly:\n- POST creates notes with 201\n- GET lists/fetches notes with proper JSON\n- PUT updates notes, validates title, returns 404 for missing\n- DELETE works correctly with proper responses\n- OPTIONS preflight returns CORS headers\n- X-Total-Count header present on collection GET\n- Auth enforcement works (401 for missing/wrong key)\n- Title validation works (400 for empty)\n- Static files still served\n\nNow I need to test pagination (limit/offset) and concurrent writes.",
+  "plan": "Test pagination params and run a concurrent write stress test to ensure no rows are dropped.",
+  "commands": [
+    {
+      "keystrokes": "curl -s -D- 'http://localhost:8080/api/notes?limit=1&offset=0' 2>&1 | grep -E '(X-Total|\\[)'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s 'http://localhost:8080/api/notes?limit=999' | python3 -c \"import sys,json; print(len(json.load(sys.stdin)))\"\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "pkill -f notes_server; sleep 0.5; rm -f /app/data/notes.db; /app/notes_server &\n",
+      "duration": 2.0
+    },
+    {
+      "keystrokes": "for i in $(seq 1 15); do curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d \"{\\\"title\\\":\\\"Note $i\\\",\\\"content\\\":\\\"Content $i\\\"}\" & done; wait\n",
+      "duration": 5.0
+    },
+    {
+      "keystrokes": "curl -s http://localhost:8080/api/notes?limit=100 | python3 -c \"import sys,json; data=json.load(sys.stdin); print(f'Count: {len(data)}')\"\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s -D- 'http://localhost:8080/api/notes?limit=100' 2>&1 | grep X-Total-Count\n",
+      "duration": 1.0
+    }
+  ]
+}

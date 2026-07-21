@@ -1,0 +1,41 @@
+Current Terminal Screen:
+> PATCH
+bash: apply_patch: command not found
+root@27e807e19559:/app# apply_patch<<'PATCH'
+> *** Begin Patch
+> *** Update File: src/routes.c
+> @@
+>  static enum MHD_Result send_json_total(struct MHD_Connection *connection,
+>                                         const char *body, unsigned int status_code,
+>                                         int total) {
+> -    struct MHD_Response *response = MHD_create_response_from_buffer(
+> -        strlen(body), (void *)body, MHD_RESPMEM_MUST_COPY);
+> -    MHD_add_response_header(response, "Content-Type", "application/json");
+> -    MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
+> -    MHD_add_response_header(response, "Access-Control-Allow-Methods",
+> -                            "GET, POST, PUT, DELETE, OPTIONS");
+> -    MHD_add_response_header(response, "Access-Control-Allow-Headers",
+> -                            "Content-Type, X-API-Key");
+> -    char count_str[32];
+> -    snprintf(count_str, sizeof(count_str), "%d", total);
+> -    MHD_add_response_header(response, "X-Total-Count", count_str);
+> -    enum MHD_Result ret = MHD_queue_response(connection, status_code, response);
+> -    MHD_destroy_response(response);
+> -    return ret;
+> +    return send_json_with_total_opt(connection, body, status_code, 1, total);
+>  }
+> *** End Patch
+> PATCH
+bash: apply_patch: command not found
+root@27e807e19559:/app# make clean && make
+rm -f notes_server src/auth.o src/db.o src/main.o src/routes.o src/static.o
+cc -Wall -Wextra -O2 -Iinclude -c -o src/auth.o src/auth.c
+cc -Wall -Wextra -O2 -Iinclude -c -o src/db.o src/db.c
+cc -Wall -Wextra -O2 -Iinclude -c -o src/main.o src/main.c
+cc -Wall -Wextra -O2 -Iinclude -c -o src/routes.o src/routes.c
+src/routes.c:42:13: warning: ‘request_completed’ defined but not used [-Wunused-function]
+   42 | static void request_completed(void *cls, struct MHD_Connection *connection,
+      |             ^~~~~~~~~~~~~~~~~
+cc -Wall -Wextra -O2 -Iinclude -c -o src/static.o src/static.c
+cc -Wall -Wextra -O2 -o notes_server src/auth.o src/db.o src/main.o src/routes.o src/static.o -lmicrohttpd -lsqlite3
+root@27e807e19559:/app#

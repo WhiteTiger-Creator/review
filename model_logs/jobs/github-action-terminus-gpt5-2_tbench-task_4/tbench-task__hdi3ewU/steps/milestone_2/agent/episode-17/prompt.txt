@@ -1,0 +1,41 @@
+Current Terminal Screen:
+X-Total-Count: 7
+Content-Length: 280
+
+[{"id":1,"title":"t1","content":"c1"},{"id":2,"title":"t1","content":"c1"},{"id":3,"title":"t_ok","content":"c_ok"},{"id":4,"title":"t_ok","content":"c_ok"},{"i
+d":5,"title":"t_ok","content":"c_ok"},{"id":6,"title":"t_ok","content":"c_ok"},{"id":7,"title":"t_ok","content":"c_ok"}]root@27e807e19559:/app# command -v netst
+at >/dev/null && netstat -tulpn | grep ':8080' || true
+root@27e807e19559:/app# command -v lsof >/dev/null && lsof -iTCP:8080 -sTCP:LISTEN -n -P || true
+root@27e807e19559:/app# command -v fuser >/dev/null && fuser -n tcp 8080 -v || true
+root@27e807e19559:/app# command -v fuser >/dev/null && fuser -k 8080/tcp || true
+root@27e807e19559:/app# ps aux | grep notes_server | grep -v grep || true
+bash: ps: command not found
+root@27e807e19559:/app# ./notes_server >server.log 2>&1 &
+[2] 2359
+root@27e807e19559:/app# sleep 0.2; tail -n +1 server.log | sed -n '1,40p'
+[2]+  Exit 1                  ./notes_server > server.log 2>&1
+Failed to start server: Bad file descriptor
+root@27e807e19559:/app# grep -n "MHD_start_daemon" -n src/main.c
+187:    daemon_handle = MHD_start_daemon(MHD_USE_THREAD_PER_CONNECTION,
+root@27e807e19559:/app# sed -i 's/MHD_USE_THREAD_PER_CONNECTION/0/' src/main.c
+root@27e807e19559:/app# make clean && make
+rm -f notes_server src/auth.o src/db.o src/main.o src/routes.o src/static.o
+cc -Wall -Wextra -O2 -Iinclude -c -o src/auth.o src/auth.c
+cc -Wall -Wextra -O2 -Iinclude -c -o src/db.o src/db.c
+cc -Wall -Wextra -O2 -Iinclude -c -o src/main.o src/main.c
+src/main.c:149:13: warning: ‘request_completed_cb’ defined but not used [-Wunused-function]
+  149 | static void request_completed_cb(void *cls, struct MHD_Connection *connection,
+      |             ^~~~~~~~~~~~~~~~~~~~
+cc -Wall -Wextra -O2 -Iinclude -c -o src/routes.o src/routes.c
+src/routes.c: In function ‘route_request’:
+src/routes.c:289:13: warning: Value MHD_HTTP_PAYLOAD_TOO_LARGE is deprecated use MHD_HTTP_CONTENT_TOO_LARGE
+  289 |         return send_json(connection, "{\"error\":\"payload too large\"}", MHD_HTTP_PAYLOAD_TOO_LARGE);
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+cc -Wall -Wextra -O2 -Iinclude -c -o src/static.o src/static.c
+cc -Wall -Wextra -O2 -o notes_server src/auth.o src/db.o src/main.o src/routes.o src/static.o -lmicrohttpd -lsqlite3
+root@27e807e19559:/app# ./notes_server >server.log 2>&1 &
+[2] 2428
+root@27e807e19559:/app# sleep 0.2; cat server.log
+[2]+  Exit 1                  ./notes_server > server.log 2>&1
+Failed to start server: Bad file descriptor
+root@27e807e19559:/app#

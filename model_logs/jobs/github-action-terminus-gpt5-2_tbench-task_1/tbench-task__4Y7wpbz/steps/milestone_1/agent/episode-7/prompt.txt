@@ -1,0 +1,157 @@
+Current terminal state:
+New Terminal Output:
+
+root@ade5f5ea62db:/app# nl -ba src/main.c | sed -n '1,140p'
+     1  #include <microhttpd.h>
+     2  #include <stdio.h>
+     3  #include <string.h>
+     4  #include <stdlib.h>
+     5  #include <signal.h>
+     6  #include <sys/stat.h>
+     7  #include <strings.h>
+     8  #include "routes.h"
+     9  #include "db.h"
+    10
+    11  #define PORT 8080
+    12  #define WWW_DIR "/app/www"
+    13
+    14  static struct MHD_Daemon *daemon_handle = NULL;
+    15
+    16  static void handle_signal(int sig) {
+    17      (void)sig;
+    18      if (daemon_handle) MHD_stop_daemon(daemon_handle);
+    19      close_db();
+    20      exit(0);
+    21  }
+    22
+    23  static const char *get_content_type(const char *path) {
+    24      const char *ext = strrchr(path, '.');
+    25      if (!ext) return "application/octet-stream";
+    26      if (strcmp(ext, ".html") == 0) return "text/html";
+    27      if (strcmp(ext, ".css") == 0) return "text/css";
+    28      if (strcmp(ext, ".js") == 0) return "application/javascript";
+    29      return "application/octet-stream";
+    30  }
+    31
+    32  static int url_contains_encoded_dotdot(const char *url) {
+    33      const char *p = url;
+    34      while (*p) {
+    35          if (strncasecmp(p, "%2e%2e", 6) == 0)
+    36              return 1;
+    37          p++;
+    38      }
+    39      return 0;
+    40  }
+    41
+    42  static enum MHD_Result serve_static_file(struct MHD_Connection *connection,
+    43      const char *url) {
+    44      if (strstr(url, "..") != NULL || url_contains_encoded_dotdot(url)) {
+    45          struct MHD_Response *r = MHD_create_response_from_buffer(
+    46              9, (void *)"Forbidden", MHD_RESPMEM_PERSISTENT);
+    47          enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_FORBIDDEN, r);
+    48          MHD_destroy_response(r);
+    49          return ret;
+    50      }
+    51
+    52      char filepath[512];
+    53      const char *path = strcmp(url, "/") == 0 ? "/index.html" : url;
+    54      snprintf(filepath, sizeof(filepath), "%s%s", WWW_DIR, path);
+    55
+    56      struct stat st;
+    57      if (stat(filepath, &st) != 0) return MHD_NO;
+    58
+    59      FILE *f = fopen(filepath, "rb");
+    60      if (!f) return MHD_NO;
+    61
+    62      char *buf = malloc(st.st_size);
+    63      fread(buf, 1, st.st_size, f);
+    64      fclose(f);
+    65
+    66      struct MHD_Response *response = MHD_create_response_from_buffer(
+    67          st.st_size, buf, MHD_RESPMEM_MUST_FREE);
+    68      MHD_add_response_header(response, "Content-Type", get_content_type(filepath));
+    69      enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
+    70      MHD_destroy_response(response);
+    71      return ret;
+    72  }
+    73
+    74  static void request_completed(void *cls, struct MHD_Connection *connection,
+    75      void **con_cls, enum MHD_RequestTerminationCode toe) {
+    76      (void)cls; (void)connection; (void)toe;
+    77      if (con_cls && *con_cls) {
+    78          struct connection_info *ci = *con_cls;
+    79          if (ci->data) free(ci->data);
+    80          free(ci);
+    81          *con_cls = NULL;
+    82      }
+    83  }
+    84
+    85  static enum MHD_Result handle_request(void *cls,
+    86      struct MHD_Connection *connection,
+    87      const char *url, const char *method,
+    88      const char *version,
+    89      const char *upload_data, size_t *upload_data_size,
+    90      void **con_cls) {
+    91      (void)cls; (void)version;
+    92
+    93      if (strncmp(url, "/api/", 5) == 0) {
+    94          return route_request(connection, url, method, upload_data,
+    95                               upload_data_size, con_cls);
+    96      }
+    97
+    98      if (strcmp(method, "GET") == 0) {
+    99          enum MHD_Result ret = serve_static_file(connection, url);
+   100          if (ret == MHD_YES) return ret;
+   101      }
+   102
+   103      struct MHD_Response *response = MHD_create_response_from_buffer(
+   104          9, (void *)"Not Found", MHD_RESPMEM_PERSISTENT);
+   105      enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, response);
+   106      MHD_destroy_response(response);
+   107      return ret;
+   108  }
+   109
+   110  int main(void) {
+   111      signal(SIGINT, handle_signal);
+   112      signal(SIGTERM, handle_signal);
+   113
+   114      mkdir("/app/data", 0755);
+   115
+   116      if (init_db("/app/data/notes.db") != 0) {
+   117          fprintf(stderr, "Failed to initialize database\n");
+   118          return 1;
+   119      }
+   120
+   121      daemon_handle = MHD_start_daemon(
+   122          MHD_USE_THREAD_PER_CONNECTION,
+   123          PORT,
+   124          NULL, NULL,
+   125          &handle_request, NULL,
+   126          MHD_OPTION_NOTIFY_COMPLETED, &request_completed, NULL,
+   127          MHD_OPTION_END
+   128      );
+   129
+   130      if (!daemon_handle) {
+   131          fprintf(stderr, "Failed to start server\n");
+   132          return 1;
+   133      }
+   134
+   135      printf("Server running on port %d\n", PORT);
+   136      while (1) pause();
+   137      return 0;
+   138  }
+[1]+  Done                    ./notes_server > server.log 2>&1
+root@ade5f5ea62db:/app# make clean && make -j"$(nproc)"
+rm -f notes_server
+gcc -Wall -Wextra -Iinclude -Isrc -o notes_server src/main.c src/routes.c src/db.c src/static.c src/auth.c -lmicrohttpd -lsqlite3
+src/routes.c:42:13: warning: ‘request_completed’ defined but not used [-Wunused-function]
+   42 | static void request_completed(void *cls, struct MHD_Connection *connection,
+      |             ^~~~~~~~~~~~~~~~~
+root@ade5f5ea62db:/app# ls -la /app/notes_server && file /app/notes_server
+-rwxr-xr-x 1 root root 18576 May 26 12:44 /app/notes_server
+/app/notes_server: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, BuildID[sha1]=57a07a16f
+c17a544c2f39170083f1775a3716ea5, for GNU/Linux 3.2.0, not stripped
+root@ade5f5ea62db:/app#
+
+
+Are you sure you want to mark the task as complete? This will trigger your solution to be graded and you won't be able to make any further corrections. If so, include "task_complete": true in your JSON response again.

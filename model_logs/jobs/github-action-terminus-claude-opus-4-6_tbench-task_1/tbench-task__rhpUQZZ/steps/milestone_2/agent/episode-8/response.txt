@@ -1,0 +1,34 @@
+{
+  "analysis": "There are a couple of issues: 1) `pkill` isn't available in this container, 2) The old server (PID 866) was still running and handling requests. Despite the mess, the concurrent write test actually worked - all 15 notes were created successfully (ids 3-17). The second server instance (1069) failed because the db was removed while old server held it. I need to properly kill the old process and redo a clean concurrent test.",
+  "plan": "Kill the old server properly, clean restart, and redo the concurrent test to confirm everything works.",
+  "commands": [
+    {
+      "keystrokes": "kill 866 2>/dev/null; kill 1069 2>/dev/null; sleep 1\n",
+      "duration": 2.0
+    },
+    {
+      "keystrokes": "rm -f /app/data/notes.db /app/data/notes.db-wal /app/data/notes.db-shm\n",
+      "duration": 0.3
+    },
+    {
+      "keystrokes": "/app/notes_server &\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s http://localhost:8080/api/notes\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "for i in $(seq 1 15); do curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d \"{\\\"title\\\":\\\"Note $i\\\",\\\"content\\\":\\\"Content $i\\\"}\" & done; wait\n",
+      "duration": 8.0
+    },
+    {
+      "keystrokes": "curl -s -D- 'http://localhost:8080/api/notes?limit=100' 2>&1 | grep -E '(X-Total-Count|^\\[)'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s 'http://localhost:8080/api/notes?limit=100' | python3 -c \"import sys,json; data=json.load(sys.stdin); print(f'Count: {len(data)}')\"\n",
+      "duration": 1.0
+    }
+  ]
+}

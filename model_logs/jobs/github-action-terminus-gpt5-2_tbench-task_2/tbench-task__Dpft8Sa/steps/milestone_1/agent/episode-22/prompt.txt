@@ -1,0 +1,66 @@
+New Terminal Output:
+80
+root@972cf0f30065:/app# ./notes_server >/tmp/notes_server.log 2>&1 & echo $! > /tmp/notes_server.pid
+[1] 2014
+root@972cf0f30065:/app# curl -i 'http://127.0.0.1:8080/%2E%2E/%2e%2E/' | head -n 12
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100   643  100   643    0     0   549k      0 --:--:-- --:--:-- --:--:--  627k
+HTTP/1.1 200 OK
+Connection: close
+Content-Type: text/html
+Content-Length: 643
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Notes App</title>
+    <link rel="stylesheet" href="/style.css">
+root@972cf0f30065:/app# curl -i 'http://127.0.0.1:8080/%2e%2e/%2e%2e/etc/passwd' | head -n 12
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100     9  100     9    0     0   8645      0 --:--:-- --:--:-- --:--:--  9000
+HTTP/1.1 404 Not Found
+Connection: close
+Content-Type: text/plain
+Content-Length: 9
+
+Not Foundroot@972cf0f30065:/app# curl -i 'http://127.0.0.1:8080/../README.md' | head -n 12
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100     9  100     9    0     0  10238      0 --:--:-- --:--:-- --:--:--  9000
+HTTP/1.1 404 Not Found
+Connection: close
+Content-Type: text/plain
+Content-Length: 9
+
+Not Foundroot@972cf0f30065:/app# curl -i http://127.0.0.1:8080/style.css | head -n 8
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100  1009  100  1009    0     0  1051k      0 --:--:-- --:--:-- --:--:--  985k
+HTTP/1.1 200 OK
+Connection: close
+Content-Type: text/css
+Content-Length: 1009
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: sans-serif; background: #f5f5f5; padding: 2rem; }
+.container { max-width: 640px; margin: 0 auto; }
+root@972cf0f30065:/app# curl -i http://127.0.0.1:8080/app.js | head -n 8
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100   943  100   943    0     0   998k      0 --:--:-- --:--:-- --:--:--  920k
+HTTP/1.1 200 OK
+Connection: close
+Content-Type: application/javascript
+Content-Length: 943
+
+var API = 'http://localhost:9090/api/notes';
+
+var editingId = null;
+root@972cf0f30065:/app# kill -TERM "$(cat /tmp/notes_server.pid)"; sleep 0.2; tail -n 20 /tmp/notes_server.log
+[1]+  Done                    ./notes_server > /tmp/notes_server.log 2>&1
+Server running on port 8080
+root@972cf0f30065:/app#

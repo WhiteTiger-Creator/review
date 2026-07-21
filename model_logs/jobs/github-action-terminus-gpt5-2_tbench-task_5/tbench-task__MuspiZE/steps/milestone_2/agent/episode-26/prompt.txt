@@ -1,0 +1,14 @@
+New Terminal Output:
+
+Server running on port 8080
+C-c
+rm -f /tmp/server.log
+./notes_server > /tmp/server.log 2>&1 & echo $! > /tmp/notes_server.pid
+curl -sS -D- -H 'X-API-Key: tb3_notes_api_secret_2026' -H 'Content-Type: application/json' -d '{"title":"t1","content":"c1"}' http://127.0.0.1:8080/api/notes
+curl -sS -D- http://127.0.0.1:8080/api/notes?limit=100&offset=0 | sed -n '1,25p'
+seq 1 15 | xargs -P 15 -I{} sh -c 'curl -sS -H "X-API-Key: tb3_notes_api_secret_2026" -H "Content-Type: application/json" -d "{\"title\":\"bulk{}\",\"content\":
+\"x\"}" http://127.0.0.1:8080/api/notes' > /tmp/bulk_out.json || true
+wc -l /tmp/bulk_out.json || true
+curl -sS -D- http://127.0.0.1:8080/api/notes?limit=100&offset=0 | sed -n '1,18p'
+tail -n 200 /tmp/server.log || true
+

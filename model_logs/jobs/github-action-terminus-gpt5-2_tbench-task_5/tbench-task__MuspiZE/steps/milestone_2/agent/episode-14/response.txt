@@ -1,0 +1,23 @@
+{
+  "analysis": "db.c is currently almost entirely stubbed: list returns \"[]\", count returns 0, get_note_json returns NULL, update/delete/note_exists return 0. So the real API is not implemented. We still need auth.c (not shown) and routes.c currently only GET collection. We must implement full SQLite-backed DB functions and update routing accordingly. Concurrency requirement is crucial: handle 15 parallel POSTs without losing rows. We'll implement SQLite with WAL, busy_timeout, and per-operation open/close connections, plus BEGIN IMMEDIATE transactions for writes.",
+  "plan": "1) Inspect db.h and auth.c fully (auth.c still not shown) and routes.c top part (helpers send_json, send_json_total, request_completed). 2) Implement db.c: init_db creates table if not exists and sets PRAGMAs; add helper open_db() that opens with FULLMUTEX, sets busy_timeout and WAL; implement count/list/get/insert/update/delete and existence checks using prepared statements. Return JSON strings matching contract. 3) Implement auth.c: read /app/config/api.key, trim whitespace, compare to X-API-Key header. 4) Implement routes.c: accumulate request body with size limit; parse limit/offset; implement endpoints and proper status codes and JSON bodies including 201 create, 200 update/delete, 404 not found exact, 401 unauthorized for missing/wrong key on writes, 413 for large body with JSON error. 5) Rebuild with make and run curl tests including parallel POST via xargs -P 15.",
+  "commands": [
+    {
+      "keystrokes": "cat /app/src/db.h\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /app/src/auth.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "nl -ba /app/src/routes.c | sed -n '1,120p'\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "nl -ba /app/src/routes.c | sed -n '120,260p'\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

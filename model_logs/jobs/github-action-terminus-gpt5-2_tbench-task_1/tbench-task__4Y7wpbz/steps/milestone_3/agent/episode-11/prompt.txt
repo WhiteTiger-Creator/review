@@ -1,0 +1,41 @@
+Current Terminal Screen:
+   331              return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+   332          if (!delete_note(id))
+   333              return send_json(connection, "{\"error\":\"server error\"}", MHD_HTTP_INTERNAL_SERVER_ERROR);
+   334          return send_json(connection, "{\"status\":\"deleted\"}", MHD_HTTP_OK);
+   335      }
+   336
+   337      return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+   338  }
+root@ade5f5ea62db:/app# perl -0777 -i -pe 's@(int route_request\(struct MHD_Connection \*connection, const char \*url, const char \*method,\n\s*const char \*upl
+oad_data, size_t \*upload_data_size, void \*\*con_cls\) \{\n)@$1    // Expose API key file so the frontend can read and trim it (used on POST/PUT/DELETE).\n
+if (strcmp(method, "GET") == 0 && strcmp(url, "/config/api.key") == 0) {\n        return send_file_text(connection, API_KEY_PATH);\n    }\n\n@sm' /app/src/route
+s.c
+root@ade5f5ea62db:/app# grep -n "Expose API key file" -n /app/src/routes.c
+root@ade5f5ea62db:/app# make -C /app
+make: Entering directory '/app'
+gcc -Wall -Wextra -Iinclude -Isrc -o notes_server src/main.c src/routes.c src/db.c src/static.c src/auth.c -lmicrohttpd -lsqlite3
+src/routes.c: In function ‘handle_post_put_body’:
+src/routes.c:201:13: warning: Value MHD_HTTP_PAYLOAD_TOO_LARGE is deprecated use MHD_HTTP_CONTENT_TOO_LARGE
+  201 |         return send_json(connection, "{\"error\":\"payload too large\"}", MHD_HTTP_PAYLOAD_TOO_LARGE);
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/routes.c: In function ‘route_request’:
+src/routes.c:305:13: warning: Value MHD_HTTP_PAYLOAD_TOO_LARGE is deprecated use MHD_HTTP_CONTENT_TOO_LARGE
+  305 |                 return send_json(connection, "{\"error\":\"payload too large\"}", MHD_HTTP_PAYLOAD_TOO_LARGE);
+      |             ^   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/routes.c:320:13: warning: Value MHD_HTTP_PAYLOAD_TOO_LARGE is deprecated use MHD_HTTP_CONTENT_TOO_LARGE
+  320 |                 return send_json(connection, "{\"error\":\"payload too large\"}", MHD_HTTP_PAYLOAD_TOO_LARGE);
+      |             ^   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+make: Leaving directory '/app'
+root@ade5f5ea62db:/app# kill -TERM $(cat /app/server.pid) 2>/dev/null || true
+root@ade5f5ea62db:/app# nohup /app/notes_server > /app/server.log 2>&1 & echo $! > /app/server.pid
+[2] 3413
+[1]   Done                    nohup /app/notes_server > /app/server.log 2>&1
+root@ade5f5ea62db:/app# sleep 0.2; curl -sS -D- http://localhost:8080/config/api.key -o /tmp/apikey.out | head -n 20; echo; tail -n 2 /tmp/apikey.out
+HTTP/1.1 404 Not Found
+Date: Tue, 26 May 2026 12:54:25 GMT
+Connection: close
+Content-Length: 9
+
+
+Not Foundroot@ade5f5ea62db:/app#

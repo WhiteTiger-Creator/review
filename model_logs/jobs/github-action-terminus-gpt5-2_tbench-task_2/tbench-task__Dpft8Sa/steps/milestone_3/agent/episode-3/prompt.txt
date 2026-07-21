@@ -1,0 +1,41 @@
+Current Terminal Screen:
+>   }
+>
+>   // Initial load
+>   loadNotes().catch(() => {});
+> })();
+> EOF
+root@972cf0f30065:/app# grep -n "const API_KEY" -n /app/www/app.js
+10:  const API_KEY = 'tb3_notes_api_secret_2026';
+root@972cf0f30065:/app# curl -sS http://localhost:8080/app.js | head -n 30
+(() => {
+  const API_BASE = '/api/notes';
+
+  const noteForm = document.getElementById('note-form');
+  const noteTitle = document.getElementById('note-title');
+  const noteContent = document.getElementById('note-content');
+  const notesList = document.getElementById('notes-list');
+
+  let activeId = null;
+  const API_KEY = 'tb3_notes_api_secret_2026';
+
+  function clearAndResetForm() {
+    activeId = null;
+    if (noteTitle) noteTitle.value = '';
+    if (noteContent) noteContent.value = '';
+  }
+
+  function fetchNotes() {
+    // No API key / Content-Type on GET
+    return fetch(API_BASE).then((r) => {
+      if (!r.ok) throw new Error('Failed to load notes');
+      return r.json();
+    });
+  }
+
+  function apiRequest(method, url, bodyObj) {
+    const headers = {
+      'Content-Type': 'application/json',
+      'x-api-key': (API_KEY || '').trim()
+    };
+root@972cf0f30065:/app#

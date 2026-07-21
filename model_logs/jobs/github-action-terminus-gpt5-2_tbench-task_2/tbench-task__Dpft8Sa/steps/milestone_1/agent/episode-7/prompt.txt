@@ -1,0 +1,4 @@
+Previous response had parsing errors:
+ERROR: Invalid JSON: Expecting ',' delimiter: line 7 column 22 (char 6051) | Content preview: '{\n  "analysis": "Server works for /, /style.css, /app.js, 404 unknown, and /api/notes returns 200 wi'...
+
+Please fix these issues and provide a proper JSON response.

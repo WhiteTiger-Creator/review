@@ -1,0 +1,37 @@
+New Terminal Output:
+
+200root@78f42a19e0d4:/app# curl -s -w '\n%{http_code}' -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_
+secret_2026' -d '{"title":"Test Note","content":"Hello world"}'
+{"id":1,"title":"Test Note","content":"Hello world"}
+201root@78f42a19e0d4:/app# curl -s -w '\n%{http_code}' http://localhost:8080/api/notes/1
+{"id":1,"title":"Test Note","content":"Hello world"}
+200root@78f42a19e0d4:/app# curl -s -w '\n%{http_code}' -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -d '{"title":"No Key","conten
+t":"test"}'
+{"error":"unauthorized"}
+401root@78f42a19e0d4:/app# curl -s -w '\n%{http_code}' -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: wrong_key' -d
+'{"title":"Bad Key","content":"test"}'
+{"error":"unauthorized"}
+401root@78f42a19e0d4:/app# curl -s -w '\n%{http_code}' -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_
+secret_2026' -d '{"content":"no title"}'
+{"error":"title is required"}
+400root@78f42a19e0d4:/app# curl -s -w '\n%{http_code}' -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_
+secret_2026' -d '{"title":"","content":"empty title"}'
+{"error":"title is required"}
+400root@78f42a19e0d4:/app# curl -s -w '\n%{http_code}' -X PUT http://localhost:8080/api/notes/1 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api
+_secret_2026' -d '{"title":"Updated Title","content":"new content"}'
+{"id":1,"title":"Updated Title","content":"new content"}
+200root@78f42a19e0d4:/app# curl -s -w '\n%{http_code}' http://localhost:8080/api/notes/99999
+{"error":"not found"}
+404root@78f42a19e0d4:/app# curl -s -w '\n%{http_code}' -X DELETE http://localhost:8080/api/notes/1 -H 'X-API-Key: tb3_notes_api_secret_2026'
+{"status":"deleted"}
+200root@78f42a19e0d4:/app# curl -s -w '\n%{http_code}' http://localhost:8080/api/notes/1
+{"error":"not found"}
+404root@78f42a19e0d4:/app# curl -s -D - http://localhost:8080/api/notes 2>&1 | grep -E '(X-Total-Count|HTTP|\[)'
+HTTP/1.1 200 OK
+X-Total-Count: 0
+[]
+root@78f42a19e0d4:/app# curl -s http://localhost:8080/app.js | head -3
+var API = 'http://localhost:9090/api/notes';
+
+var editingId = null;
+root@78f42a19e0d4:/app#

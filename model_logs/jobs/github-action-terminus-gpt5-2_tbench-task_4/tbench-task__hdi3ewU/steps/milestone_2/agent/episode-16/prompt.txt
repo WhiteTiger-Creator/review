@@ -1,0 +1,15 @@
+New Terminal Output:
+
+d":5,"title":"t_ok","content":"c_ok"},{"id":6,"title":"t_ok","content":"c_ok"},{"id":7,"title":"t_ok","content":"c_ok"}]root@27e807e19559:/app# command -v netst
+at >/dev/null && netstat -tulpn | grep ':8080' || true
+root@27e807e19559:/app# command -v lsof >/dev/null && lsof -iTCP:8080 -sTCP:LISTEN -n -P || true
+root@27e807e19559:/app# command -v fuser >/dev/null && fuser -n tcp 8080 -v || true
+root@27e807e19559:/app# command -v fuser >/dev/null && fuser -k 8080/tcp || true
+root@27e807e19559:/app# ps aux | grep notes_server | grep -v grep || true
+bash: ps: command not found
+root@27e807e19559:/app# ./notes_server >server.log 2>&1 &
+[2] 2359
+root@27e807e19559:/app# sleep 0.2; tail -n +1 server.log | sed -n '1,40p'
+[2]+  Exit 1                  ./notes_server > server.log 2>&1
+Failed to start server: Bad file descriptor
+root@27e807e19559:/app#

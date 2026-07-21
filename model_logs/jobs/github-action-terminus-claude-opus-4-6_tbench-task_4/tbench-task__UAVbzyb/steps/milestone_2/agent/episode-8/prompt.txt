@@ -1,0 +1,12 @@
+New Terminal Output:
+ot found
+root@1ebded0d6da5:/app# ls /proc/*/comm 2>/dev/null | while read f; do if grep -q notes_server "$f" 2>/dev/null; then echo "$f"; fi; done
+/proc/440/comm
+root@1ebded0d6da5:/app# for pid in $(ls /proc | grep '^[0-9]'); do if cat /proc/$pid/cmdline 2>/dev/null | tr '\0' ' ' | grep -q notes_server; then echo "Killin
+g $pid"; kill -9 $pid; fi; done
+Killing 440
+[1]+  Killed                  /app/notes_server
+root@1ebded0d6da5:/app# curl -s http://localhost:8080/ 2>&1 | head -3
+root@1ebded0d6da5:/app# ./notes_server
+Server running on port 8080
+

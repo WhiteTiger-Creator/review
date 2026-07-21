@@ -1,0 +1,41 @@
+Current Terminal Screen:
+root@972cf0f30065:/app# curl -i 'http://127.0.0.1:8080/%2E%2E/%2e%2E/' | head -n 20
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+[1]+  Exit 127                ./notes_server > /tmp/notes_server.log 2>&1
+root@972cf0f30065:/app# curl -i 'http://127.0.0.1:8080/%2e%2e/%2e%2e/etc/passwd' | head -n 20
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+root@972cf0f30065:/app# curl -i http://127.0.0.1:8080/ | head -n 12
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+root@972cf0f30065:/app# curl -i http://127.0.0.1:8080/style.css | head -n 8
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+root@972cf0f30065:/app# curl -i http://127.0.0.1:8080/app.js | head -n 8
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+root@972cf0f30065:/app# curl -i http://127.0.0.1:8080/nonexistent.txt | head -n 20
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+root@972cf0f30065:/app# curl -i http://127.0.0.1:8080/api/notes | head -n 20
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+root@972cf0f30065:/app# kill -TERM "$(cat /tmp/notes_server.pid)"; sleep 0.2; tail -n 60 /tmp/notes_server.log
+bash: kill: (1198) - No such process
+bash: ./notes_server: No such file or directory
+root@972cf0f30065:/app#

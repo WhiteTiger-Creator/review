@@ -1,0 +1,10 @@
+{
+  "analysis": "Now I have the full picture. The server serves static files from /app/www/ and routes /api/* to routes.c. The static file serving is implemented in main.c directly (not static.c which is a stub). I need to write the complete app.js and ensure the server is running.\n\nKey constraints from the mock documentation:\n- Use className (not classList)\n- Use getAttribute/setAttribute (not dataset)\n- Per-button click listeners closing over note objects\n- Load list at top-level\n- Send Content-Type and API key on POST/PUT/DELETE only\n- Clear form after mutations\n- Use json() on responses",
+  "plan": "1. Check auth.c to see what header the API key is sent as\n2. Write the complete app.js\n3. Rebuild if needed and start the server",
+  "commands": [
+    {
+      "keystrokes": "cat /app/src/auth.c\n",
+      "duration": 0.1
+    }
+  ]
+}

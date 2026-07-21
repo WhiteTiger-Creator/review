@@ -1,0 +1,41 @@
+Current Terminal Screen:
+        send_simple(fd, 404, "Not Found", "text/plain", "Not Found");
+        return;
+    }
+
+    FILE *f = fopen(fs_path, "rb");
+    if (!f) {
+        send_simple(fd, 404, "Not Found", "text/plain", "Not Found");
+        return;
+    }
+
+    char hdr[512];
+    const char *ct = content_type_for_path(fs_path);
+    int n = snprintf(hdr, sizeof(hdr),
+                     "HTTP/1.1 200 OK\r\n"
+                     "Connection: close\r\n"
+                     "Content-Type: %s\r\n"
+                     "Content-Length: %zu\r\n"
+                     "\r\n",
+                     ct, (size_t)st.st_size);
+    if (n > 0) write_all(fd, hdr, (size_t)n);
+
+    char buf[4096];
+    size_t r;
+    while ((r = fread(buf, 1, sizeof(buf), f)) > 0) {
+        if (write_all(fd, buf, r) != 0) break;
+    }
+    fclose(f);
+}
+
+static int has_dot_segments_or_backslash(const char *s) {
+    if (!s) return 0;
+root@972cf0f30065:/app# perl -i -pe 's/\bstatic void send_file\(int fd, const char \*path\)/static void send_file(int fd, const char *path, int head_only)/' /ap
+p/src/main.c
+root@972cf0f30065:/app# perl -i -pe 's/\bsend_file\(fd, fs_path\);/send_file(fd, fs_path, is_head);/' /app/src/main.c
+root@972cf0f30065:/app# perl -0777 -i -pe 's/(static void send_file\(int fd, const char \*path, int head_only\) \{)/$1\n    \(void\)head_only;\n/s' /app/src/mai
+n.c
+root@972cf0f30065:/app# grep -n "send_file(int fd" -n /app/src/main.c
+107:static void send_file(int fd, const char *fs_path) {
+root@972cf0f30065:/app# grep -n "head_only" /app/src/main.c | head -n 50
+root@972cf0f30065:/app#

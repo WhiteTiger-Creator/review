@@ -1,0 +1,262 @@
+New Terminal Output:
+
+root@bb40ba43d60f:/app# sed -n '1,120p' /app/src/routes.c
+#include "routes.h"
+#include "db.h"
+#include <microhttpd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static enum MHD_Result send_json(struct MHD_Connection *connection,
+                                  const char *body, unsigned int status_code) {
+    struct MHD_Response *response = MHD_create_response_from_buffer(
+        strlen(body), (void *)body, MHD_RESPMEM_MUST_COPY);
+    MHD_add_response_header(response, "Content-Type", "application/json");
+    MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
+    MHD_add_response_header(response, "Access-Control-Allow-Methods",
+                            "GET, POST, PUT, DELETE, OPTIONS");
+    MHD_add_response_header(response, "Access-Control-Allow-Headers",
+                            "Content-Type, X-API-Key");
+    enum MHD_Result ret = MHD_queue_response(connection, status_code, response);
+    MHD_destroy_response(response);
+    return ret;
+}
+
+static enum MHD_Result send_json_total(struct MHD_Connection *connection,
+                                       const char *body, unsigned int status_code,
+                                       int total) {
+    struct MHD_Response *response = MHD_create_response_from_buffer(
+        strlen(body), (void *)body, MHD_RESPMEM_MUST_COPY);
+    MHD_add_response_header(response, "Content-Type", "application/json");
+    MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
+    MHD_add_response_header(response, "Access-Control-Allow-Methods",
+                            "GET, POST, PUT, DELETE, OPTIONS");
+    MHD_add_response_header(response, "Access-Control-Allow-Headers",
+                            "Content-Type, X-API-Key");
+    char count_str[32];
+    snprintf(count_str, sizeof(count_str), "%d", total);
+    MHD_add_response_header(response, "X-Total-Count", count_str);
+    enum MHD_Result ret = MHD_queue_response(connection, status_code, response);
+    MHD_destroy_response(response);
+    return ret;
+}
+
+static void request_completed(void *cls, struct MHD_Connection *connection,
+                              void **con_cls, enum MHD_RequestTerminationCode toe) {
+    (void)cls;
+    (void)connection;
+    (void)toe;
+    if (con_cls && *con_cls) {
+        struct connection_info *ci = *con_cls;
+        if (ci->data)
+            free(ci->data);
+        free(ci);
+        *con_cls = NULL;
+    }
+}
+
+enum MHD_Result route_request(struct MHD_Connection *connection, const char *url,
+                              const char *method, const char *upload_data,
+                              size_t *upload_data_size, void **con_cls) {
+    (void)upload_data;
+    (void)upload_data_size;
+    (void)con_cls;
+
+    if (strcmp(method, "OPTIONS") == 0)
+        return send_json(connection, "", MHD_HTTP_OK);
+
+    if (strcmp(url, "/api/notes") == 0 && strcmp(method, "GET") == 0) {
+        int total = get_total_notes_count();
+        char *json = get_notes_paginated_json(50, 0);
+        if (!json)
+            return send_json_total(connection, "[]", MHD_HTTP_OK, total);
+        enum MHD_Result r = send_json_total(connection, json, MHD_HTTP_OK, total);
+        free(json);
+        return r;
+    }
+
+    return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+}
+root@bb40ba43d60f:/app# cat > /app/src/routes.h <<'EOF'
+> #ifndef ROUTES_H
+> #define ROUTES_H
+>
+> #include <microhttpd.h>
+> #include <stddef.h>
+>
+> struct connection_info {
+>     char *data;
+>     size_t data_size;
+>     // Raw URI as received by libmicrohttpd (may include percent-encoding)
+>     char *raw_url;
+> };
+>
+> enum MHD_Result route_request(struct MHD_Connection *connection,
+>     const char *url, const char *method,
+>     const char *upload_data, size_t *upload_data_size,
+>     void **con_cls);
+>
+> #endif
+> EOF
+root@bb40ba43d60f:/app# perl -i -pe 's/if \(ci->data\) free\(ci->data\);/if (ci->data) free(ci->data);\n        if (ci->raw_url) free(ci->raw_url);/' /app/src/m
+ain.c
+root@bb40ba43d60f:/app# perl -i -pe 's/ci->data_size = 0;/ci->data_size = 0;\n        ci->raw_url = NULL;/' /app/src/routes.c
+root@bb40ba43d60f:/app# grep -n "raw_url" -n /app/src/routes.c /app/src/main.c | head
+/app/src/main.c:127:        if (ci->raw_url) free(ci->raw_url);
+root@bb40ba43d60f:/app# cat > /app/src/main.c <<'EOF'
+> #include <microhttpd.h>
+> #include <stdio.h>
+> #include <string.h>
+> #include <stdlib.h>
+> #include <signal.h>
+> #include <sys/stat.h>
+> #include <strings.h>
+> #include <unistd.h>
+>
+> #include "routes.h"
+> #include "db.h"
+>
+> #define PORT 8080
+> #define WWW_DIR "/app/www"
+>
+> static struct MHD_Daemon *daemon_handle = NULL;
+>
+> static void handle_signal(int sig) {
+>     (void)sig;
+>     if (daemon_handle) MHD_stop_daemon(daemon_handle);
+>     close_db();
+>     exit(0);
+> }
+>
+> static const char *get_content_type(const char *path) {
+>     const char *ext = strrchr(path, '.');
+>     if (!ext) return "application/octet-stream";
+>     if (strcmp(ex
+[... output limited to 10000 bytes; 70 interior bytes omitted ...]
+ f);
+>     fclose(f);
+>
+>     struct MHD_Response *response = MHD_create_response_from_buffer(
+>         st.st_size, buf, MHD_RESPMEM_MUST_FREE);
+>     MHD_add_response_header(response, "Content-Type", get_content_type(filepath));
+>     enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
+>     MHD_destroy_response(response);
+>     return ret;
+> }
+>
+> static void request_completed(void *cls, struct MHD_Connection *connection,
+>                               void **con_cls, enum MHD_RequestTerminationCode toe) {
+>     (void)cls;
+>     (void)connection;
+>     (void)toe;
+>     if (con_cls && *con_cls) {
+>         struct connection_info *ci = *con_cls;
+>         if (ci->data) free(ci->data);
+>         if (ci->raw_url) free(ci->raw_url);
+>         free(ci);
+>         *con_cls = NULL;
+>     }
+> }
+>
+> static void uri_log_cb(void *cls, const char *uri) {
+>     (void)cls;
+>     // Note: This callback does not provide the connection pointer, so it cannot
+>     // be used to attach the URI to a specific connection.
+>     // Kept intentionally empty.
+>     (void)uri;
+> }
+>
+> static enum MHD_Result handle_request(void *cls,
+>                                      struct MHD_Connection *connection,
+>                                      const char *url, const char *method,
+>                                      const char *version,
+>                                      const char *upload_data,
+>                                      size_t *upload_data_size,
+>                                      void **con_cls) {
+>     (void)cls;
+>     (void)version;
+>
+>     if (!con_cls) return MHD_NO;
+>
+>     if (*con_cls == NULL) {
+>         struct connection_info *ci = calloc(1, sizeof(*ci));
+>         if (!ci) return MHD_NO;
+>         ci->data = NULL;
+>         ci->data_size = 0;
+>         ci->raw_url = NULL;
+>         *con_cls = ci;
+>     }
+>
+>     struct connection_info *ci = (struct connection_info *)(*con_cls);
+>     // Best-effort: keep a copy of the URL we are given (may already be normalized)
+>     if (!ci->raw_url && url) ci->raw_url = strdup(url);
+>
+>     if (strncmp(url, "/api/", 5) == 0) {
+>         return route_request(connection, url, method, upload_data,
+>                              upload_data_size, con_cls);
+>     }
+>
+>     if (strcmp(method, "GET") == 0) {
+>         enum MHD_Result ret = serve_static_file(connection, ci, url);
+>         if (ret == MHD_YES) return ret;
+>     }
+>
+>     struct MHD_Response *response = MHD_create_response_from_buffer(
+>         9, (void *)"Not Found", MHD_RESPMEM_PERSISTENT);
+>     enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, response);
+>     MHD_destroy_response(response);
+>     return ret;
+> }
+>
+> int main(void) {
+>     signal(SIGINT, handle_signal);
+>     signal(SIGTERM, handle_signal);
+>
+>     mkdir("/app/data", 0755);
+>
+>     if (init_db("/app/data/notes.db") != 0) {
+>         fprintf(stderr, "Failed to initialize database\n");
+>         return 1;
+>     }
+>
+>     daemon_handle = MHD_start_daemon(
+>         MHD_USE_THREAD_PER_CONNECTION,
+>         PORT,
+>         NULL, NULL,
+>         &handle_request, NULL,
+>         MHD_OPTION_NOTIFY_COMPLETED, &request_completed, NULL,
+>         MHD_OPTION_URI_LOG_CALLBACK, &uri_log_cb, NULL,
+>         MHD_OPTION_END);
+>
+>     if (!daemon_handle) {
+>         fprintf(stderr, "Failed to start server\n");
+>         return 1;
+>     }
+>
+>     printf("Server running on port %d\n", PORT);
+>     while (1) pause();
+>     return 0;
+> }
+> EOF
+root@bb40ba43d60f:/app# make clean && make -j"$(nproc)"
+rm -f notes_server
+gcc -Wall -Wextra -O2 -Iinclude -o notes_server src/main.c src/routes.c src/static.c src/db.c src/auth.c -lmicrohttpd -lsqlite3
+src/routes.c:42:13: warning: ‘request_completed’ defined but not used [-Wunused-function]
+   42 | static void request_completed(void *cls, struct MHD_Connection *connection,
+      |             ^~~~~~~~~~~~~~~~~
+root@bb40ba43d60f:/app# ./notes_server > /tmp/notes_server.log 2>&1 & echo $! > /tmp/notes_server.pid
+[1] 1085
+root@bb40ba43d60f:/app# sleep 0.2; curl -i 'http://127.0.0.1:8080/%2e%2e/README.md' | head -n 20
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (52) Empty reply from server
+[1]+  Segmentation fault      ./notes_server > /tmp/notes_server.log 2>&1
+root@bb40ba43d60f:/app# curl -i 'http://127.0.0.1:8080/%2e%2e%2fREADME.md' | head -n 20
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+root@bb40ba43d60f:/app# kill $(cat /tmp/notes_server.pid) 2>/dev/null || true
+root@bb40ba43d60f:/app#

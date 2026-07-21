@@ -1,0 +1,48 @@
+New Terminal Output:
+
+root@1b06f1f3df22:/app# cat /app/src/auth.c
+#include "auth.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+
+static char api_key[256] = {0};
+static int key_loaded = 0;
+
+static void load_api_key(void) {
+    if (key_loaded) return;
+    FILE *f = fopen("/app/config/api.key", "r");
+    if (!f) {
+        key_loaded = 1;
+        return;
+    }
+    if (fgets(api_key, sizeof(api_key), f)) {
+        /* Trim whitespace from both ends */
+        char *end = api_key + strlen(api_key) - 1;
+        while (end >= api_key && isspace((unsigned char)*end)) *end-- = '\0';
+        char *start = api_key;
+        while (*start && isspace((unsigned char)*start)) start++;
+        if (start != api_key) memmove(api_key, start, strlen(start) + 1);
+    }
+    fclose(f);
+    key_loaded = 1;
+}
+
+int api_key_valid(struct MHD_Connection *connection) {
+    load_api_key();
+    const char *provided = MHD_lookup_connection_value(connection, MHD_HEADER_KIND, "X-API-Key");
+    if (!provided) return 0;
+    if (api_key[0] == '\0') return 0;
+    return (strcmp(provided, api_key) == 0) ? 1 : 0;
+}
+root@1b06f1f3df22:/app# cat /app/src/auth.h
+#ifndef AUTH_H
+#define AUTH_H
+
+#include <microhttpd.h>
+
+int api_key_valid(struct MHD_Connection *connection);
+
+#endif
+root@1b06f1f3df22:/app#

@@ -1,0 +1,41 @@
+Current Terminal Screen:
+   132                                       const char *upload_data,
+   133                                       size_t *upload_data_size,
+   134                                       void **con_cls) {
+   135      (void)cls;
+   136      (void)version;
+   137
+   138      if (strncmp(url, "/api/", 5) == 0) {
+   139          return route_request(connection, url, method, upload_data,
+   140                               upload_data_size, con_cls);
+   141      }
+   142
+   143      if (strcmp(method, "GET") == 0) {
+   144          enum MHD_Result ret = serve_static_file(connection, url);
+   145          if (ret == MHD_YES) return ret;
+   146      }
+   147
+   148      struct MHD_Response *response = MHD_create_response_from_buffer(
+   149          9, (void *)"Not Found", MHD_RESPMEM_PERSISTENT);
+   150      enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, response);
+   151      MHD_destroy_response(response);
+   152      return ret;
+   153  }
+   154
+   155  int main(void) {
+   156      signal(SIGINT, handle_signal);
+   157      signal(SIGTERM, handle_signal);
+   158
+   159      mkdir("/app/data", 0755);
+   160
+   161      if (init_db("/app/data/notes.db") != 0) {
+   162          fprintf(stderr, "Failed to initialize database\n");
+   163          return 1;
+   164      }
+   165
+   166      daemon_handle = MHD_start_daemon(
+   167          MHD_USE_THREAD_PER_CONNECTION,
+   168          PORT,
+   169          NULL, NULL,
+   170          &handle_request, NULL,
+root@bb40ba43d60f:/app#

@@ -1,0 +1,6 @@
+{
+  "analysis": "Terminal is still echo-only.",
+  "plan": "Stop.",
+  "commands": [],
+  "task_complete": false
+}

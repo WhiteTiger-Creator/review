@@ -1,0 +1,20 @@
+New Terminal Output:
+
+{"error":"bad request"}root@08d5c4164ec3:/app# command -v busybox && busybox --list | grep -E '^(ps|pgrep|pidof|killall)$' || true
+root@08d5c4164ec3:/app# command -v busybox && busybox ps 2>/dev/null | head
+root@08d5c4164ec3:/app# command -v killall && killall -v notes_server 2>/dev/null || true
+root@08d5c4164ec3:/app# command -v pidof && pidof notes_server 2>/dev/null || true
+/usr/bin/pidof
+1217
+root@08d5c4164ec3:/app# for c in /proc/[0-9]*/comm; do n=$(cat "$c" 2>/dev/null || true); if [ "$n" = "notes_server" ]; then echo ${c%/comm}; fi; done | head
+/proc/1217
+root@08d5c4164ec3:/app# for p in /proc/[0-9]*; do n=$(cat "$p/comm" 2>/dev/null || true); if [ "$n" = "notes_server" ]; then echo "killing $p"; kill -TERM ${p#/
+proc/} 2>/dev/null || true; fi; done
+killing /proc/1217
+[1]+  Done                    ./notes_server
+root@08d5c4164ec3:/app# awk 'NR>1 {if($2 ~ /:1F90$/ && $4=="0A") print "LISTEN:", $0}' /proc/net/tcp || true
+root@08d5c4164ec3:/app# ./notes_server > /tmp/notes_server.log 2>&1 & echo $!
+[1] 2465
+2465
+root@08d5c4164ec3:/app# tail -n 5 /tmp/notes_server.log
+root@08d5c4164ec3:/app#

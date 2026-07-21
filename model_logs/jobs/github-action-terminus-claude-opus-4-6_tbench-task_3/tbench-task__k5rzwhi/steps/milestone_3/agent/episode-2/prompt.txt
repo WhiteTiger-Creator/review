@@ -1,0 +1,41 @@
+Current Terminal Screen:
+        int id = extract_note_id(url);
+        if (id < 0) {
+            return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+        }
+
+        if (strcmp(method, "PUT") == 0) {
+            return handle_put_note(connection, id, ci->data);
+        }
+        if (strcmp(method, "DELETE") == 0) {
+            return handle_delete_note(connection, id);
+        }
+
+        return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+    }
+
+    /* GET requests */
+    if (strcmp(method, "GET") == 0) {
+        if (strcmp(url, "/api/notes") == 0) {
+            return handle_get_notes(connection);
+        }
+
+        int id = extract_note_id(url);
+        if (id >= 0) {
+            return handle_get_note(connection, id);
+        }
+
+        return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+    }
+
+    return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+}
+root@1b06f1f3df22:/app# cat /app/src/static.c
+#include "static.h"
+
+enum MHD_Result serve_static_file(struct MHD_Connection *connection, const char *url) {
+    (void)connection;
+    (void)url;
+    return MHD_NO;
+}
+root@1b06f1f3df22:/app#

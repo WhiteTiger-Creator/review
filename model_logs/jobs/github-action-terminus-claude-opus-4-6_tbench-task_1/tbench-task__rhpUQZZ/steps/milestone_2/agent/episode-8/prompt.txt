@@ -1,0 +1,37 @@
+New Terminal Output:
+/notes/1
+401root@8115be450cb5:/app# curl -s -D- 'http://localhost:8080/api/notes?limit=1&offset=0' 2>&1 | grep -E '(X-Total|\[)'
+X-Total-Count: 1
+[{"id":1,"title":"Updated Title","content":"Updated content"}]
+root@8115be450cb5:/app# curl -s 'http://localhost:8080/api/notes?limit=999' | python3 -c "import sys,json; print(len(json.load(sys.stdin)))"
+1
+root@8115be450cb5:/app# pkill -f notes_server; sleep 0.5; rm -f /app/data/notes.db; /app/notes_server &
+bash: pkill: command not found
+[2] 1069
+root@8115be450cb5:/app# SQL error: disk I/O error
+Failed to initialize database
+for i in $(seq 1 15); do curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "{\"ti
+tle\":\"Note $i\",\"content\":\"Content $i\"}" & done; wait
+[3] 1078
+[4] 1079
+[5] 1080
+[6] 1081
+[7] 1082
+[8] 1083
+[9] 1084
+[10] 1085
+[11] 1086
+[12] 1087
+[13] 1088
+[14] 1089
+[15] 1090
+[16] 1091
+[17] 1092
+{"id":3,"title":"Note 3","content":"Content 3"}{"id":4,"title":"Note 11","content":"Content 11"}{"id":5,"title":"Note 2","content":"Content 2"}{"id":6,"title":"
+Note 13","content":"Content 13"}{"id":7,"title":"Note 12","content":"Content 12"}{"id":8,"title":"Note 8","content":"Content 8"}{"id":9,"title":"Note 15","conte
+nt":"Content 15"}{"id":10,"title":"Note 1","content":"Content 1"}{"id":11,"title":"Note 10","content":"Content 10"}{"id":12,"title":"Note 7","content":"Content
+7"}{"id":13,"title":"Note 6","content":"Content 6"}{"id":14,"title":"Note 5","content":"Content 5"}{"id":15,"title":"Note 9","content":"Content 9"}{"id":16,"tit
+le":"Note 4","content":"Content 4"}{"id":17,"title":"Note 14","content":"Content 14"}curl -s http://localhost:8080/api/notes?limit=100 | python3 -c "import sys,
+json; data=json.load(sys.stdin); print(f'Count: {len(data)}')"
+curl -s -D- 'http://localhost:8080/api/notes?limit=100' 2>&1 | grep X-Total-Count
+

@@ -1,0 +1,43 @@
+New Terminal Output:
+nse_from_buffer(
+root@1ebded0d6da5:/app# cat /app/src/auth.c
+#include "auth.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+
+static char api_key[256] = {0};
+static int key_loaded = 0;
+
+static void load_key(void) {
+    if (key_loaded) return;
+    FILE *f = fopen("/app/config/api.key", "r");
+    if (!f) {
+        key_loaded = 1;
+        return;
+    }
+    if (fgets(api_key, sizeof(api_key), f)) {
+        /* trim whitespace */
+        char *end = api_key + strlen(api_key) - 1;
+        while (end >= api_key && isspace((unsigned char)*end)) {
+            *end = '\0';
+            end--;
+        }
+        char *start = api_key;
+        while (*start && isspace((unsigned char)*start)) start++;
+        if (start != api_key) memmove(api_key, start, strlen(start) + 1);
+    }
+    fclose(f);
+    key_loaded = 1;
+}
+
+int api_key_valid(struct MHD_Connection *connection) {
+    load_key();
+    const char *provided = MHD_lookup_connection_value(connection, MHD_HEADER_KIND, "X-API-Key");
+    if (!provided || strcmp(provided, api_key) != 0) {
+        return 0;
+    }
+    return 1;
+}
+root@1ebded0d6da5:/app#

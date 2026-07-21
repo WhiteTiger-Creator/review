@@ -1,0 +1,14 @@
+{
+  "analysis": "The Makefile doesn't include static.c in the SOURCES. I need to see main.c and the full routes.c to understand how requests are routed, then I'll either implement static serving in routes.c directly or fix static.c and add it to the build.",
+  "plan": "1. View main.c\n2. View routes.c in full\n3. Then implement static file serving and the app.js client",
+  "commands": [
+    {
+      "keystrokes": "cat /app/src/main.c\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "cat /app/src/routes.c\n",
+      "duration": 0.5
+    }
+  ]
+}

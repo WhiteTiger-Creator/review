@@ -1,0 +1,19 @@
+{
+  "analysis": "We’re now viewing the JSON parsing helper early in routes.c; parse_note_body likely uses naive string search requiring quoted strings. Our curl JSON is correct. Need to see the POST handler portion and parse_note_body logic and whether it rejects missing content-type header or expects trailing null, etc. We'll print the POST section and parse_note_body definition.",
+  "plan": "1) Print routes.c 260-310 to see POST. 2) Locate parse_note_body definition line numbers and print around it. 3) Based on findings, fix server error if parse is too strict (e.g., requires content key exists, or fails with escaped chars). Then rebuild/restart and retest POST. If server fix is out-of-scope, at least ensure frontend is correct; but harness will fail otherwise.",
+  "commands": [
+    {
+      "keystrokes": "nl -ba /app/src/routes.c | sed -n '258,312p'\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "grep -n \"int parse_note_body\" /app/src/routes.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "nl -ba /app/src/routes.c | sed -n '120,190p'\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

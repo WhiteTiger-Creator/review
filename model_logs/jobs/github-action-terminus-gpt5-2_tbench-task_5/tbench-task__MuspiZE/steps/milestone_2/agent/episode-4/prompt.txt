@@ -1,0 +1,41 @@
+Current Terminal Screen:
+    }
+
+    daemon_handle = MHD_start_daemon(
+        MHD_USE_THREAD_PER_CONNECTION,
+        PORT,
+        NULL, NULL,
+        &handle_request, NULL,
+        MHD_OPTION_NOTIFY_COMPLETED, &request_completed, NULL,
+        MHD_OPTION_END);
+
+    if (!daemon_handle) {
+        fprintf(stderr, "Failed to start server\n");
+        return 1;
+    }
+
+    printf("Server running on port %d\n", PORT);
+    while (1) pause();
+    return 0;
+}
+root@bb40ba43d60f:/app# cat /app/Makefile
+.RECIPEPREFIX := >
+CC = gcc
+CFLAGS = -Wall -Wextra -O2 -Iinclude
+LDFLAGS = -lmicrohttpd -lsqlite3
+
+SOURCES = \
+  src/main.c \
+  src/routes.c \
+  src/static.c \
+  src/db.c \
+  src/auth.c
+
+TARGET = notes_server
+
+$(TARGET): $(SOURCES)
+>$(CC) $(CFLAGS) -o $(TARGET) $(SOURCES) $(LDFLAGS)
+
+clean:
+>rm -f $(TARGET)
+root@bb40ba43d60f:/app#

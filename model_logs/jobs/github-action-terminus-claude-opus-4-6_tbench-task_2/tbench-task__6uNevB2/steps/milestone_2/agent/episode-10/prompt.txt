@@ -1,0 +1,6 @@
+New Terminal Output:
+"title":
+"Note 14","content":"Content 14"}{"id":15,"title":"Note 11","content":"Content 11"}curl -s http://localhost:8080/api/notes -D - 2>&1 | grep X-Total-Count
+
+curl -s http://localhost:8080/api/notes -D - 2>&1 | grep X-Total-Count
+

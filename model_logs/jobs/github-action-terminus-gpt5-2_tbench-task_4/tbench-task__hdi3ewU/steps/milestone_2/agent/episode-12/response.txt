@@ -1,0 +1,27 @@
+{
+  "analysis": "Even with rewritten routes.c using proper handled/too_large and notify cleanup, POST response is still corrupted and server still exits after POST. GET works and shows correct stored data, implying parsing and insertion are fine, but the returned title/content are wrong at response time. That suggests title/content pointers are getting corrupted after parsing, likely due to memory overwrite elsewhere (maybe build_note_json/json_append_escaped realloc logic) or because json_get_string_field returns a pointer that later gets freed/overwritten (but we free only after building resp). Server exit indicates a crash; must inspect server.log for a concrete error (e.g., malloc corruption). Also could be that our escaping/builder uses realloc and returns but then we free resp and still use? No. Another thought: in build_note_json, json_append_escaped may realloc buf and invalidate pointer, but we pass &buf so ok. \n\nWe must capture server.log and possibly run under valgrind to pinpoint. Start by reading server.log; also run notes_server in foreground to see crash. Then run a minimal reproduction: POST with short body; if crash occurs, valgrind. We'll install? likely present. We'll run valgrind ./notes_server and one curl.",
+  "plan": "1) Show server.log after crash. 2) Run ./notes_server in foreground to see immediate stderr. 3) If not clear, run valgrind --leak-check=full --error-exitcode=99 ./notes_server in one terminal (here) and in background curl; since single terminal, we can run valgrind with timeout and curl from another process via &. 4) Based on report, fix memory bug. Most suspicious: json_get_string_field uses strstr which may match in escaped sequences, but should still return correct. Corruption like '\\u0018\\' suggests reading from freed memory, not wrong parse. Maybe request_completed_cb frees con_cls before response body is copied? But MHD_RESPMEM_MUST_COPY copies body buffer immediately from provided pointer; however we provide resp which is freed after send_json returns; MHD_create_response_from_buffer with MUST_COPY should copy at create time, so safe. Unless libmicrohttpd defers copy? To be safe, use MHD_RESPMEM_MUST_FREE and don't free resp; pass ownership. We'll change send_json to use MHD_RESPMEM_MUST_FREE and allocate body per response. For constant strings, use PERSISTENT. We'll implement send_json_alloc that takes malloc'd body and uses MUST_FREE. This could fix if MUST_COPY isn't copying when expected (or we're providing stack memory earlier). We'll adjust accordingly after log.",
+  "commands": [
+    {
+      "keystrokes": "sed -n '1,200p' server.log\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "pkill -f ./notes_server 2>/dev/null || true\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "./notes_server\n",
+      "duration": 0.2
+    },
+    {
+      "keystrokes": "C-c",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "valgrind --version 2>/dev/null || echo 'no valgrind'\n",
+      "duration": 0.5
+    }
+  ],
+  "task_complete": false
+}

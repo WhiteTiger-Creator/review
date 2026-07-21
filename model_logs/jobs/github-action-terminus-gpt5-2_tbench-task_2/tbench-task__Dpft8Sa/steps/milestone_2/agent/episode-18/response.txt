@@ -1,0 +1,43 @@
+{
+  "analysis": "notes_server now rebuilds successfully without auth.c. API key validation is handled in main.c by reading and trimming /app/config/api.key and comparing to X-API-Key. Next we need to run the server and verify the API contract: CORS+JSON content type for JSON responses, OPTIONS behavior, pagination with X-Total-Count, POST/PUT title validation, 413 for >65536 body, 404 not found shape, DELETE success shape, and that static files still serve. Also ensure concurrency safety: db.c uses WAL+busy_timeout+BEGIN IMMEDIATE+mutex, which should prevent dropped writes under bursts.",
+  "plan": "1) Start the server in background (or in a tmux session) and run curl tests against localhost:8080 for each endpoint and key behavior. 2) Verify static file serving still works (GET / and /app.js). 3) Test pagination headers and not found errors. 4) Test body size limit by sending >65536 bytes. 5) If any contract mismatch, patch main.c accordingly and rebuild.",
+  "commands": [
+    {
+      "keystrokes": "pkill -f /app/notes_server 2>/dev/null || true\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "/app/notes_server >/tmp/notes_server.log 2>&1 & echo $!\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "curl -si http://127.0.0.1:8080/api/notes | head -n 30\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -si -X OPTIONS http://127.0.0.1:8080/api/notes | head -n 30\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -si -X POST http://127.0.0.1:8080/api/notes -H 'Content-Type: application/json' -d '{\"title\":\"t1\",\"content\":\"c1\"}' | head -n 40\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -si -X POST http://127.0.0.1:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{\"title\":\"t1\",\"content\":\"c1\"}' | head -n 40\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -si 'http://127.0.0.1:8080/api/notes?limit=1&offset=0' | head -n 40\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -si http://127.0.0.1:8080/ | head -n 20\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -si http://127.0.0.1:8080/app.js | head -n 20\n",
+      "duration": 1.0
+    }
+  ],
+  "task_complete": false
+}

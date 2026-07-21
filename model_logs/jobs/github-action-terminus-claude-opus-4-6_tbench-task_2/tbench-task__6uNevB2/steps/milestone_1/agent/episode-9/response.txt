@@ -1,0 +1,26 @@
+{
+  "analysis": "The path traversal tests are returning 404 instead of 403. This is likely because curl normalizes the URL before sending (removing `..` segments). I need to test with `--path-as-is` flag to send the actual path without normalization.",
+  "plan": "Test with curl --path-as-is to ensure the dot-dot segments are actually sent to the server, and verify the 403 response.",
+  "commands": [
+    {
+      "keystrokes": "curl -s -o /dev/null -w '%{http_code}' --path-as-is http://127.0.0.1:8080/../etc/passwd\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "curl -s -o /dev/null -w '%{http_code}' --path-as-is http://127.0.0.1:8080/%2e%2e/etc/passwd\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "curl -s -o /dev/null -w '%{http_code}' --path-as-is http://127.0.0.1:8080/.%2e/etc/passwd\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "curl -s -o /dev/null -w '%{http_code}' --path-as-is http://127.0.0.1:8080/%2e./etc/passwd\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "curl -s -o /dev/null -w '%{http_code}' --path-as-is 'http://127.0.0.1:8080/foo/..%2f..%2fetc/passwd'\n",
+      "duration": 0.5
+    }
+  ]
+}

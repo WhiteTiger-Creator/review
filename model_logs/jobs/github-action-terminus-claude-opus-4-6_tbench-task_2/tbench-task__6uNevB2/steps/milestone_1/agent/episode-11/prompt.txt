@@ -1,0 +1,15 @@
+New Terminal Output:
+
+403root@10c43992d5dc:/app# curl -s -I http://127.0.0.1:8080/ | grep -i content-type
+root@10c43992d5dc:/app# curl -s -I http://127.0.0.1:8080/style.css | grep -i content-type
+root@10c43992d5dc:/app# curl -s -I http://127.0.0.1:8080/app.js | grep -i content-type
+root@10c43992d5dc:/app# curl -s -I http://127.0.0.1:8080/api/notes | grep -i content-type
+Content-Type: application/json
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+root@10c43992d5dc:/app# curl -s -o /dev/null -w '%{http_code}' --path-as-is http://127.0.0.1:8080/%2E%2E/etc/passwd
+403root@10c43992d5dc:/app# curl -s -o /dev/null -w '%{http_code}' --path-as-is http://127.0.0.1:8080/%2E./etc/passwd
+403root@10c43992d5dc:/app# kill %1 2>/dev/null; wait 2>/dev/null
+root@10c43992d5dc:/app# make clean && make
+rm -f notes_server
+gcc -Wall -Wextra -Isrc -Iinclude -o notes_server src/main.c src/routes.c src/db.c -lmicrohttpd -lsqlite3
+root@10c43992d5dc:/app#

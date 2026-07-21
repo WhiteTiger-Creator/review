@@ -1,0 +1,10 @@
+New Terminal Output:
+World"}'
+{"error":"not found"}root@1b06f1f3df22:/app# ps aux | grep notes
+bash: ps: command not found
+root@1b06f1f3df22:/app# kill $(ps aux | grep notes_server | grep -v grep | awk '{print $2}')
+bash: ps: command not found
+kill: usage: kill [-s sigspec | -n signum | -sigspec] pid | jobspec ... or kill -l [sigspec]
+root@1b06f1f3df22:/app# ps aux | grep notes
+bash: ps: command not found
+root@1b06f1f3df22:/app#

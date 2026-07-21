@@ -1,0 +1,55 @@
+{
+  "analysis": "The project now rebuilds successfully and ./notes_server exists again. However, during earlier runtime testing we observed severe issues: POST responses returned corrupted title/content and the server process exited after POST. We also hit MHD_start_daemon failures when trying to launch a second instance, likely due to an existing server bound to 8080 and lack of system tools to inspect/kill it. The code still includes unused request_completed_cb and may not be wired into MHD_start_daemon. Before declaring completion, we must ensure the server can run cleanly from scratch (verifier scenario) and that POST/PUT responses are correct, do not crash, and all contract requirements are met (CORS/OPTIONS, paging, 413, auth, 404 body).",
+  "plan": "1) Ensure main.c wires request_completed_cb via MHD_OPTION_NOTIFY_COMPLETED to properly free per-request buffers and avoid leaks/crashes; remove handled/free hacks in routes.c that might conflict with this. 2) Confirm routes.c uses correct MHD upload_data state machine and does not free con_cls itself. 3) Reduce risk of corruption by not doing fragile JSON parsing: for POST/PUT, after parsing title/content, immediately build response JSON from those strings (already done) and ensure memory ownership is safe (use MHD_RESPMEM_MUST_COPY with heap buffer that we free after queuing; or switch to MHD_RESPMEM_MUST_FREE and not free). 4) Run minimal runtime tests by starting notes_server on an alternate port temporarily (e.g., 18080) to avoid conflicts, verify behavior with curl, then restore port 8080 for final build. This is necessary because we cannot stop the existing listener on 8080 with missing tools. 5) Once verified, restore NOTES_LISTEN_PORT/PORT to 8080 and rebuild for verifier.",
+  "commands": [
+    {
+      "keystrokes": "grep -n \"MHD_start_daemon\" -n src/main.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/MHD_start_daemon\\(MHD_USE_INTERNAL_POLLING_THREAD,\\s*\\n\\s*PORT,\\s*\\n\\s*NULL, NULL,\\s*\\n\\s*&access_handler, NULL,\\s*\\n\\s*MHD_OPTION_END\\);/MHD_start_daemon(MHD_USE_INTERNAL_POLLING_THREAD,\\n                                    PORT,\\n                                    NULL, NULL,\\n                                    &access_handler, NULL,\\n                                    MHD_OPTION_NOTIFY_COMPLETED, request_completed_cb, NULL,\\n                                    MHD_OPTION_END);/s' src/main.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "make\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/#define NOTES_LISTEN_PORT 8080/#define NOTES_LISTEN_PORT 18080/' include/notes.h\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "make\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "./notes_server > /tmp/test_server.log 2>&1 &\n",
+      "duration": 0.2
+    },
+    {
+      "keystrokes": "curl -si http://127.0.0.1:18080/api/notes | sed -n '1,20p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -si -X POST http://127.0.0.1:18080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' --data '{\"title\":\"t_ok\",\"content\":\"c_ok\"}' | sed -n '1,30p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -si http://127.0.0.1:18080/api/notes?limit=2&offset=0 | sed -n '1,30p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "pkill notes_server 2>/dev/null || true\n",
+      "duration": 0.2
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/#define NOTES_LISTEN_PORT 18080/#define NOTES_LISTEN_PORT 8080/' include/notes.h\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "make\n",
+      "duration": 1.0
+    }
+  ],
+  "task_complete": false
+}

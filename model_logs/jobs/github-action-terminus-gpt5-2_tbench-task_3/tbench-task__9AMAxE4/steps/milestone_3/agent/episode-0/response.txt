@@ -1,0 +1,27 @@
+{
+  "analysis": "We are at /app with no prior commands run. The task is to modify the browser client at /app/www/app.js to use same-origin /api/notes, load notes into #notes-list on run, provide edit/delete buttons with required classes, handle create/update via #note-form, reset form after save/create, delete via API, and always reload list after successful POST/PUT/DELETE. Must send Content-Type: application/json and trimmed API key from /app/config/api.key on POST/PUT/DELETE only. Need to review /app/docs/js_verifier_mock.md for harness quirks, then update app.js and verify it is served over HTTP on port 8080.",
+  "plan": "1) Inspect the verifier mock doc to understand DOM/fetch limitations. 2) Inspect current /app/www/app.js and related HTML to see expected element IDs. 3) Read /app/config/api.key and ensure trimming. 4) Implement fetch base /api/notes with correct headers only for write operations. 5) Implement list loading on script start, render rows into #notes-list with edit/delete buttons containing edit-btn/delete-btn classes. 6) Implement form submit logic: if no active note -> POST; else PUT; then clear inputs and clear active selection; reload list after success. 7) Implement delete button to DELETE then reload list. 8) Smoke-check via curl against localhost:8080 to ensure app.js is served, and optionally grep server routes if needed.",
+  "commands": [
+    {
+      "keystrokes": "sed -n '1,200p' /app/docs/js_verifier_mock.md\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "ls -la /app/www\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,200p' /app/www/app.js\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,200p' /app/www/index.html\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /app/config/api.key\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

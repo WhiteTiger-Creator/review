@@ -1,0 +1,20 @@
+New Terminal Output:
+ }
+> EOF
+root@10c43992d5dc:/app# cat > /app/Makefile << 'EOF'
+> CC = gcc
+> CFLAGS = -Wall -Wextra -Isrc -Iinclude
+> LDFLAGS = -lmicrohttpd -lsqlite3 -lpthread
+>
+> SOURCES = src/main.c src/routes.c src/db.c src/auth.c
+> TARGET = notes_server
+>
+> $(TARGET): $(SOURCES)
+> $(CC) $(CFLAGS) -o $(TARGET) $(SOURCES) $(LDFLAGS)
+>
+> clean:
+> rm -f $(TARGET)
+> EOF
+root@10c43992d5dc:/app# cd /app && make clean && make 2>&1
+Makefile:9: *** missing separator.  Stop.
+root@10c43992d5dc:/app#

@@ -1,0 +1,15 @@
+{
+  "analysis": "Main routing only sends URLs starting with /api/ to route_request; everything else is served as static from /app/www. That’s why /config/api.key could never work. We added GET /api/key in routes.c and updated app.js to fetch /api/key; curl confirms it returns 200 with the key. app.js already implements CRUD with required edit-btn/delete-btn classes, no classList/dataset usage, loads list at top-level, uses same-origin /api/notes, sends Content-Type and X-API-Key on POST/PUT/DELETE only, clears form and resets editingId after mutation and reloads list after each mutation. Server is running again on 8080 and /app.js is reachable. Remaining step: quick sanity check that GET doesn’t send key (code does), and that list rendering includes buttons. No further changes needed.",
+  "plan": "Do a quick grep to confirm API_BASE is /api/notes and that edit-btn/delete-btn are present in app.js. Optionally curl /app.js to ensure updated file served. Then mark complete.",
+  "commands": [
+    {
+      "keystrokes": "grep -n \"API_BASE\\|edit-btn\\|delete-btn\\|X-API-Key\\|/api/key\" -n /app/www/app.js\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "curl -sS http://localhost:8080/app.js | head -n 40\n",
+      "duration": 1.0
+    }
+  ],
+  "task_complete": true
+}

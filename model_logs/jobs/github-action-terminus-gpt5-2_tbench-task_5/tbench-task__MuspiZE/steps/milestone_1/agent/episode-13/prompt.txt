@@ -1,0 +1,33 @@
+Current terminal state:
+New Terminal Output:
+
+root@bb40ba43d60f:/app# head -n 15 /app/src/main.c | nl -ba
+     1  #include <microhttpd.h>
+     2  #include <stdio.h>
+     3  #include <string.h>
+     4  #include <stdlib.h>
+     5  #include <signal.h>
+     6  #include <sys/stat.h>
+     7  #include <strings.h>
+     8  #include <unistd.h>
+     9
+    10  #include "routes.h"
+    11  #include "db.h"
+    12
+    13  #define PORT 8080
+    14  #define WWW_DIR "/app/www"
+    15
+[1]+  Done                    ./notes_server > /tmp/notes_server.log 2>&1
+root@bb40ba43d60f:/app# make clean && make -j"$(nproc)"
+rm -f notes_server
+gcc -Wall -Wextra -O2 -Iinclude -o notes_server src/main.c src/routes.c src/static.c src/db.c src/auth.c -lmicrohttpd -lsqlite3
+src/routes.c:42:13: warning: ‘request_completed’ defined but not used [-Wunused-function]
+   42 | static void request_completed(void *cls, struct MHD_Connection *connection,
+      |             ^~~~~~~~~~~~~~~~~
+root@bb40ba43d60f:/app# file /app/notes_server
+/app/notes_server: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, BuildID[sha1]=7c736b0c7
+188801e7b35d1a4379880943c101636, for GNU/Linux 3.2.0, not stripped
+root@bb40ba43d60f:/app#
+
+
+Are you sure you want to mark the task as complete? This will trigger your solution to be graded and you won't be able to make any further corrections. If so, include "task_complete": true in your JSON response again.

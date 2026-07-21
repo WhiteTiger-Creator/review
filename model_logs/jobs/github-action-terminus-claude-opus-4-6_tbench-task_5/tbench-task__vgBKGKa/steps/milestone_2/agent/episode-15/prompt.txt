@@ -1,0 +1,43 @@
+Previous response had warnings:
+WARNINGS: - Command 1 should end with newline when followed by another command. Otherwise the two commands will be concatenated together on the same line.
+
+New Terminal Output:
+ount
+curl -s 'http://localhost:8080/api/notes?limit=100' | grep -o '"id"' | wc -l
+^C
+[2]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "
+{\"title\":\"Concurrent $i\",\"content\":\"Body $i\"}"
+[3]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "
+{\"title\":\"Concurrent $i\",\"content\":\"Body $i\"}"
+[4]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "
+{\"title\":\"Concurrent $i\",\"content\":\"Body $i\"}"
+[5]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "
+{\"title\":\"Concurrent $i\",\"content\":\"Body $i\"}"
+[6]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "
+{\"title\":\"Concurrent $i\",\"content\":\"Body $i\"}"
+[7]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "
+{\"title\":\"Concurrent $i\",\"content\":\"Body $i\"}"
+[8]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "
+{\"title\":\"Concurrent $i\",\"content\":\"Body $i\"}"
+[9]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "
+{\"title\":\"Concurrent $i\",\"content\":\"Body $i\"}"
+[10]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d
+"{\"title\":\"Concurrent $i\",\"content\":\"Body $i\"}"
+[11]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d
+"{\"title\":\"Concurrent $i\",\"content\":\"Body $i\"}"
+[12]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d
+"{\"title\":\"Concurrent $i\",\"content\":\"Body $i\"}"
+[13]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d
+"{\"title\":\"Concurrent $i\",\"content\":\"Body $i\"}"
+[14]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d
+"{\"title\":\"Concurrent $i\",\"content\":\"Body $i\"}"
+[15]-  Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d
+"{\"title\":\"Concurrent $i\",\"content\":\"Body $i\"}"
+[16]+  Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d
+"{\"title\":\"Concurrent $i\",\"content\":\"Body $i\"}"
+root@78f42a19e0d4:/app#
+root@78f42a19e0d4:/app# curl -s -D - 'http://localhost:8080/api/notes?limit=100' 2>&1 | grep X-Total-Count
+X-Total-Count: 15
+root@78f42a19e0d4:/app# curl -s 'http://localhost:8080/api/notes?limit=100' | grep -o '"id"' | wc -l
+15
+root@78f42a19e0d4:/app#

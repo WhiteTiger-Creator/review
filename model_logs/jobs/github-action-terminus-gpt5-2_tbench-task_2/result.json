@@ -1,0 +1,30 @@
+{
+    "id": "a897d758-5066-4e79-9d6c-ce5c053b1f45",
+    "started_at": "2026-05-26T12:40:22.752358",
+    "finished_at": "2026-05-26T12:58:31.403488",
+    "n_total_trials": 1,
+    "stats": {
+        "n_trials": 1,
+        "n_errors": 0,
+        "evals": {
+            "terminus-2__@openai/gpt-5.2__adhoc": {
+                "n_trials": 1,
+                "n_errors": 0,
+                "metrics": [
+                    {
+                        "mean": 0.3333333333333333
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "0.3333333333333333": [
+                            "tbench-task__Dpft8Sa"
+                        ]
+                    }
+                },
+                "exception_stats": {}
+            }
+        }
+    }
+}

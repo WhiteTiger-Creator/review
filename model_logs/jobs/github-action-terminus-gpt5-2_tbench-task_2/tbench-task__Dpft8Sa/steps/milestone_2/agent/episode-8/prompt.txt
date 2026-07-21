@@ -1,0 +1,112 @@
+New Terminal Output:
+
+root@972cf0f30065:/app# cat >/app/src/auth.c <<'EOF'
+> #include "auth.h"
+>
+> #include <ctype.h>
+> #include <stdio.h>
+> #include <stdlib.h>
+> #include <string.h>
+>
+> static char *g_api_key = NULL;
+>
+> static void rstrip_inplace(char *s) {
+>     if (!s) return;
+>     size_t n = strlen(s);
+>     while (n > 0 && isspace((unsigned char)s[n - 1])) {
+>         s[n - 1] = '\0';
+>         n--;
+>     }
+> }
+>
+> static char *lstrip(char *s) {
+>     while (s && *s && isspace((unsigned char)*s)) s++;
+>     return s;
+> }
+>
+> static const char *load_api_key(void) {
+>     if (g_api_key) return g_api_key;
+>
+>     FILE *f = fopen("/app/config/api.key", "rb");
+>     if (!f) {
+>         g_api_key = strdup("");
+>         return g_api_key;
+>     }
+>
+>     char buf[4096];
+>     size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+>     fclose(f);
+>     buf[n] = '\0';
+>
+>     char *s = lstrip(buf);
+>     rstrip_inplace(s);
+>
+>     g_api_key = strdup(s);
+>     if (!g_api_key) g_api_key = strdup("");
+>     return g_api_key;
+> }
+>
+> int api_key_valid(struct MHD_Connection *connection) {
+>     const char *want = load_api_key();
+>     const char *got = MHD_lookup_connection_value(connection, MHD_HEADER_KIND, "X-API-Key");
+>
+>     if (!want || want[0] == '\0') return 0;
+>     if (!got) return 0;
+>     return strcmp(want, got) == 0;
+> }
+> EOF
+root@972cf0f30065:/app# sed -n '1,220p' /app/src/auth.c
+#include "auth.h"
+
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static char *g_api_key = NULL;
+
+static void rstrip_inplace(char *s) {
+    if (!s) return;
+    size_t n = strlen(s);
+    while (n > 0 && isspace((unsigned char)s[n - 1])) {
+        s[n - 1] = '\0';
+        n--;
+    }
+}
+
+static char *lstrip(char *s) {
+    while (s && *s && isspace((unsigned char)*s)) s++;
+    return s;
+}
+
+static const char *load_api_key(void) {
+    if (g_api_key) return g_api_key;
+
+    FILE *f = fopen("/app/config/api.key", "rb");
+    if (!f) {
+        g_api_key = strdup("");
+        return g_api_key;
+    }
+
+    char buf[4096];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+
+    char *s = lstrip(buf);
+    rstrip_inplace(s);
+
+    g_api_key = strdup(s);
+    if (!g_api_key) g_api_key = strdup("");
+    return g_api_key;
+}
+
+int api_key_valid(struct MHD_Connection *connection) {
+    const char *want = load_api_key();
+    const char *got = MHD_lookup_connection_value(connection, MHD_HEADER_KIND, "X-API-Key");
+
+    if (!want || want[0] == '\0') return 0;
+    if (!got) return 0;
+    return strcmp(want, got) == 0;
+}
+root@972cf0f30065:/app#

@@ -1,0 +1,110 @@
+New Terminal Output:
+
+root@08d5c4164ec3:/app# cat > /app/src/auth.c <<'EOF'
+> #include "auth.h"
+>
+> #include <ctype.h>
+> #include <stdio.h>
+> #include <stdlib.h>
+> #include <string.h>
+>
+> #define API_KEY_PATH "/app/config/api.key"
+>
+> static char *cached_key = NULL;
+>
+> static void trim_in_place(char *s) {
+>     if (!s) return;
+>
+>     size_t len = strlen(s);
+>     while (len > 0 && isspace((unsigned char)s[len - 1])) {
+>         s[len - 1] = '\0';
+>         len--;
+>     }
+>
+>     size_t i = 0;
+>     while (s[i] && isspace((unsigned char)s[i])) i++;
+>     if (i > 0) memmove(s, s + i, strlen(s + i) + 1);
+> }
+>
+> static const char *get_api_key(void) {
+>     if (cached_key) return cached_key;
+>
+>     FILE *f = fopen(API_KEY_PATH, "rb");
+>     if (!f) return NULL;
+>
+>     char buf[256];
+>     size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+>     fclose(f);
+>     buf[n] = '\0';
+>
+>     trim_in_place(buf);
+>     cached_key = strdup(buf);
+>     return cached_key;
+> }
+>
+> int api_key_valid(struct MHD_Connection *connection) {
+>     const char *expected = get_api_key();
+>     if (!expected || expected[0] == '\0') return 0;
+>
+>     const char *provided = MHD_lookup_connection_value(connection,
+>                                                        MHD_HEADER_KIND,
+>                                                        "X-API-Key");
+>     if (!provided) return 0;
+>
+>     return strcmp(provided, expected) == 0;
+> }
+> EOF
+root@08d5c4164ec3:/app# sed -n '1,200p' /app/src/auth.c
+#include "auth.h"
+
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define API_KEY_PATH "/app/config/api.key"
+
+static char *cached_key = NULL;
+
+static void trim_in_place(char *s) {
+    if (!s) return;
+
+    size_t len = strlen(s);
+    while (len > 0 && isspace((unsigned char)s[len - 1])) {
+        s[len - 1] = '\0';
+        len--;
+    }
+
+    size_t i = 0;
+    while (s[i] && isspace((unsigned char)s[i])) i++;
+    if (i > 0) memmove(s, s + i, strlen(s + i) + 1);
+}
+
+static const char *get_api_key(void) {
+    if (cached_key) return cached_key;
+
+    FILE *f = fopen(API_KEY_PATH, "rb");
+    if (!f) return NULL;
+
+    char buf[256];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+
+    trim_in_place(buf);
+    cached_key = strdup(buf);
+    return cached_key;
+}
+
+int api_key_valid(struct MHD_Connection *connection) {
+    const char *expected = get_api_key();
+    if (!expected || expected[0] == '\0') return 0;
+
+    const char *provided = MHD_lookup_connection_value(connection,
+                                                       MHD_HEADER_KIND,
+                                                       "X-API-Key");
+    if (!provided) return 0;
+
+    return strcmp(provided, expected) == 0;
+}
+root@08d5c4164ec3:/app#

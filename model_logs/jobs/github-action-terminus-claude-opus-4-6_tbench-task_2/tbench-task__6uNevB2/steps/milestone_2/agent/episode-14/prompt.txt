@@ -1,0 +1,44 @@
+Previous response had warnings:
+WARNINGS: - Command 1 should end with newline when followed by another command. Otherwise the two commands will be concatenated together on the same line.
+
+Current Terminal Screen:
+Content 9"}{"id":8,"title":"Note 6","content":"Content 6"}{"id":9,"title":"Note 5","content":"Content 5"}{"id":10,"title":"Note 4","content":"Content 4"}{"id":1
+1,"title":"Note 13","content":"Content 13"}{"id":12,"title":"Note 15","content":"Content 15"}{"id":13,"title":"Note 12","content":"Content 12"}{"id":14,"title":
+"Note 14","content":"Content 14"}{"id":15,"title":"Note 11","content":"Content 11"}curl -s http://localhost:8080/api/notes -D - 2>&1 | grep X-Total-Count
+
+curl -s http://localhost:8080/api/notes -D - 2>&1 | grep X-Total-Count
+curl -s -D /tmp/headers http://localhost:8080/api/notes > /tmp/body && grep X-Total-Count /tmp/headers
+
+^C
+[2]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "
+{\"title\":\"Note $i\",\"content\":\"Content $i\"}"
+[3]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "
+{\"title\":\"Note $i\",\"content\":\"Content $i\"}"
+[4]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "
+{\"title\":\"Note $i\",\"content\":\"Content $i\"}"
+[5]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "
+{\"title\":\"Note $i\",\"content\":\"Content $i\"}"
+[6]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "
+{\"title\":\"Note $i\",\"content\":\"Content $i\"}"
+[7]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "
+{\"title\":\"Note $i\",\"content\":\"Content $i\"}"
+[8]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "
+{\"title\":\"Note $i\",\"content\":\"Content $i\"}"
+[9]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d "
+{\"title\":\"Note $i\",\"content\":\"Content $i\"}"
+[10]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d
+"{\"title\":\"Note $i\",\"content\":\"Content $i\"}"
+[11]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d
+"{\"title\":\"Note $i\",\"content\":\"Content $i\"}"
+[12]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d
+"{\"title\":\"Note $i\",\"content\":\"Content $i\"}"
+[13]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d
+"{\"title\":\"Note $i\",\"content\":\"Content $i\"}"
+[14]   Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d
+"{\"title\":\"Note $i\",\"content\":\"Content $i\"}"
+[15]-  Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d
+"{\"title\":\"Note $i\",\"content\":\"Content $i\"}"
+[16]+  Done                    curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d
+"{\"title\":\"Note $i\",\"content\":\"Content $i\"}"
+root@10c43992d5dc:/app#
+root@10c43992d5dc:/app#

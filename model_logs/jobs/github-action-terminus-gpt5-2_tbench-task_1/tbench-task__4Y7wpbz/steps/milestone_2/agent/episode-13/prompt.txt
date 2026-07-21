@@ -1,0 +1,41 @@
+Current Terminal Screen:
+        ^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/http/client.py", line 1450, in getresponse
+    response.begin()
+  File "/usr/local/lib/python3.12/http/client.py", line 336, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/http/client.py", line 305, in _read_status
+    raise RemoteDisconnected("Remote end closed connection without"
+http.client.RemoteDisconnected: Remote end closed connection without response
+root@ade5f5ea62db:/app# before=$(curl -s -D- http://127.0.0.1:8080/api/notes -o /dev/null | awk -F': ' 'tolower($1)=="x-total-count"{print $2}' | tr -d '\r'); e
+cho "before=$before"
+before=0
+root@ade5f5ea62db:/app# seq 1 15 | xargs -n1 -P15 -I{} sh -c "curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/api/notes -H 'Content-Type:
+ application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' --data '{\"title\":\"p{}\",\"content\":\"c{}\"}'" | sort | uniq -c
+xargs: warning: options --max-args and --replace/-I/-i are mutually exclusive, ignoring previous --max-args value
+     15 201
+root@ade5f5ea62db:/app# after=$(curl -s -D- http://127.0.0.1:8080/api/notes -o /dev/null | awk -F': ' 'tolower($1)=="x-total-count"{print $2}' | tr -d '\r'); ec
+ho "after=$after"
+after=15
+root@ade5f5ea62db:/app# curl -s http://127.0.0.1:8080/api/notes?limit=100&offset=0 | python3 -c 'import sys,json; a=json.load(sys.stdin); print("rows",len(a))'
+[4] 1694
+[{"id":2,"title":"p2","content":"c2"},{"id":3,"title":"p1","content":"c1"},{"id":4,"title":"p3","content":"c3"},{"id":5,"title":"p4","content":"c4"},{"id":6,"ti
+tle":"p5","content":"c5"},{"id":7,"title":"p9","content":"c9"},{"id":8,"title":"p6","content":"c6"},{"id":9,"title":"p7","content":"c7"},{"id":10,"title":"p8","
+content":"c8"},{"id":11,"title":"p10","content":"c10"},{"id":12,"title":"p12","content":"c12"},{"id":13,"title":"p11","content":"c11"},{"id":14,"title":"p14","c
+ontent":"c14"},{"id":15,"title":"p13","content":"c13"},{"id":16,"title":"p15","content":"c15"}]Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "/usr/local/lib/python3.12/json/__init__.py", line 293, in load
+    return loads(fp.read(),
+           ^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/json/decoder.py", line 338, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/json/decoder.py", line 356, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+[4]+  Done                    curl -s http://127.0.0.1:8080/api/notes?limit=100
+root@ade5f5ea62db:/app#

@@ -1,0 +1,40 @@
+New Terminal Output:
+
+root@10c43992d5dc:/app# cat /app/Makefile
+CC = gcc
+CFLAGS = -Wall -Wextra -Isrc -Iinclude
+LDFLAGS = -lmicrohttpd -lsqlite3 -lpthread
+
+SOURCES = src/main.c src/routes.c src/db.c src/auth.c
+TARGET = notes_server
+
+$(TARGET): $(SOURCES)
+        $(CC) $(CFLAGS) -o $(TARGET) $(SOURCES) $(LDFLAGS)
+
+clean:
+        rm -f $(TARGET)
+root@10c43992d5dc:/app# ps aux | grep -v grep | grep -E 'node|python|nginx|http'
+bash: ps: command not found
+root@10c43992d5dc:/app# curl -s http://localhost:8080/app.js | head -5
+var API = '/api/notes';
+
+var editingId = null;
+
+async function fetchNotes() {
+root@10c43992d5dc:/app# curl -s http://localhost:8080/api/notes
+[{"id":2,"title":"Second","content":"World"},{"id":3,"title":"KeyFile Check","content":"body"},{"id":4,"title":"DB Path Check","content":"persistence"},{"id":5,
+"title":"Status Check","content":"Body"},{"id":6,"title":"ID Check","content":"Body"},{"id":7,"title":"Echo Title","content":"Echo Body"},{"id":8,"title":"Array
+ Test","content":"Body"},{"id":9,"title":"Find Me","content":"In the List"},{"id":10,"title":"Single Fetch","content":"Unique Body"},{"id":11,"title":"Updated N
+ame","content":"New"},{"id":12,"title":"Before","content":"Body"},{"id":13,"title":"Before","content":"Body"},{"id":15,"title":"Headers POST","content":"check"}
+,{"id":16,"title":"Headers PUT","content":"after"},{"id":18,"title":"Headers GET1","content":"single"},{"id":19,"title":"Auth Put","content":"Before"},{"id":20,
+"title":"Auth Del","content":"Target"},{"id":21,"title":"Put Wrong Key","content":"target"},{"id":22,"title":"Del Wrong Key","content":"target"},{"id":23,"title
+":"Public Read","content":"Accessible"},{"id":24,"title":"Paginate 0","content":"Body 0"},{"id":25,"title":"Paginate 1","content":"Body 1"},{"id":26,"title":"Pa
+ginate 2","content":"Body 2"},{"id":27,"title":"Paginate 3","content":"Body 3"},{"id":28,"title":"Paginate 4","content":"Body 4"},{"id":29,"title":"OffsetTest 0
+","content":"Body 0"},{"id":30,"title":"OffsetTest 1","content":"Body 1"},{"id":31,"title":"OffsetTest 2","content":"Body 2"},{"id":32,"title":"OffsetTest 3","c
+ontent":"Body 3"},{"id":33,"title":"OffsetTest 4","content":"Body 4"},{"id":34,"title":"CountHdr 0","content":"Body 0"},{"id":35,"title":"CountHdr 1","content":
+"Body 1"},{"id":36,"title":"CountHdr 2","content":"Body 2"},{"id":37,"title":"CountHdr 3","content":"Body 3"},{"id":38,"title":"CountHdr 4","content":"Body 4"},
+{"id":39,"title":"DefLimit 0","content":"Body 0"},{"id":40,"title":"DefLimit 1","content":"Body 1"},{"id":41,"title":"DefLimit 2","content":"Body 2"},{"id":42,"
+title":"DefLimit 3","content":"Body 3"},{"id":43,"title":"DefLimit 4","content":"Body 4"},{"id":44,"title":"DefLimit 5","content":"Body 5"},{"id":45,"title":"De
+fLimit 6","content":"Body 6"},{"id":46,"title":"DefLimit 7","content":"Body 7"},{"id":47,"title":"DefLimit 8","content":"Body 8"},{"id":48,"title":"DefLimit 9",
+"content":"Body 9"},{"id":49,"title":"DefLimit 10","content":"Body 10"},{"id":50,"title":"DefLimit 11","content":"Body 11"},{"id":51,"title":"DefLimit 12","cont
+ent":"Body 12"},{"id":52,"title":"DefLimit 13","content":"Body 13"},{"id":53,"title":"DefLimit 14","content":"Body 14"}]root@10c43992d5dc:/app#

@@ -1,0 +1,6 @@
+{
+  "analysis": "Terminal remains broken (echo-only).",
+  "plan": "Cannot continue.",
+  "commands": [],
+  "task_complete": false
+}

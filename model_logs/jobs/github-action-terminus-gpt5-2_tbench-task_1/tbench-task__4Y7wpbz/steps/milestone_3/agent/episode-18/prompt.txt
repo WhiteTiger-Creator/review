@@ -1,0 +1,41 @@
+Current Terminal Screen:
+>             *con_cls = NULL;
+>         }
+>         return rr;
+>     }
+>
+>     if (strcmp(method, "DELETE") == 0 && parse_id_from_url(url, &id)) {
+>         if (!api_key_valid(connection))
+>             return send_json(connection, "{\"error\":\"unauthorized\"}", MHD_HTTP_UNAUTHORIZED);
+>         if (!note_exists(id))
+>             return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+>         if (!delete_note(id))
+>             return send_json(connection, "{\"error\":\"server error\"}", MHD_HTTP_INTERNAL_SERVER_ERROR);
+>         return send_json(connection, "{\"status\":\"deleted\"}", MHD_HTTP_OK);
+>     }
+>
+>     return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+> }
+> EOF
+root@ade5f5ea62db:/app# make -C /app
+make: Entering directory '/app'
+gcc -Wall -Wextra -Iinclude -Isrc -o notes_server src/main.c src/routes.c src/db.c src/static.c src/auth.c -lmicrohttpd -lsqlite3
+src/routes.c: In function ‘route_request’:
+src/routes.c:284:29: error: implicit declaration of function ‘serve_static’; did you mean ‘serve_static_file’? [-Wimplicit-function-declaration]
+  284 |         enum MHD_Result r = serve_static(connection, url);
+      |                             ^~~~~~~~~~~~
+      |                             serve_static_file
+make: *** [Makefile:10: notes_server] Error 1
+make: Leaving directory '/app'
+root@ade5f5ea62db:/app# nohup /app/notes_server > /app/server.log 2>&1 & echo $! > /app/server.pid
+[1] 3986
+root@ade5f5ea62db:/app# sleep 0.2; curl -sS -D- http://localhost:8080/app.js -o /dev/null | head -n 1
+[1]+  Exit 127                nohup /app/notes_server > /app/server.log 2>&1
+curl: (7) Failed to connect to localhost port 8080 after 0 ms: Could not connect to server
+root@ade5f5ea62db:/app# curl -sS -D- http://localhost:8080/config/api.key -o /tmp/apikey.out | head -n 20; echo; tail -n 2 /tmp/apikey.out
+curl: (7) Failed to connect to localhost port 8080 after 0 ms: Could not connect to server
+
+Not Foundroot@ade5f5ea62db:/app# curl -sS http://localhost:8080/api/notes -o /tmp/notes.json && head -c 120 /tmp/notes.json; echo
+curl: (7) Failed to connect to localhost port 8080 after 0 ms: Could not connect to server
+
+root@ade5f5ea62db:/app#

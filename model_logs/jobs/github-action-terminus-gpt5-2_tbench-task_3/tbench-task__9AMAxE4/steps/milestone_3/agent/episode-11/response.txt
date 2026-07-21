@@ -1,0 +1,23 @@
+{
+  "analysis": "We now have line-numbered view around update_note, indicating nl/sed worked, but we still need the top section (init_db) and insert_note lines. We'll query for insert_note/init_db line numbers and print those specific regions.",
+  "plan": "Use nl+grep to locate init_db and insert_note, then print those ranges. Then patch if insert_note is missing COMMIT/ROLLBACK or has SQL error. After patch, rebuild and restart server, then retest POST.",
+  "commands": [
+    {
+      "keystrokes": "nl -ba /app/src/db.c | grep -n \"int init_db\" \n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "nl -ba /app/src/db.c | grep -n \"int insert_note\" \n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "nl -ba /app/src/db.c | sed -n '1,90p'\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "nl -ba /app/src/db.c | sed -n '280,340p'\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

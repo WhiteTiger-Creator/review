@@ -1,0 +1,41 @@
+Current Terminal Screen:
+    return ret;
+}
+
+static char *json_get_string(const char *json, const char *key) {
+    char search[256];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char *p = strstr(json, search);
+    if (!p) return NULL;
+    p += strlen(search);
+    while (*p && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
+    if (*p != ':') return NULL;
+    p++;
+    while (*p && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
+    if (*p == 'n' && strncmp(p, "null", 4) == 0) return NULL;
+    if (*p != '"') return NULL;
+    p++;
+    size_t cap = 1024;
+    char *result = malloc(cap);
+    size_t len = 0;
+    while (*p && *p != '"') {
+        if (len + 6 >= cap) {
+            cap *= 2;
+            result = realloc(result, cap);
+        }
+        if (*p == '\\') {
+            p++;
+            switch (*p) {
+                case '"': result[len++] = '"'; break;
+                case '\\': result[len++] = '\\'; break;
+                case '/': result[len++] = '/'; break;
+                case 'n': result[len++] = '\n'; break;
+                case 'r': result[len++] = '\r'; break;
+                case 't': result[len++] = '\t'; break;
+                case 'b': result[len++] = '\b'; break;
+                case 'f': result[len++] = '\f'; break;
+                case 'u': {
+                    result[len++] = '\\'; result[len++] = 'u';
+                    for (int i = 0; i < 4 && p[1]; i++) {
+                        p++;
+root@1ebded0d6da5:/app#

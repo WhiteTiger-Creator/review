@@ -1,0 +1,75 @@
+New Terminal Output:
+
+root@bb40ba43d60f:/app# grep -n 'url_contains_encoded_dotdot\|serve_static_file' -n /app/src/main.c
+32:static int url_contains_encoded_dotdot(const char *url) {
+42:static enum MHD_Result serve_static_file(struct MHD_Connection *connection,
+44:    if (strstr(url, "..") != NULL || url_contains_encoded_dotdot(url)) {
+99:        enum MHD_Result ret = serve_static_file(connection, url);
+[1]+  Done                    ./notes_server > /tmp/notes_server.log 2>&1
+root@bb40ba43d60f:/app# perl -0777 -i -pe 's/static int url_contains_encoded_dotdot\(const char \*url\) \{.*?\n\}\n\n/static int hexval(char c) {\n    if (c >=
+'\''0'\'' && c <= '\''9'\'') return c - '\''0'\'';\n    if (c >= '\''a'\'' && c <= '\''f'\'') return 10 + (c - '\''a'\'');\n    if (c >= '\''A'\'' && c <= '\''F
+'\'') return 10 + (c - '\''A'\'');\n    return -1;\n}\n\n// Decode %XX in URL paths. Keeps other bytes as-is.\n// Returns 0 on success, -1 on error\/overflow.\n
+static int url_percent_decode(const char *in, char *out, size_t out_sz) {\n    size_t oi = 0;\n    for (size_t i = 0; in[i] != "\\0"; i++) {\n        if (oi + 1
+ >= out_sz) return -1;\n        if (in[i] == "%%" && in[i+1] && in[i+2]) {\n            int hi = hexval(in[i+1]);\n            int lo = hexval(in[i+2]);\n
+      if (hi < 0 || lo < 0) return -1;\n            out[oi++] = (char)((hi << 4) | lo);\n            i += 2;\n        } else {\n            out[oi++] = in[i];\n
+        }\n    }\n    out[oi] = "\\0";\n    return 0;\n}\n\nstatic int decoded_path_has_dotdot_segment(const char *path) {\n    const char *p = path;\n    while
+ (*p) {\n        while (*p == "\/"[0]) p++;\n        if (!*p) break;\n        const char *seg = p;\n        while (*p && *p != "\/"[0]) p++;\n        size_t len
+ = (size_t)(p - seg);\n        if (len == 2 && seg[0] == "\."[0] && seg[1] == "\."[0]) return 1;\n    }\n    return 0;\n}\n\n/sms' /app/src/main.c
+Number found where operator expected (Do you need to predeclare "Returns"?) at -e line 1, near "Returns 0"
+syntax error at -e line 1, near "Returns 0"
+Execution of -e aborted due to compilation errors.
+root@bb40ba43d60f:/app# perl -0777 -i -pe 's/if \(strstr\(url, "\.\."\) != NULL \|\| url_contains_encoded_dotdot\(url\)\) \{\n/char decoded[512];\n    if (url_p
+ercent_decode(url, decoded, sizeof(decoded)) != 0) {\n        struct MHD_Response *r = MHD_create_response_from_buffer(\n            9, (void *)"Forbidden", MHD
+_RESPMEM_PERSISTENT);\n        enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_FORBIDDEN, r);\n        MHD_destroy_response(r);\n        return re
+t;\n    }\n\n    if (decoded_path_has_dotdot_segment(decoded)) {\n/sms' /app/src/main.c
+root@bb40ba43d60f:/app# gcc -fsyntax-only -Wall -Wextra -Iinclude /app/src/main.c
+/app/src/main.c: In function ‘serve_static_file’:
+/app/src/main.c:45:9: error: implicit declaration of function ‘url_percent_decode’ [-Wimplicit-function-declaration]
+   45 |     if (url_percent_decode(url, decoded, sizeof(decoded)) != 0) {
+      |         ^~~~~~~~~~~~~~~~~~
+/app/src/main.c:53:9: error: implicit declaration of function ‘decoded_path_has_dotdot_segment’ [-Wimplicit-function-declaration]
+   53 |     if (decoded_path_has_dotdot_segment(decoded)) {
+      |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+root@bb40ba43d60f:/app# make clean && make -j"$(nproc)"
+rm -f notes_server
+gcc -Wall -Wextra -O2 -Iinclude -o notes_server src/main.c src/routes.c src/static.c src/db.c src/auth.c -lmicrohttpd -lsqlite3
+src/main.c: In function ‘serve_static_file’:
+src/main.c:45:9: error: implicit declaration of function ‘url_percent_decode’ [-Wimplicit-function-declaration]
+   45 |     if (url_percent_decode(url, decoded, sizeof(decoded)) != 0) {
+      |         ^~~~~~~~~~~~~~~~~~
+src/main.c:53:9: error: implicit declaration of function ‘decoded_path_has_dotdot_segment’ [-Wimplicit-function-declaration]
+   53 |     if (decoded_path_has_dotdot_segment(decoded)) {
+      |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/main.c: At top level:
+src/main.c:32:12: warning: ‘url_contains_encoded_dotdot’ defined but not used [-Wunused-function]
+   32 | static int url_contains_encoded_dotdot(const char *url) {
+      |            ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/routes.c:42:13: warning: ‘request_completed’ defined but not used [-Wunused-function]
+   42 | static void request_completed(void *cls, struct MHD_Connection *connection,
+      |             ^~~~~~~~~~~~~~~~~
+make: *** [Makefile:16: notes_server] Error 1
+root@bb40ba43d60f:/app# ./notes_server > /tmp/notes_server.log 2>&1 & echo $! > /tmp/notes_server.pid
+[1] 814
+root@bb40ba43d60f:/app# sleep 0.2; curl -i 'http://127.0.0.1:8080/%2e%2e/README.md' | head -n 20
+[1]+  Exit 127                ./notes_server > /tmp/notes_server.log 2>&1
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+root@bb40ba43d60f:/app# curl -i 'http://127.0.0.1:8080/%2E%2E/README.md' | head -n 20
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+root@bb40ba43d60f:/app# curl -i 'http://127.0.0.1:8080/%2e%2e%2fREADME.md' | head -n 20
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+root@bb40ba43d60f:/app# curl -i http://127.0.0.1:8080/api/notes | head -n 20
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 1 ms: Could not connect to server
+root@bb40ba43d60f:/app# kill $(cat /tmp/notes_server.pid) 2>/dev/null || true
+root@bb40ba43d60f:/app#

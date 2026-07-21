@@ -1,0 +1,62 @@
+New Terminal Output:
+ 2
+
+[]root@972cf0f30065:/app# curl -si -X POST http://127.0.0.1:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{"t
+itle":"t2","content":"c2"}' | head -n 40
+HTTP/1.1 201 Created
+Connection: close
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+Content-Length: 36
+
+{"id":2,"title":"t2","content":"c2"}root@972cf0f30065:/app# curl -si http://127.0.0.1:8080/api/notes/2 | head -n 40
+HTTP/1.1 200 OK
+Connection: close
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+Content-Length: 36
+
+{"id":2,"title":"t2","content":"c2"}root@972cf0f30065:/app# curl -si http://127.0.0.1:8080/api/notes/99999 | head -n 40
+HTTP/1.1 404 Not Found
+Connection: close
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+Content-Length: 21
+
+{"error":"not found"}root@972cf0f30065:/app# curl -si -X PUT http://127.0.0.1:8080/api/notes/2 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_
+secret_2026' -d '{"title":" ","content":"x"}' | head -n 40
+HTTP/1.1 400 Bad Request
+Connection: close
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+Content-Length: 25
+
+{"error":"invalid title"}root@972cf0f30065:/app# curl -si -X PUT http://127.0.0.1:8080/api/notes/99999 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_no
+tes_api_secret_2026' -d '{"title":"ok","content":"x"}' | head -n 40
+HTTP/1.1 404 Not Found
+Connection: close
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+Content-Length: 21
+
+{"error":"not found"}root@972cf0f30065:/app# curl -si http://127.0.0.1:8080/api/notes | head -n 40
+HTTP/1.1 200 OK
+Connection: close
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+X-Total-Count: 1
+Content-Length: 38
+
+[{"id":2,"title":"t2","content":"c2"}]root@972cf0f30065:/app#

@@ -1,0 +1,41 @@
+Current Terminal Screen:
+path) {\n    FILE *f = fopen(path, "rb");\n    if (!f) return send_json(connection, "{\\\"error\\\":\\\"not found\\\"}", MHD_HTTP_NOT_FOUND);\n    fseek(f, 0, S
+EEK_END);\n    long n = ftell(f);\n    fseek(f, 0, SEEK_SET);\n    if (n < 0 || n > 1024 * 1024) { fclose(f); return send_json(connection, "{\\\"error\\\":\\\"s
+erver error\\\"}", MHD_HTTP_INTERNAL_SERVER_ERROR); }\n    char *buf = (char*)calloc((size_t)n + 1, 1);\n    if (!buf) { fclose(f); return send_json(connection,
+ "{\\\"error\\\":\\\"server error\\\"}", MHD_HTTP_INTERNAL_SERVER_ERROR); }\n    size_t r = fread(buf, 1, (size_t)n, f);\n    fclose(f);\n    buf[r] = "\\0"[0];
+\n    enum MHD_Result ret = send_text(connection, buf, MHD_HTTP_OK);\n    free(buf);\n    return ret;\n}\n\n@sm' /app/src/routes.c
+root@ade5f5ea62db:/app# make -C /app
+make: Entering directory '/app'
+gcc -Wall -Wextra -Iinclude -Isrc -o notes_server src/main.c src/routes.c src/db.c src/static.c src/auth.c -lmicrohttpd -lsqlite3
+src/routes.c: In function ‘handle_post_put_body’:
+src/routes.c:201:13: warning: Value MHD_HTTP_PAYLOAD_TOO_LARGE is deprecated use MHD_HTTP_CONTENT_TOO_LARGE
+  201 |         return send_json(connection, "{\"error\":\"payload too large\"}", MHD_HTTP_PAYLOAD_TOO_LARGE);
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/routes.c: In function ‘route_request’:
+src/routes.c:269:16: error: implicit declaration of function ‘send_file_text’ [-Wimplicit-function-declaration]
+  269 |         return send_file_text(connection, API_KEY_PATH);
+      |                ^~~~~~~~~~~~~~
+src/routes.c:269:43: error: ‘API_KEY_PATH’ undeclared (first use in this function)
+  269 |         return send_file_text(connection, API_KEY_PATH);
+      |                                           ^~~~~~~~~~~~
+src/routes.c:269:43: note: each undeclared identifier is reported only once for each function it appears in
+src/routes.c:311:13: warning: Value MHD_HTTP_PAYLOAD_TOO_LARGE is deprecated use MHD_HTTP_CONTENT_TOO_LARGE
+  311 |                 return send_json(connection, "{\"error\":\"payload too large\"}", MHD_HTTP_PAYLOAD_TOO_LARGE);
+      |             ^   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/routes.c:326:13: warning: Value MHD_HTTP_PAYLOAD_TOO_LARGE is deprecated use MHD_HTTP_CONTENT_TOO_LARGE
+  326 |                 return send_json(connection, "{\"error\":\"payload too large\"}", MHD_HTTP_PAYLOAD_TOO_LARGE);
+      |             ^   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+make: *** [Makefile:10: notes_server] Error 1
+make: Leaving directory '/app'
+root@ade5f5ea62db:/app# kill -TERM $(cat /app/server.pid) 2>/dev/null || true
+root@ade5f5ea62db:/app# nohup /app/notes_server > /app/server.log 2>&1 & echo $! > /app/server.pid
+[5] 3664
+[4]   Done                    nohup /app/notes_server > /app/server.log 2>&1
+root@ade5f5ea62db:/app# sleep 0.2; curl -sS -D- http://localhost:8080/config/api.key -o /tmp/apikey.out | head -n 20; echo; tail -n 2 /tmp/apikey.out
+HTTP/1.1 404 Not Found
+Date: Tue, 26 May 2026 12:55:33 GMT
+Connection: close
+Content-Length: 9
+
+
+Not Foundroot@ade5f5ea62db:/app#

@@ -1,0 +1,6 @@
+New Terminal Output:
+
+echo test2
+/bin/bash
+echo revived
+

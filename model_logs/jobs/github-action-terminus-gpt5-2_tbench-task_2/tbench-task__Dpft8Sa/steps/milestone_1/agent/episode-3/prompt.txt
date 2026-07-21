@@ -1,0 +1,78 @@
+New Terminal Output:
+
+root@972cf0f30065:/app# cat > /app/Makefile <<'EOF'
+> CC = gcc
+> CFLAGS = -Wall -Wextra -O2 -Iinclude
+> LDFLAGS = -lmicrohttpd -lsqlite3
+>
+> SOURCES = \
+> src/main.c \
+> src/routes.c \
+> src/static.c \
+> src/db.c \
+> src/auth.c
+>
+> OBJECTS = $(SOURCES:.c=.o)
+> TARGET = notes_server
+>
+> all: $(TARGET)
+>
+> $(TARGET): $(OBJECTS)
+> $(CC) $(CFLAGS) -o $@ $(OBJECTS) $(LDFLAGS)
+>
+> %.o: %.c
+> $(CC) $(CFLAGS) -c -o $@ $<
+>
+> clean:
+> rm -f $(TARGET) $(OBJECTS)
+> EOF
+root@972cf0f30065:/app# make clean
+Makefile:18: *** missing separator.  Stop.
+root@972cf0f30065:/app# make -j"$(nproc)"
+Makefile:18: *** missing separator.  Stop.
+root@972cf0f30065:/app# file /app/notes_server
+/app/notes_server: cannot open `/app/notes_server' (No such file or directory)
+root@972cf0f30065:/app# ls -la /app/notes_server
+ls: cannot access '/app/notes_server': No such file or directory
+root@972cf0f30065:/app# ./notes_server >/tmp/notes_server.log 2>&1 & echo $! > /tmp/notes_server.pid
+[1] 314
+root@972cf0f30065:/app# sleep 0.2; curl -i http://127.0.0.1:8080/ | head -n 20
+[1]+  Exit 127                ./notes_server > /tmp/notes_server.log 2>&1
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+root@972cf0f30065:/app# curl -i http://127.0.0.1:8080/style.css | head -n 20
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+root@972cf0f30065:/app# curl -i http://127.0.0.1:8080/app.js | head -n 20
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+root@972cf0f30065:/app# curl -i http://127.0.0.1:8080/nonexistent.txt | head -n 20
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+root@972cf0f30065:/app# curl -i 'http://127.0.0.1:8080/../README.md' | head -n 20
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+root@972cf0f30065:/app# curl -i 'http://127.0.0.1:8080/%2e%2e/%2e%2e/etc/passwd' | head -n 20
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+root@972cf0f30065:/app# curl -i http://127.0.0.1:8080/api/notes | head -n 40
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Could not connect to server
+root@972cf0f30065:/app# kill -TERM "$(cat /tmp/notes_server.pid)"; sleep 0.2; tail -n 50 /tmp/notes_server.log
+bash: kill: (314) - No such process
+bash: ./notes_server: No such file or directory
+root@972cf0f30065:/app#

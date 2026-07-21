@@ -1,0 +1,230 @@
+{
+    "results": {
+        "tool": {
+            "name": "pytest",
+            "version": "8.4.1"
+        },
+        "summary": {
+            "tests": 22,
+            "passed": 18,
+            "failed": 4,
+            "skipped": 0,
+            "pending": 0,
+            "other": 0,
+            "start": 1779800154.3345006,
+            "stop": 1779800154.5062943
+        },
+        "tests": [
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_fetches_notes_on_load",
+                "status": "passed",
+                "duration": 0.01550834400018175,
+                "start": 1779800154.3854194,
+                "stop": 1779800154.4012861,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_renders_note_cards",
+                "status": "passed",
+                "duration": 0.0017742380000527191,
+                "start": 1779800154.4016063,
+                "stop": 1779800154.4035492,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_renders_edit_and_delete_buttons",
+                "status": "passed",
+                "duration": 0.0017134469999291468,
+                "start": 1779800154.4037845,
+                "stop": 1779800154.4056423,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_form_submit_posts_to_api",
+                "status": "passed",
+                "duration": 0.0018556129998614779,
+                "start": 1779800154.4058688,
+                "stop": 1779800154.407879,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_form_clears_after_create",
+                "status": "passed",
+                "duration": 0.0018440510000345967,
+                "start": 1779800154.4081109,
+                "stop": 1779800154.4101121,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_refreshes_list_after_create",
+                "status": "passed",
+                "duration": 0.0018628500001796056,
+                "start": 1779800154.4103417,
+                "stop": 1779800154.4123495,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_refreshes_list_after_update",
+                "status": "passed",
+                "duration": 0.0019552079997993133,
+                "start": 1779800154.412567,
+                "stop": 1779800154.4146662,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_refreshes_list_after_delete",
+                "status": "passed",
+                "duration": 0.0018237990002489823,
+                "start": 1779800154.4148767,
+                "stop": 1779800154.4168427,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_delete_calls_delete_api",
+                "status": "passed",
+                "duration": 0.0018206040001587098,
+                "start": 1779800154.41708,
+                "stop": 1779800154.4190476,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_get_requests_omit_api_key_header",
+                "status": "passed",
+                "duration": 0.0016844430001583532,
+                "start": 1779800154.4192612,
+                "stop": 1779800154.4210875,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_post_includes_api_key_header",
+                "status": "passed",
+                "duration": 0.0018932139996650221,
+                "start": 1779800154.421306,
+                "stop": 1779800154.4233434,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_post_includes_json_content_type_header",
+                "status": "passed",
+                "duration": 0.0018514459998186794,
+                "start": 1779800154.423568,
+                "stop": 1779800154.4255648,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_delete_includes_api_key_header",
+                "status": "passed",
+                "duration": 0.0018573460004063236,
+                "start": 1779800154.4257746,
+                "stop": 1779800154.4277742,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_delete_includes_json_content_type_header",
+                "status": "passed",
+                "duration": 0.0017950639999071427,
+                "start": 1779800154.4279828,
+                "stop": 1779800154.4299207,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_put_includes_api_key_header",
+                "status": "passed",
+                "duration": 0.001867102000005616,
+                "start": 1779800154.4301422,
+                "stop": 1779800154.4321496,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_put_includes_json_content_type_header",
+                "status": "passed",
+                "duration": 0.0018414670003039646,
+                "start": 1779800154.432359,
+                "stop": 1779800154.4343436,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_edit_button_loads_note_into_form",
+                "status": "passed",
+                "duration": 0.0016506010001648974,
+                "start": 1779800154.434565,
+                "stop": 1779800154.4363604,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_form_clears_after_update",
+                "status": "passed",
+                "duration": 0.0020148909998169984,
+                "start": 1779800154.436568,
+                "stop": 1779800154.4387264,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_e2e_create_and_retrieve_note",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.000981896999746823,
+                "start": 1779800154.438937,
+                "stop": 1779800154.4635797,
+                "retries": 0,
+                "file_path": "test_m3.py",
+                "trace": "self = <test_m3.TestMilestone3 object at 0x7fc7badc1c70>\n\n    def test_e2e_create_and_retrieve_note(self):\n        \"\"\"Create a note via API and verify it is retrievable by id.\"\"\"\n>       note_id = _create_note_api(\"E2E Create\", \"Integration body\")\n                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\n/tests/test_m3.py:724: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\ntitle = 'E2E Create', content = 'Integration body'\n\n    def _create_note_api(title: str, content: str) -> int:\n        code, payload = _json_request(\n            \"POST\", \"/api/notes\", {\"title\": title, \"content\": content}\n        )\n>       assert code == 201\nE       assert 500 == 201\n\n/tests/test_m3.py:280: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_e2e_update_and_verify_persistence",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.000993486000197663,
+                "start": 1779800154.463826,
+                "stop": 1779800154.4777346,
+                "retries": 0,
+                "file_path": "test_m3.py",
+                "trace": "self = <test_m3.TestMilestone3 object at 0x7fc7badc1e50>\n\n    def test_e2e_update_and_verify_persistence(self):\n        \"\"\"Update a note and verify the change persists on re-fetch.\"\"\"\n>       note_id = _create_note_api(\"Original Title\", \"Before edit\")\n                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\n/tests/test_m3.py:732: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\ntitle = 'Original Title', content = 'Before edit'\n\n    def _create_note_api(title: str, content: str) -> int:\n        code, payload = _json_request(\n            \"POST\", \"/api/notes\", {\"title\": title, \"content\": content}\n        )\n>       assert code == 201\nE       assert 500 == 201\n\n/tests/test_m3.py:280: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_e2e_delete_and_verify_gone",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0009478679999119777,
+                "start": 1779800154.4779696,
+                "stop": 1779800154.4918172,
+                "retries": 0,
+                "file_path": "test_m3.py",
+                "trace": "self = <test_m3.TestMilestone3 object at 0x7fc7badc2090>\n\n    def test_e2e_delete_and_verify_gone(self):\n        \"\"\"Delete a note and verify it is no longer accessible.\"\"\"\n>       note_id = _create_note_api(\"Ephemeral\", \"Soon gone\")\n                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\n/tests/test_m3.py:745: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\ntitle = 'Ephemeral', content = 'Soon gone'\n\n    def _create_note_api(title: str, content: str) -> int:\n        code, payload = _json_request(\n            \"POST\", \"/api/notes\", {\"title\": title, \"content\": content}\n        )\n>       assert code == 201\nE       assert 500 == 201\n\n/tests/test_m3.py:280: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_e2e_full_crud_cycle",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0010702840002068115,
+                "start": 1779800154.4920578,
+                "stop": 1779800154.5060887,
+                "retries": 0,
+                "file_path": "test_m3.py",
+                "trace": "self = <test_m3.TestMilestone3 object at 0x7fc7badc2270>\n\n    def test_e2e_full_crud_cycle(self):\n        \"\"\"Create multiple notes, update one, delete another, verify final state.\"\"\"\n>       id1 = _create_note_api(\"Note A\", \"Body A\")\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\n/tests/test_m3.py:754: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\ntitle = 'Note A', content = 'Body A'\n\n    def _create_note_api(title: str, content: str) -> int:\n        code, payload = _json_request(\n            \"POST\", \"/api/notes\", {\"title\": title, \"content\": content}\n        )\n>       assert code == 201\nE       assert 500 == 201\n\n/tests/test_m3.py:280: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            }
+        ]
+    }
+}

@@ -1,0 +1,5 @@
+New Terminal Output:
+al-Count
+curl -s -D /tmp/headers http://localhost:8080/api/notes > /tmp/body && grep X-Total-Count /tmp/headers
+
+

@@ -1,0 +1,25 @@
+New Terminal Output:
+
+root@8115be450cb5:/app# printf 'CC = gcc\nCFLAGS = -Wall -Wextra -Isrc -Iinclude\nLDFLAGS = -lmicrohttpd -lsqlite3 -lpthread\n\nSOURCES = src/main.c src/routes.
+c src/db.c src/auth.c\nTARGET = notes_server\n\n$(TARGET): $(SOURCES)\n\t$(CC) $(CFLAGS) -o $(TARGET) $(SOURCES) $(LDFLAGS)\n\nclean:\n\trm -f $(TARGET)\n' > /a
+pp/Makefile
+root@8115be450cb5:/app# cat /app/Makefile
+CC = gcc
+CFLAGS = -Wall -Wextra -Isrc -Iinclude
+LDFLAGS = -lmicrohttpd -lsqlite3 -lpthread
+
+SOURCES = src/main.c src/routes.c src/db.c src/auth.c
+TARGET = notes_server
+
+$(TARGET): $(SOURCES)
+        $(CC) $(CFLAGS) -o $(TARGET) $(SOURCES) $(LDFLAGS)
+
+clean:
+        rm -f $(TARGET)
+root@8115be450cb5:/app# cd /app && make clean && make 2>&1
+rm -f notes_server
+gcc -Wall -Wextra -Isrc -Iinclude -o notes_server src/main.c src/routes.c src/db.c src/auth.c -lmicrohttpd -lsqlite3 -lpthread
+src/routes.c:108:12: warning: ‘json_has_key’ defined but not used [-Wunused-function]
+  108 | static int json_has_key(const char *json, const char *key) {
+      |            ^~~~~~~~~~~~
+root@8115be450cb5:/app#

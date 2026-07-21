@@ -1,0 +1,10 @@
+New Terminal Output:
+
+root@78f42a19e0d4:/app# fuser -k 8080/tcp 2>/dev/null; sleep 1
+root@78f42a19e0d4:/app# rm -f /app/data/notes.db && /app/notes_server &
+[2] 1000
+root@78f42a19e0d4:/app# Failed to start server
+sleep 1 && curl -s -w '\n%{http_code}' http://localhost:8080/api/notes
+[2]+  Exit 1                  rm -f /app/data/notes.db && /app/notes_server
+[]
+200root@78f42a19e0d4:/app#

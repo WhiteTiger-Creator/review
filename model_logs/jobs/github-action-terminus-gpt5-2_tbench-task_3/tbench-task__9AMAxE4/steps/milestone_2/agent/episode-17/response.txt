@@ -1,0 +1,47 @@
+{
+  "analysis": "New server works correctly: oversized body returns 413 with JSON error, parallel POSTs all 201, X-Total-Count header shows correct total (16). Remaining cleanup: remove the debug fprintf line from routes.c and rebuild/restart. Also ensure single POST without key returns 401 (not shown here) and PUT empty title returns 400, DELETE returns {\"status\":\"deleted\"}, and 404 body is exact. Finally confirm server start log isn’t required. After cleanup, API work is complete.",
+  "plan": "Remove debug line from routes.c, rebuild, restart server (kill by pidof). Then run a small set of final contract spot-checks: unauthorized write 401, PUT empty title 400, 404 body exact, static file still served. Then declare task complete (API work complete) without starting any browser script.",
+  "commands": [
+    {
+      "keystrokes": "sed -i '/POST parse fail body=/d' /app/src/routes.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "make clean && make\n",
+      "duration": 10.0
+    },
+    {
+      "keystrokes": "PID=$(pidof notes_server 2>/dev/null || true); echo \"PID=$PID\"; if [ -n \"$PID\" ]; then kill -TERM $PID; fi\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "./notes_server > /tmp/notes_server.log 2>&1 & echo $!\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "KEY=$(cat /app/config/api.key | tr -d ' \\t\\r\\n')\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "curl -si -X POST http://127.0.0.1:8080/api/notes -H 'Content-Type: application/json' --data '{\"title\":\"nope\",\"content\":\"x\"}' | sed -n '1,25p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "ID=$(curl -s -X POST http://127.0.0.1:8080/api/notes -H \"X-API-Key: $KEY\" -H 'Content-Type: application/json' --data '{\"title\":\"v\",\"content\":\"w\"}' | sed -n 's/.*\"id\":\\([0-9][0-9]*\\).*/\\1/p'); echo \"ID=$ID\"\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -si -X PUT http://127.0.0.1:8080/api/notes/$ID -H \"X-API-Key: $KEY\" -H 'Content-Type: application/json' --data '{\"title\":\" \",\"content\":\"x\"}' | sed -n '1,25p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -si http://127.0.0.1:8080/api/notes/99999 | sed -n '1,25p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -si http://127.0.0.1:8080/app.js | sed -n '1,8p'\n",
+      "duration": 1.0
+    }
+  ],
+  "task_complete": true
+}

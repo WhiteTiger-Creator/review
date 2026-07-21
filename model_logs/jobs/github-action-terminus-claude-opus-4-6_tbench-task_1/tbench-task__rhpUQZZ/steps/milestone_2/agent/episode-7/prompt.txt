@@ -1,0 +1,39 @@
+New Terminal Output:
+es/99999
+{"error":"not found"}root@8115be450cb5:/app# curl -s -X PUT http://localhost:8080/api/notes/1 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_s
+ecret_2026' -d '{"title":"Updated Title","content":"Updated content"}'
+{"id":1,"title":"Updated Title","content":"Updated content"}root@8115be450cb5:/app# curl -s -o /dev/null -w '%{http_code}' -X PUT http://localhost:8080/api/note
+s/99999 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{"title":"Test","content":"test"}'
+404root@8115be450cb5:/app# curl -s -X DELETE http://localhost:8080/api/notes/2 -H 'X-API-Key: tb3_notes_api_secret_2026'
+{"status":"deleted"}root@8115be450cb5:/app# curl -s -X DELETE http://localhost:8080/api/notes/99999 -H 'X-API-Key: tb3_notes_api_secret_2026'
+{"error":"not found"}root@8115be450cb5:/app# curl -s -D- -X OPTIONS http://localhost:8080/api/notes 2>&1 | head -20
+HTTP/1.1 200 OK
+Date: Tue, 26 May 2026 12:47:18 GMT
+Connection: close
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+Content-Length: 0
+
+root@8115be450cb5:/app# curl -s -D- http://localhost:8080/api/notes 2>&1 | head -20
+HTTP/1.1 200 OK
+Date: Tue, 26 May 2026 12:47:19 GMT
+Connection: close
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+X-Total-Count: 1
+Content-Length: 62
+
+[{"id":1,"title":"Updated Title","content":"Updated content"}]root@8115be450cb5:/app# curl -s http://localhost:8080/app.js | head -5
+var API = 'http://localhost:9090/api/notes';
+
+var editingId = null;
+
+async function fetchNotes() {
+root@8115be450cb5:/app# curl -s -o /dev/null -w '%{http_code}' -X PUT http://localhost:8080/api/notes/1 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_n
+otes_api_secret_2026' -d '{"title":"","content":"empty title"}'
+400root@8115be450cb5:/app# curl -s -o /dev/null -w '%{http_code}' -X DELETE http://localhost:8080/api/notes/1
+401root@8115be450cb5:/app#

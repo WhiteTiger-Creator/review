@@ -1,0 +1,14 @@
+{
+  "analysis": "I can see in main.c there's a pattern where static file serving is attempted first - if `serve_static_file` returns MHD_YES, it's done; otherwise it falls through to route_request. The static.c currently just returns MHD_NO, so I need to implement it. Let me see the top of main.c to confirm.",
+  "plan": "1. View top of main.c to see the handle_request and includes\n2. Implement static.c properly to serve files from /app/www/\n3. Write the complete app.js\n4. Add static.c to the Makefile, rebuild, and restart the server",
+  "commands": [
+    {
+      "keystrokes": "head -50 /app/src/main.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "head -30 /app/src/routes.c\n",
+      "duration": 0.1
+    }
+  ]
+}

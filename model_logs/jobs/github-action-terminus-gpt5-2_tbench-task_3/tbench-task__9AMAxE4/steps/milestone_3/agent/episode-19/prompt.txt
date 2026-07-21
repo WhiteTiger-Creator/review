@@ -1,0 +1,41 @@
+Current Terminal Screen:
+   152  static int parse_note_body(const char *json, char **title, char **content) {
+   153      *title = NULL;
+   154      *content = NULL;
+   155
+   156      if (!parse_json_string_value(json, "title", title)) return 0;
+   157      if (!parse_json_string_value(json, "content", content)) {
+   158          *content = strdup("");
+   159          if (!*content) {
+   160              free(*title);
+   161              *title = NULL;
+   162              return 0;
+   163          }
+   164      }
+   165
+   166      trim_ws_in_place(*title);
+   167      if ((*title)[0] == '\0') return 0;
+   168      return 1;
+   169  }
+   170
+   171  static void append_body_or_mark_oversize(const char *method,
+   172                                          const char *upload_data,
+   173                                          size_t *upload_data_size,
+   174                                          struct connection_info *ci) {
+   175      if (*upload_data_size == 0) return;
+   176
+   177      if ((strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0) &&
+   178          ci->data_size + *upload_data_size > NOTES_MAX_BODY_BYTES) {
+   179          ci->data_size = NOTES_MAX_BODY_BYTES + 1;
+   180          *upload_data_size = 0;
+   181          return;
+   182      }
+   183
+   184      char *nb = realloc(ci->data, ci->data_size + *upload_data_size + 1);
+   185      if (!nb) {
+   186          *upload_data_size = 0;
+   187          return;
+   188      }
+   189
+   190      ci->data = nb;
+root@08d5c4164ec3:/app#

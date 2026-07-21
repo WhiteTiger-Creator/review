@@ -1,0 +1,26 @@
+{
+  "analysis": "Good - the old server was killed (PID 866 is Done). Now I can start fresh with a clean database and run the concurrent test.",
+  "plan": "Remove the old db, start the server fresh, verify it works, then run concurrent writes.",
+  "commands": [
+    {
+      "keystrokes": "rm -f /app/data/notes.db /app/data/notes.db-wal /app/data/notes.db-shm\n",
+      "duration": 0.3
+    },
+    {
+      "keystrokes": "/app/notes_server &\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s http://localhost:8080/api/notes\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "for i in $(seq 1 15); do curl -s -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d \"{\\\"title\\\":\\\"Note $i\\\",\\\"content\\\":\\\"Content $i\\\"}\" & done\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "wait\n",
+      "duration": 10.0
+    }
+  ]
+}

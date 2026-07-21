@@ -1,0 +1,32 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.13, pytest-8.4.1, pluggy-1.6.0
+cachedir: /tmp/pytest_cache
+rootdir: /tests
+plugins: json-ctrf-0.3.5, timeout-2.3.1
+timeout: 120.0s
+timeout method: signal
+timeout func_only: False
+collected 15 items
+
+../tests/test_m1.py ...............                                      [100%]
+
+==================================== PASSES ====================================
+--------------------------- Captured stdout teardown ---------------------------
+Server running on port 8080
+=========================== short test summary info ============================
+PASSED ../tests/test_m1.py::TestMilestone1::test_server_binary_exists
+PASSED ../tests/test_m1.py::TestMilestone1::test_server_binary_is_elf
+PASSED ../tests/test_m1.py::TestMilestone1::test_server_responds_on_port_8080
+PASSED ../tests/test_m1.py::TestMilestone1::test_root_serves_html_page
+PASSED ../tests/test_m1.py::TestMilestone1::test_css_stylesheet_is_served
+PASSED ../tests/test_m1.py::TestMilestone1::test_javascript_file_is_served
+PASSED ../tests/test_m1.py::TestMilestone1::test_html_contains_note_form
+PASSED ../tests/test_m1.py::TestMilestone1::test_html_contains_title_input
+PASSED ../tests/test_m1.py::TestMilestone1::test_html_contains_content_textarea
+PASSED ../tests/test_m1.py::TestMilestone1::test_html_contains_submit_button
+PASSED ../tests/test_m1.py::TestMilestone1::test_html_contains_notes_list_container
+PASSED ../tests/test_m1.py::TestMilestone1::test_nonexistent_static_file_returns_404
+PASSED ../tests/test_m1.py::TestMilestone1::test_path_traversal_blocked
+PASSED ../tests/test_m1.py::TestMilestone1::test_path_traversal_encoded_blocked
+PASSED ../tests/test_m1.py::TestMilestone1::test_path_traversal_percent_encoded_dotdot_blocked
+============================== 15 passed in 0.05s ==============================

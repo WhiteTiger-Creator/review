@@ -1,0 +1,834 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.13, pytest-8.4.1, pluggy-1.6.0
+cachedir: /tmp/pytest_cache
+rootdir: /tests
+plugins: json-ctrf-0.3.5, timeout-2.3.1
+timeout: 120.0s
+timeout method: signal
+timeout func_only: False
+collected 43 items
+
+../tests/test_m2.py .F.FFF...FF.FFF.F....FFFFF.FF.FF.FFFFFFFFFF          [100%]
+
+=================================== FAILURES ===================================
+__________________ TestMilestone2.test_api_key_read_from_file __________________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbdf303b0>
+
+    def test_api_key_read_from_file(self):
+        """Server must authenticate using the key stored in /app/config/api.key."""
+        with open("/app/config/api.key") as f:
+            file_key = f.read().strip()
+        data = json.dumps({"title": "KeyFile Check", "content": "body"}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{BASE}/api/notes",
+            data=data,
+            method="POST",
+            headers={"Content-Type": "application/json", "X-API-Key": file_key},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                code = resp.status
+        except urllib.error.HTTPError as exc:
+            code = exc.code
+>       assert code == 201, f"Key from /app/config/api.key must authenticate, got {code}"
+E       AssertionError: Key from /app/config/api.key must authenticate, got 400
+E       assert 400 == 201
+
+/tests/test_m2.py:111: AssertionError
+_________________ TestMilestone2.test_create_note_returns_201 __________________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbd57ec00>
+
+    def test_create_note_returns_201(self):
+        """POST /api/notes with valid data must return HTTP 201."""
+        code, payload = _create_note("Status Check", "Body")
+>       assert code == 201, f"Expected 201, got {code}: {payload}"
+E       AssertionError: Expected 201, got 400: {'error': 'invalid title'}
+E       assert 400 == 201
+
+/tests/test_m2.py:126: AssertionError
+_______________ TestMilestone2.test_create_note_returns_id_field _______________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbdeecbf0>
+
+    def test_create_note_returns_id_field(self):
+        """Created note response must include a numeric id field."""
+        code, payload = _create_note("ID Check", "Body")
+>       assert code == 201
+E       assert 400 == 201
+
+/tests/test_m2.py:132: AssertionError
+___________ TestMilestone2.test_create_note_echoes_title_and_content ___________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbd54c740>
+
+    def test_create_note_echoes_title_and_content(self):
+        """Created note response must echo back the submitted title and content."""
+        code, payload = _create_note("Echo Title", "Echo Body")
+>       assert code == 201
+E       assert 400 == 201
+
+/tests/test_m2.py:140: AssertionError
+___________ TestMilestone2.test_get_all_notes_includes_created_note ____________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbd58fb60>
+
+    def test_get_all_notes_includes_created_note(self):
+        """A note created via POST must appear in the list endpoint response."""
+        code, created = _create_note("Find Me", "In the List")
+>       assert code == 201
+E       assert 400 == 201
+
+/tests/test_m2.py:168: AssertionError
+__________________ TestMilestone2.test_get_single_note_by_id ___________________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbd58e090>
+
+    def test_get_single_note_by_id(self):
+        """GET /api/notes/<id> must return the correct note."""
+        _, created = _create_note("Single Fetch", "Unique Body")
+>       note_id = int(created["id"])
+                      ^^^^^^^^^^^^^
+E       KeyError: 'id'
+
+/tests/test_m2.py:178: KeyError
+________________ TestMilestone2.test_update_note_changes_fields ________________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbd58f080>
+
+    def test_update_note_changes_fields(self):
+        """PUT /api/notes/<id> must update the note and return updated data."""
+        _, created = _create_note("Before Update", "Old content")
+>       note_id = int(created["id"])
+                      ^^^^^^^^^^^^^
+E       KeyError: 'id'
+
+/tests/test_m2.py:194: KeyError
+___________ TestMilestone2.test_update_note_empty_title_returns_400 ____________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbd58ec00>
+
+    def test_update_note_empty_title_returns_400(self):
+        """PUT /api/notes/<id> with an empty title must return HTTP 400."""
+        _, created = _create_note("Before", "Body")
+>       note_id = int(created["id"])
+                      ^^^^^^^^^^^^^
+E       KeyError: 'id'
+
+/tests/test_m2.py:208: KeyError
+__________ TestMilestone2.test_update_note_missing_title_returns_400 ___________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbcc9a1e0>
+
+    def test_update_note_missing_title_returns_400(self):
+        """PUT /api/notes/<id> with missing title must return HTTP 400."""
+        _, created = _create_note("Before", "Body")
+>       note_id = int(created["id"])
+                      ^^^^^^^^^^^^^
+E       KeyError: 'id'
+
+/tests/test_m2.py:218: KeyError
+__________________ TestMilestone2.test_delete_note_removes_it __________________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbcc9ac30>
+
+    def test_delete_note_removes_it(self):
+        """DELETE /api/notes/<id> must remove the note so GET returns 404."""
+        _, created = _create_note("Delete Target", "Gone soon")
+>       note_id = int(created["id"])
+                      ^^^^^^^^^^^^^
+E       KeyError: 'id'
+
+/tests/test_m2.py:235: KeyError
+_________ TestMilestone2.test_api_post_response_content_type_and_cors __________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbcce0c20>
+
+    def test_api_post_response_content_type_and_cors(self):
+        """POST /api/notes response must carry Content-Type: application/json and CORS header."""
+        code, _, headers = _json_request_with_headers(
+            "POST", "/api/notes", {"title": "Headers POST", "content": "check"}
+        )
+>       assert code == 201
+E       assert 400 == 201
+
+/tests/test_m2.py:292: AssertionError
+__________ TestMilestone2.test_api_put_response_content_type_and_cors __________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbcce09b0>
+
+    def test_api_put_response_content_type_and_cors(self):
+        """PUT /api/notes/<id> response must carry Content-Type: application/json and CORS header."""
+        _, created = _create_note("Headers PUT", "before")
+>       note_id = int(created["id"])
+                      ^^^^^^^^^^^^^
+E       KeyError: 'id'
+
+/tests/test_m2.py:299: KeyError
+________ TestMilestone2.test_api_delete_response_content_type_and_cors _________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbcce0830>
+
+    def test_api_delete_response_content_type_and_cors(self):
+        """DELETE /api/notes/<id> response must carry Content-Type: application/json and CORS header."""
+        _, created = _create_note("Headers DEL", "target")
+>       note_id = int(created["id"])
+                      ^^^^^^^^^^^^^
+E       KeyError: 'id'
+
+/tests/test_m2.py:310: KeyError
+______ TestMilestone2.test_api_get_single_response_content_type_and_cors _______
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbcce38c0>
+
+    def test_api_get_single_response_content_type_and_cors(self):
+        """GET /api/notes/<id> response must carry Content-Type: application/json and CORS header."""
+        _, created = _create_note("Headers GET1", "single")
+>       note_id = int(created["id"])
+                      ^^^^^^^^^^^^^
+E       KeyError: 'id'
+
+/tests/test_m2.py:321: KeyError
+________ TestMilestone2.test_error_responses_have_json_and_cors_headers ________
+
+self = <urllib.request.HTTPHandler object at 0x7f3bbd54fa70>
+http_class = <class 'http.client.HTTPConnection'>
+req = <urllib.request.Request object at 0x7f3bbc9e9dc0>, http_conn_args = {}
+host = '127.0.0.1:8080'
+h = <http.client.HTTPConnection object at 0x7f3bbc9ea270>
+headers = {'Connection': 'close', 'Content-Length': '70031', 'Content-Type': 'application/json', 'Host': '127.0.0.1:8080', ...}
+
+    def do_open(self, http_class, req, **http_conn_args):
+        """Return an HTTPResponse object for the request, using http_class.
+    
+        http_class must implement the HTTPConnection API from http.client.
+        """
+        host = req.host
+        if not host:
+            raise URLError('no host given')
+    
+        # will parse host:port
+        h = http_class(host, timeout=req.timeout, **http_conn_args)
+        h.set_debuglevel(self._debuglevel)
+    
+        headers = dict(req.unredirected_hdrs)
+        headers.update({k: v for k, v in req.headers.items()
+                        if k not in headers})
+    
+        # TODO(jhylton): Should this be redesigned to handle
+        # persistent connections?
+    
+        # We want to make an HTTP/1.1 request, but the addinfourl
+        # class isn't prepared to deal with a persistent connection.
+        # It will try to read all remaining data from the socket,
+        # which will block while the server waits for the next request.
+        # So make sure the connection gets closed after the (only)
+        # request.
+        headers["Connection"] = "close"
+        headers = {name.title(): val for name, val in headers.items()}
+    
+        if req._tunnel_host:
+            tunnel_headers = {}
+            proxy_auth_hdr = "Proxy-Authorization"
+            if proxy_auth_hdr in headers:
+                tunnel_headers[proxy_auth_hdr] = headers[proxy_auth_hdr]
+                # Proxy-Authorization should not be sent to origin
+                # server.
+                del headers[proxy_auth_hdr]
+            h.set_tunnel(req._tunnel_host, headers=tunnel_headers)
+    
+        try:
+            try:
+>               h.request(req.get_method(), req.selector, req.data, headers,
+                          encode_chunked=req.has_header('Transfer-encoding'))
+
+/usr/local/lib/python3.12/urllib/request.py:1344: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/local/lib/python3.12/http/client.py:1358: in request
+    self._send_request(method, url, body, headers, encode_chunked)
+/usr/local/lib/python3.12/http/client.py:1404: in _send_request
+    self.endheaders(body, encode_chunked=encode_chunked)
+/usr/local/lib/python3.12/http/client.py:1353: in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+/usr/local/lib/python3.12/http/client.py:1152: in _send_output
+    self.send(chunk)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <http.client.HTTPConnection object at 0x7f3bbc9ea270>
+data = b'{"title": "Big", "content": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}'
+
+    def send(self, data):
+        """Send `data' to the server.
+        ``data`` can be a string object, a bytes object, an array object, a
+        file-like object that supports a .read() method, or an iterable object.
+        """
+    
+        if self.sock is None:
+            if self.auto_open:
+                self.connect()
+            else:
+                raise NotConnected()
+    
+        if self.debuglevel > 0:
+            print("send:", repr(data))
+        if hasattr(data, "read") :
+            if self.debuglevel > 0:
+                print("sending a readable")
+            encode = self._is_textIO(data)
+            if encode and self.debuglevel > 0:
+                print("encoding file using iso-8859-1")
+            while datablock := data.read(self.blocksize):
+                if encode:
+                    datablock = datablock.encode("iso-8859-1")
+                sys.audit("http.client.send", self, datablock)
+                self.sock.sendall(datablock)
+            return
+        sys.audit("http.client.send", self, data)
+        try:
+>           self.sock.sendall(data)
+E           BrokenPipeError: [Errno 32] Broken pipe
+
+/usr/local/lib/python3.12/http/client.py:1077: BrokenPipeError
+
+During handling of the above exception, another exception occurred:
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbcce05f0>
+
+    def test_error_responses_have_json_and_cors_headers(self):
+        """API error responses (400/401/404/413) must still include JSON Content-Type and CORS headers."""
+        cases: list[tuple[str, str, object | None, bool, int]] = [
+            ("POST", "/api/notes", {}, True, 400),
+            (
+                "POST",
+                "/api/notes",
+                {"title": "No Auth", "content": "Denied"},
+                False,
+                401,
+            ),
+            ("GET", "/api/notes/99999", None, True, 404),
+            ("POST", "/api/notes", {"title": "Big", "content": "x" * 70000}, True, 413),
+        ]
+        for method, path, body, include_auth, expected_status in cases:
+>           code, _, headers = _json_request_with_headers(
+                method, path, body=body, include_auth=include_auth
+            )
+
+/tests/test_m2.py:342: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/tests/test_m2.py:59: in _json_request_with_headers
+    with urllib.request.urlopen(req, timeout=10) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/urllib/request.py:215: in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/urllib/request.py:515: in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/urllib/request.py:532: in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+/usr/local/lib/python3.12/urllib/request.py:492: in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+/usr/local/lib/python3.12/urllib/request.py:1373: in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <urllib.request.HTTPHandler object at 0x7f3bbd54fa70>
+http_class = <class 'http.client.HTTPConnection'>
+req = <urllib.request.Request object at 0x7f3bbc9e9dc0>, http_conn_args = {}
+host = '127.0.0.1:8080'
+h = <http.client.HTTPConnection object at 0x7f3bbc9ea270>
+headers = {'Connection': 'close', 'Content-Length': '70031', 'Content-Type': 'application/json', 'Host': '127.0.0.1:8080', ...}
+
+    def do_open(self, http_class, req, **http_conn_args):
+        """Return an HTTPResponse object for the request, using http_class.
+    
+        http_class must implement the HTTPConnection API from http.client.
+        """
+        host = req.host
+        if not host:
+            raise URLError('no host given')
+    
+        # will parse host:port
+        h = http_class(host, timeout=req.timeout, **http_conn_args)
+        h.set_debuglevel(self._debuglevel)
+    
+        headers = dict(req.unredirected_hdrs)
+        headers.update({k: v for k, v in req.headers.items()
+                        if k not in headers})
+    
+        # TODO(jhylton): Should this be redesigned to handle
+        # persistent connections?
+    
+        # We want to make an HTTP/1.1 request, but the addinfourl
+        # class isn't prepared to deal with a persistent connection.
+        # It will try to read all remaining data from the socket,
+        # which will block while the server waits for the next request.
+        # So make sure the connection gets closed after the (only)
+        # request.
+        headers["Connection"] = "close"
+        headers = {name.title(): val for name, val in headers.items()}
+    
+        if req._tunnel_host:
+            tunnel_headers = {}
+            proxy_auth_hdr = "Proxy-Authorization"
+            if proxy_auth_hdr in headers:
+                tunnel_headers[proxy_auth_hdr] = headers[proxy_auth_hdr]
+                # Proxy-Authorization should not be sent to origin
+                # server.
+                del headers[proxy_auth_hdr]
+            h.set_tunnel(req._tunnel_host, headers=tunnel_headers)
+    
+        try:
+            try:
+                h.request(req.get_method(), req.selector, req.data, headers,
+                          encode_chunked=req.has_header('Transfer-encoding'))
+            except OSError as err: # timeout error
+>               raise URLError(err)
+E               urllib.error.URLError: <urlopen error [Errno 32] Broken pipe>
+
+/usr/local/lib/python3.12/urllib/request.py:1347: URLError
+_____________ TestMilestone2.test_put_without_api_key_returns_401 ______________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbcce0080>
+
+    def test_put_without_api_key_returns_401(self):
+        """PUT /api/notes/<id> without X-API-Key header must return 401."""
+        _, created = _create_note("Auth Put", "Before")
+>       note_id = int(created["id"])
+                      ^^^^^^^^^^^^^
+E       KeyError: 'id'
+
+/tests/test_m2.py:364: KeyError
+____________ TestMilestone2.test_delete_without_api_key_returns_401 ____________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbcce2b70>
+
+    def test_delete_without_api_key_returns_401(self):
+        """DELETE /api/notes/<id> without X-API-Key header must return 401."""
+        _, created = _create_note("Auth Del", "Target")
+>       note_id = int(created["id"])
+                      ^^^^^^^^^^^^^
+E       KeyError: 'id'
+
+/tests/test_m2.py:375: KeyError
+______________ TestMilestone2.test_put_wrong_api_key_returns_401 _______________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbd58e600>
+
+    def test_put_wrong_api_key_returns_401(self):
+        """PUT with an incorrect API key must return 401."""
+        _, created = _create_note("Put Wrong Key", "target")
+>       note_id = int(created["id"])
+                      ^^^^^^^^^^^^^
+E       KeyError: 'id'
+
+/tests/test_m2.py:405: KeyError
+_____________ TestMilestone2.test_delete_wrong_api_key_returns_401 _____________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbd58ed50>
+
+    def test_delete_wrong_api_key_returns_401(self):
+        """DELETE with an incorrect API key must return 401."""
+        _, created = _create_note("Del Wrong Key", "target")
+>       note_id = int(created["id"])
+                      ^^^^^^^^^^^^^
+E       KeyError: 'id'
+
+/tests/test_m2.py:427: KeyError
+_________ TestMilestone2.test_get_single_note_without_api_key_succeeds _________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbcce07d0>
+
+    def test_get_single_note_without_api_key_succeeds(self):
+        """GET /api/notes/<id> must succeed without an API key."""
+        _, created = _create_note("Public Read", "Accessible")
+>       note_id = int(created["id"])
+                      ^^^^^^^^^^^^^
+E       KeyError: 'id'
+
+/tests/test_m2.py:453: KeyError
+__________ TestMilestone2.test_pagination_limit_returns_correct_count __________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbcce1f70>
+
+    def test_pagination_limit_returns_correct_count(self):
+        """GET /api/notes?limit=2 must return at most 2 notes."""
+        for i in range(5):
+            _create_note(f"Paginate {i}", f"Body {i}")
+        code, payload = _json_request("GET", "/api/notes?limit=2")
+        assert code == 200
+        assert isinstance(payload, list)
+>       assert len(payload) == 2
+E       assert 0 == 2
+E        +  where 0 = len([])
+
+/tests/test_m2.py:468: AssertionError
+______________ TestMilestone2.test_pagination_offset_skips_notes _______________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbcce2930>
+
+    def test_pagination_offset_skips_notes(self):
+        """GET /api/notes?limit=2&offset=2 must skip the first two notes."""
+        ids = []
+        for i in range(5):
+            _, created = _create_note(f"OffsetTest {i}", f"Body {i}")
+>           ids.append(int(created["id"]))
+                           ^^^^^^^^^^^^^
+E           KeyError: 'id'
+
+/tests/test_m2.py:476: KeyError
+_____________ TestMilestone2.test_pagination_x_total_count_header ______________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbccfcb90>
+
+    def test_pagination_x_total_count_header(self):
+        """X-Total-Count must equal the full row count while limit only caps the page."""
+        _, notes_before = _json_request("GET", "/api/notes?limit=100")
+        before_count = len(notes_before) if isinstance(notes_before, list) else 0
+        batch_size = 5
+        for i in range(batch_size):
+            _create_note(f"CountHdr {i}", f"Body {i}")
+        expected_total = before_count + batch_size
+        code, payload, headers = _json_request_with_headers(
+            "GET", "/api/notes?limit=2"
+        )
+        assert code == 200
+        assert isinstance(payload, list)
+>       assert len(payload) == 2
+E       assert 0 == 2
+E        +  where 0 = len([])
+
+/tests/test_m2.py:499: AssertionError
+______________ TestMilestone2.test_pagination_default_limit_is_50 ______________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbccfda90>
+
+    def test_pagination_default_limit_is_50(self):
+        """GET /api/notes without explicit limit must return at most 50 notes (default limit)."""
+        for i in range(55):
+            _create_note(f"DefLimit {i}", f"Body {i}")
+        code, payload = _json_request("GET", "/api/notes")
+        assert code == 200
+        assert isinstance(payload, list)
+>       assert len(payload) == 50, f"Default limit should be 50, got {len(payload)} notes"
+E       AssertionError: Default limit should be 50, got 0 notes
+E       assert 0 == 50
+E        +  where 0 = len([])
+
+/tests/test_m2.py:514: AssertionError
+____________ TestMilestone2.test_pagination_max_limit_capped_at_100 ____________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbccfe450>
+
+    def test_pagination_max_limit_capped_at_100(self):
+        """GET /api/notes?limit=999 must cap the limit at 100 when more than 100 rows exist."""
+        _, _, headers = _json_request_with_headers("GET", "/api/notes?limit=1")
+        total = int(headers.get("X-Total-Count", "0"))
+        needed = max(0, 105 - total)
+        for i in range(needed):
+            code, created = _create_note(f"CapFill {i}", f"body {i}")
+>           assert code == 201, f"Failed to seed note {i}: {created!r}"
+E           AssertionError: Failed to seed note 0: {'error': 'invalid title'}
+E           assert 400 == 201
+
+/tests/test_m2.py:524: AssertionError
+_____________ TestMilestone2.test_oversized_post_body_returns_413 ______________
+
+self = <urllib.request.HTTPHandler object at 0x7f3bbd54fa70>
+http_class = <class 'http.client.HTTPConnection'>
+req = <urllib.request.Request object at 0x7f3bbc9f0da0>, http_conn_args = {}
+host = '127.0.0.1:8080'
+h = <http.client.HTTPConnection object at 0x7f3bbc9f3830>
+headers = {'Connection': 'close', 'Content-Length': '70031', 'Content-Type': 'application/json', 'Host': '127.0.0.1:8080', ...}
+
+    def do_open(self, http_class, req, **http_conn_args):
+        """Return an HTTPResponse object for the request, using http_class.
+    
+        http_class must implement the HTTPConnection API from http.client.
+        """
+        host = req.host
+        if not host:
+            raise URLError('no host given')
+    
+        # will parse host:port
+        h = http_class(host, timeout=req.timeout, **http_conn_args)
+        h.set_debuglevel(self._debuglevel)
+    
+        headers = dict(req.unredirected_hdrs)
+        headers.update({k: v for k, v in req.headers.items()
+                        if k not in headers})
+    
+        # TODO(jhylton): Should this be redesigned to handle
+        # persistent connections?
+    
+        # We want to make an HTTP/1.1 request, but the addinfourl
+        # class isn't prepared to deal with a persistent connection.
+        # It will try to read all remaining data from the socket,
+        # which will block while the server waits for the next request.
+        # So make sure the connection gets closed after the (only)
+        # request.
+        headers["Connection"] = "close"
+        headers = {name.title(): val for name, val in headers.items()}
+    
+        if req._tunnel_host:
+            tunnel_headers = {}
+            proxy_auth_hdr = "Proxy-Authorization"
+            if proxy_auth_hdr in headers:
+                tunnel_headers[proxy_auth_hdr] = headers[proxy_auth_hdr]
+                # Proxy-Authorization should not be sent to origin
+                # server.
+                del headers[proxy_auth_hdr]
+            h.set_tunnel(req._tunnel_host, headers=tunnel_headers)
+    
+        try:
+            try:
+>               h.request(req.get_method(), req.selector, req.data, headers,
+                          encode_chunked=req.has_header('Transfer-encoding'))
+
+/usr/local/lib/python3.12/urllib/request.py:1344: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/local/lib/python3.12/http/client.py:1358: in request
+    self._send_request(method, url, body, headers, encode_chunked)
+/usr/local/lib/python3.12/http/client.py:1404: in _send_request
+    self.endheaders(body, encode_chunked=encode_chunked)
+/usr/local/lib/python3.12/http/client.py:1353: in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+/usr/local/lib/python3.12/http/client.py:1152: in _send_output
+    self.send(chunk)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <http.client.HTTPConnection object at 0x7f3bbc9f3830>
+data = b'{"title": "Big", "content": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}'
+
+    def send(self, data):
+        """Send `data' to the server.
+        ``data`` can be a string object, a bytes object, an array object, a
+        file-like object that supports a .read() method, or an iterable object.
+        """
+    
+        if self.sock is None:
+            if self.auto_open:
+                self.connect()
+            else:
+                raise NotConnected()
+    
+        if self.debuglevel > 0:
+            print("send:", repr(data))
+        if hasattr(data, "read") :
+            if self.debuglevel > 0:
+                print("sending a readable")
+            encode = self._is_textIO(data)
+            if encode and self.debuglevel > 0:
+                print("encoding file using iso-8859-1")
+            while datablock := data.read(self.blocksize):
+                if encode:
+                    datablock = datablock.encode("iso-8859-1")
+                sys.audit("http.client.send", self, datablock)
+                self.sock.sendall(datablock)
+            return
+        sys.audit("http.client.send", self, data)
+        try:
+>           self.sock.sendall(data)
+E           ConnectionResetError: [Errno 104] Connection reset by peer
+
+/usr/local/lib/python3.12/http/client.py:1077: ConnectionResetError
+
+During handling of the above exception, another exception occurred:
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbccff110>
+
+    def test_oversized_post_body_returns_413(self):
+        """POST with a body exceeding 64KB must return HTTP 413 with a JSON error body."""
+        large_body = {"title": "Big", "content": "x" * 70000}
+>       code, payload = _json_request("POST", "/api/notes", large_body)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+/tests/test_m2.py:539: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/tests/test_m2.py:31: in _json_request
+    with urllib.request.urlopen(req, timeout=10) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/urllib/request.py:215: in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/urllib/request.py:515: in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/urllib/request.py:532: in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+/usr/local/lib/python3.12/urllib/request.py:492: in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+/usr/local/lib/python3.12/urllib/request.py:1373: in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <urllib.request.HTTPHandler object at 0x7f3bbd54fa70>
+http_class = <class 'http.client.HTTPConnection'>
+req = <urllib.request.Request object at 0x7f3bbc9f0da0>, http_conn_args = {}
+host = '127.0.0.1:8080'
+h = <http.client.HTTPConnection object at 0x7f3bbc9f3830>
+headers = {'Connection': 'close', 'Content-Length': '70031', 'Content-Type': 'application/json', 'Host': '127.0.0.1:8080', ...}
+
+    def do_open(self, http_class, req, **http_conn_args):
+        """Return an HTTPResponse object for the request, using http_class.
+    
+        http_class must implement the HTTPConnection API from http.client.
+        """
+        host = req.host
+        if not host:
+            raise URLError('no host given')
+    
+        # will parse host:port
+        h = http_class(host, timeout=req.timeout, **http_conn_args)
+        h.set_debuglevel(self._debuglevel)
+    
+        headers = dict(req.unredirected_hdrs)
+        headers.update({k: v for k, v in req.headers.items()
+                        if k not in headers})
+    
+        # TODO(jhylton): Should this be redesigned to handle
+        # persistent connections?
+    
+        # We want to make an HTTP/1.1 request, but the addinfourl
+        # class isn't prepared to deal with a persistent connection.
+        # It will try to read all remaining data from the socket,
+        # which will block while the server waits for the next request.
+        # So make sure the connection gets closed after the (only)
+        # request.
+        headers["Connection"] = "close"
+        headers = {name.title(): val for name, val in headers.items()}
+    
+        if req._tunnel_host:
+            tunnel_headers = {}
+            proxy_auth_hdr = "Proxy-Authorization"
+            if proxy_auth_hdr in headers:
+                tunnel_headers[proxy_auth_hdr] = headers[proxy_auth_hdr]
+                # Proxy-Authorization should not be sent to origin
+                # server.
+                del headers[proxy_auth_hdr]
+            h.set_tunnel(req._tunnel_host, headers=tunnel_headers)
+    
+        try:
+            try:
+                h.request(req.get_method(), req.selector, req.data, headers,
+                          encode_chunked=req.has_header('Transfer-encoding'))
+            except OSError as err: # timeout error
+>               raise URLError(err)
+E               urllib.error.URLError: <urlopen error [Errno 104] Connection reset by peer>
+
+/usr/local/lib/python3.12/urllib/request.py:1347: URLError
+______________ TestMilestone2.test_oversized_put_body_returns_413 ______________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbccfdb80>
+
+    def test_oversized_put_body_returns_413(self):
+        """PUT with a body exceeding 64KB must return HTTP 413 with a JSON error body."""
+        _, created = _create_note("Small Note", "Normal")
+>       note_id = int(created["id"])
+                      ^^^^^^^^^^^^^
+E       KeyError: 'id'
+
+/tests/test_m2.py:548: KeyError
+______________ TestMilestone2.test_concurrent_creates_all_succeed ______________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbccfde20>
+
+    def test_concurrent_creates_all_succeed(self):
+        """20 concurrent POST requests must all succeed (thread-safe DB)."""
+        def create_one(i: int) -> tuple[int, dict]:
+            return _json_request(
+                "POST", "/api/notes",
+                {"title": f"Concurrent {i}", "content": f"Body {i}"},
+            )
+    
+        with ThreadPoolExecutor(max_workers=20) as pool:
+            futures = [pool.submit(create_one, i) for i in range(20)]
+            results = [f.result() for f in as_completed(futures)]
+    
+        successes = [r for r in results if r[0] == 201]
+>       assert len(successes) == 20, (
+            f"Expected all 20 concurrent creates to succeed, but only {len(successes)} did. "
+            f"Status codes: {[r[0] for r in results]}"
+        )
+E       AssertionError: Expected all 20 concurrent creates to succeed, but only 0 did. Status codes: [400, 500, 500, 400, 500, 400, 400, 400, 500, 500, 500, 400, 400, 500, 500, 500, 400, 500, 500, 400]
+E       assert 0 == 20
+E        +  where 0 = len([])
+
+/tests/test_m2.py:572: AssertionError
+_____________ TestMilestone2.test_concurrent_creates_no_data_loss ______________
+
+self = <test_m2.TestMilestone2 object at 0x7f3bbccfe090>
+
+    def test_concurrent_creates_no_data_loss(self):
+        """All notes created concurrently must be retrievable afterward."""
+        titles = [f"CLoss {i}" for i in range(15)]
+    
+        def create_one(title: str) -> tuple[int, dict]:
+            return _json_request(
+                "POST", "/api/notes", {"title": title, "content": "concurrent body"},
+            )
+    
+        with ThreadPoolExecutor(max_workers=15) as pool:
+            futures = {pool.submit(create_one, t): t for t in titles}
+            created_ids = []
+            for future in as_completed(futures):
+                code, payload = future.result()
+>               assert code == 201, f"Create failed: {code}"
+E               AssertionError: Create failed: 500
+E               assert 500 == 201
+
+/tests/test_m2.py:592: AssertionError
+==================================== PASSES ====================================
+___________________ TestMilestone2.test_api_key_file_exists ____________________
+---------------------------- Captured stderr setup -----------------------------
+bind: Address already in use
+=========================== short test summary info ============================
+PASSED ../tests/test_m2.py::TestMilestone2::test_api_key_file_exists
+PASSED ../tests/test_m2.py::TestMilestone2::test_database_file_at_expected_path
+PASSED ../tests/test_m2.py::TestMilestone2::test_create_note_missing_title_returns_400
+PASSED ../tests/test_m2.py::TestMilestone2::test_create_note_empty_body_returns_400
+PASSED ../tests/test_m2.py::TestMilestone2::test_get_all_notes_returns_array
+PASSED ../tests/test_m2.py::TestMilestone2::test_get_nonexistent_note_returns_404
+PASSED ../tests/test_m2.py::TestMilestone2::test_update_nonexistent_note_returns_404
+PASSED ../tests/test_m2.py::TestMilestone2::test_delete_nonexistent_note_returns_404
+PASSED ../tests/test_m2.py::TestMilestone2::test_api_get_response_content_type_is_json
+PASSED ../tests/test_m2.py::TestMilestone2::test_api_get_response_has_cors_header
+PASSED ../tests/test_m2.py::TestMilestone2::test_api_options_preflight_returns_cors_allowlist
+PASSED ../tests/test_m2.py::TestMilestone2::test_post_without_api_key_returns_401
+PASSED ../tests/test_m2.py::TestMilestone2::test_wrong_api_key_returns_401
+PASSED ../tests/test_m2.py::TestMilestone2::test_get_without_api_key_succeeds
+FAILED ../tests/test_m2.py::TestMilestone2::test_api_key_read_from_file - Ass...
+FAILED ../tests/test_m2.py::TestMilestone2::test_create_note_returns_201 - As...
+FAILED ../tests/test_m2.py::TestMilestone2::test_create_note_returns_id_field
+FAILED ../tests/test_m2.py::TestMilestone2::test_create_note_echoes_title_and_content
+FAILED ../tests/test_m2.py::TestMilestone2::test_get_all_notes_includes_created_note
+FAILED ../tests/test_m2.py::TestMilestone2::test_get_single_note_by_id - KeyE...
+FAILED ../tests/test_m2.py::TestMilestone2::test_update_note_changes_fields
+FAILED ../tests/test_m2.py::TestMilestone2::test_update_note_empty_title_returns_400
+FAILED ../tests/test_m2.py::TestMilestone2::test_update_note_missing_title_returns_400
+FAILED ../tests/test_m2.py::TestMilestone2::test_delete_note_removes_it - Key...
+FAILED ../tests/test_m2.py::TestMilestone2::test_api_post_response_content_type_and_cors
+FAILED ../tests/test_m2.py::TestMilestone2::test_api_put_response_content_type_and_cors
+FAILED ../tests/test_m2.py::TestMilestone2::test_api_delete_response_content_type_and_cors
+FAILED ../tests/test_m2.py::TestMilestone2::test_api_get_single_response_content_type_and_cors
+FAILED ../tests/test_m2.py::TestMilestone2::test_error_responses_have_json_and_cors_headers
+FAILED ../tests/test_m2.py::TestMilestone2::test_put_without_api_key_returns_401
+FAILED ../tests/test_m2.py::TestMilestone2::test_delete_without_api_key_returns_401
+FAILED ../tests/test_m2.py::TestMilestone2::test_put_wrong_api_key_returns_401
+FAILED ../tests/test_m2.py::TestMilestone2::test_delete_wrong_api_key_returns_401
+FAILED ../tests/test_m2.py::TestMilestone2::test_get_single_note_without_api_key_succeeds
+FAILED ../tests/test_m2.py::TestMilestone2::test_pagination_limit_returns_correct_count
+FAILED ../tests/test_m2.py::TestMilestone2::test_pagination_offset_skips_notes
+FAILED ../tests/test_m2.py::TestMilestone2::test_pagination_x_total_count_header
+FAILED ../tests/test_m2.py::TestMilestone2::test_pagination_default_limit_is_50
+FAILED ../tests/test_m2.py::TestMilestone2::test_pagination_max_limit_capped_at_100
+FAILED ../tests/test_m2.py::TestMilestone2::test_oversized_post_body_returns_413
+FAILED ../tests/test_m2.py::TestMilestone2::test_oversized_put_body_returns_413
+FAILED ../tests/test_m2.py::TestMilestone2::test_concurrent_creates_all_succeed
+FAILED ../tests/test_m2.py::TestMilestone2::test_concurrent_creates_no_data_loss
+======================== 29 failed, 14 passed in 0.94s =========================

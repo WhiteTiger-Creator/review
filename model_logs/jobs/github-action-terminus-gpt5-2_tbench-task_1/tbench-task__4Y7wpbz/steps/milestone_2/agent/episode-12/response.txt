@@ -1,0 +1,27 @@
+{
+  "analysis": "Most curl tests appear to have run (we saw a 404 not found body exactly). The python tests failed because the requests module isn’t installed. We need to perform the 413 and concurrency tests using available tools (curl, xargs, bash, maybe python stdlib urllib). We'll use python3 with urllib for the large body test and concurrent posts using xargs -P with curl. Then verify X-Total-Count and length via curl/grep.",
+  "plan": "1) Use python3 stdlib urllib to POST a >65536 body and print status and response body to confirm 413 and JSON error body. 2) Concurrency: run 15 parallel curl POSTs with xargs -P 15, then GET /api/notes and check X-Total-Count increases by 15 (and that list length matches or at least >= 15). 3) Confirm paging header still correct after inserts.",
+  "commands": [
+    {
+      "keystrokes": "python3 - <<'PY'\nimport json\nfrom urllib import request\nfrom urllib.error import HTTPError\n\nurl='http://127.0.0.1:8080/api/notes'\nbody=json.dumps({'title':'t','content':'x'*70000}).encode('utf-8')\nreq=request.Request(url, data=body, method='POST')\nreq.add_header('Content-Type','application/json')\nreq.add_header('X-API-Key','tb3_notes_api_secret_2026')\ntry:\n    with request.urlopen(req) as resp:\n        print('status', resp.status)\n        print(resp.read(200).decode('utf-8','replace'))\nexcept HTTPError as e:\n    print('status', e.code)\n    data=e.read(200).decode('utf-8','replace')\n    print(data)\nPY\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "before=$(curl -s -D- http://127.0.0.1:8080/api/notes -o /dev/null | awk -F': ' 'tolower($1)==\"x-total-count\"{print $2}' | tr -d '\\r'); echo \"before=$before\"\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "seq 1 15 | xargs -n1 -P15 -I{} sh -c \"curl -s -o /dev/null -w '%{http_code}\\n' -X POST http://127.0.0.1:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' --data '{\\\"title\\\":\\\"p{}\\\",\\\"content\\\":\\\"c{}\\\"}'\" | sort | uniq -c\n",
+      "duration": 3.0
+    },
+    {
+      "keystrokes": "after=$(curl -s -D- http://127.0.0.1:8080/api/notes -o /dev/null | awk -F': ' 'tolower($1)==\"x-total-count\"{print $2}' | tr -d '\\r'); echo \"after=$after\"\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -s http://127.0.0.1:8080/api/notes?limit=100&offset=0 | python3 -c 'import sys,json; a=json.load(sys.stdin); print(\"rows\",len(a))'\n",
+      "duration": 1.0
+    }
+  ],
+  "task_complete": false
+}

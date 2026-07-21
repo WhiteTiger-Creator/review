@@ -1,0 +1,51 @@
+{
+  "analysis": "connection_info is defined in routes.h with only data/data_size, and both routes.c and main.c use it (main.c in request_completed). To store raw URI, we can extend this struct in routes.h to add `char *raw_url;` and adjust allocation/freeing accordingly in routes.c and main.c. Then add an MHD URI log callback in main.c to capture the raw URI per connection into con_cls (connection_info). In handle_request, ensure con_cls allocated for all requests (not just API). Then in serve_static_file, check traversal against both provided `url` and stored `raw_url` after percent-decoding; if either has dotdot segment -> 403. This should catch the verifier’s encoded dotdot even if microhttpd normalizes `url`.",
+  "plan": "1) Update routes.h struct connection_info to include raw_url. 2) Update routes.c: where it allocates/initializes connection_info, set raw_url NULL; ensure it doesn't break. 3) Update main.c request_completed to free raw_url too. 4) Add a `uri_log_cb` and pass it via MHD_OPTION_URI_LOG_CALLBACK. In callback, store raw URI into ci->raw_url if not already set. 5) Ensure handle_request allocates ci when *con_cls is NULL for both API and static. 6) Update serve_static_file to accept `struct connection_info *ci` (or raw_url string) and test decoded dotdot on both. 7) Rebuild and re-test traversal URLs.",
+  "commands": [
+    {
+      "keystrokes": "sed -n '1,120p' /app/src/routes.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat > /app/src/routes.h <<'EOF'\n#ifndef ROUTES_H\n#define ROUTES_H\n\n#include <microhttpd.h>\n#include <stddef.h>\n\nstruct connection_info {\n    char *data;\n    size_t data_size;\n    // Raw URI as received by libmicrohttpd (may include percent-encoding)\n    char *raw_url;\n};\n\nenum MHD_Result route_request(struct MHD_Connection *connection,\n    const char *url, const char *method,\n    const char *upload_data, size_t *upload_data_size,\n    void **con_cls);\n\n#endif\nEOF\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "perl -i -pe 's/if \\(ci->data\\) free\\(ci->data\\);/if (ci->data) free(ci->data);\\n        if (ci->raw_url) free(ci->raw_url);/' /app/src/main.c\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "perl -i -pe 's/ci->data_size = 0;/ci->data_size = 0;\\n        ci->raw_url = NULL;/' /app/src/routes.c\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "grep -n \"raw_url\" -n /app/src/routes.c /app/src/main.c | head\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat > /app/src/main.c <<'EOF'\n#include <microhttpd.h>\n#include <stdio.h>\n#include <string.h>\n#include <stdlib.h>\n#include <signal.h>\n#include <sys/stat.h>\n#include <strings.h>\n#include <unistd.h>\n\n#include \"routes.h\"\n#include \"db.h\"\n\n#define PORT 8080\n#define WWW_DIR \"/app/www\"\n\nstatic struct MHD_Daemon *daemon_handle = NULL;\n\nstatic void handle_signal(int sig) {\n    (void)sig;\n    if (daemon_handle) MHD_stop_daemon(daemon_handle);\n    close_db();\n    exit(0);\n}\n\nstatic const char *get_content_type(const char *path) {\n    const char *ext = strrchr(path, '.');\n    if (!ext) return \"application/octet-stream\";\n    if (strcmp(ext, \".html\") == 0) return \"text/html\";\n    if (strcmp(ext, \".css\") == 0) return \"text/css\";\n    if (strcmp(ext, \".js\") == 0) return \"application/javascript\";\n    return \"application/octet-stream\";\n}\n\nstatic int hexval(char c) {\n    if (c >= '0' && c <= '9') return c - '0';\n    if (c >= 'a' && c <= 'f') return 10 + (c - 'a');\n    if (c >= 'A' && c <= 'F') return 10 + (c - 'A');\n    return -1;\n}\n\nstatic int url_percent_decode(const char *in, char *out, size_t out_sz) {\n    size_t oi = 0;\n    for (size_t i = 0; in[i] != '\\0'; i++) {\n        if (oi + 1 >= out_sz) return -1;\n        if (in[i] == '%' && in[i+1] && in[i+2]) {\n            int hi = hexval(in[i+1]);\n            int lo = hexval(in[i+2]);\n            if (hi < 0 || lo < 0) return -1;\n            out[oi++] = (char)((hi << 4) | lo);\n            i += 2;\n        } else {\n            out[oi++] = in[i];\n        }\n    }\n    out[oi] = '\\0';\n    return 0;\n}\n\nstatic int decoded_path_has_dotdot_segment(const char *path) {\n    const char *p = path;\n    while (*p) {\n        while (*p == '/') p++;\n        if (!*p) break;\n        const char *seg = p;\n        while (*p && *p != '/') p++;\n        size_t len = (size_t)(p - seg);\n        if (len == 2 && seg[0] == '.' && seg[1] == '.') return 1;\n    }\n    return 0;\n}\n\nstatic int url_has_traversal(const char *url) {\n    if (!url) return 0;\n    char decoded[512];\n    if (url_percent_decode(url, decoded, sizeof(decoded)) != 0) return 1;\n    if (decoded_path_has_dotdot_segment(decoded)) return 1;\n    return 0;\n}\n\nstatic enum MHD_Result serve_static_file(struct MHD_Connection *connection,\n                                        const struct connection_info *ci,\n                                        const char *url) {\n    // Forbid any traversal attempts (check both normalized and raw URI)\n    if (url_has_traversal(url) || (ci && url_has_traversal(ci->raw_url))) {\n        struct MHD_Response *r = MHD_create_response_from_buffer(\n            9, (void *)\"Forbidden\", MHD_RESPMEM_PERSISTENT);\n        enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_FORBIDDEN, r);\n        MHD_destroy_response(r);\n        return ret;\n    }\n\n    char filepath[512];\n    const char *path = (strcmp(url, \"/\") == 0) ? \"/index.html\" : url;\n    snprintf(filepath, sizeof(filepath), \"%s%s\", WWW_DIR, path);\n\n    struct stat st;\n    if (stat(filepath, &st) != 0) return MHD_NO;\n\n    FILE *f = fopen(filepath, \"rb\");\n    if (!f) return MHD_NO;\n\n    char *buf = malloc(st.st_size);\n    if (!buf) {\n        fclose(f);\n        return MHD_NO;\n    }\n    fread(buf, 1, st.st_size, f);\n    fclose(f);\n\n    struct MHD_Response *response = MHD_create_response_from_buffer(\n        st.st_size, buf, MHD_RESPMEM_MUST_FREE);\n    MHD_add_response_header(response, \"Content-Type\", get_content_type(filepath));\n    enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_OK, response);\n    MHD_destroy_response(response);\n    return ret;\n}\n\nstatic void request_completed(void *cls, struct MHD_Connection *connection,\n                              void **con_cls, enum MHD_RequestTerminationCode toe) {\n    (void)cls;\n    (void)connection;\n    (void)toe;\n    if (con_cls && *con_cls) {\n        struct connection_info *ci = *con_cls;\n        if (ci->data) free(ci->data);\n        if (ci->raw_url) free(ci->raw_url);\n        free(ci);\n        *con_cls = NULL;\n    }\n}\n\nstatic void uri_log_cb(void *cls, const char *uri) {\n    (void)cls;\n    // Note: This callback does not provide the connection pointer, so it cannot\n    // be used to attach the URI to a specific connection.\n    // Kept intentionally empty.\n    (void)uri;\n}\n\nstatic enum MHD_Result handle_request(void *cls,\n                                     struct MHD_Connection *connection,\n                                     const char *url, const char *method,\n                                     const char *version,\n                                     const char *upload_data,\n                                     size_t *upload_data_size,\n                                     void **con_cls) {\n    (void)cls;\n    (void)version;\n\n    if (!con_cls) return MHD_NO;\n\n    if (*con_cls == NULL) {\n        struct connection_info *ci = calloc(1, sizeof(*ci));\n        if (!ci) return MHD_NO;\n        ci->data = NULL;\n        ci->data_size = 0;\n        ci->raw_url = NULL;\n        *con_cls = ci;\n    }\n\n    struct connection_info *ci = (struct connection_info *)(*con_cls);\n    // Best-effort: keep a copy of the URL we are given (may already be normalized)\n    if (!ci->raw_url && url) ci->raw_url = strdup(url);\n\n    if (strncmp(url, \"/api/\", 5) == 0) {\n        return route_request(connection, url, method, upload_data,\n                             upload_data_size, con_cls);\n    }\n\n    if (strcmp(method, \"GET\") == 0) {\n        enum MHD_Result ret = serve_static_file(connection, ci, url);\n        if (ret == MHD_YES) return ret;\n    }\n\n    struct MHD_Response *response = MHD_create_response_from_buffer(\n        9, (void *)\"Not Found\", MHD_RESPMEM_PERSISTENT);\n    enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, response);\n    MHD_destroy_response(response);\n    return ret;\n}\n\nint main(void) {\n    signal(SIGINT, handle_signal);\n    signal(SIGTERM, handle_signal);\n\n    mkdir(\"/app/data\", 0755);\n\n    if (init_db(\"/app/data/notes.db\") != 0) {\n        fprintf(stderr, \"Failed to initialize database\\n\");\n        return 1;\n    }\n\n    daemon_handle = MHD_start_daemon(\n        MHD_USE_THREAD_PER_CONNECTION,\n        PORT,\n        NULL, NULL,\n        &handle_request, NULL,\n        MHD_OPTION_NOTIFY_COMPLETED, &request_completed, NULL,\n        MHD_OPTION_URI_LOG_CALLBACK, &uri_log_cb, NULL,\n        MHD_OPTION_END);\n\n    if (!daemon_handle) {\n        fprintf(stderr, \"Failed to start server\\n\");\n        return 1;\n    }\n\n    printf(\"Server running on port %d\\n\", PORT);\n    while (1) pause();\n    return 0;\n}\nEOF\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "make clean && make -j\"$(nproc)\"\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "./notes_server > /tmp/notes_server.log 2>&1 & echo $! > /tmp/notes_server.pid\n",
+      "duration": 0.2
+    },
+    {
+      "keystrokes": "sleep 0.2; curl -i 'http://127.0.0.1:8080/%2e%2e/README.md' | head -n 20\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -i 'http://127.0.0.1:8080/%2e%2e%2fREADME.md' | head -n 20\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "kill $(cat /tmp/notes_server.pid) 2>/dev/null || true\n",
+      "duration": 0.2
+    }
+  ],
+  "task_complete": false
+}

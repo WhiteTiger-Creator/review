@@ -1,0 +1,38 @@
+New Terminal Output:
+th: 107
+
+[{"id":1,"title":"Test Note","content":"Hello World"},{"id":2,"title":"Test Note","content":"Hello World"}]root@10c43992d5dc:/app# curl -s -X PUT http://localho
+st:8080/api/notes/1 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{"title":"Updated","content":"New content"}'
+{"id":1,"title":"Updated","content":"New content"}root@10c43992d5dc:/app# curl -s -X DELETE http://localhost:8080/api/notes/2 -H 'X-API-Key: tb3_notes_api_secre
+t_2026'
+{"status":"deleted"}root@10c43992d5dc:/app# curl -s http://localhost:8080/api/notes/99999
+{"error":"not found"}root@10c43992d5dc:/app# curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json'
+-H 'X-API-Key: tb3_notes_api_secret_2026' -d '{"title":"","content":"test"}'
+400root@10c43992d5dc:/app# curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3
+_notes_api_secret_2026' -d '{"content":"no title"}'
+400root@10c43992d5dc:/app# curl -s -X OPTIONS http://localhost:8080/api/notes -D - 2>&1 | head -15
+HTTP/1.1 200 OK
+Date: Tue, 26 May 2026 12:49:00 GMT
+Connection: close
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+Content-Type: application/json
+Content-Length: 0
+
+root@10c43992d5dc:/app# curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/app.js
+200root@10c43992d5dc:/app# curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/index.html
+200root@10c43992d5dc:/app# curl -s 'http://localhost:8080/api/notes?limit=1&offset=0' -D - 2>&1 | head -15
+HTTP/1.1 200 OK
+Date: Tue, 26 May 2026 12:49:03 GMT
+Connection: close
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+X-Total-Count: 1
+Content-Length: 52
+
+[{"id":1,"title":"Updated","content":"New content"}]root@10c43992d5dc:/app# curl -s -o /dev/null -w '%{http_code}' -X PUT http://localhost:8080/api/notes/1 -H '
+Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{"title":"","content":"test"}'
+400root@10c43992d5dc:/app#

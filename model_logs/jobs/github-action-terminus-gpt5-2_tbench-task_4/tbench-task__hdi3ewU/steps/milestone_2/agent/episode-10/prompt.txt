@@ -1,0 +1,103 @@
+New Terminal Output:
+log 2>&1
+root@27e807e19559:/app# nl -ba src/main.c | sed -n '130,190p'
+   130      size_t n = fread(data, 1, st.st_size, f);
+   131      fclose(f);
+   132      if (n != (size_t)st.st_size) {
+   133          free(data);
+   134          struct MHD_Response *r = MHD_create_response_from_buffer(
+   135              5, (void *)"Error", MHD_RESPMEM_PERSISTENT);
+   136          enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_INTERNAL_SERVER_ERROR, r);
+   137          MHD_destroy_response(r);
+   138          return ret;
+   139      }
+   140
+   141      struct MHD_Response *r = MHD_create_response_from_buffer(
+   142          n, (void *)data, MHD_RESPMEM_MUST_FREE);
+   143      MHD_add_response_header(r, "Content-Type", get_content_type(path));
+   144      enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_OK, r);
+   145      MHD_destroy_response(r);
+   146      return ret;
+   147  }
+   148
+   149  static static enum MHD_Result access_handler(void *cls,
+   150                                       struct MHD_Connection *connection,
+   151                                       const char *url,
+   152                                       const char *method,
+   153                                       const char *version,
+   154                                       const char *upload_data,
+   155                                       size_t *upload_data_size,
+   156                                       void **con_cls) {
+   157      (void)cls;
+   158      (void)version;
+   159
+   160      if (strncmp(url, "/api/", 5) == 0) {
+   161          return route_request(connection, url, method, upload_data, upload_data_size, con_cls);
+   162      }
+   163      return serve_static_file(connection, url);
+   164  }
+   165
+   166  int main(void) {
+   167      signal(SIGINT, handle_signal);
+   168      signal(SIGTERM, handle_signal);
+   169
+   170      if (init_db("/app/data/notes.db") != 0) {
+   171          fprintf(stderr, "Failed to initialize database\n");
+   172          return 1;
+   173      }
+   174
+   175      daemon_handle = MHD_start_daemon(MHD_USE_INTERNAL_POLLING_THREAD,
+   176                                      PORT,
+   177                                      NULL, NULL,
+   178                                      &access_handler, NULL,
+   179                                      MHD_OPTION_END);
+   180
+   181      if (!daemon_handle) {
+   182          fprintf(stderr, "Failed to start server: %s\n", strerror(errno));
+   183          return 1;
+   184      }
+   185
+   186      printf("Server running on port %d\n", PORT);
+   187      while (1) pause();
+   188      return 0;
+   189  }
+root@27e807e19559:/app# sed -i 's/^static static /static /' src/main.c
+root@27e807e19559:/app# grep -n "request_completed_cb\|NOTIFY_COMPLETED\|static static" -n src/main.c || true
+root@27e807e19559:/app# make clean && make
+rm -f notes_server src/auth.o src/db.o src/main.o src/routes.o src/static.o
+cc -Wall -Wextra -O2 -Iinclude -c -o src/auth.o src/auth.c
+cc -Wall -Wextra -O2 -Iinclude -c -o src/db.o src/db.c
+cc -Wall -Wextra -O2 -Iinclude -c -o src/main.o src/main.c
+cc -Wall -Wextra -O2 -Iinclude -c -o src/routes.o src/routes.c
+src/routes.c: In function ‘route_request’:
+src/routes.c:273:13: warning: Value MHD_HTTP_PAYLOAD_TOO_LARGE is deprecated use MHD_HTTP_CONTENT_TOO_LARGE
+  273 |             enum MHD_Result r = send_json(connection, "{\"error\":\"payload too large\"}", MHD_HTTP_PAYLOAD_TOO_LARGE);
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+cc -Wall -Wextra -O2 -Iinclude -c -o src/static.o src/static.c
+cc -Wall -Wextra -O2 -o notes_server src/auth.o src/db.o src/main.o src/routes.o src/static.o -lmicrohttpd -lsqlite3
+root@27e807e19559:/app# pkill -f ./notes_server 2>/dev/null || true
+root@27e807e19559:/app# ./notes_server >server.log 2>&1 &
+[2] 1845
+root@27e807e19559:/app# curl -si -X POST http://127.0.0.1:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' --data '{
+"title":"t_ok","content":"c_ok"}' | sed -n '1,25p'
+HTTP/1.1 201 Created
+Date: Tue, 26 May 2026 12:50:28 GMT
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+Content-Length: 54
+
+{"id":5,"title":"\u0018Ш'U","content":"\u0018è'U"}[2]+  Exit 1                  ./notes_server > server.log 2>&1
+root@27e807e19559:/app# curl -si http://127.0.0.1:8080/api/notes?limit=2&offset=0 | sed -n '1,30p'
+[2] 1861
+root@27e807e19559:/app# HTTP/1.1 200 OK
+Date: Tue, 26 May 2026 12:50:29 GMT
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+X-Total-Count: 5
+Content-Length: 75
+
+[{"id":1,"title":"t1","content":"c1"},{"id":2,"title":"t1","content":"c1"}]

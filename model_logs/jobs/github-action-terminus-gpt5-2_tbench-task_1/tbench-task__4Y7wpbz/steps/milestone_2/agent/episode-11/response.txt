@@ -1,0 +1,51 @@
+{
+  "analysis": "POST now succeeds with 201 and returns the stored object including numeric id, title, content. Next we must verify remaining contract points: GET collection paging limit/offset and cap to 100, X-Total-Count reflects pre-page total, GET by id and 404 body, PUT updates with same title validation (reject blank), DELETE behavior and 404 on missing, OPTIONS headers, body size limit 65536 returns 413 with JSON error body, and that reads work without key. Concurrency robustness is likely improved by FULLMUTEX+WAL+busy_timeout but we should at least do a quick parallel POST test.",
+  "plan": "Run curl tests for:\n- GET /api/notes (no key) -> includes X-Total-Count=1\n- GET /api/notes?limit=1&offset=0 and limit=999 cap\n- GET /api/notes/1 -> 200\n- GET /api/notes/99999 -> 404 exact body\n- PUT /api/notes/1 with blank title -> 400\n- PUT /api/notes/1 valid -> 200\n- DELETE /api/notes/1 -> 200 deleted, then GET -> 404\n- 413 test: send >65536 bytes body on POST\n- Basic concurrency: fire 15 parallel POSTs and ensure count increases by 15.\nIf all pass, API work is complete.",
+  "commands": [
+    {
+      "keystrokes": "curl -i http://127.0.0.1:8080/api/notes | sed -n '1,30p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -i 'http://127.0.0.1:8080/api/notes?limit=1&offset=0' | sed -n '1,40p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -i 'http://127.0.0.1:8080/api/notes?limit=999&offset=0' | sed -n '1,25p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -i http://127.0.0.1:8080/api/notes/1 | sed -n '1,30p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -i http://127.0.0.1:8080/api/notes/99999 | sed -n '1,30p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -i -X PUT http://127.0.0.1:8080/api/notes/1 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' --data '{\"title\":\"   \",\"content\":\"x\"}' | sed -n '1,30p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -i -X PUT http://127.0.0.1:8080/api/notes/1 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' --data '{\"title\":\"t1b\",\"content\":\"c1b\"}' | sed -n '1,40p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -i -X DELETE http://127.0.0.1:8080/api/notes/1 -H 'X-API-Key: tb3_notes_api_secret_2026' | sed -n '1,25p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -i http://127.0.0.1:8080/api/notes/1 | sed -n '1,25p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "python3 - <<'PY'\nimport requests\nurl='http://127.0.0.1:8080/api/notes'\nbody='{'+'\"title\":\"t\",\"content\":\"' + ('x'*70000) + '\"}'\nheaders={'Content-Type':'application/json','X-API-Key':'tb3_notes_api_secret_2026'}\nr=requests.post(url,data=body,headers=headers)\nprint(r.status_code)\nprint(r.text[:200])\nPY\n",
+      "duration": 2.0
+    },
+    {
+      "keystrokes": "python3 - <<'PY'\nimport json\nimport concurrent.futures\nimport requests\n\nURL='http://127.0.0.1:8080/api/notes'\nH={'Content-Type':'application/json','X-API-Key':'tb3_notes_api_secret_2026'}\n\ndef post(i):\n    r=requests.post(URL, headers=H, data=json.dumps({'title':f't{i}','content':f'c{i}'}))\n    return r.status_code\n\nwith concurrent.futures.ThreadPoolExecutor(max_workers=15) as ex:\n    codes=list(ex.map(post, range(15)))\nprint('codes', {c:codes.count(c) for c in set(codes)})\n\nr=requests.get(URL)\nprint('get', r.status_code)\nprint('X-Total-Count', r.headers.get('X-Total-Count'))\nprint('len', len(r.json()))\nPY\n",
+      "duration": 3.0
+    }
+  ],
+  "task_complete": false
+}

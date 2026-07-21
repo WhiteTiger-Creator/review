@@ -1,0 +1,230 @@
+{
+    "id": "7799ea3a-1d7b-42a7-8229-b925e8600c6c",
+    "task_name": "tbench-task",
+    "trial_name": "tbench-task__rhpUQZZ",
+    "trial_uri": "file:///root/jobs/github-action-terminus-claude-opus-4-6_tbench-task_1/tbench-task__rhpUQZZ",
+    "task_id": {
+        "path": "harbor_tasks/tbench-task"
+    },
+    "source": null,
+    "task_checksum": "48b7d2e04c3beca89448d1dbd41e90160f1ac5b9dd7c9460fdd66e69035caff9",
+    "config": {
+        "task": {
+            "path": "harbor_tasks/tbench-task",
+            "git_url": null,
+            "git_commit_id": null,
+            "name": null,
+            "ref": null,
+            "overwrite": false,
+            "download_dir": null,
+            "source": null
+        },
+        "trial_name": "tbench-task__rhpUQZZ",
+        "trials_dir": "jobs/github-action-terminus-claude-opus-4-6_tbench-task_1",
+        "timeout_multiplier": 1.0,
+        "agent_timeout_multiplier": null,
+        "verifier_timeout_multiplier": null,
+        "agent_setup_timeout_multiplier": null,
+        "environment_build_timeout_multiplier": null,
+        "agent": {
+            "name": "terminus-2",
+            "import_path": null,
+            "model_name": "openai/@anthropic/claude-opus-4-6",
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "kwargs": {
+                "model_info": {
+                    "max_input_tokens": 200000,
+                    "max_output_tokens": 16384
+                }
+            },
+            "env": {}
+        },
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "suppress_override_warnings": false,
+            "mounts_json": null,
+            "env": {},
+            "kwargs": {}
+        },
+        "verifier": {
+            "override_timeout_sec": null,
+            "max_timeout_sec": null,
+            "env": {},
+            "disable": false
+        },
+        "artifacts": [],
+        "job_id": "8033a41a-29d6-4ffb-9bd1-90e4860b3250"
+    },
+    "agent_info": {
+        "name": "terminus-2",
+        "version": "2.0.0",
+        "model_info": {
+            "name": "@anthropic/claude-opus-4-6",
+            "provider": "openai"
+        }
+    },
+    "agent_result": null,
+    "verifier_result": {
+        "rewards": {
+            "reward": 1.0
+        }
+    },
+    "exception_info": null,
+    "started_at": "2026-05-26T12:40:18.610014Z",
+    "finished_at": "2026-05-26T12:54:15.786042Z",
+    "environment_setup": {
+        "started_at": "2026-05-26T12:40:18.670476Z",
+        "finished_at": "2026-05-26T12:41:05.253357Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-05-26T12:41:05.253414Z",
+        "finished_at": "2026-05-26T12:41:07.018351Z"
+    },
+    "agent_execution": null,
+    "verifier": null,
+    "step_results": [
+        {
+            "step_name": "milestone_1",
+            "agent_result": {
+                "n_input_tokens": 65172,
+                "n_cache_tokens": 0,
+                "n_output_tokens": 6446,
+                "cost_usd": null,
+                "rollout_details": [],
+                "metadata": {
+                    "n_episodes": 9,
+                    "api_request_times_msec": [
+                        23701.04694366455,
+                        7372.327566146851,
+                        8142.370223999023,
+                        22767.51208305359,
+                        5233.205080032349,
+                        9561.967134475708,
+                        19982.431650161743,
+                        12860.591888427734,
+                        8505.295515060425
+                    ],
+                    "summarization_count": 0
+                }
+            },
+            "verifier_result": {
+                "rewards": {
+                    "reward": 1.0
+                }
+            },
+            "exception_info": null,
+            "agent_execution": {
+                "started_at": "2026-05-26T12:41:07.129478Z",
+                "finished_at": "2026-05-26T12:43:30.585849Z"
+            },
+            "verifier": {
+                "started_at": "2026-05-26T12:43:30.692276Z",
+                "finished_at": "2026-05-26T12:43:31.466097Z"
+            }
+        },
+        {
+            "step_name": "milestone_2",
+            "agent_result": {
+                "n_input_tokens": 822784,
+                "n_cache_tokens": 0,
+                "n_output_tokens": 23123,
+                "cost_usd": null,
+                "rollout_details": [],
+                "metadata": {
+                    "n_episodes": 28,
+                    "api_request_times_msec": [
+                        6060.31608581543,
+                        6776.105165481567,
+                        120778.45811843872,
+                        31495.83888053894,
+                        6034.24859046936,
+                        10533.744096755981,
+                        10747.328281402588,
+                        14518.063068389893,
+                        14410.059690475464,
+                        3583.8093757629395,
+                        3045.6483364105225,
+                        4043.6973571777344,
+                        4516.248464584351,
+                        7926.175117492676,
+                        7407.421350479126,
+                        5981.743812561035,
+                        4308.990478515625,
+                        3777.2305011749268,
+                        3852.710962295532,
+                        5172.249317169189,
+                        3750.2570152282715,
+                        4418.701171875,
+                        6635.008335113525,
+                        6702.639102935791,
+                        9075.307607650757,
+                        14837.849855422974,
+                        24841.73536300659,
+                        17056.239366531372
+                    ],
+                    "summarization_count": 0
+                }
+            },
+            "verifier_result": {
+                "rewards": {
+                    "reward": 1.0
+                }
+            },
+            "exception_info": null,
+            "agent_execution": {
+                "started_at": "2026-05-26T12:43:31.581737Z",
+                "finished_at": "2026-05-26T12:52:27.139935Z"
+            },
+            "verifier": {
+                "started_at": "2026-05-26T12:52:27.248425Z",
+                "finished_at": "2026-05-26T12:52:28.334959Z"
+            }
+        },
+        {
+            "step_name": "milestone_3",
+            "agent_result": {
+                "n_input_tokens": 32367,
+                "n_cache_tokens": 0,
+                "n_output_tokens": 5018,
+                "cost_usd": null,
+                "rollout_details": [],
+                "metadata": {
+                    "n_episodes": 7,
+                    "api_request_times_msec": [
+                        6144.536256790161,
+                        6917.464256286621,
+                        22217.310905456543,
+                        4961.715221405029,
+                        7217.212915420532,
+                        11624.222755432129,
+                        26795.915365219116
+                    ],
+                    "summarization_count": 0
+                }
+            },
+            "verifier_result": {
+                "rewards": {
+                    "reward": 1.0
+                }
+            },
+            "exception_info": null,
+            "agent_execution": {
+                "started_at": "2026-05-26T12:52:28.456506Z",
+                "finished_at": "2026-05-26T12:54:03.778990Z"
+            },
+            "verifier": {
+                "started_at": "2026-05-26T12:54:03.888731Z",
+                "finished_at": "2026-05-26T12:54:04.675289Z"
+            }
+        }
+    ]
+}

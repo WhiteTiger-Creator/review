@@ -1,0 +1,31 @@
+{
+  "analysis": "The server already uses libmicrohttpd and sqlite3. Current routing only supports OPTIONS (returns empty body 200) and GET /api/notes with hardcoded paging (50,0) and X-Total-Count; everything else 404 with {\"error\":\"not found\"}. Need to implement full CRUD, real paging via query params, body parsing with 65536 limit, title validation, API key enforcement on writes, correct error bodies/status codes per contract, and concurrency-safe SQLite (WAL, busy_timeout, transactions). Also ensure static serving remains intact (main.c contains a full serve_static_file implementation; static.c is stub but likely unused). Need to inspect db.c/auth.c/routes.c fully (main.c output truncated).",
+  "plan": "1) View full src/routes.c, src/db.c, src/auth.c, and the remainder of src/main.c to see current infrastructure for reading request bodies and serving static. 2) Implement/adjust request body accumulation in route_request using con_cls and request_completed callback, enforce NOTES_MAX_BODY_BYTES. 3) Implement auth: load /app/config/api.key once, trim whitespace, compare to X-API-Key header. 4) Extend db layer with functions: init_db/open with WAL + busy_timeout + schema init; count, list with limit/offset; get by id; create returning id; update; delete; all using prepared statements and transactions for writes. 5) Update routes to handle /api/notes and /api/notes/{id} for GET/POST/PUT/DELETE with proper status codes and JSON bodies, plus X-Total-Count only on collection GET. 6) Rebuild and run curl tests including parallel POST burst to verify no dropped rows, and confirm static /app.js still served.",
+  "commands": [
+    {
+      "keystrokes": "sed -n '1,260p' src/routes.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,260p' src/db.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,220p' src/db.h\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,220p' src/auth.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,220p' src/auth.h\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '200,520p' src/main.c\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

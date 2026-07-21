@@ -1,0 +1,41 @@
+Current Terminal Screen:
+root@ade5f5ea62db:/app# perl -0777 -i -pe 's/if \(strcmp\(method, "POST"\) == 0 && strcmp\(url, "\\/api\\/notes"\) == 0\) \{/if (strcmp(method, "POST") == 0 &&
+strcmp(url, "\\/api\\/notes") == 0) {\n        const char *cl = MHD_lookup_connection_value(connection, MHD_HEADER_KIND, "Content-Length");\n        if (cl) {\n
+            int v=0;\n            if (parse_int(cl, &v) && v > NOTES_MAX_BODY_BYTES)\n                return send_json(connection, "{\\"error\\":\\"payload too
+large\\"}", MHD_HTTP_PAYLOAD_TOO_LARGE);\n        }/s; s/if \(strcmp\(method, "PUT"\) == 0 && strncmp\(url, "\\/api\\/notes\\/", 11\) == 0\) \{/if (strcmp(metho
+d, "PUT") == 0 && strncmp(url, "\\/api\\/notes\\/", 11) == 0) {\n        const char *cl = MHD_lookup_connection_value(connection, MHD_HEADER_KIND, "Content-Leng
+th");\n        if (cl) {\n            int v=0;\n            if (parse_int(cl, &v) && v > NOTES_MAX_BODY_BYTES)\n                return send_json(connection, "{\
+\"error\\":\\"payload too large\\"}", MHD_HTTP_PAYLOAD_TOO_LARGE);\n        }/s' /app/src/routes.c
+Backslash found where operator expected (Missing operator before "\"?) at -e line 1, near "api\"
+Unknown regexp modifier "/t" at -e line 1, at end of line
+syntax error at -e line 1, near "api\"
+Execution of -e aborted due to compilation errors.
+root@ade5f5ea62db:/app# make
+make: 'notes_server' is up to date.
+root@ade5f5ea62db:/app# if [ -f /app/server.pid ]; then kill $(cat /app/server.pid) 2>/dev/null || true; fi
+root@ade5f5ea62db:/app# ./notes_server >server.log 2>&1 & echo $! > server.pid
+[5] 1893
+root@ade5f5ea62db:/app# python3 - <<'PY'
+> import json, os, subprocess, tempfile
+> payload=json.dumps({'title':'t','content':'x'*70000}).encode()
+> fd, path = tempfile.mkstemp()
+> os.write(fd, payload)
+> os.close(fd)
+> cmd=['curl','-i','-s','-X','POST','http://127.0.0.1:8080/api/notes','-H','Content-Type: application/json','-H','X-API-Key: tb3_notes_api_secret_2026','--data-
+binary', '@'+path]
+> print(subprocess.check_output(cmd, text=True)[:300])
+> os.unlink(path)
+> PY
+Traceback (most recent call last):
+  File "<stdin>", line 7, in <module>
+  File "/usr/local/lib/python3.12/subprocess.py", line 466, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['curl', '-i', '-s', '-X', 'POST', 'http://127.0.0.1:8080/api/notes', '-H', 'Content-Type: application/json', '-H', 'X-A
+PI-Key: tb3_notes_api_secret_2026', '--data-binary', '@/tmp/tmp0vfc67sn']' returned non-zero exit status 52.
+[5]+  Exit 1                  ./notes_server > server.log 2>&1
+root@ade5f5ea62db:/app# tail -n 50 /app/server.log || true
+Failed to start server
+root@ade5f5ea62db:/app#

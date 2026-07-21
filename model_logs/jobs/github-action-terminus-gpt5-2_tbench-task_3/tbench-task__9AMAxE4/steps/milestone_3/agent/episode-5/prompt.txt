@@ -1,0 +1,28 @@
+New Terminal Output:
+
+[]root@08d5c4164ec3:/app# curl -i -sS -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '
+{"title":"Smoke","content":"Test"}'
+HTTP/1.1 500 Internal Server Error
+Date: Tue, 26 May 2026 12:51:16 GMT
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+Content-Length: 24
+
+{"error":"server error"}root@08d5c4164ec3:/app# ss -ltnp | grep ':8080' || true
+bash: ss: command not found
+root@08d5c4164ec3:/app# ps auxww | grep -E '(notes|8080|server|mhd|microhttpd)' | grep -v grep
+bash: ps: command not found
+root@08d5c4164ec3:/app# ls -la /app/data || true
+total 52
+drwxr-xr-x  2 root root    62 May 26 12:50 .
+drwxr-xr-x 10 root root   157 May 26 12:49 ..
+-rw-r--r--  1 root root  4096 May 26 12:50 notes.db
+-rw-r--r--  1 root root 32768 May 26 12:50 notes.db-shm
+-rw-r--r--  1 root root 20632 May 26 12:50 notes.db-wal
+root@08d5c4164ec3:/app# ls -la /app/data/notes.db || true
+-rw-r--r-- 1 root root 4096 May 26 12:50 /app/data/notes.db
+root@08d5c4164ec3:/app# sqlite3 /app/data/notes.db '.tables' 2>/dev/null || echo 'sqlite3 not available or db missing/corrupt'
+sqlite3 not available or db missing/corrupt
+root@08d5c4164ec3:/app#

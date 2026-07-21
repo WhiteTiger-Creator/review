@@ -1,0 +1,41 @@
+Current Terminal Screen:
+    fread(buf, 1, st.st_size, f);
+    fclose(f);
+
+    struct MHD_Response *response = MHD_create_response_from_buffer(
+        st.st_size, buf, MHD_RESPMEM_MUST_FREE);
+    MHD_add_response_header(response, "Content-Type", get_content_type(filepath));
+    enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
+    MHD_destroy_response(response);
+    return ret;
+}
+
+static void request_completed(void *cls, struct MHD_Connection *connection,
+    void **con_cls, enum MHD_RequestTerminationCode toe) {
+    (void)cls; (void)connection; (void)toe;
+    if (con_cls && *con_cls) {
+        struct connection_info *ci = *con_cls;
+        if (ci->data) free(ci->data);
+        free(ci);
+        *con_cls = NULL;
+    }
+}
+
+static enum MHD_Result handle_request(void *cls,
+    struct MHD_Connection *connection,
+    const char *url, const char *method,
+    const char *version,
+    const char *upload_data, size_t *upload_data_size,
+    void **con_cls) {
+    (void)cls; (void)version;
+
+    if (strncmp(url, "/api/", 5) == 0) {
+        return route_request(connection, url, method, upload_data,
+                             upload_data_size, con_cls);
+    }
+
+    if (strcmp(method, "GET") == 0) {
+        enum MHD_Result ret = serve_static_file(connection, url);
+        if (ret == MHD_YES) return ret;
+    }
+root@1ebded0d6da5:/app#

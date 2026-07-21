@@ -1,0 +1,488 @@
+{
+    "results": {
+        "tool": {
+            "name": "pytest",
+            "version": "8.4.1"
+        },
+        "summary": {
+            "tests": 43,
+            "passed": 16,
+            "failed": 27,
+            "skipped": 0,
+            "pending": 0,
+            "other": 0,
+            "start": 1779799815.8774822,
+            "stop": 1779799816.3665133
+        },
+        "tests": [
+            {
+                "name": "test_m2.py::TestMilestone2::test_api_key_file_exists",
+                "status": "passed",
+                "duration": 0.013922146999902907,
+                "start": 1779799815.9483197,
+                "stop": 1779799815.9625444,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_api_key_read_from_file",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0013357230001247444,
+                "start": 1779799815.962839,
+                "stop": 1779799815.9858217,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6ddddc3b0>\n\n    def test_api_key_read_from_file(self):\n        \"\"\"Server must authenticate using the key stored in /app/config/api.key.\"\"\"\n        with open(\"/app/config/api.key\") as f:\n            file_key = f.read().strip()\n        data = json.dumps({\"title\": \"KeyFile Check\", \"content\": \"body\"}).encode(\"utf-8\")\n        req = urllib.request.Request(\n            f\"{BASE}/api/notes\",\n            data=data,\n            method=\"POST\",\n            headers={\"Content-Type\": \"application/json\", \"X-API-Key\": file_key},\n        )\n        try:\n            with urllib.request.urlopen(req, timeout=10) as resp:\n                code = resp.status\n        except urllib.error.HTTPError as exc:\n            code = exc.code\n>       assert code == 201, f\"Key from /app/config/api.key must authenticate, got {code}\"\nE       AssertionError: Key from /app/config/api.key must authenticate, got 500\nE       assert 500 == 201\n\n/tests/test_m2.py:111: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_database_file_at_expected_path",
+                "status": "passed",
+                "duration": 0.0010086549999641647,
+                "start": 1779799815.9861064,
+                "stop": 1779799815.987278,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_create_note_returns_201",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0009628040000961846,
+                "start": 1779799815.9875119,
+                "stop": 1779799815.999347,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dd3f8560>\n\n    def test_create_note_returns_201(self):\n        \"\"\"POST /api/notes with valid data must return HTTP 201.\"\"\"\n        code, payload = _create_note(\"Status Check\", \"Body\")\n>       assert code == 201, f\"Expected 201, got {code}: {payload}\"\nE       AssertionError: Expected 201, got 500: {'error': 'server error'}\nE       assert 500 == 201\n\n/tests/test_m2.py:126: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_create_note_returns_id_field",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0009775080001190872,
+                "start": 1779799815.999594,
+                "stop": 1779799816.0110714,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dd3f8740>\n\n    def test_create_note_returns_id_field(self):\n        \"\"\"Created note response must include a numeric id field.\"\"\"\n        code, payload = _create_note(\"ID Check\", \"Body\")\n>       assert code == 201\nE       assert 500 == 201\n\n/tests/test_m2.py:132: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_create_note_echoes_title_and_content",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0009497600000258899,
+                "start": 1779799816.0113108,
+                "stop": 1779799816.0226932,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dd3f8470>\n\n    def test_create_note_echoes_title_and_content(self):\n        \"\"\"Created note response must echo back the submitted title and content.\"\"\"\n        code, payload = _create_note(\"Echo Title\", \"Echo Body\")\n>       assert code == 201\nE       assert 500 == 201\n\n/tests/test_m2.py:140: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_create_note_missing_title_returns_400",
+                "status": "passed",
+                "duration": 0.0008203919999232312,
+                "start": 1779799816.0229344,
+                "stop": 1779799816.0239072,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_create_note_empty_body_returns_400",
+                "status": "passed",
+                "duration": 0.0007583899999872301,
+                "start": 1779799816.024131,
+                "stop": 1779799816.025031,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_get_all_notes_returns_array",
+                "status": "passed",
+                "duration": 0.0011599100000694307,
+                "start": 1779799816.025279,
+                "stop": 1779799816.026586,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_get_all_notes_includes_created_note",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0008584509999991496,
+                "start": 1779799816.026803,
+                "stop": 1779799816.038251,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dcb45f10>\n\n    def test_get_all_notes_includes_created_note(self):\n        \"\"\"A note created via POST must appear in the list endpoint response.\"\"\"\n        code, created = _create_note(\"Find Me\", \"In the List\")\n>       assert code == 201\nE       assert 500 == 201\n\n/tests/test_m2.py:168: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_get_single_note_by_id",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0008529159999852709,
+                "start": 1779799816.0384855,
+                "stop": 1779799816.0498538,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dcb46060>\n\n    def test_get_single_note_by_id(self):\n        \"\"\"GET /api/notes/<id> must return the correct note.\"\"\"\n        _, created = _create_note(\"Single Fetch\", \"Unique Body\")\n>       note_id = int(created[\"id\"])\n                      ^^^^^^^^^^^^^\nE       KeyError: 'id'\n\n/tests/test_m2.py:178: KeyError",
+                "message": "The test failed in the call phase"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_get_nonexistent_note_returns_404",
+                "status": "passed",
+                "duration": 0.0008495089999769334,
+                "start": 1779799816.0500934,
+                "stop": 1779799816.0511057,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_update_note_changes_fields",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.000843650999968304,
+                "start": 1779799816.0513294,
+                "stop": 1779799816.0633376,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dcb46000>\n\n    def test_update_note_changes_fields(self):\n        \"\"\"PUT /api/notes/<id> must update the note and return updated data.\"\"\"\n        _, created = _create_note(\"Before Update\", \"Old content\")\n>       note_id = int(created[\"id\"])\n                      ^^^^^^^^^^^^^\nE       KeyError: 'id'\n\n/tests/test_m2.py:194: KeyError",
+                "message": "The test failed in the call phase"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_update_note_empty_title_returns_400",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0009661609999511711,
+                "start": 1779799816.0635977,
+                "stop": 1779799816.0751932,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dd439670>\n\n    def test_update_note_empty_title_returns_400(self):\n        \"\"\"PUT /api/notes/<id> with an empty title must return HTTP 400.\"\"\"\n        _, created = _create_note(\"Before\", \"Body\")\n>       note_id = int(created[\"id\"])\n                      ^^^^^^^^^^^^^\nE       KeyError: 'id'\n\n/tests/test_m2.py:208: KeyError",
+                "message": "The test failed in the call phase"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_update_note_missing_title_returns_400",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0009488110000575034,
+                "start": 1779799816.0754418,
+                "stop": 1779799816.0872302,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dd43ad80>\n\n    def test_update_note_missing_title_returns_400(self):\n        \"\"\"PUT /api/notes/<id> with missing title must return HTTP 400.\"\"\"\n        _, created = _create_note(\"Before\", \"Body\")\n>       note_id = int(created[\"id\"])\n                      ^^^^^^^^^^^^^\nE       KeyError: 'id'\n\n/tests/test_m2.py:218: KeyError",
+                "message": "The test failed in the call phase"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_update_nonexistent_note_returns_404",
+                "status": "passed",
+                "duration": 0.0009154800000032992,
+                "start": 1779799816.0874805,
+                "stop": 1779799816.0885496,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_delete_note_removes_it",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0008578209999541286,
+                "start": 1779799816.0887742,
+                "stop": 1779799816.1004372,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dd438cb0>\n\n    def test_delete_note_removes_it(self):\n        \"\"\"DELETE /api/notes/<id> must remove the note so GET returns 404.\"\"\"\n        _, created = _create_note(\"Delete Target\", \"Gone soon\")\n>       note_id = int(created[\"id\"])\n                      ^^^^^^^^^^^^^\nE       KeyError: 'id'\n\n/tests/test_m2.py:235: KeyError",
+                "message": "The test failed in the call phase"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_delete_nonexistent_note_returns_404",
+                "status": "passed",
+                "duration": 0.0008810680000124194,
+                "start": 1779799816.100681,
+                "stop": 1779799816.1017163,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_api_get_response_content_type_is_json",
+                "status": "passed",
+                "duration": 0.0007501200000206154,
+                "start": 1779799816.1019368,
+                "stop": 1779799816.102832,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_api_get_response_has_cors_header",
+                "status": "passed",
+                "duration": 0.0007060899999942194,
+                "start": 1779799816.103047,
+                "stop": 1779799816.1038976,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_api_options_preflight_returns_cors_allowlist",
+                "status": "passed",
+                "duration": 0.0006686400000717185,
+                "start": 1779799816.1041124,
+                "stop": 1779799816.1049232,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_api_post_response_content_type_and_cors",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0009233519999725104,
+                "start": 1779799816.1051354,
+                "stop": 1779799816.1169214,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dcb8f410>\n\n    def test_api_post_response_content_type_and_cors(self):\n        \"\"\"POST /api/notes response must carry Content-Type: application/json and CORS header.\"\"\"\n        code, _, headers = _json_request_with_headers(\n            \"POST\", \"/api/notes\", {\"title\": \"Headers POST\", \"content\": \"check\"}\n        )\n>       assert code == 201\nE       assert 500 == 201\n\n/tests/test_m2.py:292: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_api_put_response_content_type_and_cors",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0009055019999095748,
+                "start": 1779799816.1171587,
+                "stop": 1779799816.1287224,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dcb8c920>\n\n    def test_api_put_response_content_type_and_cors(self):\n        \"\"\"PUT /api/notes/<id> response must carry Content-Type: application/json and CORS header.\"\"\"\n        _, created = _create_note(\"Headers PUT\", \"before\")\n>       note_id = int(created[\"id\"])\n                      ^^^^^^^^^^^^^\nE       KeyError: 'id'\n\n/tests/test_m2.py:299: KeyError",
+                "message": "The test failed in the call phase"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_api_delete_response_content_type_and_cors",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0009191670000063823,
+                "start": 1779799816.1289642,
+                "stop": 1779799816.1404257,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dcb8c830>\n\n    def test_api_delete_response_content_type_and_cors(self):\n        \"\"\"DELETE /api/notes/<id> response must carry Content-Type: application/json and CORS header.\"\"\"\n        _, created = _create_note(\"Headers DEL\", \"target\")\n>       note_id = int(created[\"id\"])\n                      ^^^^^^^^^^^^^\nE       KeyError: 'id'\n\n/tests/test_m2.py:310: KeyError",
+                "message": "The test failed in the call phase"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_api_get_single_response_content_type_and_cors",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.000905017999912161,
+                "start": 1779799816.1406674,
+                "stop": 1779799816.1521869,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dcb8c560>\n\n    def test_api_get_single_response_content_type_and_cors(self):\n        \"\"\"GET /api/notes/<id> response must carry Content-Type: application/json and CORS header.\"\"\"\n        _, created = _create_note(\"Headers GET1\", \"single\")\n>       note_id = int(created[\"id\"])\n                      ^^^^^^^^^^^^^\nE       KeyError: 'id'\n\n/tests/test_m2.py:321: KeyError",
+                "message": "The test failed in the call phase"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_error_responses_have_json_and_cors_headers",
+                "status": "passed",
+                "duration": 0.0023271679999652406,
+                "start": 1779799816.1524572,
+                "stop": 1779799816.1549385,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_post_without_api_key_returns_401",
+                "status": "passed",
+                "duration": 0.0007272870001315823,
+                "start": 1779799816.1551661,
+                "stop": 1779799816.156041,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_put_without_api_key_returns_401",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0008028130000639067,
+                "start": 1779799816.1562598,
+                "stop": 1779799816.1678,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dcb8eb70>\n\n    def test_put_without_api_key_returns_401(self):\n        \"\"\"PUT /api/notes/<id> without X-API-Key header must return 401.\"\"\"\n        _, created = _create_note(\"Auth Put\", \"Before\")\n>       note_id = int(created[\"id\"])\n                      ^^^^^^^^^^^^^\nE       KeyError: 'id'\n\n/tests/test_m2.py:364: KeyError",
+                "message": "The test failed in the call phase"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_delete_without_api_key_returns_401",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0008825830000205315,
+                "start": 1779799816.1680417,
+                "stop": 1779799816.1795392,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dcbabbc0>\n\n    def test_delete_without_api_key_returns_401(self):\n        \"\"\"DELETE /api/notes/<id> without X-API-Key header must return 401.\"\"\"\n        _, created = _create_note(\"Auth Del\", \"Target\")\n>       note_id = int(created[\"id\"])\n                      ^^^^^^^^^^^^^\nE       KeyError: 'id'\n\n/tests/test_m2.py:375: KeyError",
+                "message": "The test failed in the call phase"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_wrong_api_key_returns_401",
+                "status": "passed",
+                "duration": 0.0007961590000604701,
+                "start": 1779799816.179781,
+                "stop": 1779799816.1807313,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_put_wrong_api_key_returns_401",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0008818339999834279,
+                "start": 1779799816.1809535,
+                "stop": 1779799816.1925194,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dcb8f860>\n\n    def test_put_wrong_api_key_returns_401(self):\n        \"\"\"PUT with an incorrect API key must return 401.\"\"\"\n        _, created = _create_note(\"Put Wrong Key\", \"target\")\n>       note_id = int(created[\"id\"])\n                      ^^^^^^^^^^^^^\nE       KeyError: 'id'\n\n/tests/test_m2.py:405: KeyError",
+                "message": "The test failed in the call phase"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_delete_wrong_api_key_returns_401",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0009142410000322343,
+                "start": 1779799816.1927571,
+                "stop": 1779799816.2043076,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dcb8ccb0>\n\n    def test_delete_wrong_api_key_returns_401(self):\n        \"\"\"DELETE with an incorrect API key must return 401.\"\"\"\n        _, created = _create_note(\"Del Wrong Key\", \"target\")\n>       note_id = int(created[\"id\"])\n                      ^^^^^^^^^^^^^\nE       KeyError: 'id'\n\n/tests/test_m2.py:427: KeyError",
+                "message": "The test failed in the call phase"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_get_without_api_key_succeeds",
+                "status": "passed",
+                "duration": 0.0008805320001101791,
+                "start": 1779799816.204558,
+                "stop": 1779799816.2055957,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_get_single_note_without_api_key_succeeds",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0008349480001470511,
+                "start": 1779799816.20582,
+                "stop": 1779799816.217856,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dd43aa20>\n\n    def test_get_single_note_without_api_key_succeeds(self):\n        \"\"\"GET /api/notes/<id> must succeed without an API key.\"\"\"\n        _, created = _create_note(\"Public Read\", \"Accessible\")\n>       note_id = int(created[\"id\"])\n                      ^^^^^^^^^^^^^\nE       KeyError: 'id'\n\n/tests/test_m2.py:453: KeyError",
+                "message": "The test failed in the call phase"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_pagination_limit_returns_correct_count",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0028987179999830914,
+                "start": 1779799816.2180974,
+                "stop": 1779799816.2325141,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dd42b710>\n\n    def test_pagination_limit_returns_correct_count(self):\n        \"\"\"GET /api/notes?limit=2 must return at most 2 notes.\"\"\"\n        for i in range(5):\n            _create_note(f\"Paginate {i}\", f\"Body {i}\")\n        code, payload = _json_request(\"GET\", \"/api/notes?limit=2\")\n        assert code == 200\n        assert isinstance(payload, list)\n>       assert len(payload) == 2\nE       assert 0 == 2\nE        +  where 0 = len([])\n\n/tests/test_m2.py:468: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_pagination_offset_skips_notes",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0009735820000287276,
+                "start": 1779799816.232764,
+                "stop": 1779799816.2445753,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dcba9100>\n\n    def test_pagination_offset_skips_notes(self):\n        \"\"\"GET /api/notes?limit=2&offset=2 must skip the first two notes.\"\"\"\n        ids = []\n        for i in range(5):\n            _, created = _create_note(f\"OffsetTest {i}\", f\"Body {i}\")\n>           ids.append(int(created[\"id\"]))\n                           ^^^^^^^^^^^^^\nE           KeyError: 'id'\n\n/tests/test_m2.py:476: KeyError",
+                "message": "The test failed in the call phase"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_pagination_x_total_count_header",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0033753169998362864,
+                "start": 1779799816.2448356,
+                "stop": 1779799816.2600205,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dcba9df0>\n\n    def test_pagination_x_total_count_header(self):\n        \"\"\"X-Total-Count must equal the full row count while limit only caps the page.\"\"\"\n        _, notes_before = _json_request(\"GET\", \"/api/notes?limit=100\")\n        before_count = len(notes_before) if isinstance(notes_before, list) else 0\n        batch_size = 5\n        for i in range(batch_size):\n            _create_note(f\"CountHdr {i}\", f\"Body {i}\")\n        expected_total = before_count + batch_size\n        code, payload, headers = _json_request_with_headers(\n            \"GET\", \"/api/notes?limit=2\"\n        )\n        assert code == 200\n        assert isinstance(payload, list)\n>       assert len(payload) == 2\nE       assert 0 == 2\nE        +  where 0 = len([])\n\n/tests/test_m2.py:499: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_pagination_default_limit_is_50",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.021448928000040723,
+                "start": 1779799816.2602944,
+                "stop": 1779799816.2939975,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dcbaa960>\n\n    def test_pagination_default_limit_is_50(self):\n        \"\"\"GET /api/notes without explicit limit must return at most 50 notes (default limit).\"\"\"\n        for i in range(55):\n            _create_note(f\"DefLimit {i}\", f\"Body {i}\")\n        code, payload = _json_request(\"GET\", \"/api/notes\")\n        assert code == 200\n        assert isinstance(payload, list)\n>       assert len(payload) == 50, f\"Default limit should be 50, got {len(payload)} notes\"\nE       AssertionError: Default limit should be 50, got 0 notes\nE       assert 0 == 50\nE        +  where 0 = len([])\n\n/tests/test_m2.py:514: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_pagination_max_limit_capped_at_100",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0014126039999382556,
+                "start": 1779799816.29428,
+                "stop": 1779799816.307011,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dcbab620>\n\n    def test_pagination_max_limit_capped_at_100(self):\n        \"\"\"GET /api/notes?limit=999 must cap the limit at 100 when more than 100 rows exist.\"\"\"\n        _, _, headers = _json_request_with_headers(\"GET\", \"/api/notes?limit=1\")\n        total = int(headers.get(\"X-Total-Count\", \"0\"))\n        needed = max(0, 105 - total)\n        for i in range(needed):\n            code, created = _create_note(f\"CapFill {i}\", f\"body {i}\")\n>           assert code == 201, f\"Failed to seed note {i}: {created!r}\"\nE           AssertionError: Failed to seed note 0: {'error': 'server error'}\nE           assert 500 == 201\n\n/tests/test_m2.py:524: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_oversized_post_body_returns_413",
+                "status": "passed",
+                "duration": 0.0011161720000245623,
+                "start": 1779799816.3072731,
+                "stop": 1779799816.3085487,
+                "retries": 0,
+                "file_path": "test_m2.py"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_oversized_put_body_returns_413",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0008649969998941742,
+                "start": 1779799816.3087828,
+                "stop": 1779799816.3204455,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dcba9ee0>\n\n    def test_oversized_put_body_returns_413(self):\n        \"\"\"PUT with a body exceeding 64KB must return HTTP 413 with a JSON error body.\"\"\"\n        _, created = _create_note(\"Small Note\", \"Normal\")\n>       note_id = int(created[\"id\"])\n                      ^^^^^^^^^^^^^\nE       KeyError: 'id'\n\n/tests/test_m2.py:548: KeyError",
+                "message": "The test failed in the call phase"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_concurrent_creates_all_succeed",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.012582130000055258,
+                "start": 1779799816.3206923,
+                "stop": 1779799816.3453276,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dcbaa180>\n\n    def test_concurrent_creates_all_succeed(self):\n        \"\"\"20 concurrent POST requests must all succeed (thread-safe DB).\"\"\"\n        def create_one(i: int) -> tuple[int, dict]:\n            return _json_request(\n                \"POST\", \"/api/notes\",\n                {\"title\": f\"Concurrent {i}\", \"content\": f\"Body {i}\"},\n            )\n    \n        with ThreadPoolExecutor(max_workers=20) as pool:\n            futures = [pool.submit(create_one, i) for i in range(20)]\n            results = [f.result() for f in as_completed(futures)]\n    \n        successes = [r for r in results if r[0] == 201]\n>       assert len(successes) == 20, (\n            f\"Expected all 20 concurrent creates to succeed, but only {len(successes)} did. \"\n            f\"Status codes: {[r[0] for r in results]}\"\n        )\nE       AssertionError: Expected all 20 concurrent creates to succeed, but only 0 did. Status codes: [500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500]\nE       assert 0 == 20\nE        +  where 0 = len([])\n\n/tests/test_m2.py:572: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_m2.py::TestMilestone2::test_concurrent_creates_no_data_loss",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.009162638000020706,
+                "start": 1779799816.3456144,
+                "stop": 1779799816.3663054,
+                "retries": 0,
+                "file_path": "test_m2.py",
+                "trace": "self = <test_m2.TestMilestone2 object at 0x7fe6dcbaa3f0>\n\n    def test_concurrent_creates_no_data_loss(self):\n        \"\"\"All notes created concurrently must be retrievable afterward.\"\"\"\n        titles = [f\"CLoss {i}\" for i in range(15)]\n    \n        def create_one(title: str) -> tuple[int, dict]:\n            return _json_request(\n                \"POST\", \"/api/notes\", {\"title\": title, \"content\": \"concurrent body\"},\n            )\n    \n        with ThreadPoolExecutor(max_workers=15) as pool:\n            futures = {pool.submit(create_one, t): t for t in titles}\n            created_ids = []\n            for future in as_completed(futures):\n                code, payload = future.result()\n>               assert code == 201, f\"Create failed: {code}\"\nE               AssertionError: Create failed: 500\nE               assert 500 == 201\n\n/tests/test_m2.py:592: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            }
+        ]
+    }
+}

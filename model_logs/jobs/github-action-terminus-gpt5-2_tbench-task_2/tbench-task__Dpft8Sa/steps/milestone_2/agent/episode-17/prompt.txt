@@ -1,0 +1,41 @@
+Current Terminal Screen:
+>     setsockopt(g_listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+>
+>     struct sockaddr_in addr;
+>     memset(&addr, 0, sizeof(addr));
+>     addr.sin_family = AF_INET;
+>     addr.sin_port = htons(PORT);
+>     addr.sin_addr.s_addr = htonl(INADDR_ANY);
+>
+>     if (bind(g_listen_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+>         perror("bind");
+>         return 1;
+>     }
+>
+>     if (listen(g_listen_fd, 128) != 0) {
+>         perror("listen");
+>         return 1;
+>     }
+>
+>     printf("Server running on port %d\n", PORT);
+>
+>     while (!g_stop) {
+>         int cfd = accept(g_listen_fd, NULL, NULL);
+>         if (cfd < 0) {
+>             if (errno == EINTR) continue;
+>             break;
+>         }
+>         handle_client(cfd);
+>         close(cfd);
+>     }
+>
+>     if (g_listen_fd >= 0) close(g_listen_fd);
+>     close_db();
+>     return 0;
+> }
+> EOF
+root@972cf0f30065:/app# gcc -O2 -Wall -Wextra -o /app/notes_server /app/src/main.c /app/src/db.c /app/src/auth.c -lsqlite3 -lpthread
+/usr/bin/ld: /tmp/ccMKU4Bg.o: in function `api_key_valid':
+auth.c:(.text+0x131): undefined reference to `MHD_lookup_connection_value'
+collect2: error: ld returned 1 exit status
+root@972cf0f30065:/app#

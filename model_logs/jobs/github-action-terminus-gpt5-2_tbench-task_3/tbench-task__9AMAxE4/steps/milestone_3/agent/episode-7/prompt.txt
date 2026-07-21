@@ -1,0 +1,41 @@
+Current Terminal Screen:
+    struct MHD_Response *response = MHD_create_response_from_buffer(
+        9, (void *)"Not Found", MHD_RESPMEM_PERSISTENT);
+    enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, response);
+    MHD_destroy_response(response);
+    return ret;
+}
+
+int main(void) {
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+
+    mkdir("/app/data", 0755);
+
+    if (init_db("/app/data/notes.db") != 0) {
+        fprintf(stderr, "Failed to initialize database\n");
+        return 1;
+    }
+
+    daemon_handle = MHD_start_daemon(
+        MHD_USE_THREAD_PER_CONNECTION,
+        PORT,
+        NULL, NULL,
+        &handle_request, NULL,
+        MHD_OPTION_NOTIFY_COMPLETED, &request_completed, NULL,
+        MHD_OPTION_END
+    );
+
+    if (!daemon_handle) {
+        fprintf(stderr, "Failed to start server\n");
+        return 1;
+    }
+
+    printf("Server running on port %d\n", PORT);
+    while (1) pause();
+    return 0;
+}
+root@08d5c4164ec3:/app# awk 'NR>1{print}' /proc/net/tcp | awk '$2 ~ /:1F90/ {print}' || true
+   0: 00000000:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 293430 1 0000000000000000 100 0 0 10 0
+   4: 0100007F:1F90 0100007F:EDC6 06 00000000:00000000 03:00000882 00000000     0        0 0 3 0000000000000000
+root@08d5c4164ec3:/app#

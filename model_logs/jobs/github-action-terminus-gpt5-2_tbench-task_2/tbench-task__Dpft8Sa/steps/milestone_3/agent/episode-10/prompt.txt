@@ -1,0 +1,41 @@
+Current Terminal Screen:
+        return;
+    }
+
+    const char *url_path = decoded;
+    if (strcmp(url_path, "/") == 0) url_path = "/index.html";
+
+    char fs_path[512];
+    if (snprintf(fs_path, sizeof(fs_path), "%s%s", WWW_DIR, url_path) >= (int)sizeof(fs_path)) {
+        send_simple(fd, 404, "Not Found", "text/plain", "Not Found");
+        free(req);
+        return;
+    }
+
+    send_file(fd, fs_path, is_head);
+    free(req);
+}
+
+int main(void) {
+    signal(SIGINT, on_signal);
+    signal(SIGTERM, on_signal);
+root@972cf0f30065:/app# make -C /app
+make: Entering directory '/app'
+gcc -Wall -Wextra -O2 -Iinclude -c -o src/main.o src/main.c
+gcc -Wall -Wextra -O2 -Iinclude -c -o src/db.o src/db.c
+gcc -Wall -Wextra -O2 -Iinclude -o notes_server src/main.o src/db.o -lsqlite3
+make: Leaving directory '/app'
+root@972cf0f30065:/app# ps aux | grep -E "/app/notes_server|notes_server" | grep -v grep
+bash: ps: command not found
+root@972cf0f30065:/app# SERVER_PID="$(ps aux | grep -E '/app/notes_server' | grep -v grep | awk '{print $2}' | head -n1)"; echo "PID=$SERVER_PID"; if [ -n "$SER
+VER_PID" ]; then kill "$SERVER_PID"; fi
+bash: ps: command not found
+PID=
+root@972cf0f30065:/app# nohup /app/notes_server >/app/server.log 2>&1 &
+[2] 4102
+root@972cf0f30065:/app# sleep 0.3; curl -sS -o /dev/null -w "%{http_code}\n" -I http://localhost:8080/app.js
+[2]+  Exit 1                  nohup /app/notes_server > /app/server.log 2>&1
+405
+root@972cf0f30065:/app# curl -sS -o /dev/null -w "%{http_code}\n" http://localhost:8080/app.js
+200
+root@972cf0f30065:/app#

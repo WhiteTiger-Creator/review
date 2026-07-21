@@ -1,0 +1,23 @@
+{
+  "analysis": "Current /app/www/app.js is only doing a POST on form submit and then fetchNotes(); it lacks same-origin base /api/notes, initial list rendering into #notes-list with per-row edit/delete buttons, update vs create behavior, active selection tracking/reset, delete support, required API-key header on POST/PUT/DELETE (not GET), and clearing the form after successful save. We have the API key value in /app/config/api.key. Need to read js_verifier_mock.md to ensure compatibility with the harness, then rewrite app.js accordingly and confirm it is served from the running server on :8080.",
+  "plan": "1) Open /app/docs/js_verifier_mock.md to learn any constraints (no DOMContentLoaded, limited classList, fetch behavior, etc.). 2) Replace /app/www/app.js with an implementation that:\n- Uses const API_BASE = '/api/notes'\n- Reads API key via fetch('/config/api.key') if accessible, otherwise embeds by server? (Most likely we must fetch it from same origin; but the task says read from /app/config/api.key, so in this environment we’ll inline by server-side build? We can’t read filesystem from browser, so we should add a small endpoint? Before changing server, check if /config/api.key is served statically; if not, we may need to add it. First, verify whether /config/api.key is reachable over HTTP.\n- On load, calls fetchNotes() and renders into #notes-list.\n- Renders each note with Edit and Delete buttons with class lists including edit-btn and delete-btn.\n- Tracks activeNoteId; on edit sets form fields and activeNoteId; on submit POST if none else PUT; after success clears inputs and clears activeNoteId.\n- Delete does DELETE then reload.\n- Adds headers Content-Type: application/json and X-API-Key (or whatever backend expects) with trimmed key on POST/PUT/DELETE only.\n3) Verify /app.js is served via curl from localhost:8080 and that GET/POST/PUT/DELETE work.\nIf /config/api.key is not served, inspect server setup and add a safe way to provide the key to the client (as required by task/harness).",
+  "commands": [
+    {
+      "keystrokes": "sed -n '1,200p' /app/docs/js_verifier_mock.md\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "curl -sS -D - http://localhost:8080/app.js | sed -n '1,20p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -sS -D - http://localhost:8080/config/api.key | sed -n '1,30p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "grep -RIn \"api.key\" /app | head\n",
+      "duration": 1.0
+    }
+  ],
+  "task_complete": false
+}

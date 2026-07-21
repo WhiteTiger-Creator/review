@@ -1,0 +1,16 @@
+New Terminal Output:
+
+root@1ebded0d6da5:/app# for pid in $(ls /proc | grep '^[0-9]'); do if cat /proc/$pid/comm 2>/dev/null | grep -q notes_server; then kill -9 $pid; fi; done; sleep
+ 1
+[1]+  Killed                  ./notes_server
+root@1ebded0d6da5:/app# rm -f /app/data/notes.db && ./notes_server &
+[1] 1935
+root@1ebded0d6da5:/app# Server running on port 8080
+sleep 1
+root@1ebded0d6da5:/app# python3 -c "import sys; sys.stdout.buffer.write(b'{\"title\":\"big\",\"content\":\"' + b'x'*70000 + b'\"}')" | curl -s -o /dev/null -w '
+%{http_code}' -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d @-
+413root@1ebded0d6da5:/app# python3 -c "import sys; sys.stdout.buffer.write(b'{\"title\":\"big\",\"content\":\"' + b'x'*70000 + b'\"}')" > /tmp/bigbody.json && c
+url -s -w '\n%{http_code}' -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' --data-binary @
+/tmp/bigbody.json
+{"error":"body too large"}
+413root@1ebded0d6da5:/app#

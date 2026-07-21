@@ -1,0 +1,155 @@
+{
+    "results": {
+        "tool": {
+            "name": "pytest",
+            "version": "8.4.1"
+        },
+        "summary": {
+            "tests": 15,
+            "passed": 15,
+            "failed": 0,
+            "skipped": 0,
+            "pending": 0,
+            "other": 0,
+            "start": 1779799449.195444,
+            "stop": 1779799449.2432868
+        },
+        "tests": [
+            {
+                "name": "test_m1.py::TestMilestone1::test_server_binary_exists",
+                "status": "passed",
+                "duration": 0.013036975999966671,
+                "start": 1779799449.2132304,
+                "stop": 1779799449.2265182,
+                "retries": 0,
+                "file_path": "test_m1.py"
+            },
+            {
+                "name": "test_m1.py::TestMilestone1::test_server_binary_is_elf",
+                "status": "passed",
+                "duration": 0.002222827999958099,
+                "start": 1779799449.226779,
+                "stop": 1779799449.2291665,
+                "retries": 0,
+                "file_path": "test_m1.py"
+            },
+            {
+                "name": "test_m1.py::TestMilestone1::test_server_responds_on_port_8080",
+                "status": "passed",
+                "duration": 0.0007737790000419409,
+                "start": 1779799449.2293913,
+                "stop": 1779799449.2303097,
+                "retries": 0,
+                "file_path": "test_m1.py"
+            },
+            {
+                "name": "test_m1.py::TestMilestone1::test_root_serves_html_page",
+                "status": "passed",
+                "duration": 0.0007916349999845806,
+                "start": 1779799449.2305257,
+                "stop": 1779799449.2314608,
+                "retries": 0,
+                "file_path": "test_m1.py"
+            },
+            {
+                "name": "test_m1.py::TestMilestone1::test_css_stylesheet_is_served",
+                "status": "passed",
+                "duration": 0.0007269459999861283,
+                "start": 1779799449.231678,
+                "stop": 1779799449.232548,
+                "retries": 0,
+                "file_path": "test_m1.py"
+            },
+            {
+                "name": "test_m1.py::TestMilestone1::test_javascript_file_is_served",
+                "status": "passed",
+                "duration": 0.0007384760000377355,
+                "start": 1779799449.2327626,
+                "stop": 1779799449.2336423,
+                "retries": 0,
+                "file_path": "test_m1.py"
+            },
+            {
+                "name": "test_m1.py::TestMilestone1::test_html_contains_note_form",
+                "status": "passed",
+                "duration": 0.0006715430000099332,
+                "start": 1779799449.2338545,
+                "stop": 1779799449.2346702,
+                "retries": 0,
+                "file_path": "test_m1.py"
+            },
+            {
+                "name": "test_m1.py::TestMilestone1::test_html_contains_title_input",
+                "status": "passed",
+                "duration": 0.0006765589999986332,
+                "start": 1779799449.2349138,
+                "stop": 1779799449.2357361,
+                "retries": 0,
+                "file_path": "test_m1.py"
+            },
+            {
+                "name": "test_m1.py::TestMilestone1::test_html_contains_content_textarea",
+                "status": "passed",
+                "duration": 0.0006581600000004073,
+                "start": 1779799449.2359488,
+                "stop": 1779799449.2367513,
+                "retries": 0,
+                "file_path": "test_m1.py"
+            },
+            {
+                "name": "test_m1.py::TestMilestone1::test_html_contains_submit_button",
+                "status": "passed",
+                "duration": 0.0006562470000517351,
+                "start": 1779799449.2369676,
+                "stop": 1779799449.237767,
+                "retries": 0,
+                "file_path": "test_m1.py"
+            },
+            {
+                "name": "test_m1.py::TestMilestone1::test_html_contains_notes_list_container",
+                "status": "passed",
+                "duration": 0.0006728029999862883,
+                "start": 1779799449.2379823,
+                "stop": 1779799449.2388,
+                "retries": 0,
+                "file_path": "test_m1.py"
+            },
+            {
+                "name": "test_m1.py::TestMilestone1::test_nonexistent_static_file_returns_404",
+                "status": "passed",
+                "duration": 0.000712770000063756,
+                "start": 1779799449.2390459,
+                "stop": 1779799449.239904,
+                "retries": 0,
+                "file_path": "test_m1.py"
+            },
+            {
+                "name": "test_m1.py::TestMilestone1::test_path_traversal_blocked",
+                "status": "passed",
+                "duration": 0.0006910160000188625,
+                "start": 1779799449.2401187,
+                "stop": 1779799449.2409537,
+                "retries": 0,
+                "file_path": "test_m1.py"
+            },
+            {
+                "name": "test_m1.py::TestMilestone1::test_path_traversal_encoded_blocked",
+                "status": "passed",
+                "duration": 0.000675471000079142,
+                "start": 1779799449.2411678,
+                "stop": 1779799449.2419858,
+                "retries": 0,
+                "file_path": "test_m1.py"
+            },
+            {
+                "name": "test_m1.py::TestMilestone1::test_path_traversal_percent_encoded_dotdot_blocked",
+                "status": "passed",
+                "duration": 0.0007642379999879267,
+                "start": 1779799449.242213,
+                "stop": 1779799449.2431188,
+                "retries": 0,
+                "file_path": "test_m1.py"
+            }
+        ]
+    }
+}

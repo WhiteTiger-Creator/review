@@ -1,0 +1,20 @@
+New Terminal Output:
+' | wc -l
+15
+root@1b06f1f3df22:/app# curl -si 'http://localhost:8080/api/notes?limit=999' 2>&1 | grep X-Total-Count
+X-Total-Count: 15
+root@1b06f1f3df22:/app# curl -s 'http://localhost:8080/api/notes?limit=999' | grep -o '"id"' | wc -l
+15
+root@1b06f1f3df22:/app# curl -si -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: wrong_key' -d '{"title":"Bad","conte
+nt":"test"}' 2>&1 | head -1
+HTTP/1.1 401 Unauthorized
+root@1b06f1f3df22:/app# python3 -c "import sys; sys.stdout.buffer.write(b'{\"title\":\"big\",\"content\":\"' + b'x'*70000 + b'\"}')" | curl -si -X POST http://l
+ocalhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' --data-binary @- 2>&1 | head -1
+root@1b06f1f3df22:/app# curl -s http://localhost:8080/index.html | head -3
+<!DOCTYPE html>
+<html lang="en">
+<head>
+root@1b06f1f3df22:/app# curl -si 'http://localhost:8080/api/notes?limit=3&offset=2' 2>&1 | grep -E '(X-Total|HTTP)'
+HTTP/1.1 200 OK
+X-Total-Count: 15
+root@1b06f1f3df22:/app#

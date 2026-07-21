@@ -1,0 +1,285 @@
+New Terminal Output:
+
+root@ade5f5ea62db:/app# cat > /app/src/db.c <<'EOF'
+> #include "db.h"
+>
+> #include <sqlite3.h>
+> #include <stdio.h>
+> #include <stdlib.h>
+> #include <string.h>
+>
+> static sqlite3 *db = NULL;
+>
+> static char *json_escape(const char *s) {
+>     if (!s) s = "";
+>     size_t len = 0;
+>     for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+>         switch (*p) {
+>             case '"':
+>             case '\\':
+>                 len += 2;
+>                 break;
+>             case '\b':
+>             case '\f':
+>             case '\n':
+>             case '\r':
+>             case '\t':
+>                 len += 2;
+>                 break;
+>             default:
+>                 if (*p < 0x20)
+>                     len += 6; // \u00XX
+>                 else
+>                     len += 1;
+>         }
+>     }
+>
+>     char *out = malloc(len + 1);
+>     if (!out) return NULL;
+>
+>     char *o = out;
+>     for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+>         switch (*p) {
+>             case '"': *o++ = '\\'; *o++ = '"'; break;
+>             case '\\': *o++ = '\\'; *o++ = '\\'; break;
+>             case '\b': *o++ = '\\'; *o++ = 'b'; break;
+>             case '\f': *o++ = '\\'; *o++ = 'f'; break;
+>             case '\n': *o++ = '\\'; *o++ = 'n'; break;
+>             case '\r': *o++ = '\\'; *o++ = 'r'; break;
+>             case '\t': *o++ = '\\'; *o++ = 't'; break;
+>             default:
+>                 if (*p < 0x20) {
+>                     sprintf(o, "\\u%04x", (unsigned int)*p);
+>                     o += 6;
+>                 } else {
+>                     *o++ = (char)*p;
+>                 }
+>         }
+>     }
+>     *o = '\0';
+>     return out;
+> }
+>
+> int init_db(const char *path) {
+>     if (sqlite3_open_v2(path, &db,
+>                         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+>                         NULL) != SQLITE_OK) {
+>         fprintf(stderr, "Cannot open database: %s\n", sqlite3_errmsg(db));
+>         return -1;
+>     }
+>
+>     sqlite3_busy_timeout(db, 5000);
+>
+>     char *err_msg = NULL;
+>     sqlite3_exec(db, "PRAGMA journal_mode=WAL;", NULL, NULL, &err_msg);
+>     if (err_msg) sqlite3_free(err_msg);
+>     err_msg = NULL;
+>     sqlite3_exec(db, "PRAGMA synchronous=NORMAL;", NULL, NULL, &err_msg);
+>     if (err_msg) sqlite3_free(err_msg);
+>
+>     const char *sql =
+>         "CREATE TABLE IF NOT EXISTS notes ("
+>         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+>         "title TEXT NOT NULL,"
+>         "content TEXT NOT NULL"
+>         ");";
+>
+>     if (sqlite3_exec(db, sql, NULL, NULL, &err_msg) != SQLITE_OK) {
+>         fprintf(stderr, "SQL error: %s\n", err_msg);
+>         sqlite3_free(err_msg);
+>         return -1;
+>     }
+>
+>     return 0;
+> }
+>
+> void close_db(void) {
+>     if (db) sqlite3_close(db);
+>     db = NULL;
+> }
+>
+> int create_note(const char *title, const char *content) {
+>     if (!db) return -1;
+>
+>     sqlite3_stmt *stmt = NULL;
+>     const char *sql = "INSERT INTO notes(title, content) VALUES(?, ?);";
+>
+>     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) return -1;
+>
+>     sqlite3_bind_text(stmt, 1, title ? title : "", -1, SQLITE_TRANSIENT);
+>     sqlite3_bind_text(stmt, 2, content ? content : "", -1, SQLITE_TRANSIENT);
+>
+>     int rc = sqlite3_step(stmt);
+>     sqlite3_finalize(stmt);
+>     if (rc != SQLITE_DONE) return -1;
+>
+>     return (int)sqlite3_last_insert_rowid(db);
+> }
+>
+> static int append_str(char **buf, size_t *cap, size_t *len, const char *s) {
+>     size_t add = strlen(s);
+>     if (*len + add + 1 > *cap) {
+>         size_t ncap = (*cap == 0) ? 256 : *cap;
+>         while (*len + add + 1 > ncap) ncap *= 2;
+>         char *nbuf = realloc(*buf, ncap);
+>         if (!nbuf) return -1;
+>         *buf = nbuf;
+>         *cap = ncap;
+>     }
+>     memcpy(*buf + *len, s, add);
+>     *len += add;
+>     (*buf)[*len] = '\0';
+>     return 0;
+> }
+>
+> char *get_notes_paginated_json(int limit, int offset) {
+>     if (!db) return NULL;
+>
+>     const char *sql = "SELECT id, title, content FROM notes ORDER BY id LIMIT ? OFFSET ?;";
+>     sqlite3_stmt *stmt = NULL;
+>     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) return NULL;
+>     sqlite3_bind_int(stmt, 1, limit);
+>     sqlite3_bind_int(stmt, 2, offset);
+>
+>     char *out = NULL;
+>     size_t cap = 0, len = 0;
+>     if (append_str(&out, &cap, &len, "[") != 0) {
+>         sqlite3_finalize(stmt);
+>         return NULL;
+>     }
+>
+>     int first = 1;
+>     while (sqlite3_step(stmt) == SQLITE_ROW) {
+>         int id = sqlite3_column_int(stmt, 0);
+>         const char *title = (const char *)sqlite3_column_text(stmt, 1);
+>         const char *content = (const char *)sqlite3_column_text(stmt, 2);
+>
+>         char *et = json_escape(title);
+>         char *ec = json_escape(content);
+>         if (!et || !ec) {
+>             free(et); free(ec);
+>             free(out);
+>             sqlite3_finalize(stmt);
+>             return NULL;
+>         }
+>
+>         char item[64];
+>         snprintf(item, sizeof(item), "%s{\"id\":%d,\"title\":\"", first ? "" : ",", id);
+>         first = 0;
+>
+>         if (append_str(&out, &cap, &len, item) != 0 ||
+>             append_str(&out, &cap, &len, et) != 0 ||
+>             append_str(&out, &cap, &len, "\",\"content\":\"") != 0 ||
+>             append_str(&out, &cap, &len, ec) != 0 ||
+>             append_str(&out, &cap, &len, "\"}") != 0) {
+>             free(et); free(ec);
+>             free(out);
+>             sqlite3_finalize(stmt);
+>             return NULL;
+>         }
+>
+>         free(et);
+>         free(ec);
+>     }
+>
+>     sqlite3_finalize(stmt);
+>
+>     if (append_str(&out, &cap, &len, "]") != 0) {
+>         free(out);
+>         return NULL;
+>     }
+>
+>     return out;
+> }
+>
+> char *get_all_notes_json(void) {
+>     return get_notes_paginated_json(1000000, 0);
+> }
+>
+> int get_total_notes_count(void) {
+>     if (!db) return 0;
+>
+>     const char *sql = "SELECT COUNT(*) FROM notes;";
+>     sqlite3_stmt *stmt = NULL;
+>     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) return 0;
+>
+>     int total = 0;
+>     if (sqlite3_step(stmt) == SQLITE_ROW) total = sqlite3_column_int(stmt, 0);
+>     sqlite3_finalize(stmt);
+>     return total;
+> }
+>
+> char *get_note_json(int id) {
+>     if (!db) return NULL;
+>
+>     const char *sql = "SELECT id, title, content FROM notes WHERE id = ?;";
+>     sqlite3_stmt *stmt = NULL;
+>     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) return NULL;
+>     sqlite3_bind_int(stmt, 1, id);
+>
+>     char *out = NULL;
+>     if (sqlite3_step(stmt) == SQLITE_ROW) {
+>         int rid = sqlite3_column_int(stmt, 0);
+>         const char *title = (const char *)sqlite3_column_text(stmt, 1);
+>         const char *content = (const char *)sqlite3_column_text(stmt, 2);
+>         char *et = json_escape(title);
+>         char *ec = json_escape(content);
+>         if (et && ec) {
+>             size_t need = strlen(et) + strlen(ec) + 64;
+>             out = malloc(need);
+>             if (out)
+>                 snprintf(out, need, "{\"id\":%d,\"title\":\"%s\",\"content\":\"%s\"}", rid, et, ec);
+>         }
+>         free(et);
+>         free(ec);
+>     }
+>
+>     sqlite3_finalize(stmt);
+>     return out;
+> }
+>
+> int note_exists(int id) {
+>     if (!db) return 0;
+>     const char *sql = "SELECT 1 FROM notes WHERE id = ?;";
+>     sqlite3_stmt *stmt = NULL;
+>     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) return 0;
+>     sqlite3_bind_int(stmt, 1, id);
+>     int exists = (sqlite3_step(stmt) == SQLITE_ROW);
+>     sqlite3_finalize(stmt);
+>     return exists;
+> }
+>
+> int update_note(int id, const char *title, const char *content) {
+>     if (!db) return 0;
+>
+>     const char *sql = "UPDATE notes SET title = ?, content = ? WHERE id = ?;";
+>     sqlite3_stmt *stmt = NULL;
+>     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) return 0;
+>
+>     sqlite3_bind_text(stmt, 1, title ? title : "", -1, SQLITE_TRANSIENT);
+>     sqlite3_bind_text(stmt, 2, content ? content : "", -1, SQLITE_TRANSIENT);
+>     sqlite3_bind_int(stmt, 3, id);
+>
+>     int rc = sqlite3_step(stmt);
+>     sqlite3_finalize(stmt);
+>     if (rc != SQLITE_DONE) return 0;
+>
+>     return sqlite3_changes(db) > 0;
+> }
+>
+> int delete_note(int id) {
+>     if (!db) return 0;
+>
+>     const char *sql = "DELETE FROM notes WHERE id = ?;";
+>     sqlite3_stmt *stmt = NULL;
+>     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) return 0;
+>     sqlite3_bind_int(stmt, 1, id);
+>
+>     int rc = sqlite3_step(stmt);
+>     sqlite3_finalize(stmt);
+>     if (rc != SQLITE_DONE) return 0;
+>
+>     return sqlite3_changes(db) > 0;
+> }
+> EOF
+root@ade5f5ea62db:/app#

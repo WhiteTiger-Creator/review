@@ -1,0 +1,31 @@
+{
+  "analysis": "We still haven’t seen main.c handle_request body; only tail portion showed. POST returns 404, indicating route_request is not handling POST correctly with MHD upload cycle. Common MHD pattern: on first call for a connection, *con_cls==NULL must be initialized and return MHD_YES immediately without processing; then subsequent calls deliver upload_data chunks; only when *upload_data_size==0 should we generate the response. Our current route_request does not handle the first-call init case and may attempt routing before body is read, causing 404. Also request_completed in routes.c is unused; main.c has its own request_completed.\n\nFix: in routes.c, at start of route_request, if *con_cls==NULL allocate connection_info and return MHD_YES. For methods without body (GET/DELETE/OPTIONS) we can respond on first call. For POST/PUT, accumulate as we do; when *upload_data_size==0 and body finished, then execute endpoint logic.",
+  "plan": "Patch routes.c to implement proper MHD per-connection state initialization and upload handling: \n- If *con_cls is NULL: allocate connection_info, assign, return MHD_YES.\n- For POST/PUT: if *upload_data_size>0 append; set *upload_data_size=0; return MHD_YES.\n- Only after upload complete (*upload_data_size==0) run routing logic.\nAlso remove the unused request_completed function from routes.c to avoid confusion (main.c handles it). Rebuild and re-test POST and parallel POST burst; verify X-Total-Count reflects inserts.",
+  "commands": [
+    {
+      "keystrokes": "apply_patch<<'PATCH'\n*** Begin Patch\n*** Update File: /app/src/routes.c\n@@\n-static void request_completed(void *cls, struct MHD_Connection *connection,\n-                              void **con_cls, enum MHD_RequestTerminationCode toe) {\n-    (void)cls;\n-    (void)connection;\n-    (void)toe;\n-    if (con_cls && *con_cls) {\n-        struct connection_info *ci = *con_cls;\n-        if (ci->data)\n-            free(ci->data);\n-        free(ci);\n-        *con_cls = NULL;\n-    }\n-}\n-\n enum MHD_Result route_request(struct MHD_Connection *connection, const char *url,\n                               const char *method, const char *upload_data,\n                               size_t *upload_data_size, void **con_cls) {\n+    // libmicrohttpd calls the handler multiple times per request.\n+    // First call must initialize per-connection state and return.\n+    if (*con_cls == NULL) {\n+        struct connection_info *ci = calloc(1, sizeof(*ci));\n+        if (!ci) return MHD_NO;\n+        *con_cls = ci;\n+        return MHD_YES;\n+    }\n+\n     if (strcmp(method, \"OPTIONS\") == 0)\n         return send_json(connection, \"\", MHD_HTTP_OK);\n@@\n-    // Handle upload (POST/PUT)\n+    // Handle upload (POST/PUT)\n     int is_write = (strcmp(method, \"POST\") == 0 || strcmp(method, \"PUT\") == 0 || strcmp(method, \"DELETE\") == 0);\n     if (is_write && !api_key_valid(connection)) {\n         return unauthorized(connection);\n     }\n@@\n-    if ((strcmp(method, \"POST\") == 0 || strcmp(method, \"PUT\") == 0) && *upload_data_size) {\n-        struct connection_info *ci = *con_cls;\n-        if (!ci) {\n-            ci = calloc(1, sizeof(*ci));\n-            if (!ci) return MHD_NO;\n-            *con_cls = ci;\n-        }\n+    if ((strcmp(method, \"POST\") == 0 || strcmp(method, \"PUT\") == 0) && *upload_data_size) {\n+        struct connection_info *ci = *con_cls;\n         if (ci->data_size + *upload_data_size > NOTES_MAX_BODY_BYTES) {\n             *upload_data_size = 0;\n             return too_large(connection);\n         }\n@@\n         *upload_data_size = 0;\n         return MHD_YES;\n     }\n*** End Patch\nPATCH\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "make clean && make\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "kill $(cat /tmp/notes_server.pid) 2>/dev/null || true\n./notes_server & echo $! > /tmp/notes_server.pid\n",
+      "duration": 0.3
+    },
+    {
+      "keystrokes": "curl -sS -D- -H 'X-API-Key: tb3_notes_api_secret_2026' -H 'Content-Type: application/json' -d '{\"title\":\"t1\",\"content\":\"c1\"}' http://127.0.0.1:8080/api/notes\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "curl -sS -D- 'http://127.0.0.1:8080/api/notes?limit=100&offset=0' | head -n 20\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "seq 1 15 | xargs -P 15 -I{} curl -sS -H 'X-API-Key: tb3_notes_api_secret_2026' -H 'Content-Type: application/json' -d '{\"title\":\"bulk{}\",\"content\":\"x\"}' http://127.0.0.1:8080/api/notes > /tmp/bulk_out.json\nwc -l /tmp/bulk_out.json\ncurl -sS -D- 'http://127.0.0.1:8080/api/notes?limit=100&offset=0' | sed -n '1,12p'\n",
+      "duration": 2.0
+    }
+  ],
+  "task_complete": false
+}

@@ -1,0 +1,56 @@
+New Terminal Output:
+World"}'
+{"id":1,"title":"Test Note","content":"Hello World"}root@1b06f1f3df22:/app# curl -s http://localhost:8080/api/notes/1
+{"id":1,"title":"Test Note","content":"Hello World"}root@1b06f1f3df22:/app# curl -s http://localhost:8080/api/notes/99999
+{"error":"not found"}root@1b06f1f3df22:/app# curl -si -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -d '{"title":"No Key","content
+":"test"}'
+HTTP/1.1 401 Unauthorized
+Date: Tue, 26 May 2026 12:47:35 GMT
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+Content-Length: 24
+
+{"error":"unauthorized"}root@1b06f1f3df22:/app# curl -s -X PUT http://localhost:8080/api/notes/1 -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_ap
+i_secret_2026' -d '{"title":"Updated Title","content":"Updated content"}'
+{"id":1,"title":"Updated Title","content":"Updated content"}root@1b06f1f3df22:/app# curl -si -X POST http://localhost:8080/api/notes -H 'Content-Type: applicati
+on/json' -H 'X-API-Key: tb3_notes_api_secret_2026' -d '{"title":"","content":"test"}'
+HTTP/1.1 400 Bad Request
+Date: Tue, 26 May 2026 12:47:36 GMT
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+Content-Length: 29
+
+{"error":"title is required"}root@1b06f1f3df22:/app# curl -si -X POST http://localhost:8080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_not
+es_api_secret_2026' -d '{}'
+HTTP/1.1 400 Bad Request
+Date: Tue, 26 May 2026 12:47:36 GMT
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+Content-Length: 29
+
+{"error":"title is required"}root@1b06f1f3df22:/app# curl -s -X DELETE http://localhost:8080/api/notes/1 -H 'X-API-Key: tb3_notes_api_secret_2026'
+{"status":"deleted"}root@1b06f1f3df22:/app# curl -s -X DELETE http://localhost:8080/api/notes/1 -H 'X-API-Key: tb3_notes_api_secret_2026'
+{"error":"not found"}root@1b06f1f3df22:/app# curl -si http://localhost:8080/api/notes
+HTTP/1.1 200 OK
+Date: Tue, 26 May 2026 12:47:38 GMT
+Connection: close
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+X-Total-Count: 0
+Content-Length: 2
+
+[]root@1b06f1f3df22:/app# curl -s http://localhost:8080/app.js | head -5
+var API = '/api/notes';
+
+var editingId = null;
+
+async function fetchNotes() {
+root@1b06f1f3df22:/app#

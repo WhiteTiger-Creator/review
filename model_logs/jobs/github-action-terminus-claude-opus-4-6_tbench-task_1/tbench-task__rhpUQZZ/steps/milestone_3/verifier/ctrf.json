@@ -1,0 +1,218 @@
+{
+    "results": {
+        "tool": {
+            "name": "pytest",
+            "version": "8.4.1"
+        },
+        "summary": {
+            "tests": 22,
+            "passed": 22,
+            "failed": 0,
+            "skipped": 0,
+            "pending": 0,
+            "other": 0,
+            "start": 1779800044.4863553,
+            "stop": 1779800044.616707
+        },
+        "tests": [
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_fetches_notes_on_load",
+                "status": "passed",
+                "duration": 0.014725819000091178,
+                "start": 1779800044.5369656,
+                "stop": 1779800044.551993,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_renders_note_cards",
+                "status": "passed",
+                "duration": 0.001737085000058869,
+                "start": 1779800044.5522585,
+                "stop": 1779800044.554154,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_renders_edit_and_delete_buttons",
+                "status": "passed",
+                "duration": 0.0017225700000835786,
+                "start": 1779800044.5543766,
+                "stop": 1779800044.5562427,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_form_submit_posts_to_api",
+                "status": "passed",
+                "duration": 0.0018619629998966047,
+                "start": 1779800044.5564568,
+                "stop": 1779800044.558461,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_form_clears_after_create",
+                "status": "passed",
+                "duration": 0.00187177500015423,
+                "start": 1779800044.5587053,
+                "stop": 1779800044.5607224,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_refreshes_list_after_create",
+                "status": "passed",
+                "duration": 0.0018675220001114212,
+                "start": 1779800044.5609374,
+                "stop": 1779800044.562949,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_refreshes_list_after_update",
+                "status": "passed",
+                "duration": 0.0018839709999838306,
+                "start": 1779800044.5631595,
+                "stop": 1779800044.5651844,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_refreshes_list_after_delete",
+                "status": "passed",
+                "duration": 0.0018207800000027419,
+                "start": 1779800044.5653946,
+                "stop": 1779800044.5673573,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_delete_calls_delete_api",
+                "status": "passed",
+                "duration": 0.001802278999889495,
+                "start": 1779800044.5675683,
+                "stop": 1779800044.5695124,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_get_requests_omit_api_key_header",
+                "status": "passed",
+                "duration": 0.001697365000040918,
+                "start": 1779800044.5697238,
+                "stop": 1779800044.5715625,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_post_includes_api_key_header",
+                "status": "passed",
+                "duration": 0.0019211589999486023,
+                "start": 1779800044.5717733,
+                "stop": 1779800044.5738382,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_post_includes_json_content_type_header",
+                "status": "passed",
+                "duration": 0.0018686479999132644,
+                "start": 1779800044.5740495,
+                "stop": 1779800044.576062,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_delete_includes_api_key_header",
+                "status": "passed",
+                "duration": 0.0018509019998873555,
+                "start": 1779800044.5762744,
+                "stop": 1779800044.578267,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_delete_includes_json_content_type_header",
+                "status": "passed",
+                "duration": 0.0018485100000589227,
+                "start": 1779800044.5784762,
+                "stop": 1779800044.5804753,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_put_includes_api_key_header",
+                "status": "passed",
+                "duration": 0.0019005670000069586,
+                "start": 1779800044.58071,
+                "stop": 1779800044.582781,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_put_includes_json_content_type_header",
+                "status": "passed",
+                "duration": 0.0018481810001276244,
+                "start": 1779800044.582992,
+                "stop": 1779800044.5849817,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_edit_button_loads_note_into_form",
+                "status": "passed",
+                "duration": 0.001779686000077163,
+                "start": 1779800044.5851889,
+                "stop": 1779800044.5871127,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_js_form_clears_after_update",
+                "status": "passed",
+                "duration": 0.0020080719999668872,
+                "start": 1779800044.5873237,
+                "stop": 1779800044.5894732,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_e2e_create_and_retrieve_note",
+                "status": "passed",
+                "duration": 0.003078978999951687,
+                "start": 1779800044.5896835,
+                "stop": 1779800044.592904,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_e2e_update_and_verify_persistence",
+                "status": "passed",
+                "duration": 0.004983366000033129,
+                "start": 1779800044.5931144,
+                "stop": 1779800044.5982413,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_e2e_delete_and_verify_gone",
+                "status": "passed",
+                "duration": 0.005015630000002602,
+                "start": 1779800044.5984516,
+                "stop": 1779800044.6036391,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            },
+            {
+                "name": "test_m3.py::TestMilestone3::test_e2e_full_crud_cycle",
+                "status": "passed",
+                "duration": 0.012535055000171269,
+                "start": 1779800044.6038501,
+                "stop": 1779800044.6165276,
+                "retries": 0,
+                "file_path": "test_m3.py"
+            }
+        ]
+    }
+}

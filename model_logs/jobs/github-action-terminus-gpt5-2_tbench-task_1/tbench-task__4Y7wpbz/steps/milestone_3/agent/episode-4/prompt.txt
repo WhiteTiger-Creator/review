@@ -1,0 +1,41 @@
+Current Terminal Screen:
+
+        const char *cl = MHD_lookup_connection_value(connection, MHD_HEADER_KIND, "Content-Length");
+        if (cl) {
+            int v = 0;
+            if (parse_int(cl, &v) && v > NOTES_MAX_BODY_BYTES)
+                return send_json(connection, "{\"error\":\"payload too large\"}", MHD_HTTP_PAYLOAD_TOO_LARGE);
+        }
+
+        if (*con_cls == NULL) return init_con_info(con_cls);
+        return handle_post_put_body(connection, method, url, upload_data, upload_data_size, con_cls);
+    }
+
+    if (strcmp(method, "PUT") == 0 && strncmp(url, "/api/notes/", 11) == 0) {
+        if (!api_key_valid(connection))
+            return send_json(connection, "{\"error\":\"unauthorized\"}", MHD_HTTP_UNAUTHORIZED);
+
+        const char *cl = MHD_lookup_connection_value(connection, MHD_HEADER_KIND, "Content-Length");
+        if (cl) {
+            int v = 0;
+            if (parse_int(cl, &v) && v > NOTES_MAX_BODY_BYTES)
+                return send_json(connection, "{\"error\":\"payload too large\"}", MHD_HTTP_PAYLOAD_TOO_LARGE);
+        }
+
+        if (*con_cls == NULL) return init_con_info(con_cls);
+        return handle_post_put_body(connection, method, url, upload_data, upload_data_size, con_cls);
+    }
+
+    if (strcmp(method, "DELETE") == 0 && parse_id_from_url(url, &id)) {
+        if (!api_key_valid(connection))
+            return send_json(connection, "{\"error\":\"unauthorized\"}", MHD_HTTP_UNAUTHORIZED);
+        if (!note_exists(id))
+            return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+        if (!delete_note(id))
+            return send_json(connection, "{\"error\":\"server error\"}", MHD_HTTP_INTERNAL_SERVER_ERROR);
+        return send_json(connection, "{\"status\":\"deleted\"}", MHD_HTTP_OK);
+    }
+
+    return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+}
+root@ade5f5ea62db:/app#

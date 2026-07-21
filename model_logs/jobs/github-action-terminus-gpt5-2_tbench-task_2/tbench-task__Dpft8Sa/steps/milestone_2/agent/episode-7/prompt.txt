@@ -1,0 +1,41 @@
+Current Terminal Screen:
+> +        n--;
+> +    }
+> +}
+> +
+> +static char *lstrip(char *s) {
+> +    while (s && *s && isspace((unsigned char)*s)) s++;
+> +    return s;
+> +}
+> +
+> +static const char *load_api_key(void) {
+> +    if (g_api_key) return g_api_key;
+> +
+> +    FILE *f = fopen("/app/config/api.key", "rb");
+> +    if (!f) {
+> +        g_api_key = strdup("");
+> +        return g_api_key;
+> +    }
+> +    char buf[4096];
+> +    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+> +    fclose(f);
+> +    buf[n] = '\0';
+> +
+> +    char *s = lstrip(buf);
+> +    rstrip_inplace(s);
+> +    g_api_key = strdup(s);
+> +    if (!g_api_key) g_api_key = strdup("");
+> +    return g_api_key;
+> +}
+> +
+> +int api_key_valid(struct MHD_Connection *connection) {
+> +    const char *want = load_api_key();
+> +    const char *got = MHD_lookup_connection_value(connection, MHD_HEADER_KIND, "X-API-Key");
+> +    if (!want || want[0] == '\0') return 0;
+> +    if (!got) return 0;
+> +    return strcmp(want, got) == 0;
+> +}
+> *** End Patch
+> PATCH
+bash: apply_patch: command not found
+root@972cf0f30065:/app#

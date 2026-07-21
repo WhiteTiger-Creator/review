@@ -1,0 +1,14 @@
+{
+  "analysis": "The terminal appears stuck. The background jobs from the concurrent test are still listed. Let me try to get back to a clean prompt.",
+  "plan": "Send Ctrl+C to break out of anything stuck, then try running commands.",
+  "commands": [
+    {
+      "keystrokes": "C-c\n",
+      "duration": 2.0
+    },
+    {
+      "keystrokes": "echo test\n",
+      "duration": 2.0
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "analysis": "Concurrency test passed: 15 parallel POSTs all returned 201 and X-Total-Count increased from 0 to 15, and the collection returns 15 rows. The 413 test using urllib caused RemoteDisconnected: the server closed the connection without response when sending a very large body; likely libmicrohttpd or our handler is terminating early when limit exceeded but not properly queuing a response for subsequent calls, or we’re responding mid-upload without consuming the rest and MHD closes. We must ensure that when body exceeds limit we still return a proper 413 JSON response reliably. Approach: when limit exceeded, set a flag in connection_info (e.g., too_large=1) and keep returning MHD_YES while discarding remaining upload_data until *upload_data_size==0, then send the 413 response once. This matches MHD upload handling.\nAlso the JSON length python command failed because curl output got printed before python ran (likely due to line wrapping/terminal); we'll ignore; concurrency is proven.\nNext: modify connection_info struct to include too_large flag and in handle_post_put_body discard data while too_large; when finished send 413 JSON error.",
+  "plan": "1) Update src/routes.h connection_info to include an int too_large. 2) Update routes.c: during upload, if size would exceed limit, set too_large=1, but still set *upload_data_size=0 and return MHD_YES (no response yet). While too_large, just drop chunks. When upload completes (*upload_data_size==0), if too_large then respond 413 with JSON error. 3) Rebuild and restart server. 4) Re-run 413 test using python urllib (or curl with a generated big payload) and confirm HTTP 413 with JSON body.",
+  "commands": [
+    {
+      "keystrokes": "cat > /app/src/routes.h <<'EOF'\n#ifndef ROUTES_H\n#define ROUTES_H\n\n#include <microhttpd.h>\n\nstruct connection_info {\n    char *data;\n    size_t data_size;\n    int too_large;\n};\n\nenum MHD_Result route_request(struct MHD_Connection *connection,\n    const char *url, const char *method,\n    const char *upload_data, size_t *upload_data_size,\n    void **con_cls);\n\n#endif\nEOF\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "perl -i -pe 's/if \\(ci->data_size \\+ \\*upload_data_size > NOTES_MAX_BODY_BYTES\\) \\{\\n\\s*\\*upload_data_size = 0;\\n\\s*return send_json\\(connection, \"\\{\\\\\"error\\\\\":\\\\\"payload too large\\\\\"\\}\", MHD_HTTP_PAYLOAD_TOO_LARGE\\);\\n\\s*\\}/if (ci->data_size + *upload_data_size > NOTES_MAX_BODY_BYTES) {\\n            ci->too_large = 1;\\n            *upload_data_size = 0;\\n            return MHD_YES;\\n        }/s' /app/src/routes.c\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/const char \\*body = ci->data \\? ci->data : \"\";\\n/if (ci->too_large) {\\n        return send_json(connection, \"{\\\\\"error\\\\\":\\\\\"payload too large\\\\\"}\", MHD_HTTP_PAYLOAD_TOO_LARGE);\\n    }\\n\\n    const char *body = ci->data ? ci->data : \"\";\\n/s' /app/src/routes.c\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "make\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "kill $(cat /app/server.pid) 2>/dev/null || true\n./notes_server >server.log 2>&1 & echo $! > server.pid\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "python3 - <<'PY'\nimport json\nfrom urllib import request\nfrom urllib.error import HTTPError\n\nurl='http://127.0.0.1:8080/api/notes'\nbody=json.dumps({'title':'t','content':'x'*70000}).encode('utf-8')\nreq=request.Request(url, data=body, method='POST')\nreq.add_header('Content-Type','application/json')\nreq.add_header('X-API-Key','tb3_notes_api_secret_2026')\ntry:\n    with request.urlopen(req, timeout=5) as resp:\n        print('status', resp.status)\n        print(resp.read(200).decode('utf-8','replace'))\nexcept HTTPError as e:\n    print('status', e.code)\n    print(e.read(200).decode('utf-8','replace'))\nPY\n",
+      "duration": 2.0
+    }
+  ],
+  "task_complete": false
+}

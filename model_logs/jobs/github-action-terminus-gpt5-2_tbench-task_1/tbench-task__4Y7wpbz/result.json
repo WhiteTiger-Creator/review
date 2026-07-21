@@ -1,0 +1,234 @@
+{
+    "id": "a3752c7d-5eb6-455a-be0d-4ed687563629",
+    "task_name": "tbench-task",
+    "trial_name": "tbench-task__4Y7wpbz",
+    "trial_uri": "file:///root/jobs/github-action-terminus-gpt5-2_tbench-task_1/tbench-task__4Y7wpbz",
+    "task_id": {
+        "path": "harbor_tasks/tbench-task"
+    },
+    "source": null,
+    "task_checksum": "48b7d2e04c3beca89448d1dbd41e90160f1ac5b9dd7c9460fdd66e69035caff9",
+    "config": {
+        "task": {
+            "path": "harbor_tasks/tbench-task",
+            "git_url": null,
+            "git_commit_id": null,
+            "name": null,
+            "ref": null,
+            "overwrite": false,
+            "download_dir": null,
+            "source": null
+        },
+        "trial_name": "tbench-task__4Y7wpbz",
+        "trials_dir": "jobs/github-action-terminus-gpt5-2_tbench-task_1",
+        "timeout_multiplier": 1.0,
+        "agent_timeout_multiplier": null,
+        "verifier_timeout_multiplier": null,
+        "agent_setup_timeout_multiplier": null,
+        "environment_build_timeout_multiplier": null,
+        "agent": {
+            "name": "terminus-2",
+            "import_path": null,
+            "model_name": "openai/@openai/gpt-5.2",
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "kwargs": {},
+            "env": {}
+        },
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "suppress_override_warnings": false,
+            "mounts_json": null,
+            "env": {},
+            "kwargs": {}
+        },
+        "verifier": {
+            "override_timeout_sec": null,
+            "max_timeout_sec": null,
+            "env": {},
+            "disable": false
+        },
+        "artifacts": [],
+        "job_id": "e7951ac0-265f-45be-bbd0-a2db00e6b203"
+    },
+    "agent_info": {
+        "name": "terminus-2",
+        "version": "2.0.0",
+        "model_info": {
+            "name": "@openai/gpt-5.2",
+            "provider": "openai"
+        }
+    },
+    "agent_result": null,
+    "verifier_result": {
+        "rewards": {
+            "reward": 0.6666666666666666
+        }
+    },
+    "exception_info": null,
+    "started_at": "2026-05-26T12:40:14.763456Z",
+    "finished_at": "2026-05-26T12:58:44.582299Z",
+    "environment_setup": {
+        "started_at": "2026-05-26T12:40:14.832093Z",
+        "finished_at": "2026-05-26T12:41:03.601850Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-05-26T12:41:03.601896Z",
+        "finished_at": "2026-05-26T12:41:05.406757Z"
+    },
+    "agent_execution": null,
+    "verifier": null,
+    "step_results": [
+        {
+            "step_name": "milestone_1",
+            "agent_result": {
+                "n_input_tokens": 73276,
+                "n_cache_tokens": 23424,
+                "n_output_tokens": 6847,
+                "cost_usd": 0.37439639999999996,
+                "rollout_details": [],
+                "metadata": {
+                    "n_episodes": 8,
+                    "api_request_times_msec": [
+                        7303.339242935181,
+                        9246.754169464111,
+                        10713.411569595337,
+                        8061.275482177734,
+                        8680.147171020508,
+                        25014.72306251526,
+                        15180.341243743896,
+                        2854.87961769104
+                    ],
+                    "summarization_count": 0
+                }
+            },
+            "verifier_result": {
+                "rewards": {
+                    "reward": 1.0
+                }
+            },
+            "exception_info": null,
+            "agent_execution": {
+                "started_at": "2026-05-26T12:41:05.530583Z",
+                "finished_at": "2026-05-26T12:44:27.267030Z"
+            },
+            "verifier": {
+                "started_at": "2026-05-26T12:44:27.381800Z",
+                "finished_at": "2026-05-26T12:44:28.221025Z"
+            }
+        },
+        {
+            "step_name": "milestone_2",
+            "agent_result": {
+                "n_input_tokens": 669449,
+                "n_cache_tokens": 459648,
+                "n_output_tokens": 30230,
+                "cost_usd": 1.7416203000000001,
+                "rollout_details": [],
+                "metadata": {
+                    "n_episodes": 23,
+                    "api_request_times_msec": [
+                        6622.904062271118,
+                        7799.640893936157,
+                        5681.419134140015,
+                        7879.93860244751,
+                        11212.62502670288,
+                        8009.61446762085,
+                        31365.200519561768,
+                        32200.507402420044,
+                        8591.929912567139,
+                        11775.582075119019,
+                        29856.648445129395,
+                        12035.664796829224,
+                        10147.915840148926,
+                        11844.095945358276,
+                        10696.430921554565,
+                        16724.63059425354,
+                        35959.049463272095,
+                        12755.595684051514,
+                        11097.429037094116,
+                        11737.267255783081,
+                        6924.964427947998,
+                        5332.478284835815,
+                        2963.1855487823486
+                    ],
+                    "summarization_count": 0
+                }
+            },
+            "verifier_result": {
+                "rewards": {
+                    "reward": 1.0
+                }
+            },
+            "exception_info": null,
+            "agent_execution": {
+                "started_at": "2026-05-26T12:44:28.338694Z",
+                "finished_at": "2026-05-26T12:51:01.757536Z"
+            },
+            "verifier": {
+                "started_at": "2026-05-26T12:51:01.870589Z",
+                "finished_at": "2026-05-26T12:51:02.755911Z"
+            }
+        },
+        {
+            "step_name": "milestone_3",
+            "agent_result": {
+                "n_input_tokens": 429060,
+                "n_cache_tokens": 261376,
+                "n_output_tokens": 21574,
+                "cost_usd": 1.2824475999999998,
+                "rollout_details": [],
+                "metadata": {
+                    "n_episodes": 22,
+                    "api_request_times_msec": [
+                        9058.387279510498,
+                        16963.653087615967,
+                        4793.251276016235,
+                        4107.131242752075,
+                        13543.70927810669,
+                        11907.163381576538,
+                        7209.195137023926,
+                        7011.328220367432,
+                        11165.829181671143,
+                        7721.561431884766,
+                        7807.547092437744,
+                        7184.748649597168,
+                        6602.11968421936,
+                        13114.903211593628,
+                        9478.885889053345,
+                        9774.256944656372,
+                        9999.287366867065,
+                        46606.672286987305,
+                        6726.864576339722,
+                        10138.730764389038,
+                        5176.310777664185,
+                        3539.314031600952
+                    ],
+                    "summarization_count": 0
+                }
+            },
+            "verifier_result": {
+                "rewards": {
+                    "reward": 0.0
+                }
+            },
+            "exception_info": null,
+            "agent_execution": {
+                "started_at": "2026-05-26T12:51:02.874580Z",
+                "finished_at": "2026-05-26T12:58:32.453674Z"
+            },
+            "verifier": {
+                "started_at": "2026-05-26T12:58:32.573424Z",
+                "finished_at": "2026-05-26T12:58:33.459672Z"
+            }
+        }
+    ]
+}

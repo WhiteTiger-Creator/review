@@ -1,0 +1,71 @@
+New Terminal Output:
+
+root@27e807e19559:/app# sed -n '1,120p' /tmp/test_server.log 2>/dev/null || true
+Failed to start server: Bad file descriptor
+root@27e807e19559:/app# grep -n "#define PORT" -n src/main.c
+14:#define PORT NOTES_LISTEN_PORT
+root@27e807e19559:/app# sed -i 's/^#define PORT .*/#define PORT 18080/' src/main.c
+root@27e807e19559:/app# make clean && make
+rm -f notes_server src/auth.o src/db.o src/main.o src/routes.o src/static.o
+cc -Wall -Wextra -O2 -Iinclude -c -o src/auth.o src/auth.c
+cc -Wall -Wextra -O2 -Iinclude -c -o src/db.o src/db.c
+cc -Wall -Wextra -O2 -Iinclude -c -o src/main.o src/main.c
+cc -Wall -Wextra -O2 -Iinclude -c -o src/routes.o src/routes.c
+src/routes.c: In function ‘route_request’:
+src/routes.c:289:13: warning: Value MHD_HTTP_PAYLOAD_TOO_LARGE is deprecated use MHD_HTTP_CONTENT_TOO_LARGE
+  289 |         return send_json(connection, "{\"error\":\"payload too large\"}", MHD_HTTP_PAYLOAD_TOO_LARGE);
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+cc -Wall -Wextra -O2 -Iinclude -c -o src/static.o src/static.c
+cc -Wall -Wextra -O2 -o notes_server src/auth.o src/db.o src/main.o src/routes.o src/static.o -lmicrohttpd -lsqlite3
+root@27e807e19559:/app# ./notes_server > /tmp/test_server.log 2>&1 &
+[2] 2788
+root@27e807e19559:/app# sleep 0.2; sed -n '1,80p' /tmp/test_server.log
+root@27e807e19559:/app# curl -si http://127.0.0.1:18080/api/notes | sed -n '1,20p'
+HTTP/1.1 200 OK
+Date: Tue, 26 May 2026 12:53:53 GMT
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+X-Total-Count: 7
+Content-Length: 280
+
+[{"id":1,"title":"t1","content":"c1"},{"id":2,"title":"t1","content":"c1"},{"id":3,"title":"t_ok","content":"c_ok"},{"id":4,"title":"t_ok","content":"c_ok"},{"i
+d":5,"title":"t_ok","content":"c_ok"},{"id":6,"title":"t_ok","content":"c_ok"},{"id":7,"title":"t_ok","content":"c_ok"}]root@27e807e19559:/app# curl -si -X POST
+ http://127.0.0.1:18080/api/notes -H 'Content-Type: application/json' -H 'X-API-Key: tb3_notes_api_secret_2026' --data '{"title":"t_ok","content":"c_ok"}' | sed
+ -n '1,30p'
+HTTP/1.1 201 Created
+Date: Tue, 26 May 2026 12:53:54 GMT
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+Content-Length: 40
+
+{"id":8,"title":"t_ok","content":"c_ok"}root@27e807e19559:/app# curl -si http://127.0.0.1:18080/api/notes?limit=2&offset=0 | sed -n '1,30p'
+[3] 2821
+root@27e807e19559:/app# HTTP/1.1 200 OK
+Date: Tue, 26 May 2026 12:53:55 GMT
+Content-Type: application/json
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-API-Key
+X-Total-Count: 8
+Content-Length: 75
+
+[{"id":1,"title":"t1","content":"c1"},{"id":2,"title":"t1","content":"c1"}]pkill notes_server 2>/dev/null || true
+[3]+  Done                    curl -si http://127.0.0.1:18080/api/notes?limit=2
+root@27e807e19559:/app# sed -i 's/^#define PORT .*/#define PORT 8080/' src/main.c
+root@27e807e19559:/app# make clean && make
+rm -f notes_server src/auth.o src/db.o src/main.o src/routes.o src/static.o
+cc -Wall -Wextra -O2 -Iinclude -c -o src/auth.o src/auth.c
+cc -Wall -Wextra -O2 -Iinclude -c -o src/db.o src/db.c
+cc -Wall -Wextra -O2 -Iinclude -c -o src/main.o src/main.c
+cc -Wall -Wextra -O2 -Iinclude -c -o src/routes.o src/routes.c
+src/routes.c: In function ‘route_request’:
+src/routes.c:289:13: warning: Value MHD_HTTP_PAYLOAD_TOO_LARGE is deprecated use MHD_HTTP_CONTENT_TOO_LARGE
+  289 |         return send_json(connection, "{\"error\":\"payload too large\"}", MHD_HTTP_PAYLOAD_TOO_LARGE);
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+cc -Wall -Wextra -O2 -Iinclude -c -o src/static.o src/static.c
+cc -Wall -Wextra -O2 -o notes_server src/auth.o src/db.o src/main.o src/routes.o src/static.o -lmicrohttpd -lsqlite3
+root@27e807e19559:/app#

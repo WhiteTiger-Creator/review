@@ -1,0 +1,41 @@
+Current Terminal Screen:
+        <form id="note-form">
+            <input type="text" id="note-title" placeholder="Title" required>
+            <textarea id="note-content" placeholder="Content"></textarea>
+            <button type="submit" id="btn-submit">Save</button>
+root@972cf0f30065:/app# curl -i 'http://127.0.0.1:8080/%2e%2e/%2e%2e/etc/passwd' | head -n 20
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100     9  100     9    0     0   9740      0 --:--:-- --:--:-- --:--:--  9000
+HTTP/1.1 404 Not Found
+Connection: close
+Content-Type: text/plain
+Content-Length: 9
+
+Not Foundroot@972cf0f30065:/app# curl -i http://127.0.0.1:8080/ | head -n 10
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100   643  100   643    0     0   650k      0 --:--:-- --:--:-- --:--:--  627k
+HTTP/1.1 200 OK
+Connection: close
+Content-Type: text/html
+Content-Length: 643
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+root@972cf0f30065:/app# curl -i http://127.0.0.1:8080/api/notes | head -n 20
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100     2  100     2    0     0   2580      0 --:--:-- --:--:-- --:--:--  2000
+HTTP/1.1 200 OK
+Connection: close
+Content-Type: application/json
+Content-Length: 2
+
+[]root@972cf0f30065:/app# kill -TERM "$(cat /tmp/notes_server.pid)"; sleep 0.2; tail -n 40 /tmp/notes_server.log
+[1]+  Done                    ./notes_server > /tmp/notes_server.log 2>&1
+Server running on port 8080
+root@972cf0f30065:/app#

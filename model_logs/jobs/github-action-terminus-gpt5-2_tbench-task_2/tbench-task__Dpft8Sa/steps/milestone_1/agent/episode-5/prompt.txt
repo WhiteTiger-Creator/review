@@ -1,0 +1,73 @@
+New Terminal Output:
+
+root@972cf0f30065:/app# python3 - <<'PY'
+> content = """CC = gcc
+> CFLAGS = -Wall -Wextra -O2 -Iinclude
+> LDFLAGS = -lmicrohttpd -lsqlite3
+>
+> SOURCES = \\
+> \tsrc/main.c \\
+> \tsrc/routes.c \\
+> \tsrc/static.c \\
+> \tsrc/db.c \\
+> \tsrc/auth.c
+>
+> OBJECTS = $(SOURCES:.c=.o)
+> TARGET = notes_server
+>
+> all: $(TARGET)
+>
+> $(TARGET): $(OBJECTS)
+> \t$(CC) $(CFLAGS) -o $@ $(OBJECTS) $(LDFLAGS)
+>
+> %.o: %.c
+> \t$(CC) $(CFLAGS) -c -o $@ $<
+>
+> clean:
+> \trm -f $(TARGET) $(OBJECTS)
+> """
+> open('/app/Makefile','w').write(content)
+> PY
+root@972cf0f30065:/app# sed -n '1,120p' /app/Makefile | sed -n 'l'
+CC = gcc$
+CFLAGS = -Wall -Wextra -O2 -Iinclude$
+LDFLAGS = -lmicrohttpd -lsqlite3$
+$
+SOURCES = \\$
+\tsrc/main.c \\$
+\tsrc/routes.c \\$
+\tsrc/static.c \\$
+\tsrc/db.c \\$
+\tsrc/auth.c$
+$
+OBJECTS = $(SOURCES:.c=.o)$
+TARGET = notes_server$
+$
+all: $(TARGET)$
+$
+$(TARGET): $(OBJECTS)$
+\t$(CC) $(CFLAGS) -o $@ $(OBJECTS) $(LDFLAGS)$
+$
+%.o: %.c$
+\t$(CC) $(CFLAGS) -c -o $@ $<$
+$
+clean:$
+\trm -f $(TARGET) $(OBJECTS)$
+root@972cf0f30065:/app# make clean
+rm -f notes_server src/main.o src/routes.o src/static.o src/db.o src/auth.o
+root@972cf0f30065:/app# make -j"$(nproc)"
+gcc -Wall -Wextra -O2 -Iinclude -c -o src/main.o src/main.c
+gcc -Wall -Wextra -O2 -Iinclude -c -o src/routes.o src/routes.c
+gcc -Wall -Wextra -O2 -Iinclude -c -o src/static.o src/static.c
+gcc -Wall -Wextra -O2 -Iinclude -c -o src/db.o src/db.c
+gcc -Wall -Wextra -O2 -Iinclude -c -o src/auth.o src/auth.c
+src/routes.c:42:13: warning: ‘request_completed’ defined but not used [-Wunused-function]
+   42 | static void request_completed(void *cls, struct MHD_Connection *connection,
+      |             ^~~~~~~~~~~~~~~~~
+gcc -Wall -Wextra -O2 -Iinclude -o notes_server src/main.o src/routes.o src/static.o src/db.o src/auth.o -lmicrohttpd -lsqlite3
+root@972cf0f30065:/app# ls -la /app/notes_server
+-rwxr-xr-x 1 root root 18472 May 26 12:42 /app/notes_server
+root@972cf0f30065:/app# file /app/notes_server
+/app/notes_server: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, BuildID[sha1]=20ce83b44
+d3c6303255386a01be02104109dc631, for GNU/Linux 3.2.0, not stripped
+root@972cf0f30065:/app#

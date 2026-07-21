@@ -1,0 +1,41 @@
+Current Terminal Screen:
+   315          int total = get_total_notes_count();
+   316          char *json = get_notes_paginated_json(limit, offset);
+   317          if (!json) return send_json_total(connection, "[]", MHD_HTTP_OK, total);
+   318          enum MHD_Result r = send_json_total(connection, json, MHD_HTTP_OK, total);
+   319          free(json);
+   320          return r;
+   321      }
+   322
+   323      int id = 0;
+   324      if (parse_id_from_url(url, &id) && strcmp(method, "GET") == 0) {
+   325          char *json = get_note_json(id);
+   326          if (!json) return send_json(connection, "{\"error\":\"not found\"}", MHD_HTTP_NOT_FOUND);
+   327          enum MHD_Result r = send_json(connection, json, MHD_HTTP_OK);
+   328          free(json);
+   329          return r;
+   330      }
+root@ade5f5ea62db:/app# perl -i -ne 'print unless /\/config\/api\.key/' /app/src/routes.c > /tmp/routes.c && mv /tmp/routes.c /app/src/routes.c
+root@ade5f5ea62db:/app# awk 'NR==1{in=0} {print} /if \(strcmp\(method, "OPTIONS"\) == 0\)/{opt=1} (opt && /return send_json\(connection, "", MHD_HTTP_OK\);/ &&
+!ins){print "\n    // Expose API key file so the frontend can read and trim it (used on POST/PUT/DELETE)."; print "    if (strcmp(method, \"GET\") == 0 && strcm
+p(url, \"/config/api.key\") == 0)"; print "        return send_file_text(connection, API_KEY_PATH);\n"; ins=1} ' /app/src/routes.c > /tmp/routes.c && mv /tmp/ro
+utes.c /app/src/routes.c
+awk: line 1: syntax error at or near in
+root@ade5f5ea62db:/app# grep -n "config/api.key" -n /app/src/routes.c
+root@ade5f5ea62db:/app# make -C /app
+make: Entering directory '/app'
+gcc -Wall -Wextra -Iinclude -Isrc -o notes_server src/main.c src/routes.c src/db.c src/static.c src/auth.c -lmicrohttpd -lsqlite3
+/usr/bin/ld: /tmp/ccVDs0mR.o: in function `handle_request':
+main.c:(.text+0x3fd): undefined reference to `route_request'
+collect2: error: ld returned 1 exit status
+make: *** [Makefile:10: notes_server] Error 1
+make: Leaving directory '/app'
+root@ade5f5ea62db:/app# kill -TERM $(cat /app/server.pid) 2>/dev/null || true
+root@ade5f5ea62db:/app# nohup /app/notes_server > /app/server.log 2>&1 & echo $! > /app/server.pid
+[7] 3841
+[6]   Done                    nohup /app/notes_server > /app/server.log 2>&1
+root@ade5f5ea62db:/app# sleep 0.2; curl -sS -D- http://localhost:8080/config/api.key -o /tmp/apikey.out | head -n 20; echo; tail -n 2 /tmp/apikey.out
+[7]+  Exit 127                nohup /app/notes_server > /app/server.log 2>&1
+curl: (7) Failed to connect to localhost port 8080 after 0 ms: Could not connect to server
+
+Not Foundroot@ade5f5ea62db:/app#

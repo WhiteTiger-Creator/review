@@ -1,0 +1,47 @@
+{
+  "analysis": "POST is returning 400 even with correct API key. Likely because body collection logic is wrong: in route_request we call ensure_body_collected and then immediately check if *upload_data_size != 0, but ensure_body_collected sets it to 0, so we proceed too early on the first call when con_cls was NULL (ci allocated) and no data appended yet, resulting in empty body -> bad_request. Need standard libmicrohttpd pattern: if con_cls==NULL allocate and return MHD_YES; then if *upload_data_size>0 append and return MHD_YES; only when *upload_data_size==0 after data has been fully received should we process. We should adjust route_request accordingly for POST/PUT. Also in ensure_body_collected, the sentinel ci->data_size = max+1 is ok. We'll simplify by inlining and removing the incorrect check.",
+  "plan": "Edit routes.c to implement correct body receive flow: 1) if *con_cls==NULL allocate ci and return MHD_YES. 2) if method is POST/PUT and *upload_data_size>0 then append (with limit check), set *upload_data_size=0, return MHD_YES. 3) else (upload_data_size==0) process request using ci->data. Then rebuild and re-run POST and parallel test. Also stop existing notes_server and restart after rebuild.",
+  "commands": [
+    {
+      "keystrokes": "pkill -f ./notes_server || true\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/static enum MHD_Result ensure_body_collected[\\s\\S]*?return MHD_YES;\\n}\\n\\n/static void append_body_or_mark_oversize(const char *method, const char *upload_data, size_t *upload_data_size, struct connection_info *ci) {\\n    if (*upload_data_size == 0) return;\\n    if ((strcmp(method, \"POST\") == 0 || strcmp(method, \"PUT\") == 0) &&\\n        ci->data_size + *upload_data_size > NOTES_MAX_BODY_BYTES) {\\n        ci->data_size = NOTES_MAX_BODY_BYTES + 1;\\n        *upload_data_size = 0;\\n        return;\\n    }\\n    char *nb = realloc(ci->data, ci->data_size + *upload_data_size + 1);\\n    if (!nb) {\\n        *upload_data_size = 0;\\n        return;\\n    }\\n    ci->data = nb;\\n    memcpy(ci->data + ci->data_size, upload_data, *upload_data_size);\\n    ci->data_size += *upload_data_size;\\n    ci->data[ci->data_size] = \"\\\\0\"[0];\\n    *upload_data_size = 0;\\n}\\n\\n/sm' /app/src/routes.c\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/\\n    \\/* Collect request body for POST\\/PUT\\.\\*\\/\\n    if \\(\\(strcmp\\(method, \"POST\"\\) == 0 \\|\\| strcmp\\(method, \"PUT\"\\) == 0\\)\\) \\{[\\s\\S]*?struct connection_info \\*ci = \\*con_cls;\\n/\\n    if (*con_cls == NULL) {\\n        struct connection_info *ci0 = calloc(1, sizeof(struct connection_info));\\n        if (!ci0) return MHD_NO;\\n        *con_cls = ci0;\\n        return MHD_YES;\\n    }\\n\\n    struct connection_info *ci = *con_cls;\\n\\n    if ((strcmp(method, \"POST\") == 0 || strcmp(method, \"PUT\") == 0) && *upload_data_size > 0) {\\n        append_body_or_mark_oversize(method, upload_data, upload_data_size, ci);\\n        return MHD_YES;\\n    }\\n\\n/sm' /app/src/routes.c\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "grep -n \"append_body_or_mark_oversize\\|con_cls == NULL\\|upload_data_size > 0\" -n /app/src/routes.c | sed -n '1,120p'\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "make clean && make\n",
+      "duration": 10.0
+    },
+    {
+      "keystrokes": "./notes_server &\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "KEY=$(cat /app/config/api.key | tr -d ' \\t\\r\\n')\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "curl -si -X POST http://127.0.0.1:8080/api/notes -H \"X-API-Key: $KEY\" -H 'Content-Type: application/json' -d '{\"title\":\"t1\",\"content\":\"c1\"}' | sed -n '1,40p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "seq 1 15 | xargs -I{} -P15 sh -c \"curl -s -o /dev/null -w '%{http_code}\\n' -X POST http://127.0.0.1:8080/api/notes -H \\\"X-API-Key: $KEY\\\" -H 'Content-Type: application/json' -d '{\\\"title\\\":\\\"p{}\\\",\\\"content\\\":\\\"c\\\"}'\" | sort | uniq -c\n",
+      "duration": 10.0
+    },
+    {
+      "keystrokes": "curl -si http://127.0.0.1:8080/api/notes | grep -i '^X-Total-Count:'\n",
+      "duration": 1.0
+    }
+  ],
+  "task_complete": false
+}

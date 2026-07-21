@@ -1,0 +1,41 @@
+Current Terminal Screen:
+drwxr-xr-x  2 root root   103 May 26 12:40 docs
+drwxr-xr-x  2 root root    37 May 26 12:40 include
+-rwxr-xr-x  1 root root 18208 May 26 12:49 notes_server
+drwxr-xr-x  2 root root    22 May 26 12:40 sql
+drwxr-xr-x  2 root root   208 May 26 12:49 src
+drwxr-xr-x  2 root root    55 May 26 12:40 www
+root@972cf0f30065:/app# ls -la /app/src /app/www 2>/dev/null || true
+/app/src:
+total 72
+drwxr-xr-x  2 root root  208 May 26 12:49 .
+drwxr-xr-x 10 root root  157 May 26 12:49 ..
+-rw-r--r--  1 root root  112 May 26 12:40 auth.c
+-rw-r--r--  1 root root  118 May 26 12:40 auth.h
+-rw-r--r--  1 root root 1088 May 26 12:46 auth.o
+-rw-r--r--  1 root root 1598 May 26 12:40 db.c
+-rw-r--r--  1 root root  408 May 26 12:40 db.h
+-rw-r--r--  1 root root 3520 May 26 12:49 db.o
+-rw-r--r--  1 root root 7037 May 26 12:49 main.c
+-rw-r--r--  1 root root 9288 May 26 12:49 main.o
+-rw-r--r--  1 root root 3243 May 26 12:40 routes.c
+-rw-r--r--  1 root root  317 May 26 12:40 routes.h
+-rw-r--r--  1 root root 4440 May 26 12:46 routes.o
+-rw-r--r--  1 root root  167 May 26 12:40 static.c
+-rw-r--r--  1 root root  155 May 26 12:40 static.h
+-rw-r--r--  1 root root 1096 May 26 12:46 static.o
+
+/app/www:
+total 12
+drwxr-xr-x  2 root root   55 May 26 12:40 .
+drwxr-xr-x 10 root root  157 May 26 12:49 ..
+-rw-r--r--  1 root root  943 May 26 12:40 app.js
+-rw-r--r--  1 root root  643 May 26 12:40 index.html
+-rw-r--r--  1 root root 1009 May 26 12:40 style.css
+root@972cf0f30065:/app# find /app -maxdepth 3 -type f \( -name 'notes_server*' -o -name 'server.*' -o -name 'index.*' -o -name 'app.*' \) -print
+/app/www/app.js
+/app/www/index.html
+/app/notes_server
+root@972cf0f30065:/app# cat /app/config/api.key 2>/dev/null || true
+tb3_notes_api_secret_2026
+root@972cf0f30065:/app#

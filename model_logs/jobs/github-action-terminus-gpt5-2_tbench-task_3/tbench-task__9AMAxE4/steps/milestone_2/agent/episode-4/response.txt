@@ -1,0 +1,15 @@
+{
+  "analysis": "The environment lacks apply_patch, so we must edit files using heredocs (cat > file) or sed. auth.c is still the stub. routes.h defines connection_info for buffering but routes.c currently ignores upload_data/con_cls, so body handling must be implemented. Also contract doesn’t specify exact unauthorized error body; only specifies exact not-found error string. We will implement 401 JSON as {\"error\":\"unauthorized\"} consistently.",
+  "plan": "Rewrite src/auth.c using a heredoc to implement API key loading from /app/config/api.key, trimming whitespace, and comparing with X-API-Key header. Then proceed to implement DB and routes similarly via rewriting files. Next commands will overwrite auth.c with correct implementation and quickly cat it to confirm.",
+  "commands": [
+    {
+      "keystrokes": "cat > /app/src/auth.c <<'EOF'\n#include \"auth.h\"\n\n#include <ctype.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\n#define API_KEY_PATH \"/app/config/api.key\"\n\nstatic char *cached_key = NULL;\n\nstatic void trim_in_place(char *s) {\n    if (!s) return;\n\n    size_t len = strlen(s);\n    while (len > 0 && isspace((unsigned char)s[len - 1])) {\n        s[len - 1] = '\\0';\n        len--;\n    }\n\n    size_t i = 0;\n    while (s[i] && isspace((unsigned char)s[i])) i++;\n    if (i > 0) memmove(s, s + i, strlen(s + i) + 1);\n}\n\nstatic const char *get_api_key(void) {\n    if (cached_key) return cached_key;\n\n    FILE *f = fopen(API_KEY_PATH, \"rb\");\n    if (!f) return NULL;\n\n    char buf[256];\n    size_t n = fread(buf, 1, sizeof(buf) - 1, f);\n    fclose(f);\n    buf[n] = '\\0';\n\n    trim_in_place(buf);\n    cached_key = strdup(buf);\n    return cached_key;\n}\n\nint api_key_valid(struct MHD_Connection *connection) {\n    const char *expected = get_api_key();\n    if (!expected || expected[0] == '\\0') return 0;\n\n    const char *provided = MHD_lookup_connection_value(connection,\n                                                       MHD_HEADER_KIND,\n                                                       \"X-API-Key\");\n    if (!provided) return 0;\n\n    return strcmp(provided, expected) == 0;\n}\nEOF\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,200p' /app/src/auth.c\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

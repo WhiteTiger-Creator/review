@@ -1,0 +1,43 @@
+New Terminal Output:
+
+root@27e807e19559:/app# ./notes_server >server.log 2>&1 & echo $! > server.pid
+[2] 797
+[1]   Done                    ./notes_server > server.log 2>&1
+root@27e807e19559:/app# curl --path-as-is -si http://127.0.0.1:8080/../README.md | head -n 20
+HTTP/1.1 403 Forbidden
+Date: Tue, 26 May 2026 12:44:25 GMT
+Connection: close
+Content-Length: 9
+
+Forbiddenroot@27e807e19559:/app# curl --path-as-is -si 'http://127.0.0.1:8080/%2e%2e/README.md' | head -n 20
+HTTP/1.1 403 Forbidden
+Date: Tue, 26 May 2026 12:44:26 GMT
+Connection: close
+Content-Length: 9
+
+Forbiddenroot@27e807e19559:/app# kill $(cat server.pid) && rm -f server.pid
+[2]+  Done                    ./notes_server > server.log 2>&1
+root@27e807e19559:/app# python3 - <<'PY'
+> import re
+> p='src/main.c'
+> s=open(p,'r',encoding='utf-8').read()
+> if 'static int hexval(' not in s:
+>     s = s.replace('static int url_contains_encoded_dotdot(const char *url) {\n',
+> "static int hexval(int c){\n    if (c>='0' && c<='9') return c-'0';\n    if (c>='a' && c<='f') return 10 + (c-'a');\n    if (c>='A' && c<='F') return 10 + (c-
+'A');\n    return -1;\n}\n\nstatic int url_decode(const char *in, char *out, size_t outsz){\n    size_t oi=0;\n    for (size_t i=0; in[i]; i++){\n        unsign
+ed char ch = (unsigned char)in[i];\n        if (ch=='%'){\n            int a = hexval((unsigned char)in[i+1]);\n            int b = hexval((unsigned char)in[i+2
+]);\n            if (a<0 || b<0) return -1;\n            ch = (unsigned char)((a<<4)|b);\n            i += 2;\n        }\n        if (ch==0) return -1;\n
+ if (oi+1>=outsz) return -1;\n        out[oi++] = (char)ch;\n    }\n    out[oi]=0;\n    return 0;\n}\n\nstatic int decoded_path_has_dotdot(const char *url){\n
+  char dec[4096];\n    if (url_decode(url, dec, sizeof(dec))!=0) return 0;\n    const char *p = dec;\n    while (*p){\n        while (*p=='/') p++;\n        if
+(!*p) break;\n        const char *seg=p;\n        while (*p && *p!='/') p++;\n        size_t len = (size_t)(p-seg);\n        if (len==2 && seg[0]=='.' && seg[1]
+=='.') return 1;\n    }\n    return 0;\n}\n\nstatic int url_contains_encoded_dotdot(const char *url) {\n")
+>
+> # strengthen the fast-path check
+> s = s.replace('if (strstr(url, "..") != NULL || url_contains_encoded_dotdot(url)) {',
+>               'if (strstr(url, "..") != NULL || url_contains_encoded_dotdot(url) || decoded_path_has_dotdot(url)) {')
+> open(p,'w',encoding='utf-8').write(s)
+> PY
+root@27e807e19559:/app# make -j$(nproc)
+cc -Wall -Wextra -O2 -Iinclude -c -o src/main.o src/main.c
+cc -Wall -Wextra -O2 -o notes_server src/auth.o src/db.o src/main.o src/routes.o src/static.o -lmicrohttpd -lsqlite3
+root@27e807e19559:/app#

@@ -1,0 +1,41 @@
+Current Terminal Screen:
+    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        pthread_mutex_unlock(&db_mu);
+        return 0;
+    }
+    sqlite3_bind_int(stmt, 1, id);
+    int exists = (sqlite3_step(stmt) == SQLITE_ROW);
+    sqlite3_finalize(stmt);
+
+    pthread_mutex_unlock(&db_mu);
+    return exists;
+}
+
+char *get_note_json(int id) {
+    pthread_mutex_lock(&db_mu);
+
+    const char *sql = "SELECT id, title, content FROM notes WHERE id=?;";
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        pthread_mutex_unlock(&db_mu);
+        return NULL;
+    }
+    sqlite3_bind_int(stmt, 1, id);
+
+    char *out = NULL;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        int rid = sqlite3_column_int(stmt, 0);
+        const char *title = (const char *)sqlite3_column_text(stmt, 1);
+        const char *content = (const char *)sqlite3_column_text(stmt, 2);
+        char *et = json_escape(title);
+        char *ec = json_escape(content);
+        if (et && ec) {
+            size_t needed = strlen(et) + strlen(ec) + 64;
+            out = malloc(needed);
+            if (out)
+                snprintf(out, needed,
+                         "{\"id\":%d,\"title\":\"%s\",\"content\":\"%s\"}",
+                         rid, et, ec);
+root@08d5c4164ec3:/app#

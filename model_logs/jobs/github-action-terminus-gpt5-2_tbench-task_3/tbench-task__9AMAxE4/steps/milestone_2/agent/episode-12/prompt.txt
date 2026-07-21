@@ -1,0 +1,56 @@
+New Terminal Output:
+
+root@08d5c4164ec3:/app# KEY=$(cat /app/config/api.key | tr -d ' \t\r\n'); echo "KEY=$KEY"
+KEY=tb3_notes_api_secret_2026
+root@08d5c4164ec3:/app# ps aux | grep '[n]otes_server' || true
+bash: ps: command not found
+root@08d5c4164ec3:/app# tail -n 50 /tmp/notes_server.log 2>/dev/null || true
+Failed to start server
+root@08d5c4164ec3:/app# curl -sv -X POST http://127.0.0.1:8080/api/notes -H "X-API-Key: $KEY" -H 'Content-Type: application/json' --data '{"title":"t1","content
+":"c1"}' 2>&1 | sed -n '1,120p'
+*   Trying 127.0.0.1:8080...
+* Connected to 127.0.0.1 (127.0.0.1) port 8080
+* using HTTP/1.x
+> POST /api/notes HTTP/1.1
+> Host: 127.0.0.1:8080
+> User-Agent: curl/8.14.1
+> Accept: */*
+> X-API-Key: tb3_notes_api_secret_2026
+> Content-Type: application/json
+> Content-Length: 29
+>
+} [29 bytes data]
+* upload completely sent off: 29 bytes
+< HTTP/1.1 400 Bad Request
+< Date: Tue, 26 May 2026 12:48:02 GMT
+< Connection: close
+< Content-Type: application/json
+< Access-Control-Allow-Origin: *
+< Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+< Access-Control-Allow-Headers: Content-Type, X-API-Key
+< Content-Length: 23
+<
+{ [23 bytes data]
+* shutting down connection #0
+{"error":"bad request"}root@08d5c4164ec3:/app# PID=$(ps aux | awk '/[n]otes_server/{print $2; exit}'); echo "PID=$PID"
+bash: ps: command not found
+PID=
+root@08d5c4164ec3:/app# grep -n "return bad_request" -n /app/src/routes.c
+274:            return bad_request(connection);
+314:                return bad_request(connection);
+root@08d5c4164ec3:/app# perl -i -pe 'if($.==281){print "        fprintf(stderr, \"POST parse fail body=%s\\n\", ci->data ? ci->data : \"(null)\");\n"}' /app/src
+/routes.c
+root@08d5c4164ec3:/app# make clean && make
+rm -f notes_server
+gcc -Wall -Wextra -O2 -Iinclude -o notes_server src/main.c src/routes.c src/static.c src/db.c src/auth.c -lmicrohttpd -lsqlite3
+root@08d5c4164ec3:/app# if [ -n "$PID" ]; then kill -TERM "$PID"; fi
+root@08d5c4164ec3:/app# ./notes_server > /tmp/notes_server.log 2>&1 & echo $!
+[2] 1871
+1871
+root@08d5c4164ec3:/app# curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/api/notes -H "X-API-Key: $KEY" -H 'Content-Type: application/json
+' --data '{"title":"t1","content":"c1"}'
+400
+[2]+  Exit 1                  ./notes_server > /tmp/notes_server.log 2>&1
+root@08d5c4164ec3:/app# tail -n 20 /tmp/notes_server.log
+Failed to start server
+root@08d5c4164ec3:/app#

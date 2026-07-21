@@ -1,0 +1,41 @@
+Current Terminal Screen:
+   322          free(et);
+   323          free(ec);
+   324      }
+   325
+   326      sqlite3_finalize(stmt);
+   327      pthread_mutex_unlock(&db_mu);
+   328      return out;
+   329  }
+   330
+   331  int update_note(int id, const char *title, const char *content) {
+   332      pthread_mutex_lock(&db_mu);
+   333
+   334      sqlite3_exec(db, "BEGIN IMMEDIATE;", NULL, NULL, NULL);
+   335
+   336      const char *sql = "UPDATE notes SET title=?, content=? WHERE id=?;";
+   337      sqlite3_stmt *stmt = NULL;
+   338      int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+   339      if (rc != SQLITE_OK) {
+   340          sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
+   341          pthread_mutex_unlock(&db_mu);
+   342          return 0;
+   343      }
+   344
+   345      sqlite3_bind_text(stmt, 1, title ? title : "", -1, SQLITE_TRANSIENT);
+   346      sqlite3_bind_text(stmt, 2, content ? content : "", -1, SQLITE_TRANSIENT);
+   347      sqlite3_bind_int(stmt, 3, id);
+   348
+   349      rc = sqlite3_step(stmt);
+   350      int changed = sqlite3_changes(db);
+   351      sqlite3_finalize(stmt);
+   352
+   353      if (rc != SQLITE_DONE) {
+   354          sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
+   355          pthread_mutex_unlock(&db_mu);
+   356          return 0;
+   357      }
+   358
+   359      sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL);
+   360      pthread_mutex_unlock(&db_mu);
+root@08d5c4164ec3:/app#
