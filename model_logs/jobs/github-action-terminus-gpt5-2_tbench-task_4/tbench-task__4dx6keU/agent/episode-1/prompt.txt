@@ -1,0 +1,51 @@
+New Terminal Output:
+root@0c4a89e29ee7:/app# ls -la
+total 4
+drwxr-xr-x  6 root root  73 May 26 12:45 .
+drwxr-xr-x 19 root root 265 May 26 12:46 ..
+-rw-r--r--  1 root root 762 May 26 12:44 Makefile
+drwxr-xr-x  6 root root 101 May 26 12:44 include
+drwxr-xr-x  2 root root   6 May 26 12:45 output
+drwxr-xr-x  2 root root  24 May 26 12:44 run
+drwxr-xr-x  6 root root 115 May 26 12:44 src
+root@0c4a89e29ee7:/app# find /app -maxdepth 2 -type d -print
+/app
+/app/include
+/app/include/core
+/app/include/io
+/app/include/logic
+/app/include/runtime
+/app/output
+/app/run
+/app/src
+/app/src/core
+/app/src/io
+/app/src/logic
+/app/src/runtime
+root@0c4a89e29ee7:/app# make -C /app clean && make -C /app -j$(nproc)
+make: Entering directory '/app'
+rm -f /usr/local/bin/arena
+make: Leaving directory '/app'
+make: Entering directory '/app'
+mkdir -p /usr/local/bin
+cc -O2 -g -std=c11 -Wall -Wextra -Wshadow -Wconversion -Iinclude -o /usr/local/bin/arena src/main.c src/cli.c src/tb_err.c src/report.c src/runtime/runtime.c sr
+c/runtime/profile.c src/runtime/script.c src/core/idgen.c src/core/queue.c src/core/map_u64.c src/core/vec_u64.c src/core/vec_ev.c src/io/fs.c src/io/journal.c
+src/logic/ingest.c src/logic/settle.c src/logic/nudge.c src/logic/merge.c src/logic/link.c
+make: Leaving directory '/app'
+root@0c4a89e29ee7:/app# pytest -q
+
+no tests ran in 0.01s
+root@0c4a89e29ee7:/app# /usr/local/bin/arena --help | sed -n '1,200p'
+usage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]
+cli: bad_arg
+root@0c4a89e29ee7:/app# rm -f /app/output/report.json
+root@0c4a89e29ee7:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --output /app/output/report.json; echo EXIT:$?
+usage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]
+cli: bad_arg
+EXIT:2
+root@0c4a89e29ee7:/app# ls -la /app/output && sed -n '1,200p' /app/output/report.json
+total 0
+drwxr-xr-x 2 root root  6 May 26 12:45 .
+drwxr-xr-x 7 root root 94 May 26 12:46 ..
+sed: can't read /app/output/report.json: No such file or directory
+root@0c4a89e29ee7:/app#

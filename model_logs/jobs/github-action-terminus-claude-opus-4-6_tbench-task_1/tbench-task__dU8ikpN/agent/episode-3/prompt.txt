@@ -1,0 +1,269 @@
+New Terminal Output:
+
+root@ddb910b7e5ab:/app# cat /app/include/runtime/runtime.h
+#pragma once
+
+#include "core/ev.h"
+#include "core/map_u64.h"
+#include "core/queue.h"
+#include "core/vec_ev.h"
+#include "io/journal.h"
+#include "runtime/profile.h"
+#include "runtime/script.h"
+#include "tb_err.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+
+typedef enum {
+  TB_ORDER_A_THEN_B = 1,
+  TB_ORDER_B_THEN_A = 2,
+} tb_order;
+
+tb_order tb_order_parse(const char *s);
+const char *tb_order_str(tb_order o);
+
+typedef struct {
+  // "in-flight" handles are 64-bit tokens; external ids are stable u32.
+  tb_map_u64 token_to_id; // token -> id
+  tb_map_u64 token_done;  // canonical done-set, key depends on reconciliation
+
+  tb_q64 in_q;
+  tb_q64 done_a;
+  tb_q64 done_b;
+  tb_q64 notify_q;
+
+  tb_vec_ev evlog;
+
+  uint32_t gen;
+  uint64_t cursor;
+  bool attached;
+
+  const char *journal_path;
+} tb_rt;
+
+tb_status tb_rt_init(tb_rt *rt, const char *journal_path);
+void tb_rt_free(tb_rt *rt);
+
+tb_status tb_rt_run(tb_rt *rt, tb_scenario scn, tb_profile prof, tb_order ord, uint32_t seed);
+
+// report extraction
+const tb_vec_ev *tb_rt_events(const tb_rt *rt);
+
+root@ddb910b7e5ab:/app# cat /app/src/runtime/runtime.c
+#include "runtime/runtime.h"
+
+#include "core/idgen.h"
+#include "logic/ingest.h"
+#include "logic/link.h"
+#include "logic/merge.h"
+#include "logic/nudge.h"
+#include "logic/settle.h"
+
+#include <stdio.h>
+#include <string.h>
+
+tb_status tb_rt_init(tb_rt *rt, const char *journal_path) {
+  if (!rt || !journal_path)
+    return TB_ERR_BAD_ARG;
+  memset(rt, 0, sizeof(*rt));
+
+  if (!tb_map_u64_init(&rt->token_to_id, 128))
+    return TB_ERR_OOM;
+  if (!tb_map_u64_init(&rt->token_done, 128))
+    return TB_ERR_OOM;
+  if (!tb_q64_init(&rt->in_q, 4096))
+    return TB_ERR_OOM;
+  if (!tb_q64_init(&rt->done_a, 4096))
+    return TB_ERR_OOM;
+  if (!tb_q64_init(&rt->done_b, 4096))
+    return TB_ERR_OOM;
+  if (!tb_q64_init(&rt->notify_q, 4096))
+    return TB_ERR_OOM;
+  if (!tb_vec_ev_init(&rt->evlog, 2048))
+    return TB_ERR_OOM;
+
+  rt->gen = 1;
+  rt->cursor = 1;
+  rt->attached = true;
+  rt->journal_path = journal_path;
+  return TB_OK;
+}
+
+void tb_rt_free(tb_rt *rt) {
+  if (!rt)
+    return;
+  tb_map_u64_free(&rt->token_to_id);
+  tb_map_u64_free(&rt->token_done);
+  tb_q64_free(&rt->in_q);
+  tb_q64_free(&rt->done_a);
+  tb_q64_free(&rt->done_b);
+  tb_q64_free(&rt->notify_q);
+  tb_vec_ev_free(&rt->evlog);
+}
+
+const tb_vec_ev *tb_rt_events(const tb_rt *rt) { return &rt->evlog; }
+
+static tb_status maybe_detach_attach(tb_rt *rt, const tb_script *sc, uint32_t tick) {
+  if (sc->detach_at && tick == sc->detach_at) {
+    return tb_link_detach(rt, tick);
+  }
+  if (sc->detach_at && tick == sc->detach_at + sc->detach_len) {
+    return tb_link_attach(rt, tick);
+  }
+  if (sc->detach2_at && tick == sc->detach2_at) {
+    return tb_link_detach(rt, tick);
+  }
+  if (sc->detach2_at && tick == sc->detach2_at + sc->detach2_len) {
+    return tb_link_attach(rt, tick);
+  }
+  return TB_OK;
+}
+
+tb_status tb_rt_run(tb_rt *rt, tb_scenario scn, tb_profile prof, tb_order ord, uint32_t seed) {
+  (void)seed;
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+
+  tb_script sc = {0};
+  if (!tb_script_for(scn, &sc))
+    return TB_ERR_BAD_ARG;
+
+  tb_stamp last = {0};
+  bool found = false;
+  tb_status st = journal_load_last(rt->journal_path, &last, &found);
+  if (st != TB_OK)
+    return st;
+  if (found) {
+    rt->gen = last.gen + 1;
+    rt->cursor = last.cursor;
+  }
+
+  for (uint32_t tick = 0; tick < sc.ticks; tick++) {
+    st = maybe_detach_attach(rt, &sc, tick);
+    if (st != TB_OK)
+      return st;
+
+    uint32_t submitted = 0;
+    st = tb_ingest_tick(rt, prof, tick, &submitted);
+    if (st != TB_OK)
+      return st;
+
+    st = tb_settle_tick(rt, tick);
+    if (st != TB_OK)
+      return st;
+
+    st = tb_merge_drain(rt, tick, ord);
+    if (st != TB_OK)
+      return st;
+
+    st = tb_nudge_drain(rt, tick);
+    if (st != TB_OK)
+      return st;
+  }
+
+  // Final drain to avoid leaving work in queues.
+  for (uint32_t i = 0; i < 16; i++) {
+    st = tb_settle_tick(rt, sc.ticks + i);
+    if (st != TB_OK)
+      return st;
+    st = tb_merge_drain(rt, sc.ticks + i, ord);
+    if (st != TB_OK)
+      return st;
+    st = tb_nudge_drain(rt, sc.ticks + i);
+    if (st != TB_OK)
+      return st;
+  }
+
+  return TB_OK;
+}
+
+root@ddb910b7e5ab:/app# cat /app/include/runtime/script.h
+#pragma once
+
+#include <stdbool.h>
+#include <stdint.h>
+
+typedef enum {
+  TB_SCN_BASIC = 1,
+  TB_SCN_STRESS = 2,
+  TB_SCN_STRESS2 = 3,
+} tb_scenario;
+
+tb_scenario tb_scenario_parse(const char *s);
+const char *tb_scenario_str(tb_scenario scn);
+
+typedef struct {
+  uint32_t ticks;
+  uint32_t detach_at;   // 0 means never
+  uint32_t detach_len;  // number of ticks detached
+  uint32_t detach2_at;  // optional second detach
+  uint32_t detach2_len;
+} tb_script;
+
+bool tb_script_for(tb_scenario scn, tb_script *out);
+
+root@ddb910b7e5ab:/app# cat /app/src/runtime/script.c
+#include "runtime/script.h"
+
+#include <string.h>
+
+tb_scenario tb_scenario_parse(const char *s) {
+  if (!s)
+    return 0;
+  if (strcmp(s, "basic") == 0)
+    return TB_SCN_BASIC;
+  if (strcmp(s, "stress") == 0)
+    return TB_SCN_STRESS;
+  if (strcmp(s, "stress2") == 0)
+    return TB_SCN_STRESS2;
+  return 0;
+}
+
+const char *tb_scenario_str(tb_scenario scn) {
+  switch (scn) {
+  case TB_SCN_BASIC:
+    return "basic";
+  case TB_SCN_STRESS:
+    return "stress";
+  case TB_SCN_STRESS2:
+    return "stress2";
+  default:
+    return "unknown";
+  }
+}
+
+bool tb_script_for(tb_scenario scn, tb_script *out) {
+  if (!out)
+    return false;
+  tb_script s = {0};
+  switch (scn) {
+  case TB_SCN_BASIC:
+    s.ticks = 40;
+    s.detach_at = 0;
+    s.detach_len = 0;
+    s.detach2_at = 0;
+    s.detach2_len = 0;
+    break;
+  case TB_SCN_STRESS:
+    s.ticks = 80;
+    s.detach_at = 22;
+    s.detach_len = 10;
+    s.detach2_at = 0;
+    s.detach2_len = 0;
+    break;
+  case TB_SCN_STRESS2:
+    s.ticks = 110;
+    s.detach_at = 26;
+    s.detach_len = 10;
+    s.detach2_at = 68;
+    s.detach2_len = 12;
+    break;
+  default:
+    return false;
+  }
+  *out = s;
+  return true;
+}
+
+root@ddb910b7e5ab:/app#

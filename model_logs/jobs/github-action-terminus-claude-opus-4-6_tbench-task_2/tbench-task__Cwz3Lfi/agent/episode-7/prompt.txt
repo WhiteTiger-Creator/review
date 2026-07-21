@@ -1,5 +1,0 @@
-New Terminal Output:
-
-root@c18de6e73dca:/app# cd /app && rm -f /opt/jobqueue/jobs.db && go build -o jobqueue . 2>&1
-bash: go: command not found
-root@c18de6e73dca:/app#

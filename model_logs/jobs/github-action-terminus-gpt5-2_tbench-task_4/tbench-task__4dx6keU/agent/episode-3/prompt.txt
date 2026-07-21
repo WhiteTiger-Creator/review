@@ -1,0 +1,427 @@
+New Terminal Output:
+
+root@0c4a89e29ee7:/app# sed -n '1,200p' /app/include/io/journal.h
+#pragma once
+
+#include "tb_err.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+
+typedef struct {
+  uint32_t gen;
+  uint64_t cursor;
+} tb_stamp;
+
+tb_status journal_append_stamp(const char *path, tb_stamp s);
+tb_status journal_load_last(const char *path, tb_stamp *out, bool *found);
+
+root@0c4a89e29ee7:/app# sed -n '1,220p' /app/src/io/journal.c
+#include "io/journal.h"
+
+#include "io/fs.h"
+
+#include <errno.h>
+#include <stdio.h>
+
+static tb_status append_rec(FILE *f, tb_stamp s) {
+  if (!fs_write_u32(f, s.gen))
+    return TB_ERR_IO;
+
+  uint32_t lo = (uint32_t)s.cursor;
+  if (!fs_write_u32(f, lo))
+    return TB_ERR_IO;
+
+  return TB_OK;
+}
+
+static bool read_rec(FILE *f, tb_stamp *out) {
+  uint32_t gen = 0;
+  if (!fs_read_u32(f, &gen))
+    return false;
+
+  uint32_t lo = 0;
+  if (!fs_read_u32(f, &lo))
+    return false;
+
+  out->gen = gen;
+  out->cursor = (uint64_t)lo;
+  return true;
+}
+
+tb_status journal_append_stamp(const char *path, tb_stamp s) {
+  FILE *f = fopen(path, "ab");
+  if (!f)
+    return TB_ERR_IO;
+  tb_status st = append_rec(f, s);
+  if (fclose(f) != 0)
+    return TB_ERR_IO;
+  return st;
+}
+
+tb_status journal_load_last(const char *path, tb_stamp *out, bool *found) {
+  if (!out || !found)
+    return TB_ERR_BAD_ARG;
+
+  FILE *f = fopen(path, "rb");
+  if (!f) {
+    if (errno == ENOENT) {
+      *found = false;
+      return TB_OK;
+    }
+    return TB_ERR_IO;
+  }
+
+  tb_stamp cur = {0};
+  bool any = false;
+  while (read_rec(f, &cur)) {
+    any = true;
+  }
+  fclose(f);
+  if (!any) {
+    *found = false;
+    return TB_OK;
+  }
+  *found = true;
+  *out = cur;
+  return TB_OK;
+}
+root@0c4a89e29ee7:/app# sed -n '1,220p' /app/include/runtime/runtime.h
+#pragma once
+
+#include "core/ev.h"
+#include "core/map_u64.h"
+#include "core/queue.h"
+#include "core/vec_ev.h"
+#include "io/journal.h"
+#include "runtime/profile.h"
+#include "runtime/script.h"
+#include "tb_err.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+
+typedef enum {
+  TB_ORDER_A_THEN_B = 1,
+  TB_ORDER_B_THEN_A = 2,
+} tb_order;
+
+tb_order tb_order_parse(const char *s);
+const char *tb_order_str(tb_order o);
+
+typedef struct {
+  // "in-flight" handles are 64-bit tokens; external ids are stable u32.
+  tb_map_u64 token_to_id; // token -> id
+  tb_map_u64 token_done;  // canonical done-set, key depends on reconciliation
+
+  tb_q64 in_q;
+  tb_q64 done_a;
+  tb_q64 done_b;
+  tb_q64 notify_q;
+
+  tb_vec_ev evlog;
+
+  uint32_t gen;
+  uint64_t cursor;
+  bool attached;
+
+  const char *journal_path;
+} tb_rt;
+
+tb_status tb_rt_init(tb_rt *rt, const char *journal_path);
+void tb_rt_free(tb_rt *rt);
+
+tb_status tb_rt_run(tb_rt *rt, tb_scenario scn, tb_profile prof, tb_order ord, uint32_t seed);
+
+// report extraction
+const tb_vec_ev *tb_rt_events(const tb_rt *rt);
+
+root@0c4a89e29ee7:/app# sed -n '1,260p' /app/src/runtime/runtime.c
+#include "runtime/runtime.h"
+
+#include "core/idgen.h"
+#include "logic/ingest.h"
+#include "logic/link.h"
+#include "logic/merge.h"
+#include "logic/nudge.h"
+#include "logic/settle.h"
+
+#include <stdio.h>
+#include <string.h>
+
+tb_status tb_rt_init(tb_rt *rt, const char *journal_path) {
+  if (!rt || !journal_path)
+    return TB_ERR_BAD_ARG;
+  memset(rt, 0, sizeof(*rt));
+
+  if (!tb_map_u64_init(&rt->token_to_id, 128))
+    return TB_ERR_OOM;
+  if (!tb_map_u64_init(&rt->token_done, 128))
+    return TB_ERR_OOM;
+  if (!tb_q64_init(&rt->in_q, 4096))
+    return TB_ERR_OOM;
+  if (!tb_q64_init(&rt->done_a, 4096))
+    return TB_ERR_OOM;
+  if (!tb_q64_init(&rt->done_b, 4096))
+    return TB_ERR_OOM;
+  if (!tb_q64_init(&rt->notify_q, 4096))
+    return TB_ERR_OOM;
+  if (!tb_vec_ev_init(&rt->evlog, 2048))
+    return TB_ERR_OOM;
+
+  rt->gen = 1;
+  rt->cursor = 1;
+  rt->attached = true;
+  rt->journal_path = journal_path;
+  return TB_OK;
+}
+
+void tb_rt_free(tb_rt *rt) {
+  if (!rt)
+    return;
+  tb_map_u64_free(&rt->token_to_id);
+  tb_map_u64_free(&rt->token_done);
+  tb_q64_free(&rt->in_q);
+  tb_q64_free(&rt->done_a);
+  tb_q64_free(&rt->done_b);
+  tb_q64_free(&rt->notify_q);
+  tb_vec_ev_free(&rt->evlog);
+}
+
+const tb_vec_ev *tb_rt_events(const tb_rt *rt) { return &rt->evlog; }
+
+static tb_status maybe_detach_attach(tb_rt *rt, const tb_script *sc, uint32_t tick) {
+  if (sc->detach_at && tick == sc->detach_at) {
+    return tb_link_detach(rt, tick);
+  }
+  if (sc->detach_at && tick == sc->detach_at + sc->detach_len) {
+    return tb_link_attach(rt, tick);
+  }
+  if (sc->detach2_at && tick == sc->detach2_at) {
+    return tb_link_detach(rt, tick);
+  }
+  if (sc->detach2_at && tick == sc->detach2_at + sc->detach2_len) {
+    return tb_link_attach(rt, tick);
+  }
+  return TB_OK;
+}
+
+tb_status tb_rt_run(tb_rt *rt, tb_scenario scn, tb_profile prof, tb_order ord, uint32_t seed) {
+  (void)seed;
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+
+  tb_script sc = {0};
+  if (!tb_script_for(scn, &sc))
+    return TB_ERR_BAD_ARG;
+
+  tb_stamp last = {0};
+  bool found = false;
+  tb_status st = journal_load_last(rt->journal_path, &last, &found);
+  if (st != TB_OK
+[... output limited to 10000 bytes; 70 interior bytes omitted ...]
+
+
+#include "tb_err.h"
+#include "runtime/runtime.h"
+
+tb_status tb_ingest_tick(tb_rt *rt, tb_profile prof, uint32_t tick, uint32_t *submitted_out);
+
+#include "logic/ingest.h"
+
+#include "core/ev.h"
+#include "runtime/profile.h"
+
+static uint64_t make_token(uint32_t gen, uint64_t cursor) { return (((uint64_t)gen) << 32) ^ cursor; }
+
+tb_status tb_ingest_tick(tb_rt *rt, tb_profile prof, uint32_t tick, uint32_t *submitted_out) {
+  if (!rt || !submitted_out)
+    return TB_ERR_BAD_ARG;
+
+  uint32_t n = tb_profile_should_submit(prof, tick);
+  *submitted_out = n;
+
+  for (uint32_t i = 0; i < n; i++) {
+    uint32_t id = (uint32_t)(rt->cursor & 0xffffffffu);
+    uint64_t token = make_token(rt->gen, rt->cursor);
+    rt->cursor++;
+
+    if (!tb_map_u64_put(&rt->token_to_id, token, (uint64_t)id))
+      return TB_ERR_OOM;
+    if (!tb_q64_push(&rt->in_q, token))
+      return TB_ERR_CORRUPT;
+
+    tb_event ev = {.kind = TB_EV_SUBMIT, .id = id};
+    if (!tb_vec_ev_push(&rt->evlog, ev))
+      return TB_ERR_OOM;
+  }
+
+  return TB_OK;
+}
+
+root@0c4a89e29ee7:/app# sed -n '1,260p' /app/include/logic/settle.h /app/src/logic/settle.c
+#pragma once
+
+#include "tb_err.h"
+#include "runtime/runtime.h"
+
+tb_status tb_settle_tick(tb_rt *rt, uint32_t tick);
+
+#include "logic/settle.h"
+
+#include "runtime/runtime.h"
+
+// Deterministic "work takes time": only move certain tokens each tick.
+static bool ready(uint64_t token, uint32_t tick) {
+  // spread completion across ticks, but deterministic and input-dependent
+  return (((uint32_t)token) ^ tick) % 3 == 0;
+}
+
+static bool lane_a(uint64_t token, uint32_t tick) {
+  // Choose which completion source produced the "done" record.
+  return ((((uint32_t)(token >> 32)) + (uint32_t)token + tick) & 1u) == 0u;
+}
+
+tb_status tb_settle_tick(tb_rt *rt, uint32_t tick) {
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+
+  // rotate through at most a bounded number so runs are stable
+  size_t spins = rt->in_q.len;
+  for (size_t i = 0; i < spins; i++) {
+    uint64_t token = 0;
+    if (!tb_q64_pop(&rt->in_q, &token))
+      break;
+
+    if (ready(token, tick)) {
+      if (lane_a(token, tick)) {
+        if (!tb_q64_push(&rt->done_a, token))
+          return TB_ERR_CORRUPT;
+      } else {
+        if (!tb_q64_push(&rt->done_b, token))
+          return TB_ERR_CORRUPT;
+      }
+      if (rt->attached) {
+        // The notifier is only live while attached.
+        if (!tb_q64_push(&rt->notify_q, token))
+          return TB_ERR_CORRUPT;
+      }
+    } else {
+      // not ready, requeue at tail
+      if (!tb_q64_push(&rt->in_q, token))
+        return TB_ERR_CORRUPT;
+    }
+  }
+
+  return TB_OK;
+}
+
+root@0c4a89e29ee7:/app# sed -n '1,240p' /app/include/logic/merge.h /app/src/logic/merge.c
+#pragma once
+
+#include "tb_err.h"
+#include "runtime/runtime.h"
+
+tb_status tb_merge_drain(tb_rt *rt, uint32_t tick, tb_order ord);
+
+#include "logic/merge.h"
+
+#include "core/ev.h"
+
+static bool drain_one(tb_rt *rt, tb_q64 *q, uint32_t tick) {
+  (void)tick;
+  uint64_t token = 0;
+  if (!tb_q64_pop(q, &token))
+    return false;
+
+  uint64_t key = (uint32_t)token;
+
+  if (!tb_map_u64_has(&rt->token_done, key)) {
+    uint64_t id64 = 0;
+    if (!tb_map_u64_get(&rt->token_to_id, token, &id64)) {
+      return true;
+    }
+    (void)tb_map_u64_put(&rt->token_done, key, 1);
+    tb_event ev = {.kind = TB_EV_DONE, .id = (uint32_t)id64};
+    (void)tb_vec_ev_push(&rt->evlog, ev);
+  }
+  return true;
+}
+
+tb_status tb_merge_drain(tb_rt *rt, uint32_t tick, tb_order ord) {
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+
+  tb_q64 *a = &rt->done_a;
+  tb_q64 *b = &rt->done_b;
+
+  if (ord == TB_ORDER_A_THEN_B) {
+    while (drain_one(rt, a, tick)) {
+    }
+    while (drain_one(rt, b, tick)) {
+    }
+  } else {
+    while (drain_one(rt, b, tick)) {
+    }
+    while (drain_one(rt, a, tick)) {
+    }
+  }
+
+  return TB_OK;
+}
+root@0c4a89e29ee7:/app# sed -n '1,260p' /app/include/logic/link.h /app/src/logic/link.c
+#pragma once
+
+#include "tb_err.h"
+#include "runtime/runtime.h"
+
+tb_status tb_link_detach(tb_rt *rt, uint32_t tick);
+tb_status tb_link_attach(tb_rt *rt, uint32_t tick);
+
+#include "logic/link.h"
+
+#include "io/journal.h"
+
+#include <string.h>
+
+tb_status tb_link_detach(tb_rt *rt, uint32_t tick) {
+  (void)tick;
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+  if (!rt->attached)
+    return TB_OK;
+
+  rt->attached = false;
+
+  tb_stamp s = {.gen = rt->gen, .cursor = rt->cursor};
+  tb_status st = journal_append_stamp(rt->journal_path, s);
+  if (st != TB_OK)
+    return st;
+
+  // A "device-side" queue continues to exist while detached; the notifier doesn't.
+  tb_q64_clear(&rt->notify_q);
+  return TB_OK;
+}
+
+tb_status tb_link_attach(tb_rt *rt, uint32_t tick) {
+  (void)tick;
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+  if (rt->attached)
+    return TB_OK;
+
+  tb_stamp last = {0};
+  bool found = false;
+  tb_status st = journal_load_last(rt->journal_path, &last, &found);
+  if (st != TB_OK)
+    return st;
+  if (found) {
+    rt->gen = last.gen + 1;
+    rt->cursor = last.cursor;
+  }
+
+  rt->attached = true;
+  return TB_OK;
+}
+
+root@0c4a89e29ee7:/app#

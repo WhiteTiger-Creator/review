@@ -1,0 +1,47 @@
+{
+  "analysis": "We reproduced correctness failures in stress2/burst: duplicate submits for ids 57..66 etc (Counter shows submit pairs with count=2), non-contiguous submit ids (140 submits but last id 118), at least one missing notify (id 55), and many ordering violations (notify before complete, resubmits). This matches a broken completion/notification delivery mechanism under detach/reattach; likely replay from journal or ring cursor reset causes re-emitting submits and/or notifies out of sync with completions. Need to inspect journal stamp (generation+cursor) handling and any ring/queue logic that replays events after reattach. Next step: open relevant headers/sources for journal, runtime, and logic pipeline to identify how events are stored and replayed; then implement monotonic id generation and exactly-once delivery by persisting and honoring cursors/generation across detach cycles, and by separating internal work queues from externally visible event log (avoid logging submit twice on replay).",
+  "plan": "1) Inspect include/ and src/ for event structures and journal stamp format; read io/journal.c and include/io/journal.h. 2) Inspect runtime script/profile to understand detach/reattach and stress2 behavior. 3) Inspect logic/link/merge/settle/ingest for how completions and notifies are generated and how ring/cursor is advanced. 4) After pinpointing the bug (likely cursor reset / wraparound / generation compare wrong, or journal append/read mismatch), patch code and rebuild; rerun arena and re-check invariants with the python checker.",
+  "commands": [
+    {
+      "keystrokes": "sed -n '1,200p' /app/include/io/journal.h\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,220p' /app/src/io/journal.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,220p' /app/include/runtime/runtime.h\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,260p' /app/src/runtime/runtime.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,240p' /app/src/runtime/script.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,240p' /app/src/runtime/profile.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,240p' /app/include/logic/ingest.h /app/src/logic/ingest.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,260p' /app/include/logic/settle.h /app/src/logic/settle.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,240p' /app/include/logic/merge.h /app/src/logic/merge.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,260p' /app/include/logic/link.h /app/src/logic/link.c\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

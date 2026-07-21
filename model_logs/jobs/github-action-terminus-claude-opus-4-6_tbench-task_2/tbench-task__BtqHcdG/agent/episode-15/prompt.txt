@@ -1,0 +1,65 @@
+New Terminal Output:
+
+root@34094591dd9d:/app# arena --scenario basic --profile steady --order b_then_a --out /tmp/basic_steady_b.json && python3 -c "
+> import json
+> from collections import defaultdict, Counter
+> data = json.load(open('/tmp/basic_steady_b.json'))
+> assert data['scenario'] == 'basic'
+> assert data['profile'] == 'steady'
+> events = data['events']
+> submits = [e for e in events if e['kind'] == 'submit']
+> completes = [e for e in events if e['kind'] == 'complete']
+> notifies = [e for e in events if e['kind'] == 'notify']
+> assert len(submits) == len(completes) == len(notifies)
+> submit_ids = set(e['id'] for e in submits)
+> assert submit_ids == set(range(1, len(submits)+1))
+> assert len(Counter((e['kind'], e['id']) for e in events)) == len(events)  # no dups
+> positions = defaultdict(dict)
+> for i, e in enumerate(events):
+>     positions[e['id']][e['kind']] = i
+> for id_, pos in positions.items():
+>     assert pos['submit'] < pos['complete'] < pos['notify']
+> print(f'basic/steady/b_then_a: PASS ({len(submits)} ids)')
+> "
+basic/steady/b_then_a: PASS (14 ids)
+root@34094591dd9d:/app# arena --scenario stress2 --profile steady --order b_then_a --out /tmp/s2_steady_b.json && python3 -c "
+> import json
+> from collections import defaultdict, Counter
+> data = json.load(open('/tmp/s2_steady_b.json'))
+> events = data['events']
+> submits = [e for e in events if e['kind'] == 'submit']
+> assert len(submits) == len([e for e in events if e['kind'] == 'complete']) == len([e for e in events if e['kind'] == 'notify'])
+> submit_ids = set(e['id'] for e in submits)
+> assert submit_ids == set(range(1, len(submits)+1))
+> assert len(Counter((e['kind'], e['id']) for e in events)) == len(events)
+> positions = defaultdict(dict)
+> for i, e in enumerate(events):
+>     positions[e['id']][e['kind']] = i
+> for id_, pos in positions.items():
+>     assert pos['submit'] < pos['complete'] < pos['notify']
+> print(f'stress2/steady/b_then_a: PASS ({len(submits)} ids)')
+> # Check different from a_then_b
+> data2 = json.load(open('/tmp/steady.json'))  # stress2/steady/a_then_b
+> assert [(e['kind'], e['id']) for e in data['events']] != [(e['kind'], e['id']) for e in data2['events']]
+> print('Different order: PASS')
+> "
+stress2/steady/b_then_a: PASS (37 ids)
+Traceback (most recent call last):
+  File "<string>", line 19, in <module>
+AssertionError
+root@34094591dd9d:/app# # Verify submit IDs always appear in order 1, 2, 3, ..., N in the log
+root@34094591dd9d:/app# python3 -c "
+> import json
+> for f in ['/tmp/a.json', '/tmp/b.json', '/tmp/d1.json', '/tmp/steady.json', '/tmp/basic_steady_b.json', '/tmp/s2_steady_b.json']:
+>     data = json.load(open(f))
+>     submits = [e['id'] for e in data['events'] if e['kind'] == 'submit']
+>     assert submits == list(range(1, len(submits)+1)), f'{f}: submits not in order'
+>     print(f'{f}: submits in order 1..{len(submits)}')
+> "
+/tmp/a.json: submits in order 1..110
+/tmp/b.json: submits in order 1..110
+/tmp/d1.json: submits in order 1..140
+/tmp/steady.json: submits in order 1..37
+/tmp/basic_steady_b.json: submits in order 1..14
+/tmp/s2_steady_b.json: submits in order 1..37
+root@34094591dd9d:/app#

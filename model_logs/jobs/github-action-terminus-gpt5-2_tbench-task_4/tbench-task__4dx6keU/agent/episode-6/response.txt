@@ -1,0 +1,35 @@
+{
+  "analysis": "Journal path is /app/run/state.bin and main removes it at start of each invocation, so no cross-run contamination. state.bin size is 24 bytes, consistent with two detach cycles and 12-byte stamps each: journal fix is working.\nYet duplicates persist: submit ids repeat starting around 57, meaning rt->cursor must be reset during the run. Only tb_link_attach mutates cursor/gen mid-run based on journal_load_last. It currently sets rt->gen=last.gen+1 and rt->cursor=last.cursor, where last is the last stamped cursor from detach. But detach stamps cursor at time of detaching; during detach period, ingest continues to submit every tick per requirements, so cursor advances while detached. When reattaching, setting cursor back to the detach-time cursor rewinds, causing resubmits/dup ids. Therefore attach must NOT restore cursor; only gen should advance. Cursor should remain as-is (monotonic through run). The stamp is for the external client cursor, not internal allocation cursor.\nSo fix tb_link_attach: load last stamp, bump gen, but do not change rt->cursor. Also runtime.c at start loads last stamp; but main removes state.bin, so found=false, fine.\nAdditionally, notify emission now preserved.\nNext: patch src/logic/link.c accordingly, rebuild, rerun invariant checker.",
+  "plan": "Edit tb_link_attach to avoid rewinding rt->cursor on attach; only update generation. Optionally ensure gen always increases even if no stamp found. Rebuild and rerun stress2/burst both orders and run invariant checker; expect contiguous submit ids 1..N, exactly one submit/complete/notify per id, and zero ordering violations.",
+  "commands": [
+    {
+      "keystrokes": "python3 - <<'PY'\nfrom pathlib import Path\npath=Path('/app/src/logic/link.c')\ns=path.read_text(); old=s\ns=s.replace('    rt->gen = last.gen + 1;\\n    rt->cursor = last.cursor;\\n',\n            '    // Reattach creates a new generation for tokens, but must not rewind\\n    // the allocation cursor: submissions continue while detached.\\n    rt->gen = last.gen + 1;\\n')\nif s==old:\n    raise SystemExit('link.c: attach patch not applied (pattern mismatch)')\npath.write_text(s)\nprint('patched',path)\nPY\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "make -C /app clean && make -C /app -j$(nproc)\n",
+      "duration": 10.0
+    },
+    {
+      "keystrokes": "rm -f /app/output/report.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "/usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json; echo EXIT:$?\n",
+      "duration": 2.0
+    },
+    {
+      "keystrokes": "python3 - <<'PY'\nimport json\nfrom collections import Counter,defaultdict\np='/app/output/report.json'\nev=json.load(open(p))['events']\nc=Counter((e['kind'],e['id']) for e in ev)\nviol=[k for k,v in c.items() if v!=1]\nprint('events',len(ev),'unique_pairs',len(c),'bad_pairs',len(viol))\nstate=defaultdict(int); bad=[]\nfor i,e in enumerate(ev):\n  k,id_=e['kind'],e['id']; st=state[id_]\n  if k=='submit':\n    if st!=0: bad.append((i,'resubmit',id_,st))\n    state[id_]=1\n  elif k=='complete':\n    if st!=1: bad.append((i,'complete_before_submit_or_dup',id_,st))\n    state[id_]=2\n  elif k=='notify':\n    if st!=2: bad.append((i,'notify_before_complete_or_dup',id_,st))\n    state[id_]=3\nsubs=[e['id'] for e in ev if e['kind']=='submit']\nprint('submits',len(subs),'contiguous',subs==list(range(1,len(subs)+1)),'last',subs[-1] if subs else None)\nids=set(subs)\ncomp=set(e['id'] for e in ev if e['kind']=='complete')\nnoti=set(e['id'] for e in ev if e['kind']=='notify')\nprint('missing_complete',len(ids-comp),'missing_notify',len(ids-noti))\nprint('bad_order',len(bad))\nif viol[:5]: print('sample_bad_pairs',viol[:5],[c[k] for k in viol[:5]])\nif bad[:10]: print('sample_bad_order',bad[:10])\nPY\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "/usr/local/bin/arena --scenario stress2 --profile burst --order b_then_a --out /app/output/report.json; echo EXIT:$?\n",
+      "duration": 2.0
+    },
+    {
+      "keystrokes": "python3 - <<'PY'\nimport json\nfrom collections import Counter\np='/app/output/report.json'\nev=json.load(open(p))['events']\nc=Counter((e['kind'],e['id']) for e in ev)\nviol=[k for k,v in c.items() if v!=1]\nprint('bad_pairs',len(viol))\nPY\n",
+      "duration": 1.0
+    }
+  ],
+  "task_complete": false
+}

@@ -1,7 +1,0 @@
-New Terminal Output:
-
-root@198e88760f8b:/app# which go 2>/dev/null || find / -name 'go' -type f 2>/dev/null | head -10
-/usr/local/go/bin/go
-root@198e88760f8b:/app# ls /usr/local/go/bin/ 2>/dev/null || ls /usr/lib/go*/bin/ 2>/dev/null
-go  gofmt
-root@198e88760f8b:/app#

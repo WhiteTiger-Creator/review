@@ -1,0 +1,43 @@
+{
+  "analysis": "We don’t have apply_patch in this environment, so none of the intended code edits were applied; build just rebuilt existing sources unchanged. We must edit files using available tools (e.g., sed/heredoc with cat > file, perl -0777 -pe, ed, or use python to rewrite). Next: directly modify the target C files (src/io/journal.c, src/logic/merge.c, src/logic/link.c, src/logic/settle.c, and also src/logic/nudge.c which still uses key=(uint32_t)token) using a safe rewrite approach. Then rebuild and rerun arena + invariant checker.",
+  "plan": "1) Use python scripts to perform deterministic in-place rewrites of the C sources (read file, replace specific code blocks, write back). This is safer than complex sed. 2) Apply fixes:\n- journal.c: write u64 cursor and read u64 cursor (12-byte stamp).\n- merge.c and nudge.c: use full 64-bit token as key for token_done lookup.\n- link.c: do not clear notify_q on detach.\n- settle.c: always enqueue token into notify_q; later we may also gate emission in nudge based on attached.\n- nudge.c: ensure it only emits notifications when rt->attached, and dedupe notify emission (we may need a new token_notified map; simplest first step: don’t pop notify_q while detached, so tokens remain queued until attached).\n3) Rebuild and rerun stress2/burst both orders with the python invariant checker.\n",
+  "commands": [
+    {
+      "keystrokes": "python3 - <<'PY'\nfrom pathlib import Path\npath=Path('/app/src/io/journal.c')\ns=path.read_text()\nold=s\ns=s.replace(\"  uint32_t lo = (uint32_t)s.cursor;\\n  if (!fs_write_u32(f, lo))\\n    return TB_ERR_IO;\\n\",\n            \"  // stamp format is exactly 12 bytes: u32 generation + u64 cursor\\n  // (cursor is the next id/cursor to allocate).\\n  if (!fs_write_u64(f, s.cursor))\\n    return TB_ERR_IO;\\n\")\ns=s.replace(\"  uint32_t lo = 0;\\n  if (!fs_read_u32(f, &lo))\\n    return false;\\n\\n  out->gen = gen;\\n  out->cursor = (uint64_t)lo;\\n\",\n            \"  uint64_t cursor = 0;\\n  if (!fs_read_u64(f, &cursor))\\n    return false;\\n\\n  out->gen = gen;\\n  out->cursor = cursor;\\n\")\nif s==old:\n    raise SystemExit('journal.c: no changes applied (pattern mismatch)')\npath.write_text(s)\nprint('patched',path)\nPY\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "python3 - <<'PY'\nfrom pathlib import Path\npath=Path('/app/src/logic/merge.c')\ns=path.read_text(); old=s\ns=s.replace('  uint64_t key = (uint32_t)token;\\n','  // Dedupe by full 64-bit token (generation + cursor), not low 32 bits.\\n  uint64_t key = token;\\n')\nif s==old:\n    raise SystemExit('merge.c: no changes applied')\npath.write_text(s)\nprint('patched',path)\nPY\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "python3 - <<'PY'\nfrom pathlib import Path\npath=Path('/app/src/logic/nudge.c')\ns=path.read_text(); old=s\n# Use full token key and avoid draining while detached (preserve queued notifies)\ns=s.replace('  uint64_t token = 0;\\n  while (tb_q64_pop(&rt->notify_q, &token)) {\\n','  if (!rt->attached)\\n    return TB_OK;\\n\\n  uint64_t token = 0;\\n  while (tb_q64_pop(&rt->notify_q, &token)) {\\n')\ns=s.replace('    uint64_t key = (uint32_t)token;\\n','    uint64_t key = token;\\n')\nif s==old:\n    raise SystemExit('nudge.c: no changes applied')\npath.write_text(s)\nprint('patched',path)\nPY\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "python3 - <<'PY'\nfrom pathlib import Path\npath=Path('/app/src/logic/link.c')\ns=path.read_text(); old=s\ns=s.replace('  // A \"device-side\" queue continues to exist while detached; the notifier doesn\\'t.\\n  tb_q64_clear(&rt->notify_q);\\n','  // While detached the device can still complete work. Do not drop pending\\n  // notifications; they will be flushed on reattach.\\n')\nif s==old:\n    raise SystemExit('link.c: no changes applied')\npath.write_text(s)\nprint('patched',path)\nPY\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "python3 - <<'PY'\nfrom pathlib import Path\npath=Path('/app/src/logic/settle.c')\ns=path.read_text(); old=s\n# Replace the attached-only notify enqueue with unconditional enqueue.\nneedle='      if (rt->attached) {\\n        // The notifier is only live while attached.\\n        if (!tb_q64_push(&rt->notify_q, token))\\n          return TB_ERR_CORRUPT;\\n      }\\n'\nrepl='      // Always queue notifications; emission is gated by attachment in tb_nudge_drain.\\n      if (!tb_q64_push(&rt->notify_q, token))\\n        return TB_ERR_CORRUPT;\\n'\ns=s.replace(needle,repl)\nif s==old:\n    raise SystemExit('settle.c: no changes applied (pattern mismatch)')\npath.write_text(s)\nprint('patched',path)\nPY\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "make -C /app clean && make -C /app -j$(nproc)\n",
+      "duration": 10.0
+    },
+    {
+      "keystrokes": "rm -f /app/output/report.json /app/run/journal.bin\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "/usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json; echo EXIT:$?\n",
+      "duration": 2.0
+    },
+    {
+      "keystrokes": "python3 - <<'PY'\nimport json\nfrom collections import Counter,defaultdict\np='/app/output/report.json'\nev=json.load(open(p))['events']\nc=Counter((e['kind'],e['id']) for e in ev)\nviol=[k for k,v in c.items() if v!=1]\nprint('events',len(ev),'unique_pairs',len(c),'bad_pairs',len(viol))\nstate=defaultdict(int); bad=[]\nfor i,e in enumerate(ev):\n  k,id_=e['kind'],e['id']; st=state[id_]\n  if k=='submit':\n    if st!=0: bad.append((i,'resubmit',id_,st))\n    state[id_]=1\n  elif k=='complete':\n    if st!=1: bad.append((i,'complete_before_submit_or_dup',id_,st))\n    state[id_]=2\n  elif k=='notify':\n    if st!=2: bad.append((i,'notify_before_complete_or_dup',id_,st))\n    state[id_]=3\nsubs=[e['id'] for e in ev if e['kind']=='submit']\nprint('submits',len(subs),'contiguous',subs==list(range(1,len(subs)+1)),'last',subs[-1] if subs else None)\nids=set(subs)\ncomp=set(e['id'] for e in ev if e['kind']=='complete')\nnoti=set(e['id'] for e in ev if e['kind']=='notify')\nprint('missing_complete',len(ids-comp),'missing_notify',len(ids-noti))\nprint('bad_order',len(bad))\nif viol[:5]: print('sample_bad_pairs',viol[:5],[c[k] for k in viol[:5]])\nif bad[:10]: print('sample_bad_order',bad[:10])\nPY\n",
+      "duration": 1.0
+    }
+  ],
+  "task_complete": false
+}

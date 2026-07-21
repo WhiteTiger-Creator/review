@@ -1,0 +1,364 @@
+New Terminal Output:
+
+root@7ae5e2ee926b:/app# sed -n '1,260p' /app/include/io/journal.h
+#pragma once
+
+#include "tb_err.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+
+typedef struct {
+  uint32_t gen;
+  uint64_t cursor;
+} tb_stamp;
+
+tb_status journal_append_stamp(const char *path, tb_stamp s);
+tb_status journal_load_last(const char *path, tb_stamp *out, bool *found);
+
+root@7ae5e2ee926b:/app# sed -n '1,260p' /app/src/runtime/runtime.c
+#include "runtime/runtime.h"
+
+#include "core/idgen.h"
+#include "logic/ingest.h"
+#include "logic/link.h"
+#include "logic/merge.h"
+#include "logic/nudge.h"
+#include "logic/settle.h"
+
+#include <stdio.h>
+#include <string.h>
+
+tb_status tb_rt_init(tb_rt *rt, const char *journal_path) {
+  if (!rt || !journal_path)
+    return TB_ERR_BAD_ARG;
+  memset(rt, 0, sizeof(*rt));
+
+  if (!tb_map_u64_init(&rt->token_to_id, 128))
+    return TB_ERR_OOM;
+  if (!tb_map_u64_init(&rt->token_done, 128))
+    return TB_ERR_OOM;
+  if (!tb_q64_init(&rt->in_q, 4096))
+    return TB_ERR_OOM;
+  if (!tb_q64_init(&rt->done_a, 4096))
+    return TB_ERR_OOM;
+  if (!tb_q64_init(&rt->done_b, 4096))
+    return TB_ERR_OOM;
+  if (!tb_q64_init(&rt->notify_q, 4096))
+    return TB_ERR_OOM;
+  if (!tb_vec_ev_init(&rt->evlog, 2048))
+    return TB_ERR_OOM;
+
+  rt->gen = 1;
+  rt->cursor = 1;
+  rt->attached = true;
+  rt->journal_path = journal_path;
+  return TB_OK;
+}
+
+void tb_rt_free(tb_rt *rt) {
+  if (!rt)
+    return;
+  tb_map_u64_free(&rt->token_to_id);
+  tb_map_u64_free(&rt->token_done);
+  tb_q64_free(&rt->in_q);
+  tb_q64_free(&rt->done_a);
+  tb_q64_free(&rt->done_b);
+  tb_q64_free(&rt->notify_q);
+  tb_vec_ev_free(&rt->evlog);
+}
+
+const tb_vec_ev *tb_rt_events(const tb_rt *rt) { return &rt->evlog; }
+
+static tb_status maybe_detach_attach(tb_rt *rt, const tb_script *sc, uint32_t tick) {
+  if (sc->detach_at && tick == sc->detach_at) {
+    return tb_link_detach(rt, tick);
+  }
+  if (sc->detach_at && tick == sc->detach_at + sc->detach_len) {
+    return tb_link_attach(rt, tick);
+  }
+  if (sc->detach2_at && tick == sc->detach2_at) {
+    return tb_link_detach(rt, tick);
+  }
+  if (sc->detach2_at && tick == sc->detach2_at + sc->detach2_len) {
+    return tb_link_attach(rt, tick);
+  }
+  return TB_OK;
+}
+
+tb_status tb_rt_run(tb_rt *rt, tb_scenario scn, tb_profile prof, tb_order ord, uint32_t seed) {
+  (void)seed;
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+
+  tb_script sc = {0};
+  if (!tb_script_for(scn, &sc))
+    return TB_ERR_BAD_ARG;
+
+  tb_stamp last = {0};
+  bool found = false;
+  tb_status st = journal_load_last(rt->journal_path, &last, &found);
+  if (st != TB_OK)
+    return st;
+  if (found) {
+    rt->gen = last.gen + 1;
+    rt->cursor = last.cursor;
+  }
+
+  for (uint32_t tick = 0; tick < sc.ticks; tick++) {
+    st = maybe_detach_attach(rt, &sc, tick);
+    if (st != TB_OK)
+      return st;
+
+    uint32_t submitted = 0;
+    st = tb_ingest_tick(rt, prof, tick, &submitted);
+    if (st != TB_OK)
+      return st;
+
+    st = tb_settle_tick(rt, tick);
+    if (st != TB_OK)
+      return st;
+
+    st = tb_merge_drain(rt, tick, ord);
+    if (st != TB_OK)
+      return st;
+
+    st = tb_nudge_drain(rt, tick);
+    if (st != TB_OK)
+      return st;
+  }
+
+  // Final drain to avoid leaving work in queues.
+  for (uint32_t i = 0; i < 16; i++) {
+    st = tb_settle_tick(rt, sc.ticks + i);
+    if (st != TB_OK)
+      return st;
+    st = tb_merge_drain(rt, sc.ticks + i, ord);
+    if (st != TB_OK)
+      return st;
+    st = tb_nudge_drain(rt, sc.ticks + i);
+    if (st != TB_OK)
+      return st;
+  }
+
+  return TB_OK;
+}
+
+root@7ae5e2ee926b:/app# sed -n '1,260p' /app/src/logic/ingest.c
+#include "logic/ingest.h"
+
+#include "core/ev.h"
+#include "runtime/profile.h"
+
+static uint64_t make_token(uint32_t gen, uint64_t cursor) { return (((uint64_t)gen) << 32) ^ cursor; }
+
+tb_status tb_ingest_tick(tb_rt *rt, tb_profile prof, uint32_t tick, uint32_t *submitted_out) {
+  if (!rt || !submitted_out)
+    return TB_ERR_BAD_ARG;
+
+  uint32_t n = tb_profile_should_submit(prof, tick);
+  *submitted_out = n;
+
+  for (uint32_t i = 0; i < n; i++) {
+    uint32_t id = (uint32_t)(rt->cursor & 0xffffffffu);
+    uint64_t token = make_token(rt->gen, rt->cursor);
+    rt->cursor++;
+
+    if (!tb_map_u64_put(&rt->token_to_id, token, (uint64_t)id))
+      return TB_ERR_OOM;
+    if (!tb_q64_push(&rt->in_q, token))
+      return TB_ERR_CORRUPT;
+
+    tb_event ev = {.kind = TB_EV_SUBMIT, .id = id};
+    if (!tb_vec_ev_push(&rt->evlog, ev))
+      return TB_ERR_OOM;
+  }
+
+  return TB_OK;
+}
+
+root@7ae5e2ee926b:/app# sed -n '1,260p' /app/src/core/idgen.c
+#include "core/idgen.h"
+
+void tb_idgen_init(tb_idgen *g, uint64_t seed) { g->x = seed ? seed : 0x9e3779b97f4a7c15ULL; }
+
+uint64_t tb_idgen_next(tb_idgen *g) {
+  // xorshift64*
+  uint64_t x = g->x;
+  x ^= x >> 12;
+  x ^= x << 25;
+  x ^= x >> 27;
+  g->x = x;
+  return x * 2685821657736338717ULL;
+}
+
+root@7ae5e2ee926b:/app# sed -n '1,320p' /app/src/logic/settle.c
+#include "logic/settle.h"
+
+#include "runtime/runtime.h"
+
+// Deterministic "work takes time": only move certain tokens each tic
+[... output limited to 10000 bytes; 70 interior bytes omitted ...]
+(!tb_q64_push(&rt->in_q, token))
+        return TB_ERR_CORRUPT;
+    }
+  }
+
+  return TB_OK;
+}
+
+root@7ae5e2ee926b:/app# sed -n '1,320p' /app/src/logic/merge.c
+#include "logic/merge.h"
+
+#include "core/ev.h"
+
+static bool drain_one(tb_rt *rt, tb_q64 *q, uint32_t tick) {
+  (void)tick;
+  uint64_t token = 0;
+  if (!tb_q64_pop(q, &token))
+    return false;
+
+  uint64_t key = (uint32_t)token;
+
+  if (!tb_map_u64_has(&rt->token_done, key)) {
+    uint64_t id64 = 0;
+    if (!tb_map_u64_get(&rt->token_to_id, token, &id64)) {
+      return true;
+    }
+    (void)tb_map_u64_put(&rt->token_done, key, 1);
+    tb_event ev = {.kind = TB_EV_DONE, .id = (uint32_t)id64};
+    (void)tb_vec_ev_push(&rt->evlog, ev);
+  }
+  return true;
+}
+
+tb_status tb_merge_drain(tb_rt *rt, uint32_t tick, tb_order ord) {
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+
+  tb_q64 *a = &rt->done_a;
+  tb_q64 *b = &rt->done_b;
+
+  if (ord == TB_ORDER_A_THEN_B) {
+    while (drain_one(rt, a, tick)) {
+    }
+    while (drain_one(rt, b, tick)) {
+    }
+  } else {
+    while (drain_one(rt, b, tick)) {
+    }
+    while (drain_one(rt, a, tick)) {
+    }
+  }
+
+  return TB_OK;
+}
+root@7ae5e2ee926b:/app# sed -n '1,320p' /app/src/logic/nudge.c
+#include "logic/nudge.h"
+
+#include "core/ev.h"
+
+tb_status tb_nudge_drain(tb_rt *rt, uint32_t tick) {
+  (void)tick;
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+
+  uint64_t token = 0;
+  while (tb_q64_pop(&rt->notify_q, &token)) {
+    uint64_t key = (uint32_t)token;
+    if (!tb_map_u64_has(&rt->token_done, key)) {
+      continue;
+    }
+    uint64_t id64 = 0;
+    if (!tb_map_u64_get(&rt->token_to_id, token, &id64))
+      continue;
+    tb_event ev = {.kind = TB_EV_POKE, .id = (uint32_t)id64};
+    (void)tb_vec_ev_push(&rt->evlog, ev);
+  }
+  return TB_OK;
+}
+root@7ae5e2ee926b:/app# apply_patch <<'PATCH'
+> *** Begin Patch
+> *** Update File: /app/src/io/journal.c
+> @@
+>  static tb_status append_rec(FILE *f, tb_stamp s) {
+>    if (!fs_write_u32(f, s.gen))
+>      return TB_ERR_IO;
+> -
+> -  uint32_t lo = (uint32_t)s.cursor;
+> -  if (!fs_write_u32(f, lo))
+> -    return TB_ERR_IO;
+> +
+> +  // stamp format: u32 generation + u64 cursor (12 bytes)
+> +  uint32_t lo = (uint32_t)(s.cursor & 0xffffffffu);
+> +  uint32_t hi = (uint32_t)((s.cursor >> 32) & 0xffffffffu);
+> +  if (!fs_write_u32(f, lo))
+> +    return TB_ERR_IO;
+> +  if (!fs_write_u32(f, hi))
+> +    return TB_ERR_IO;
+> @@
+>  static bool read_rec(FILE *f, tb_stamp *out) {
+>    uint32_t gen = 0;
+>    if (!fs_read_u32(f, &gen))
+>      return false;
+> @@
+>    uint32_t lo = 0;
+>    if (!fs_read_u32(f, &lo))
+>      return false;
+> +
+> +  uint32_t hi = 0;
+> +  if (!fs_read_u32(f, &hi))
+> +    return false;
+> @@
+>    out->gen = gen;
+> -  out->cursor = (uint64_t)lo;
+> +  out->cursor = ((uint64_t)hi << 32) | (uint64_t)lo;
+>    return true;
+>  }
+> *** End Patch
+> PATCH
+bash: apply_patch: command not found
+root@7ae5e2ee926b:/app# make -C /app -j4
+make: Entering directory '/app'
+make: '/usr/local/bin/arena' is up to date.
+make: Leaving directory '/app'
+root@7ae5e2ee926b:/app# rm -f /app/run/journal.bin /app/output/report.json 2>/dev/null || true
+root@7ae5e2ee926b:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json --seed 2
+root@7ae5e2ee926b:/app# python3 - <<'PY'
+> import json
+> from collections import Counter,defaultdict
+> r=json.load(open('/app/output/report.json'))
+> e=r['events']
+> print('events',len(e),Counter(x['kind'] for x in e))
+> seen=set(); dup=[]
+> for x in e:
+>  t=(x['kind'],x['id'])
+>  if t in seen: dup.append(t)
+>  seen.add(t)
+> print('dup_count',len(dup),'sample',dup[:10])
+> subs=[x['id'] for x in e if x['kind']=='submit']
+> mx=max(subs) if subs else 0
+> print('submit_ids_contig',subs==list(range(1,mx+1)),'N',mx)
+> by=defaultdict(set)
+> for x in e: by[x['id']].add(x['kind'])
+> miss=[(i,{'submit','complete','notify'}-k) for i,k in by.items() if k!={'submit','complete','notify'}]
+> print('missing_rows',len(miss),'sample',miss[:10])
+> pos=defaultdict(dict)
+> for idx,x in enumerate(e): pos[x['id']][x['kind']]=idx
+> bad=[i for i,d in pos.items() if set(d)=={'submit','complete','notify'} and not (d['submit']<d['complete']<d['notify'])]
+> print('order_bad',len(bad),'sample',bad[:10])
+> PY
+events 377 Counter({'submit': 140, 'notify': 119, 'complete': 118})
+dup_count 24 sample [('submit', 57), ('submit', 58), ('submit', 59), ('submit', 60), ('submit', 61), ('submit', 62), ('submit', 63), ('submit', 64), ('submit',
+65), ('submit', 66)]
+submit_ids_contig False N 118
+missing_rows 1 sample [(55, {'notify'})]
+order_bad 22 sample [57, 58, 59, 60, 61, 62, 63, 64, 65, 66]
+root@7ae5e2ee926b:/app# ls -la /app/run 2>/dev/null || true
+total 8
+drwxr-xr-x 2 root root  41 May 26 12:48 .
+drwxr-xr-x 7 root root  94 May 26 12:46 ..
+-rw-r--r-- 1 root root 775 May 26 12:44 README.txt
+-rw-r--r-- 1 root root  16 May 26 12:48 state.bin
+root@7ae5e2ee926b:/app# if [ -f /app/run/journal.bin ]; then wc -c /app/run/journal.bin; hexdump -C /app/run/journal.bin | head; fi
+root@7ae5e2ee926b:/app#

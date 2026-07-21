@@ -1,0 +1,99 @@
+Current terminal state:
+New Terminal Output:
+
+root@b0eb78f960ec:/app# python3 - <<'PY'
+> import json, subprocess, os, hashlib
+>
+> def check(path):
+>   r=json.load(open(path))
+>   ev=r['events']
+>   seen=set();
+>   for e in ev:
+>     t=(e['kind'],e['id'])
+>     if t in seen:
+>       return 'dup',t
+>     seen.add(t)
+>   subs=[e['id'] for e in ev if e['kind']=='submit']
+>   comps=[e['id'] for e in ev if e['kind']=='complete']
+>   notifs=[e['id'] for e in ev if e['kind']=='notify']
+>   if not subs:
+>     return 'no_submits',None
+>   mx=max(subs)
+>   if subs!=list(range(1,mx+1)):
+>     return 'noncontig', (subs[:20],mx)
+>   if set(subs)!=set(comps):
+>     return 'comp_mismatch', (len(set(subs)-set(comps)), len(set(comps)-set(subs)))
+>   if set(subs)!=set(notifs):
+>     return 'notif_mismatch', (len(set(subs)-set(notifs)), len(set(notifs)-set(subs)))
+>   pos={}
+>   for i,e in enumerate(ev):
+>     pos[(e['kind'],e['id'])]=i
+>   for i in range(1,mx+1):
+>     s=pos.get(('submit',i)); c=pos.get(('complete',i)); n=pos.get(('notify',i))
+>     if not (s is not None and c is not None and n is not None and s<c<n):
+>       return 'order', (i,s,c,n)
+>   return None,None
+>
+> scenarios=['basic','stress','stress2']
+> profiles=['burst','steady']
+> orders=['a_then_b','b_then_a']
+> for sc in scenarios:
+>   for pr in profiles:
+>     for od in orders:
+>       out=f'/app/output/{sc}_{pr}_{od}.json'
+>       if os.path.exists(out): os.remove(out)
+>       subprocess.check_call(['/usr/local/bin/arena','--scenario',sc,'--profile',pr,'--order',od,'--out',out])
+>       err,info=check(out)
+>       if err:
+>         print('FAIL',sc,pr,od,err,info)
+>         raise SystemExit(1)
+> print('ALL_OK')
+> PY
+ALL_OK
+root@b0eb78f960ec:/app# python3 - <<'PY'
+> import json, subprocess, os, hashlib
+>
+> def run(sc,pr,od,out):
+>   if os.path.exists(out): os.remove(out)
+>   subprocess.check_call(['/usr/local/bin/arena','--scenario',sc,'--profile',pr,'--order',od,'--out',out,'--seed','123'])
+>   ev=json.load(open(out))['events']
+>   return hashlib.sha256(json.dumps(ev,separators=(',',':')).encode()).hexdigest(), [e['id'] for e in ev if e['kind']=='submit']
+>
+> h1,s1=run('stress2','burst','a_then_b','/app/output/r1.json')
+> h2,s2=run('stress2','burst','a_then_b','/app/output/r2.json')
+> print('deterministic',h1==h2,'N',len(s1))
+> ha,sa=run('stress2','burst','a_then_b','/app/output/ra.json')
+> hb,sb=run('stress2','burst','b_then_a','/app/output/rb.json')
+> print('same_id_coverage',sa==sb,'seq_diff',ha!=hb)
+> PY
+deterministic True N 140
+same_id_coverage True seq_diff True
+root@b0eb78f960ec:/app# set -e
+root@b0eb78f960ec:/app# rm -f /app/output/bad.json
+root@b0eb78f960ec:/app# if /usr/local/bin/arena --scenario stress2 --profile steady --order z_then_y --out /app/output/bad.json; then echo 'UNEXPECTED_SUCCESS';
+ exit 1; else echo 'rejected_bad_order_ok'; fi
+usage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]
+cli: bad_arg
+rejected_bad_order_ok
+root@b0eb78f960ec:/app# test ! -e /app/output/bad.json && echo 'no_output_on_failure_ok'
+no_output_on_failure_ok
+root@b0eb78f960ec:/app# rm -f /app/output/bad.json
+root@b0eb78f960ec:/app# if /usr/local/bin/arena --scenario unknown --profile steady --order a_then_b --out /app/output/bad.json; then echo 'UNEXPECTED_SUCCESS';
+ exit 1; else echo 'rejected_bad_scenario_ok'; fi
+usage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]
+cli: bad_arg
+rejected_bad_scenario_ok
+root@b0eb78f960ec:/app# test ! -e /app/output/bad.json && echo 'no_output_on_failure_ok'
+no_output_on_failure_ok
+root@b0eb78f960ec:/app# rm -f /app/output/bad.json
+root@b0eb78f960ec:/app# if /usr/local/bin/arena --scenario stress2 --profile nope --order a_then_b --out /app/output/bad.json; then echo 'UNEXPECTED_SUCCESS'; e
+xit 1; else echo 'rejected_bad_profile_ok'; fi
+usage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]
+cli: bad_arg
+rejected_bad_profile_ok
+root@b0eb78f960ec:/app# test ! -e /app/output/bad.json && echo 'no_output_on_failure_ok'
+no_output_on_failure_ok
+root@b0eb78f960ec:/app#
+
+
+Are you sure you want to mark the task as complete? This will trigger your solution to be graded and you won't be able to make any further corrections. If so, include "task_complete": true in your JSON response again.

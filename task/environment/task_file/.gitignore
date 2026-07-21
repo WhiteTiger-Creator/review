@@ -1,4 +1,0 @@
-jobqueue
-*.db
-*.db-wal
-*.db-shm

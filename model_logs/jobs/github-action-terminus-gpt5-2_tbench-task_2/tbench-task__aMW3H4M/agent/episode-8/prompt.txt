@@ -1,0 +1,101 @@
+New Terminal Output:
+
+root@e252228b7510:/app# cat > /app/src/logic/link.c <<'EOF'
+> #include "logic/link.h"
+>
+> #include "io/journal.h"
+>
+> #include <string.h>
+>
+> // Detach/attach models a client disconnect/reconnect within a single run.
+> // Submissions continue while detached (load profile fires every tick), so the
+> // runtime's cursor (next request id) must remain monotonic across the whole run.
+>
+> tb_status tb_link_detach(tb_rt *rt, uint32_t tick) {
+>   (void)tick;
+>   if (!rt)
+>     return TB_ERR_BAD_ARG;
+>   if (!rt->attached)
+>     return TB_OK;
+>
+>   rt->attached = false;
+>
+>   tb_stamp s = {.gen = rt->gen, .cursor = rt->cursor};
+>   tb_status st = journal_append_stamp(rt->journal_path, s);
+>   if (st != TB_OK)
+>     return st;
+>
+>   // While detached the notifier is offline, but notification *delivery* must
+>   // resume after reattach. Keep the pending notify queue intact.
+>   return TB_OK;
+> }
+>
+> tb_status tb_link_attach(tb_rt *rt, uint32_t tick) {
+>   (void)tick;
+>   if (!rt)
+>     return TB_ERR_BAD_ARG;
+>   if (rt->attached)
+>     return TB_OK;
+>
+>   // Load the last detach stamp to advance generation.
+>   // IMPORTANT: do NOT rewind rt->cursor to the stamped cursor. Submissions
+>   // continue while detached, so rewinding would reuse ids and duplicate events.
+>   tb_stamp last = {0};
+>   bool found = false;
+>   tb_status st = journal_load_last(rt->journal_path, &last, &found);
+>   if (st != TB_OK)
+>     return st;
+>   if (found) {
+>     rt->gen = last.gen + 1;
+>     // Defensive: if something went backwards, clamp forward.
+>     if (rt->cursor < last.cursor)
+>       rt->cursor = last.cursor;
+>   }
+>
+>   rt->attached = true;
+>   return TB_OK;
+> }
+> EOF
+root@e252228b7510:/app# make -C /app -j
+make: Entering directory '/app'
+mkdir -p /usr/local/bin
+cc -O2 -g -std=c11 -Wall -Wextra -Wshadow -Wconversion -Iinclude -o /usr/local/bin/arena src/main.c src/cli.c src/tb_err.c src/report.c src/runtime/runtime.c sr
+c/runtime/profile.c src/runtime/script.c src/core/idgen.c src/core/queue.c src/core/map_u64.c src/core/vec_u64.c src/core/vec_ev.c src/io/fs.c src/io/journal.c
+src/logic/ingest.c src/logic/settle.c src/logic/nudge.c src/logic/merge.c src/logic/link.c
+make: Leaving directory '/app'
+root@e252228b7510:/app# rm -f /app/output/report.json /app/output/report_b.json /app/run/state.bin
+root@e252228b7510:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json
+root@e252228b7510:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order b_then_a --out /app/output/report_b.json
+root@e252228b7510:/app# python3 - <<'PY'
+> import json
+>
+> def check(p):
+>     r=json.load(open(p))
+>     ev=r['events']
+>     seen=set(); kinds={}; subs=[]; bad=[]
+>     for i,e in enumerate(ev):
+>         k=e['kind']; id=e['id']
+>         if (k,id) in seen: bad.append(('dup',(k,id),i))
+>         seen.add((k,id))
+>         kinds.setdefault(id,[]).append(k)
+>         if k=='submit': subs.append(id)
+>     for id,ks in kinds.items():
+>         if ks.count('submit')!=1 or ks.count('complete')!=1 or ks.count('notify')!=1:
+>             bad.append(('counts',id,ks))
+>     pos={(e['kind'],e['id']):i for i,e in enumerate(ev)}
+>     for id in kinds:
+>         if pos.get(('submit',id),10**9) > pos.get(('complete',id),-1) or pos.get(('complete',id),10**9) > pos.get(('notify',id),-1):
+>             bad.append(('order',id,(pos.get(('submit',id)),pos.get(('complete',id)),pos.get(('notify',id)))))
+>     if subs and subs!=list(range(1,len(subs)+1)):
+>         bad.append(('id_sequence',subs[:30],len(subs),max(subs)))
+>     return len(ev), len(subs), (max(subs) if subs else None), bad[:10], len(bad)
+>
+> for p in ['/app/output/report.json','/app/output/report_b.json']:
+>     evn,sn,mx,bad10,nb=check(p)
+>     print(p,'events',evn,'submits',sn,'maxid',mx,'bad',nb)
+>     if nb:
+>         print('bad_first',bad10)
+> PY
+/app/output/report.json events 420 submits 140 maxid 140 bad 0
+/app/output/report_b.json events 420 submits 140 maxid 140 bad 0
+root@e252228b7510:/app#

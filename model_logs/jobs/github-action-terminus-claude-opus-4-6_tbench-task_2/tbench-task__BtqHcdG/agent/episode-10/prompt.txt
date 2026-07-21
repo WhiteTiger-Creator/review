@@ -1,0 +1,75 @@
+New Terminal Output:
+
+root@34094591dd9d:/app# mkdir -p /app/output
+root@34094591dd9d:/app# arena --scenario basic --profile burst --order a_then_b --out /app/output/report.json
+root@34094591dd9d:/app# cat /app/output/report.json | head -40
+{
+  "scenario": "basic",
+  "profile": "burst",
+  "events": [
+    {"kind": "submit", "id": 1},
+    {"kind": "submit", "id": 2},
+    {"kind": "submit", "id": 3},
+    {"kind": "complete", "id": 3},
+    {"kind": "notify", "id": 3},
+    {"kind": "submit", "id": 4},
+    {"kind": "submit", "id": 5},
+    {"kind": "submit", "id": 6},
+    {"kind": "complete", "id": 2},
+    {"kind": "complete", "id": 1},
+    {"kind": "notify", "id": 1},
+    {"kind": "notify", "id": 2},
+    {"kind": "submit", "id": 7},
+    {"kind": "submit", "id": 8},
+    {"kind": "submit", "id": 9},
+    {"kind": "complete", "id": 4},
+    {"kind": "notify", "id": 4},
+    {"kind": "submit", "id": 10},
+    {"kind": "submit", "id": 11},
+    {"kind": "submit", "id": 12},
+    {"kind": "complete", "id": 10},
+    {"kind": "complete", "id": 12},
+    {"kind": "complete", "id": 5},
+    {"kind": "notify", "id": 5},
+    {"kind": "notify", "id": 10},
+    {"kind": "notify", "id": 12},
+    {"kind": "submit", "id": 13},
+    {"kind": "submit", "id": 14},
+    {"kind": "submit", "id": 15},
+    {"kind": "complete", "id": 7},
+    {"kind": "complete", "id": 11},
+    {"kind": "complete", "id": 13},
+    {"kind": "complete", "id": 8},
+    {"kind": "notify", "id": 7},
+    {"kind": "notify", "id": 8},
+    {"kind": "notify", "id": 11},
+root@34094591dd9d:/app# cat /app/output/report.json | python3 -c "
+> import json, sys
+> data = json.load(sys.stdin)
+> events = data['events']
+> submits = [e for e in events if e['kind'] == 'submit']
+> completes = [e for e in events if e['kind'] == 'complete']
+> notifies = [e for e in events if e['kind'] == 'notify']
+> print(f'Submits: {len(submits)}, Completes: {len(completes)}, Notifies: {len(notifies)}')
+> print(f'Submit IDs: {[e[\"id\"] for e in submits[:10]]}...')
+> print(f'Complete IDs: {sorted([e[\"id\"] for e in completes])[:10]}...')
+> print(f'Notify IDs: {sorted([e[\"id\"] for e in notifies])[:10]}...')
+> submit_ids = set(e['id'] for e in submits)
+> complete_ids = set(e['id'] for e in completes)
+> notify_ids = set(e['id'] for e in notifies)
+> print(f'All completes have submit: {complete_ids <= submit_ids}')
+> print(f'All notifies have complete: {notify_ids <= complete_ids}')
+> print(f'All submits have complete: {submit_ids <= complete_ids}')
+> print(f'All completes have notify: {complete_ids <= notify_ids}')
+> print(f'IDs contiguous 1..N: {submit_ids == set(range(1, len(submits)+1))}')
+> "
+Submits: 70, Completes: 70, Notifies: 70
+Submit IDs: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]...
+Complete IDs: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]...
+Notify IDs: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]...
+All completes have submit: True
+All notifies have complete: True
+All submits have complete: True
+All completes have notify: True
+IDs contiguous 1..N: True
+root@34094591dd9d:/app#

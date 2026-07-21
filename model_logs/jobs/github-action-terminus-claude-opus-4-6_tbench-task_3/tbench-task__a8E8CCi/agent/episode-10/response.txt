@@ -1,0 +1,30 @@
+{
+  "analysis": "All stress scenarios pass invariants. Now I need to verify: (1) order changes the sequence, (2) determinism on rerun, (3) invalid inputs rejected properly, (4) different scenarios/profiles produce different sequences, (5) tick-driven spread.",
+  "plan": "Test additional invariants: order differences, determinism, invalid input rejection, and interleaving.",
+  "commands": [
+    {
+      "keystrokes": "python3 -c \"\nimport json\nwith open('/app/output/stress_a.json') as f:\n    a = json.load(f)\nwith open('/app/output/stress_b.json') as f:\n    b = json.load(f)\na_ids = set(e['id'] for e in a['events'] if e['kind']=='complete')\nb_ids = set(e['id'] for e in b['events'] if e['kind']=='complete')\nprint(f'Same ID coverage: {a_ids == b_ids}')\na_seq = [(e['kind'], e['id']) for e in a['events']]\nb_seq = [(e['kind'], e['id']) for e in b['events']]\nprint(f'Different sequence: {a_seq != b_seq}')\n\"\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "arena --scenario stress --profile burst --order a_then_b --out /app/output/stress_a2.json && diff /app/output/stress_a.json /app/output/stress_a2.json && echo DETERMINISTIC\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "# Test invalid inputs\narena --scenario invalid --profile burst --order a_then_b --out /app/output/bad.json; echo \"exit=$?\"\ntest -f /app/output/bad.json && echo \"FILE EXISTS (BAD)\" || echo \"NO FILE (GOOD)\"\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "arena --scenario basic --profile burst --order z_then_y --out /app/output/bad2.json; echo \"exit=$?\"\ntest -f /app/output/bad2.json && echo \"FILE EXISTS (BAD)\" || echo \"NO FILE (GOOD)\"\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "arena --scenario basic --profile invalid --order a_then_b --out /app/output/bad3.json; echo \"exit=$?\"\ntest -f /app/output/bad3.json && echo \"FILE EXISTS (BAD)\" || echo \"NO FILE (GOOD)\"\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "arena; echo \"exit=$?\"\n",
+      "duration": 0.5
+    }
+  ]
+}

@@ -1,4 +1,0 @@
-New Terminal Output:
-
-root@198e88760f8b:/app# export PATH=$PATH:/usr/local/go/bin && cd /app && go build -o jobqueue . 2>&1
-root@198e88760f8b:/app#

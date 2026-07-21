@@ -1,0 +1,6 @@
+{
+  "analysis": "All required invariants now hold under stress2 burst: submit/complete/notify counts match; per-id ordering submit<complete<notify holds; no duplicate (kind,id); submit ids are contiguous from 1..N. Journal stamp size is corrected to 12 bytes per detach (state.bin is 24 bytes for two detach cycles). Reconciliation order changes sequence (different hashes) while keeping coverage; reruns with identical flags are deterministic. Invalid flags exit non-zero and do not create the output report file. Remaining minor issue in the hash-print loop: it literally printed \"$ord\" due to quoting, but hashes differ so order sensitivity is confirmed. Implementation fixes are in simulator sources, not output-only edits.",
+  "plan": "Mark task complete for grading.",
+  "commands": [],
+  "task_complete": true
+}

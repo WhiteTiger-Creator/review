@@ -1,0 +1,247 @@
+New Terminal Output:
+
+root@0c4a89e29ee7:/app# rm -f /app/output/report.json
+root@0c4a89e29ee7:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json; echo EXIT:$?
+EXIT:0
+root@0c4a89e29ee7:/app# wc -c /app/output/report.json && sed -n '1,120p' /app/output/report.json
+13154 /app/output/report.json
+{
+  "scenario": "stress2",
+  "profile": "burst",
+  "events": [
+    {"kind": "submit", "id": 1},
+    {"kind": "submit", "id": 2},
+    {"kind": "submit", "id": 3},
+    {"kind": "complete", "id": 3},
+    {"kind": "notify", "id": 3},
+    {"kind": "submit", "id": 4},
+    {"kind": "submit", "id": 5},
+    {"kind": "submit", "id": 6},
+    {"kind": "complete", "id": 2},
+    {"kind": "complete", "id": 1},
+    {"kind": "notify", "id": 1},
+    {"kind": "notify", "id": 2},
+    {"kind": "submit", "id": 7},
+    {"kind": "submit", "id": 8},
+    {"kind": "submit", "id": 9},
+    {"kind": "complete", "id": 4},
+    {"kind": "notify", "id": 4},
+    {"kind": "submit", "id": 10},
+    {"kind": "submit", "id": 11},
+    {"kind": "submit", "id": 12},
+    {"kind": "complete", "id": 10},
+    {"kind": "complete", "id": 12},
+    {"kind": "complete", "id": 5},
+    {"kind": "notify", "id": 5},
+    {"kind": "notify", "id": 10},
+    {"kind": "notify", "id": 12},
+    {"kind": "submit", "id": 13},
+    {"kind": "submit", "id": 14},
+    {"kind": "submit", "id": 15},
+    {"kind": "complete", "id": 7},
+    {"kind": "complete", "id": 11},
+    {"kind": "complete", "id": 13},
+    {"kind": "complete", "id": 8},
+    {"kind": "notify", "id": 7},
+    {"kind": "notify", "id": 8},
+    {"kind": "notify", "id": 11},
+    {"kind": "notify", "id": 13},
+    {"kind": "submit", "id": 16},
+    {"kind": "submit", "id": 17},
+    {"kind": "submit", "id": 18},
+    {"kind": "complete", "id": 6},
+    {"kind": "complete", "id": 16},
+    {"kind": "complete", "id": 9},
+    {"kind": "notify", "id": 6},
+    {"kind": "notify", "id": 9},
+    {"kind": "notify", "id": 16},
+    {"kind": "submit", "id": 19},
+    {"kind": "submit", "id": 20},
+    {"kind": "submit", "id": 21},
+    {"kind": "complete", "id": 15},
+    {"kind": "complete", "id": 19},
+    {"kind": "complete", "id": 20},
+    {"kind": "notify", "id": 15},
+    {"kind": "notify", "id": 19},
+    {"kind": "notify", "id": 20},
+    {"kind": "submit", "id": 22},
+    {"kind": "submit", "id": 23},
+    {"kind": "submit", "id": 24},
+    {"kind": "complete", "id": 14},
+    {"kind": "complete", "id": 18},
+    {"kind": "complete", "id": 21},
+    {"kind": "notify", "id": 14},
+    {"kind": "notify", "id": 18},
+    {"kind": "notify", "id": 21},
+    {"kind": "submit", "id": 25},
+    {"kind": "submit", "id": 26},
+    {"kind": "submit", "id": 27},
+    {"kind": "complete", "id": 22},
+    {"kind": "complete", "id": 26},
+    {"kind": "notify", "id": 22},
+    {"kind": "notify", "id": 26},
+    {"kind": "submit", "id": 28},
+    {"kind": "submit", "id": 29},
+    {"kind": "submit", "id": 30},
+    {"kind": "complete", "id": 28},
+    {"kind": "complete", "id": 17},
+    {"kind": "complete", "id": 23},
+    {"kind": "complete", "id": 27},
+    {"kind": "notify", "id": 17},
+    {"kind": "notify", "id": 23},
+    {"kind": "notify", "id": 27},
+    {"kind": "notify", "id": 28},
+    {"kind": "submit", "id": 31},
+    {"kind": "submit", "id": 32},
+    {"kind": "complete", "id": 31},
+    {"kind": "complete", "id": 24},
+    {"kind": "complete", "id": 32},
+    {"kind": "notify", "id": 24},
+    {"kind": "notify", "id": 31},
+    {"kind": "notify", "id": 32},
+    {"kind": "submit", "id": 33},
+    {"kind": "submit", "id": 34},
+    {"kind": "complete", "id": 30},
+    {"kind": "complete", "id": 25},
+    {"kind": "complete", "id": 33},
+    {"kind": "notify", "id": 25},
+    {"kind": "notify", "id": 30},
+    {"kind": "notify", "id": 33},
+    {"kind": "submit", "id": 35},
+    {"kind": "submit", "id": 36},
+    {"kind": "submit", "id": 37},
+    {"kind": "submit", "id": 38},
+    {"kind": "submit", "id": 39},
+    {"kind": "submit", "id": 40},
+    {"kind": "complete", "id": 35},
+    {"kind": "complete", "id": 36},
+    {"kind": "notify", "id": 35},
+    {"kind": "notify", "id": 36},
+    {"kind": "submit", "id": 41},
+    {"kind": "submit", "id": 42},
+    {"kind": "complete", "id": 34},
+    {"kind": "complete", "id": 40},
+    {"kind": "complete", "id": 29},
+    {"kind": "complete", "id": 37},
+    {"kind": "notify", "id": 29},
+    {"kind": "notify", "id": 34},
+root@0c4a89e29ee7:/app# python3 - <<'PY'
+> import json,sys
+> p='/app/output/report.json'
+> obj=json.load(open(p))
+> ev=obj['events']
+> from collections import Counter,defaultdict
+> c=Counter((e['kind'],e['id']) for e in ev)
+> dups=[k for k,v in c.items() if v!=1]
+> print('events',len(ev),'unique pairs',len(c),'dups_or_missing_pairs',len(dups))
+'submits',len(subs),'contiguous',contig_ok,'first_last', (subs[0],subs[-1]) if subs else None)
+# completion+notify coverage
+ids=set(subs)
+comp=set(e['id'] for e in ev if e['kind']=='complete')
+noti=set(e['id'] for e in ev if e['kind']=='notify')
+print('missing_complete',sorted(ids-comp)[:10],'missing_notify',sorted(ids-noti)[:10])
+print('extra_complete',sorted(comp-ids)[:10],'extra_notify',sorted(noti-ids)[:10])
+print('bad_order_count',len(bad))
+if bad[:20]:
+  print('sample bad order',bad[:20])
+PY
+> if dups[:10]:
+>   print('sample bad pairs',dups[:10],[c[k] for k in dups[:10]])
+> # ordering checks
+> state=defaultdict(int) # 0 none,1 submitted,2 completed,3 notified
+> bad=[]
+> for i,e in enumerate(ev):
+>   k,id_=e['kind'],e['id']
+>   st=state[id_]
+>   if k=='submit':
+>     if st!=0: bad.append((i,'resubmit',id_,st))
+>     state[id_]=1
+>   elif k=='complete':
+>     if st!=1: bad.append((i,'complete_before_submit_or_dup',id_,st))
+>     state[id_]=2
+>   elif k=='notify':
+>     if st!=2: bad.append((i,'notify_before_complete_or_dup',id_,st))
+>     state[id_]=3
+>   else:
+>     bad.append((i,'unknown_kind',k,id_))
+> # id contiguity based on submits
+> subs=[e['id'] for e in ev if e['kind']=='submit']
+> contig_ok = subs==list(range(1,len(subs)+1))
+> print('submits',len(subs),'contiguous',contig_ok,'first_last', (subs[0],subs[-1]) if subs else None)
+> # completion+notify coverage
+> ids=set(subs)
+> comp=set(e['id'] for e in ev if e['kind']=='complete')
+> noti=set(e['id'] for e in ev if e['kind']=='notify')
+> print('missing_complete',sorted(ids-comp)[:10],'missing_notify',sorted(ids-noti)[:10])
+> print('extra_complete',sorted(comp-ids)[:10],'extra_notify',sorted(noti-ids)[:10])
+> print('bad_order_count',len(bad))
+> if bad[:20]:
+>   print('sample bad order',bad[:20])
+> PY
+events 377 unique pairs 353 dups_or_missing_pairs 24
+sample bad pairs [('submit', 57), ('submit', 58), ('submit', 59), ('submit', 60), ('submit', 61), ('submit', 62), ('submit', 63), ('submit', 64), ('submit', 65)
+, ('submit', 66)] [2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
+submits 140 contiguous False first_last (1, 118)
+missing_complete [] missing_notify [55]
+extra_complete [] extra_notify []
+bad_order_count 44
+sample bad order [(186, 'resubmit', 57, 2), (189, 'resubmit', 58, 2), (190, 'resubmit', 59, 2), (191, 'resubmit', 60, 2), (192, 'notify_before_complete_or_dup',
+ 57, 1), (193, 'notify_before_complete_or_dup', 60, 1), (194, 'resubmit', 61, 2), (195, 'notify_before_complete_or_dup', 58, 1), (196, 'notify_before_complete_o
+r_dup', 61, 1), (197, 'resubmit', 62, 2), (198, 'notify_before_complete_or_dup', 59, 1), (199, 'resubmit', 63, 2), (200, 'notify_before_complete_or_dup', 63, 1)
+, (201, 'resubmit', 64, 2), (202, 'notify_before_complete_or_dup', 62, 1), (203, 'resubmit', 65, 2), (204, 'notify_before_complete_or_dup', 64, 1), (205, 'resub
+mit', 66, 3), (206, 'notify_before_complete_or_dup', 65, 1), (207, 'notify_before_complete_or_dup', 66, 1)]
+root@0c4a89e29ee7:/app# cp /app/output/report.json /app/output/report_a_then_b.json
+root@0c4a89e29ee7:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order b_then_a --out /app/output/report.json; echo EXIT:$?
+EXIT:0
+root@0c4a89e29ee7:/app# python3 - <<'PY'
+> import json
+> A=json.load(open('/app/output/report_a_then_b.json'))['events']
+> B=json.load(open('/app/output/report.json'))['events']
+> print('lenA',len(A),'lenB',len(B))
+> print('same_sequence',A==B)
+> # compare id coverage
+> sa=[e['id'] for e in A if e['kind']=='submit']
+> sb=[e['id'] for e in B if e['kind']=='submit']
+> print('same_submit_count',len(sa)==len(sb))
+> print('same_id_set',set(sa)==set(sb))
+> # first divergence point
+> m=min(len(A),len(B))
+> idx=None
+> for i in range(m):
+>   if A[i]!=B[i]:
+>     idx=i;break
+> print('first_diff',idx,'A',A[idx] if idx is not None else None,'B',B[idx] if idx is not None else None)
+> PY
+lenA 377 lenB 377
+same_sequence False
+same_submit_count True
+same_id_set True
+first_diff 8 A {'kind': 'complete', 'id': 2} B {'kind': 'complete', 'id': 1}
+root@0c4a89e29ee7:/app# ls -la /app/src/logic /app/src/io /app/src/core
+/app/src/core:
+total 20
+drwxr-xr-x 2 root root   86 May 26 12:44 .
+drwxr-xr-x 6 root root  115 May 26 12:44 ..
+-rw-r--r-- 1 root root  297 May 26 12:44 idgen.c
+-rw-r--r-- 1 root root 2594 May 26 12:44 map_u64.c
+-rw-r--r-- 1 root root 1123 May 26 12:44 queue.c
+-rw-r--r-- 1 root root  804 May 26 12:44 vec_ev.c
+-rw-r--r-- 1 root root  810 May 26 12:44 vec_u64.c
+
+/app/src/io:
+total 8
+drwxr-xr-x 2 root root   35 May 26 12:44 .
+drwxr-xr-x 6 root root  115 May 26 12:44 ..
+-rw-r--r-- 1 root root  368 May 26 12:44 fs.c
+-rw-r--r-- 1 root root 1244 May 26 12:44 journal.c
+
+/app/src/logic:
+total 20
+drwxr-xr-x 2 root root   82 May 26 12:44 .
+drwxr-xr-x 6 root root  115 May 26 12:44 ..
+-rw-r--r-- 1 root root  877 May 26 12:44 ingest.c
+-rw-r--r-- 1 root root  937 May 26 12:44 link.c
+-rw-r--r-- 1 root root  961 May 26 12:44 merge.c
+-rw-r--r-- 1 root root  551 May 26 12:44 nudge.c
+-rw-r--r-- 1 root root 1367 May 26 12:44 settle.c
+root@0c4a89e29ee7:/app#

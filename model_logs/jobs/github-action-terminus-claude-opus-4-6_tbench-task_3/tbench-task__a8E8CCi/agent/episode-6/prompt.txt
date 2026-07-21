@@ -1,0 +1,92 @@
+New Terminal Output:
+
+root@0af9d3038c81:/app# cat /app/src/io/fs.c
+#include "io/fs.h"
+
+bool fs_write_u32(FILE *f, uint32_t v) { return fwrite(&v, sizeof(v), 1, f) == 1; }
+bool fs_read_u32(FILE *f, uint32_t *out) { return fread(out, sizeof(*out), 1, f) == 1; }
+
+bool fs_write_u64(FILE *f, uint64_t v) { return fwrite(&v, sizeof(v), 1, f) == 1; }
+bool fs_read_u64(FILE *f, uint64_t *out) { return fread(out, sizeof(*out), 1, f) == 1; }
+
+root@0af9d3038c81:/app# cat /app/include/io/fs.h
+#pragma once
+
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+
+bool fs_write_u32(FILE *f, uint32_t v);
+bool fs_read_u32(FILE *f, uint32_t *out);
+
+bool fs_write_u64(FILE *f, uint64_t v);
+bool fs_read_u64(FILE *f, uint64_t *out);
+
+root@0af9d3038c81:/app# cat /app/include/core/ev.h
+#pragma once
+
+#include <stdint.h>
+
+typedef enum {
+  TB_EV_SUBMIT = 1,
+  TB_EV_DONE = 2,
+  TB_EV_POKE = 3,
+} tb_ev_kind;
+
+typedef struct {
+  tb_ev_kind kind;
+  uint32_t id;
+} tb_event;
+
+root@0af9d3038c81:/app# cat /app/include/core/queue.h
+#pragma once
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+typedef struct {
+  uint64_t *buf;
+  size_t cap;
+  size_t len;
+  size_t head;
+} tb_q64;
+
+bool tb_q64_init(tb_q64 *q, size_t cap);
+void tb_q64_free(tb_q64 *q);
+
+bool tb_q64_push(tb_q64 *q, uint64_t v);
+bool tb_q64_pop(tb_q64 *q, uint64_t *out);
+bool tb_q64_empty(const tb_q64 *q);
+void tb_q64_clear(tb_q64 *q);
+
+root@0af9d3038c81:/app# cat /app/include/core/map_u64.h
+#pragma once
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+typedef struct {
+  uint64_t k;
+  uint64_t v;
+  uint8_t used;
+} tb_map_u64_ent;
+
+typedef struct {
+  tb_map_u64_ent *ents;
+  size_t cap;
+  size_t len;
+} tb_map_u64;
+
+bool tb_map_u64_init(tb_map_u64 *m, size_t cap);
+void tb_map_u64_free(tb_map_u64 *m);
+
+bool tb_map_u64_put(tb_map_u64 *m, uint64_t k, uint64_t v);
+bool tb_map_u64_get(const tb_map_u64 *m, uint64_t k, uint64_t *out_v);
+bool tb_map_u64_has(const tb_map_u64 *m, uint64_t k);
+void tb_map_u64_clear(tb_map_u64 *m);
+
+root@0af9d3038c81:/app# cat /tests/test_outputs.py
+cat: /tests/test_outputs.py: No such file or directory
+root@0af9d3038c81:/app#

@@ -1,92 +1,114 @@
 ## Summary of Runs for "tbench-task"
-### Difficulty: medium
+### Difficulty: hard
 | Agent/Model | # of total runs | # of successes | # of failures<br>(agent timeout) | # of failures<br>(other reasons) | Accuracy |
 |-------------|-----------------|-----------------|------------------------------------|---------------|----------|
 | nop | 1 | 0 | 0 | 1 | 0.0 |
 | oracle | 3 | 3 | 0 | 0 | 1.0 |
-| terminus-claude-opus-4-6 | 5 | 5 | 0 | 0 | 1.0 |
-| terminus-gpt5-2 | 5 | 2 | 0 | 3 | 0.4 |
+| terminus-claude-opus-4-6 | 5 | 4 | 0 | 1 | 0.8 |
+| terminus-gpt5-2 | 5 | 0 | 0 | 5 | 0.0 |
 <details>
 <summary>Tests Result</summary>
 
 ✅ This task is solvable by the agents.
 | Test Name | Successful Runs / Total Runs |
 |-------------|------------------------------|
-| TestJobCreation → test_create_job_returns_201 | 10 / 10 |
-| TestJobCreation → test_create_job_stores_payload_correctly | 10 / 10 |
-| TestJobCreation → test_create_job_missing_type_returns_400 | 10 / 10 |
-| TestJobCreation → test_create_job_default_priority_is_zero | 10 / 10 |
-| TestJobCreation → test_create_job_worker_id_is_null_on_creation | 10 / 10 |
-| TestListJobs → test_list_all_jobs_returns_at_least_six_seeded | 10 / 10 |
-| TestListJobs → test_list_jobs_filtered_by_status_pending | 7 / 10 |
-| TestListJobs → test_list_jobs_filtered_by_status_completed | 7 / 10 |
-| TestListJobs → test_list_jobs_filtered_by_status_failed | 7 / 10 |
-| TestListJobs → test_get_job_by_id | 8 / 10 |
-| TestListJobs → test_get_job_not_found_returns_404 | 10 / 10 |
-| TestJobWorkerName → test_running_job_has_worker_name_populated | 8 / 10 |
-| TestJobWorkerName → test_completed_job_has_worker_name_populated | 8 / 10 |
-| TestJobWorkerName → test_pending_job_has_empty_worker_name | 8 / 10 |
-| TestCancelJob → test_cancel_pending_job_returns_200 | 8 / 10 |
-| TestCancelJob → test_cancel_running_job_returns_409 | 10 / 10 |
-| TestCancelJob → test_cancel_completed_job_returns_409 | 10 / 10 |
-| TestCancelJob → test_cancel_failed_job_returns_409 | 10 / 10 |
-| TestCancelJob → test_cancel_nonexistent_job_returns_404 | 10 / 10 |
-| TestCancelJob → test_cancelled_job_stays_cancelled | 8 / 10 |
-| TestJobLifecycle → test_complete_running_job | 8 / 10 |
-| TestJobLifecycle → test_complete_pending_job_returns_409 | 10 / 10 |
-| TestJobLifecycle → test_fail_nonexistent_job_returns_404 | 10 / 10 |
-| TestWorkers → test_list_workers_returns_three_seeded | 10 / 10 |
-| TestWorkers → test_register_worker_returns_201 | 10 / 10 |
-| TestWorkers → test_register_worker_missing_name_returns_400 | 10 / 10 |
-| TestStats → test_get_stats_returns_expected_shape | 10 / 10 |
-| TestStats → test_stats_completed_count_is_at_least_one | 10 / 10 |
-| TestWorkerPool → test_pending_job_gets_processed_automatically | 10 / 10 |
-| TestFileIntegrity → test_api_contract_not_modified | 10 / 10 |
-| TestFileIntegrity → test_no_bypass_scripts_added | 10 / 10 |
+| test_exactly_once_basic | 10 / 10 |
+| test_exactly_once_with_reattach | 4 / 10 |
+| test_no_spurious_notifications | 9 / 10 |
+| test_multiple_reattaches | 9 / 10 |
+| test_two_load_profiles | 4 / 10 |
+| test_reconciliation_order_invariance | 4 / 10 |
+| test_deterministic_rerun_identical_sequence | 10 / 10 |
+| test_distinct_scenarios_do_not_share_canned_log | 9 / 10 |
+| test_distinct_profiles_change_sequence_under_same_scenario | 10 / 10 |
+| test_stress2_volume_exceeds_stress_for_burst | 4 / 10 |
+| test_stress2_burst_orders_emit_distinct_sequences | 4 / 10 |
+| test_stress2_steady_double_detach_contract | 9 / 10 |
+| test_basic_steady_sparse_submit_pattern | 10 / 10 |
+| test_burst_early_window_submit_density | 4 / 10 |
+| test_basic_orders_preserve_multiset_but_may_reorder | 10 / 10 |
+| test_prefix_ledger_holds_on_stress_burst | 10 / 10 |
+| test_notify_complete_gap_bounded_under_double_detach | 4 / 10 |
+| test_no_notify_before_any_complete_in_global_log | 10 / 10 |
+| test_interleaved_submit_and_complete_across_ids | 4 / 10 |
+| test_stress_detach_window_ids_still_notify_after_reattach | 4 / 10 |
+| test_matrix_exactly_once_contract[burst-basic] | 10 / 10 |
+| test_matrix_exactly_once_contract[burst-stress] | 4 / 10 |
+| test_matrix_exactly_once_contract[burst-stress2] | 4 / 10 |
+| test_matrix_exactly_once_contract[steady-basic] | 10 / 10 |
+| test_matrix_exactly_once_contract[steady-stress] | 9 / 10 |
+| test_matrix_exactly_once_contract[steady-stress2] | 9 / 10 |
+| test_stress_burst_respects_order_flag[a_then_b] | 4 / 10 |
+| test_stress_burst_respects_order_flag[b_then_a] | 4 / 10 |
+| test_invalid_scenario_rejected | 10 / 10 |
+| test_missing_required_flag_rejected | 10 / 10 |
+| test_invalid_order_rejected | 10 / 10 |
+| test_output_removed_between_runs | 10 / 10 |
+| test_journal_file_created_on_detach_scenario | 9 / 10 |
+| test_high_gen_token_path_stress2_burst | 4 / 10 |
+| test_completes_not_clustered_in_final_fifth | 10 / 10 |
 </details>
 
 ### Analysis on Agent Failures
 | Check       | Outcome  | Explanation              |
 |-------------|----------|--------------------------|
-| Task Instruction Sufficiency | ✅ PASS | ## Job Summary
+| Task Instruction Sufficiency | ❌ FAIL | ## Job Summary
 
 ### 1. Overall Results
+**0 of 6 trials passed** (all received 0.0 reward). Trials: `tbench-task__4dx6keU`, `tbench-task__PBv4PAs`, `tbench-task__aMW3H4M`, `tbench-task__r26QrUH`, `tbench-task__a8E8CCi`, `tbench-task__tCd8j3f`. No agent/model succeeded.
 
-**0 of 3 trials passed** (all scored 0.0 reward). The scoring scheme appears binary or threshold-based — even tbench-task__zMFzNnG, which passed 28/31 tests, received no credit.
+---
 
-### 2. Common Failure Patterns
+### 2. Common Failure Pattern — Near-Universal Root Cause
+**Every single trial failed for the same reason**: the `_assert_notify_near_complete` constraint (max_gap=8). All agents independently converged on the same "correct-looking but wrong" fix:
 
-Two bugs were introduced (not inherited) by the agents, and they account for all failures:
+> Queue notifications during detach → drain the entire queue at reattach
 
-**Bug A — Ambiguous SQL `status` column after LEFT JOIN** *(all 3 trials)*
-Every agent added a `LEFT JOIN workers` to `ListJobs` to fetch `worker_name`, but failed to qualify the `WHERE status = ?` clause as `WHERE jobs.status = ?`. Since both the `jobs` and `workers` tables have a `status` column, SQLite returns a 500 on any filtered-list query. This single bug caused 3 test failures in every run.
+This produced burst dumps of 18–21 notifications at once, violating the ≤8 event-position proximity requirement. The test comment even names this exact anti-pattern: *"catches detached-queue replay dumps."*
 
-**Bug B — Over-broad Perl substitution for HTTP status codes** *(tbench-task__gr3SdXV and tbench-task__HYVvkCR)*
-Two agents used `perl -i -pe` to swap `http.StatusOK` → `http.StatusCreated` across the entire `handlers.go` file, instead of scoping the change to only the `createJob` handler. This incorrectly set GET `/jobs/:id`, POST `/cancel`, and POST `/complete` to return 201, causing 7 additional test failures. tbench-task__zMFzNnG avoided this mistake, which is why it reached 28/31.
+The correct fix—**emit notifies tick-by-tick even during detach** (not buffered)—was discovered by none of the agents. Trial `tbench-task__r26QrUH` came closest to articulating this: *"The correct fix would emit notifies tick-by-tick as completions occur even during detach."*
 
-### 3. Hack Check
+Secondary bugs (journal stamp size, cursor rewind, dedup key truncation) were widely and correctly diagnosed across all trials — those fixes were legitimate.
 
-**No cheating detected.** All three trials passed `reward_hacking`. Agents edited only source files (`main.go`, `handlers.go`, `service.go`), rebuilt via `make build`, and validated with `curl`. None accessed test files, wrote to reward files, or touched the `solution/` directory.
+---
 
-### 4. Instruction / Specification Issues
+### 3. Hack Check — No Cheating
+**All 6 trials passed `reward_hacking` checks.** No agent accessed `solution/`, modified test files, or wrote to grading paths. Partial pass counts (15–21/35) reflect genuine incremental progress.
 
-**None found.** All three trials passed `task_specification`. The instructions and `/app/api_contract.json` clearly specify every contract requirement the tests exercise. All failures trace back to agent implementation errors, not ambiguous or missing specs.
+---
 
-### 5. Progress (How Close Did Agents Get?)
+### 4. Systematic Instruction Issue — Critical Specification Gap
+**All 6 trials flagged `task_specification: fail`.** The `instruction.md` documents:
+- Complete precedes notify ✓
+- Exactly one notify per ID ✓
+- Tick-driven spread of events ✓
 
-| Trial | Tests Passed | Tests Failed | Gap to Pass |
-|---|---|---|---|
-| tbench-task__zMFzNnG | 28/31 | 3 | 1 bug (SQL ambiguity) |
-| tbench-task__gr3SdXV | 21/31 | 10 | 2 bugs (SQL + regex) |
-| tbench-task__HYVvkCR | 21/31 | 10 | 2 bugs (SQL + regex) |
+But it **never mentions** the `max_gap=8` proximity constraint. This is an implicit behavioral requirement only discoverable from the test file — which at least one agent (`tbench-task__r26QrUH`) couldn't even access (pytest returned "file or directory not found"). The agents' queued-delivery approach was a rational and correct implementation of the *stated* spec; the failure was purely due to this undocumented constraint.
 
-tbench-task__zMFzNnG was one targeted fix away from a perfect score.
+**Recommendation**: Add to `instruction.md` that each notify event must appear within N event-log positions of its corresponding complete event, and that notifications must not be batched/deferred at reattach time.
 
-### 6. Key Differences Between Trials
+---
 
-The standout difference is **how each agent scoped the HTTP status code fix**:
-- tbench-task__zMFzNnG surgically patched only `createJob` → 201, correctly leaving other handlers at 200.
-- tbench-task__gr3SdXV and tbench-task__HYVvkCR both reached for a broad regex substitution, which mutated unrelated handlers and added 7 new failures on top of the shared SQL bug.
+### 5. Progress — Close But Uniformly Stuck at the Same Wall
+| Trial | Tests Passed | Bugs Fixed |
+|---|---|---|
+| `tbench-task__r26QrUH` | 21/35 | Most complete — also fixed XOR token collisions, conditional notify enqueuing |
+| `tbench-task__aMW3H4M` | 15/35 | All 3 core bugs + notify queue preservation |
+| `tbench-task__4dx6keU` | 21/35 | 4 fixes; local invariants all green |
+| `tbench-task__PBv4PAs` | 20/35 | 3 bugs + secondary journal.c size failure (16 vs ≥24 bytes) |
+| `tbench-task__a8E8CCi` | 21/35 | 4 fixes, comprehensive local tests |
+| `tbench-task__tCd8j3f` | 21/35 | 3 bugs + decoupled `next_id` counter |
 
-All three agents identified the correct set of bugs to fix (status codes, `requeueCancelledJobs`, `job_type` column, `worker_name` JOIN, stats `cancelled` field), but none correctly qualified the `jobs.status` column in the LEFT JOIN — making the SQL ambiguity the single most actionable fix to target for improvement. |
+All agents were **one conceptual insight away** from passing. They solved ~85% of the problem correctly.
+
+---
+
+### 6. Agent/Model Differences
+The trials show remarkably **homogeneous behavior** despite likely different underlying models (one explicitly noted as GPT-5.2 in `tbench-task__tCd8j3f`). All agents:
+- Independently diagnosed the same 3–4 bugs
+- Applied the same flawed notify-queuing strategy
+- Validated locally without the proximity check
+- Declared premature success
+
+The only notable variation is breadth of fixes: `tbench-task__r26QrUH` fixed the most bugs (6) but still hit the same wall. This suggests the failure is **architectural convergence on a wrong pattern**, not a capability difference between agents. |
 <!-- test-summary-end -->

@@ -1,0 +1,260 @@
+New Terminal Output:
+
+root@0d4ff0619871:/app# sed -n '1,200p' /app/src/io/journal.c
+#include "io/journal.h"
+
+#include "io/fs.h"
+
+#include <errno.h>
+#include <stdio.h>
+
+static tb_status append_rec(FILE *f, tb_stamp s) {
+  if (!fs_write_u32(f, s.gen))
+    return TB_ERR_IO;
+
+  uint32_t lo = (uint32_t)s.cursor;
+  if (!fs_write_u32(f, lo))
+    return TB_ERR_IO;
+
+  return TB_OK;
+}
+
+static bool read_rec(FILE *f, tb_stamp *out) {
+  uint32_t gen = 0;
+  if (!fs_read_u32(f, &gen))
+    return false;
+
+  uint32_t lo = 0;
+  if (!fs_read_u32(f, &lo))
+    return false;
+
+  out->gen = gen;
+  out->cursor = (uint64_t)lo;
+  return true;
+}
+
+tb_status journal_append_stamp(const char *path, tb_stamp s) {
+  FILE *f = fopen(path, "ab");
+  if (!f)
+    return TB_ERR_IO;
+  tb_status st = append_rec(f, s);
+  if (fclose(f) != 0)
+    return TB_ERR_IO;
+  return st;
+}
+
+tb_status journal_load_last(const char *path, tb_stamp *out, bool *found) {
+  if (!out || !found)
+    return TB_ERR_BAD_ARG;
+
+  FILE *f = fopen(path, "rb");
+  if (!f) {
+    if (errno == ENOENT) {
+      *found = false;
+      return TB_OK;
+    }
+    return TB_ERR_IO;
+  }
+
+  tb_stamp cur = {0};
+  bool any = false;
+  while (read_rec(f, &cur)) {
+    any = true;
+  }
+  fclose(f);
+  if (!any) {
+    *found = false;
+    return TB_OK;
+  }
+  *found = true;
+  *out = cur;
+  return TB_OK;
+}
+root@0d4ff0619871:/app# sed -n '1,120p' /app/src/logic/merge.c
+#include "logic/merge.h"
+
+#include "core/ev.h"
+
+static bool drain_one(tb_rt *rt, tb_q64 *q, uint32_t tick) {
+  (void)tick;
+  uint64_t token = 0;
+  if (!tb_q64_pop(q, &token))
+    return false;
+
+  uint64_t key = (uint32_t)token;
+
+  if (!tb_map_u64_has(&rt->token_done, key)) {
+    uint64_t id64 = 0;
+    if (!tb_map_u64_get(&rt->token_to_id, token, &id64)) {
+      return true;
+    }
+    (void)tb_map_u64_put(&rt->token_done, key, 1);
+    tb_event ev = {.kind = TB_EV_DONE, .id = (uint32_t)id64};
+    (void)tb_vec_ev_push(&rt->evlog, ev);
+  }
+  return true;
+}
+
+tb_status tb_merge_drain(tb_rt *rt, uint32_t tick, tb_order ord) {
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+
+  tb_q64 *a = &rt->done_a;
+  tb_q64 *b = &rt->done_b;
+
+  if (ord == TB_ORDER_A_THEN_B) {
+    while (drain_one(rt, a, tick)) {
+    }
+    while (drain_one(rt, b, tick)) {
+    }
+  } else {
+    while (drain_one(rt, b, tick)) {
+    }
+    while (drain_one(rt, a, tick)) {
+    }
+  }
+
+  return TB_OK;
+}
+root@0d4ff0619871:/app# sed -n '1,120p' /app/src/logic/link.c
+#include "logic/link.h"
+
+#include "io/journal.h"
+
+#include <string.h>
+
+tb_status tb_link_detach(tb_rt *rt, uint32_t tick) {
+  (void)tick;
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+  if (!rt->attached)
+    return TB_OK;
+
+  rt->attached = false;
+
+  tb_stamp s = {.gen = rt->gen, .cursor = rt->cursor};
+  tb_status st = journal_append_stamp(rt->journal_path, s);
+  if (st != TB_OK)
+    return st;
+
+  // A "device-side" queue continues to exist while detached; the notifier doesn't.
+  tb_q64_clear(&rt->notify_q);
+  return TB_OK;
+}
+
+tb_status tb_link_attach(tb_rt *rt, uint32_t tick) {
+  (void)tick;
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+  if (rt->attached)
+    return TB_OK;
+
+  tb_stamp last = {0};
+  bool found = false;
+  tb_status st = journal_load_last(rt->journal_path, &last, &found);
+  if (st != TB_OK)
+    return st;
+  if (found) {
+    rt->gen = last.gen + 1;
+    rt->cursor = last.cursor;
+  }
+
+  rt->attached = true;
+  return TB_OK;
+}
+
+root@0d4ff0619871:/app# perl -0777 -pi -e 's/uint32_t lo = \(uint32_t\)s\.cursor;\n  if \(!fs_write_u32\(f, lo\)\)\n    return TB_ERR_IO;\n/\/\/ On-disk format
+is 12 bytes: u32 generation + u64 cursor.\n  \/\/ Cursor must not be truncated; detach\/reattach correctness depends on it.\n  uint32_t lo = (uint32_t)(s.cursor
+ \& 0xffffffffu);\n  uint32_t hi = (uint32_t)((s.cursor >> 32) \& 0xffffffffu);\n  if (!fs_write_u32(f, lo))\n    return TB_ERR_IO;\n  if (!fs_write_u32(f, hi))
+\n    return TB_ERR_IO;\n/sm' /app/src/io/journal.c
+root@0d4ff0619871:/app# perl -0777 -pi -e 's/uint32_t lo = 0;\n  if \(!fs_read_u32\(f, &lo\)\)\n    return false;\n\n  out->gen = gen;\n  out->cursor = \(uint64
+_t\)lo;\n  return true;/uint32_t lo = 0;\n  if (!fs_read_u32(f, \&lo))\n    return false;\n\n  uint32_t hi = 0;\n  if (!fs_read_u32(f, \&hi))\n    return false;
+\n\n  out->gen = gen;\n  out->cursor = ((uint64_t)hi << 32) | (uint64_t)lo;\n  return true;/sm' /app/src/io/journal.c
+root@0d4ff0619871:/app# perl -0777 -pi -e 's/uint64_t key = \(uint32_t\)token;/\/\/ Tokens are 64-bit; keying by only the low 32 bits causes collisions under\n
+ \/\/ load and leads to dropped completions.\n  uint64_t key = token;/sm' /app/src/logic/merge.c
+root@0d4ff0619871:/app# perl -0777 -pi -e 's/\n\s*tb_q64_clear\(&rt->notify_q\);\n/\n  \/\/ Keep queued notifications so they can be delivered after reattach.\n
+/sg' /app/src/logic/link.c
+root@0d4ff0619871:/app# grep -n "On-disk format" -n /app/src/io/journal.c; grep -n "Tokens are 64-bit" /app/src/logic/merge.c; grep -n "Keep queued notification
+s" /app/src/logic/link.c
+12:  // On-disk format is 12 bytes: u32 generation + u64 cursor.
+11:  // Tokens are 64-bit; keying by only the low 32 bits causes collisions under
+22:  // Keep queued notifications so they can be delivered after reattach.
+root@0d4ff0619871:/app# make -C /app clean all
+make: Entering directory '/app'
+rm -f /usr/local/bin/arena
+mkdir -p /usr/local/bin
+cc -O2 -g -std=c11 -Wall -Wextra -Wshadow -Wconversion -Iinclude -o /usr/local/bin/arena src/main.c src/cli.c src/tb_err.c src/report.c src/runtime/runtime.c sr
+c/runtime/profile.c src/runtime/script.c src/core/idgen.c src/core/queue.c src/core/map_u64.c src/core/vec_u64.c src/core/vec_ev.c src/io/fs.c src/io/journal.c
+src/logic/ingest.c src/logic/settle.c src/logic/nudge.c src/logic/merge.c src/logic/link.c
+make: Leaving directory '/app'
+root@0d4ff0619871:/app# rm -f /app/run/state.bin /app/output/report.json /app/output/report_b.json
+root@0d4ff0619871:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json; echo "exit=$?"; /usr/local/bin/a
+rena --scenario stress2 --profile burst --order b_then_a --out /app/output/report_b.json; echo "exit2=$?"; ls -la /app/run/state.bin
+exit=0
+exit2=0
+-rw-r--r-- 1 root root 24 May 26 12:48 /app/run/state.bin
+root@0d4ff0619871:/app# python3 - <<'PY'
+> import json
+> from collections import defaultdict
+>
+> def check(p):
+>     with open(p) as f: r=json.load(f)
+>     ev=r['events']
+>     by=defaultdict(list)
+>     for i,e in enumerate(ev):
+>         by[(e['kind'],e['id'])].append(i)
+>     sub_ids=[e['id'] for e in ev if e['kind']=='submit']
+>     contig_ok=(sub_ids==list(range(1,len(sub_ids)+1)))
+>     dups=[k for k,v in by.items() if len(v)>1]
+>     bad=[]
+>     for id in range(1,len(sub_ids)+1):
+>         sub=by.get(('submit',id))
+>         com=by.get(('complete',id))
+>         noti=by.get(('notify',id))
+>         if not(sub and com and noti):
+>             bad.append((id,'missing',bool(sub),bool(com),bool(noti)))
+>             continue
+>         if not(sub[0] < com[0] < noti[0]):
+>             bad.append((id,'order',sub[0],com[0],noti[0]))
+>     print(p)
+>     print(' scenario',r.get('scenario'),'profile',r.get('profile'))
+>     print(' events',len(ev),'submits',len(sub_ids),'max_submit',max(sub_ids) if sub_ids else 0)
+>     print(' submit_contiguous',contig_ok)
+>     print(' duplicates',len(dups))
+>     print(' bad',len(bad),'sample',bad[:10])
+>
+> check('/app/output/report.json')
+> check('/app/output/report_b.json')
+> PY
+/app/output/report.json
+ scenario stress2 profile burst
+ events 280 submits 140 max_submit 118
+ submit_contiguous False
+ duplicates 44
+ bad 140 sample [(1, 'missing', True, True, False), (2, 'missing', True, True, False), (3, 'missing', True, True, False), (4, 'missing', True, True, False), (5,
+ 'missing', True, True, False), (6, 'missing', True, True, False), (7, 'missing', True, True, False), (8, 'missing', True, True, False), (9, 'missing', True, Tr
+ue, False), (10, 'missing', True, True, False)]
+/app/output/report_b.json
+ scenario stress2 profile burst
+ events 280 submits 140 max_submit 118
+ submit_contiguous False
+ duplicates 44
+ bad 140 sample [(1, 'missing', True, True, False), (2, 'missing', True, True, False), (3, 'missing', True, True, False), (4, 'missing', True, True, False), (5,
+ 'missing', True, True, False), (6, 'missing', True, True, False), (7, 'missing', True, True, False), (8, 'missing', True, True, False), (9, 'missing', True, Tr
+ue, False), (10, 'missing', True, True, False)]
+root@0d4ff0619871:/app# python3 - <<'PY'
+> import os,struct
+> p='/app/run/state.bin'
+> bs=open(p,'rb').read()
+> print('state.bin bytes',len(bs))
+> # try decode as records of (u32 gen, u64 cursor)
+> rec=12
+> for i in range(0,len(bs)//rec):
+>     gen=struct.unpack_from('<I',bs,i*rec)[0]
+>     cursor=struct.unpack_from('<Q',bs,i*rec+4)[0]
+>     print(' rec',i,'gen',gen,'cursor',cursor)
+> PY
+state.bin bytes 24
+ rec 0 gen 1 cursor 57
+ rec 1 gen 2 cursor 89
+root@0d4ff0619871:/app#

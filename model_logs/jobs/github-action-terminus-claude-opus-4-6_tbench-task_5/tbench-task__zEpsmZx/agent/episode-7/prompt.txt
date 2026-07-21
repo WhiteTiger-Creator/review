@@ -1,0 +1,136 @@
+New Terminal Output:
+
+root@11b6bf757a9f:/app# cat /app/include/core/idgen.h /app/src/core/idgen.c
+#pragma once
+
+#include <stdint.h>
+
+typedef struct {
+  uint64_t x;
+} tb_idgen;
+
+void tb_idgen_init(tb_idgen *g, uint64_t seed);
+uint64_t tb_idgen_next(tb_idgen *g);
+
+#include "core/idgen.h"
+
+void tb_idgen_init(tb_idgen *g, uint64_t seed) { g->x = seed ? seed : 0x9e3779b97f4a7c15ULL; }
+
+uint64_t tb_idgen_next(tb_idgen *g) {
+  // xorshift64*
+  uint64_t x = g->x;
+  x ^= x >> 12;
+  x ^= x << 25;
+  x ^= x >> 27;
+  g->x = x;
+  return x * 2685821657736338717ULL;
+}
+
+root@11b6bf757a9f:/app# cat /app/include/core/vec_u64.h /app/src/core/vec_u64.c
+#pragma once
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+typedef struct {
+  uint64_t *v;
+  size_t len;
+  size_t cap;
+} tb_vec_u64;
+
+bool tb_vec_u64_init(tb_vec_u64 *a, size_t cap);
+void tb_vec_u64_free(tb_vec_u64 *a);
+bool tb_vec_u64_push(tb_vec_u64 *a, uint64_t x);
+void tb_vec_u64_clear(tb_vec_u64 *a);
+
+#include "core/vec_u64.h"
+
+#include <stdlib.h>
+
+bool tb_vec_u64_init(tb_vec_u64 *a, size_t cap) {
+  if (!a)
+    return false;
+  if (cap == 0)
+    cap = 8;
+  a->v = (uint64_t *)malloc(sizeof(uint64_t) * cap);
+  if (!a->v)
+    return false;
+  a->len = 0;
+  a->cap = cap;
+  return true;
+}
+
+void tb_vec_u64_free(tb_vec_u64 *a) {
+  if (!a)
+    return;
+  free(a->v);
+  a->v = NULL;
+  a->len = 0;
+  a->cap = 0;
+}
+
+bool tb_vec_u64_push(tb_vec_u64 *a, uint64_t x) {
+  if (!a || !a->v)
+    return false;
+  if (a->len == a->cap) {
+    size_t ncap = a->cap * 2;
+    uint64_t *nv = (uint64_t *)realloc(a->v, ncap * sizeof(uint64_t));
+    if (!nv)
+      return false;
+    a->v = nv;
+    a->cap = ncap;
+  }
+  a->v[a->len++] = x;
+  return true;
+}
+
+void tb_vec_u64_clear(tb_vec_u64 *a) {
+  if (!a)
+    return;
+  a->len = 0;
+}
+
+root@11b6bf757a9f:/app# cat /app/include/tb_err.h /app/src/tb_err.c
+#pragma once
+
+#include <stdbool.h>
+#include <stdint.h>
+
+typedef enum {
+  TB_OK = 0,
+  TB_ERR_IO = 1,
+  TB_ERR_BAD_ARG = 2,
+  TB_ERR_CORRUPT = 3,
+  TB_ERR_OOM = 4,
+} tb_status;
+
+const char *tb_status_str(tb_status st);
+
+#include "tb_err.h"
+
+const char *tb_status_str(tb_status st) {
+  switch (st) {
+  case TB_OK:
+    return "ok";
+  case TB_ERR_IO:
+    return "io";
+  case TB_ERR_BAD_ARG:
+    return "bad_arg";
+  case TB_ERR_CORRUPT:
+    return "corrupt";
+  case TB_ERR_OOM:
+    return "oom";
+  default:
+    return "unknown";
+  }
+}
+
+root@11b6bf757a9f:/app# make -C /app 2>&1
+make: Entering directory '/app'
+mkdir -p /usr/local/bin
+cc -O2 -g -std=c11 -Wall -Wextra -Wshadow -Wconversion -Iinclude -o /usr/local/bin/arena src/main.c src/cli.c src/tb_err.c src/report.c src/runtime/runtime.c sr
+c/runtime/profile.c src/runtime/script.c src/core/idgen.c src/core/queue.c src/core/map_u64.c src/core/vec_u64.c src/core/vec_ev.c src/io/fs.c src/io/journal.c
+src/logic/ingest.c src/logic/settle.c src/logic/nudge.c src/logic/merge.c src/logic/link.c
+make: Leaving directory '/app'
+root@11b6bf757a9f:/app#

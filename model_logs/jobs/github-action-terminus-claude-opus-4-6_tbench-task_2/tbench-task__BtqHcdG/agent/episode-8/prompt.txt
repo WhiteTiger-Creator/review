@@ -1,0 +1,125 @@
+New Terminal Output:
+
+root@34094591dd9d:/app# cat /app/include/core/vec_ev.h
+#pragma once
+
+#include "core/ev.h"
+
+#include <stdbool.h>
+#include <stddef.h>
+
+typedef struct {
+  tb_event *v;
+  size_t len;
+  size_t cap;
+} tb_vec_ev;
+
+bool tb_vec_ev_init(tb_vec_ev *a, size_t cap);
+void tb_vec_ev_free(tb_vec_ev *a);
+bool tb_vec_ev_push(tb_vec_ev *a, tb_event ev);
+void tb_vec_ev_clear(tb_vec_ev *a);
+
+root@34094591dd9d:/app# cat /app/include/core/vec_u64.h
+#pragma once
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+typedef struct {
+  uint64_t *v;
+  size_t len;
+  size_t cap;
+} tb_vec_u64;
+
+bool tb_vec_u64_init(tb_vec_u64 *a, size_t cap);
+void tb_vec_u64_free(tb_vec_u64 *a);
+bool tb_vec_u64_push(tb_vec_u64 *a, uint64_t x);
+void tb_vec_u64_clear(tb_vec_u64 *a);
+
+root@34094591dd9d:/app# cat /app/include/logic/ingest.h /app/include/logic/settle.h /app/include/logic/merge.h /app/include/logic/link.h /app/include/logic/nudg
+e.h
+#pragma once
+
+#include "tb_err.h"
+#include "runtime/runtime.h"
+
+tb_status tb_ingest_tick(tb_rt *rt, tb_profile prof, uint32_t tick, uint32_t *submitted_out);
+
+#pragma once
+
+#include "tb_err.h"
+#include "runtime/runtime.h"
+
+tb_status tb_settle_tick(tb_rt *rt, uint32_t tick);
+
+#pragma once
+
+#include "tb_err.h"
+#include "runtime/runtime.h"
+
+tb_status tb_merge_drain(tb_rt *rt, uint32_t tick, tb_order ord);
+
+#pragma once
+
+#include "tb_err.h"
+#include "runtime/runtime.h"
+
+tb_status tb_link_detach(tb_rt *rt, uint32_t tick);
+tb_status tb_link_attach(tb_rt *rt, uint32_t tick);
+
+#pragma once
+
+#include "tb_err.h"
+#include "runtime/runtime.h"
+
+tb_status tb_nudge_drain(tb_rt *rt, uint32_t tick);
+
+root@34094591dd9d:/app# cat /app/include/report.h /app/include/tb_err.h
+#pragma once
+
+#include "core/vec_ev.h"
+#include "runtime/profile.h"
+#include "runtime/script.h"
+
+#include <stdint.h>
+
+// Writes report.json as described in instruction.md.
+int tb_report_write_json(const char *path, tb_scenario scn, tb_profile prof, const tb_vec_ev *evs);
+
+#pragma once
+
+#include <stdbool.h>
+#include <stdint.h>
+
+typedef enum {
+  TB_OK = 0,
+  TB_ERR_IO = 1,
+  TB_ERR_BAD_ARG = 2,
+  TB_ERR_CORRUPT = 3,
+  TB_ERR_OOM = 4,
+} tb_status;
+
+const char *tb_status_str(tb_status st);
+
+root@34094591dd9d:/app# cat /app/src/tb_err.c
+#include "tb_err.h"
+
+const char *tb_status_str(tb_status st) {
+  switch (st) {
+  case TB_OK:
+    return "ok";
+  case TB_ERR_IO:
+    return "io";
+  case TB_ERR_BAD_ARG:
+    return "bad_arg";
+  case TB_ERR_CORRUPT:
+    return "corrupt";
+  case TB_ERR_OOM:
+    return "oom";
+  default:
+    return "unknown";
+  }
+}
+
+root@34094591dd9d:/app#

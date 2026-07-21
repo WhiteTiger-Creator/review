@@ -1,0 +1,6 @@
+{
+  "analysis": "All scenario/profile/order combinations now satisfy the required invariants (no duplicate/missing events, contiguous submit ids, correct ordering). Determinism on identical flags/seed is confirmed, and different reconciliation orders produce different sequences with the same id coverage. Invalid scenario/profile/order invocations correctly fail and do not leave an output report file behind. Source changes were made in settle/nudge/merge/link to fix detach/reattach behavior and deduplication keys.",
+  "plan": "Mark task complete.",
+  "commands": [],
+  "task_complete": true
+}

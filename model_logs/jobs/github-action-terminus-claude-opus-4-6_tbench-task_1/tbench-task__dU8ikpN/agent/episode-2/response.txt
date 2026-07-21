@@ -1,0 +1,22 @@
+{
+  "analysis": "I can see the main entry point and CLI parsing. The CLI validates scenario, profile, and order. Let me continue reading the runtime, profile, script, and logic source files.",
+  "plan": "Continue reading source files to understand the full pipeline.",
+  "commands": [
+    {
+      "keystrokes": "cat /app/include/runtime/runtime.h\n",
+      "duration": 0.3
+    },
+    {
+      "keystrokes": "cat /app/src/runtime/runtime.c\n",
+      "duration": 0.3
+    },
+    {
+      "keystrokes": "cat /app/include/runtime/script.h\n",
+      "duration": 0.3
+    },
+    {
+      "keystrokes": "cat /app/src/runtime/script.c\n",
+      "duration": 0.3
+    }
+  ]
+}

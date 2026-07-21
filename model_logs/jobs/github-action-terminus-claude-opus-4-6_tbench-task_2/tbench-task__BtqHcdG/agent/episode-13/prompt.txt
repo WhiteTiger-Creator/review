@@ -1,0 +1,40 @@
+New Terminal Output:
+
+root@34094591dd9d:/app# arena --scenario stress2 --profile burst --order a_then_b --out /tmp/d1.json && arena --scenario stress2 --profile burst --order a_then_
+b --out /tmp/d2.json && diff /tmp/d1.json /tmp/d2.json && echo 'DETERMINISTIC'
+DETERMINISTIC
+root@34094591dd9d:/app# arena --scenario stress2 --profile burst --order a_then_b --out /tmp/s2.json && wc -c /app/run/state.bin && python3 -c "print(f'At least
+ 24: {$(wc -c < /app/run/state.bin) >= 24}')"
+24 /app/run/state.bin
+At least 24: True
+root@34094591dd9d:/app# arena --scenario stress2 --profile steady --order a_then_b --out /tmp/steady.json && python3 -c "
+> import json
+> data = json.load(open('/tmp/steady.json'))
+> events = data['events']
+> submits = [e for e in events if e['kind'] == 'submit']
+> completes = [e for e in events if e['kind'] == 'complete']
+> notifies = [e for e in events if e['kind'] == 'notify']
+> print(f'Submits: {len(submits)}, Completes: {len(completes)}, Notifies: {len(notifies)}')
+> submit_ids = set(e['id'] for e in submits)
+> complete_ids = set(e['id'] for e in completes)
+> notify_ids = set(e['id'] for e in notifies)
+> print(f'All match: {submit_ids == complete_ids == notify_ids}')
+> print(f'Contiguous: {submit_ids == set(range(1, len(submits)+1))}')
+> print(f'No dup submits: {len(submits) == len(submit_ids)}')
+> "
+Submits: 37, Completes: 37, Notifies: 37
+All match: True
+Contiguous: True
+No dup submits: True
+root@34094591dd9d:/app# python3 -c "
+> import json
+> # Verify basic+burst != stress+burst != stress2+burst
+> a = json.load(open('/app/output/report.json'))  # stress2/burst
+> b = json.load(open('/tmp/a.json'))  # stress/burst/a_then_b
+> c = json.load(open('/tmp/steady.json'))  # stress2/steady
+> print(f'stress2/burst != stress/burst: {a[\"events\"] != b[\"events\"]}')
+> print(f'stress2/burst != stress2/steady: {a[\"events\"] != c[\"events\"]}')
+> "
+stress2/burst != stress/burst: True
+stress2/burst != stress2/steady: True
+root@34094591dd9d:/app#

@@ -1,0 +1,22 @@
+{
+  "analysis": "All invariants pass perfectly:\n- Deterministic output (same flags = same result)\n- Different scenarios/profiles produce different outputs\n- Order a_then_b vs b_then_a: same IDs, different sequence\n- Journal is exactly 24 bytes for stress2 (2 detach cycles × 12 bytes)\n- IDs are contiguous 1..N\n- Each ID has exactly one submit, one complete, one notify\n- Ordering: submit < complete < notify in the log\n- Invalid inputs rejected with exit 2 and no output file\n\nLet me check if there's a test infrastructure that I need to prepare for.",
+  "plan": "Look for pytest infrastructure and run any existing tests. Also verify the ordering constraint for all scenarios with both orders.",
+  "commands": [
+    {
+      "keystrokes": "find / -path '/proc' -prune -o -path '/sys' -prune -o -name 'pytest*' -print 2>/dev/null | head -10\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "find / -path '/proc' -prune -o -path '/sys' -prune -o -name 'test_*' -print 2>/dev/null | head -10\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "pip list 2>/dev/null | grep -i pytest\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "python3 -c \"\nimport json\nfrom collections import defaultdict\n\ndef check(path):\n    data = json.load(open(path))\n    events = data['events']\n    positions = defaultdict(dict)\n    for i, e in enumerate(events):\n        positions[e['id']][e['kind']] = i\n    for id_, pos in positions.items():\n        assert 'submit' in pos and 'complete' in pos and 'notify' in pos, f'{path}: ID {id_} missing'\n        assert pos['submit'] < pos['complete'] < pos['notify'], f'{path}: ID {id_} order wrong'\n    # Check at most one per (kind, id)\n    from collections import Counter\n    c = Counter((e['kind'], e['id']) for e in events)\n    for k, v in c.items():\n        assert v == 1, f'{path}: duplicate {k}'\n    print(f'{path}: OK ({len(positions)} ids)')\n\ncheck('/tmp/a.json')  # stress/burst/a_then_b\ncheck('/tmp/b.json')  # stress/burst/b_then_a\ncheck('/tmp/d1.json')  # stress2/burst/a_then_b\ncheck('/tmp/steady.json')  # stress2/steady/a_then_b\n\"\n",
+      "duration": 1.0
+    }
+  ]
+}

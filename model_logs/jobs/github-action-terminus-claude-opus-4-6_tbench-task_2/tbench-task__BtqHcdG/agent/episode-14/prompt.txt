@@ -1,0 +1,47 @@
+New Terminal Output:
+
+root@34094591dd9d:/app# find / -path '/proc' -prune -o -path '/sys' -prune -o -name 'pytest*' -print 2>/dev/null | head -10
+/usr/local/bin/pytest
+/usr/local/lib/python3.11/dist-packages/_pytest/__pycache__/pytester.cpython-311.pyc
+/usr/local/lib/python3.11/dist-packages/_pytest/__pycache__/pytester_assertions.cpython-311.pyc
+/usr/local/lib/python3.11/dist-packages/_pytest/pytester.py
+/usr/local/lib/python3.11/dist-packages/_pytest/pytester_assertions.py
+/usr/local/lib/python3.11/dist-packages/pytest
+/usr/local/lib/python3.11/dist-packages/pytest-8.4.1.dist-info
+/usr/local/lib/python3.11/dist-packages/pytest_json_ctrf-0.3.5.dist-info
+root@34094591dd9d:/app# find / -path '/proc' -prune -o -path '/sys' -prune -o -name 'test_*' -print 2>/dev/null | head -10
+/usr/lib/python3.11/test/__pycache__/test_support.cpython-311.pyc
+/usr/lib/python3.11/test/test_support.py
+root@34094591dd9d:/app# pip list 2>/dev/null | grep -i pytest
+pytest           8.4.1
+pytest-json-ctrf 0.3.5
+root@34094591dd9d:/app# python3 -c "
+> import json
+> from collections import defaultdict
+>
+> def check(path):
+>     data = json.load(open(path))
+>     events = data['events']
+>     positions = defaultdict(dict)
+>     for i, e in enumerate(events):
+>         positions[e['id']][e['kind']] = i
+>     for id_, pos in positions.items():
+>         assert 'submit' in pos and 'complete' in pos and 'notify' in pos, f'{path}: ID {id_} missing'
+>         assert pos['submit'] < pos['complete'] < pos['notify'], f'{path}: ID {id_} order wrong'
+>     # Check at most one per (kind, id)
+>     from collections import Counter
+>     c = Counter((e['kind'], e['id']) for e in events)
+>     for k, v in c.items():
+>         assert v == 1, f'{path}: duplicate {k}'
+>     print(f'{path}: OK ({len(positions)} ids)')
+>
+> check('/tmp/a.json')  # stress/burst/a_then_b
+> check('/tmp/b.json')  # stress/burst/b_then_a
+> check('/tmp/d1.json')  # stress2/burst/a_then_b
+> check('/tmp/steady.json')  # stress2/steady/a_then_b
+> "
+/tmp/a.json: OK (110 ids)
+/tmp/b.json: OK (110 ids)
+/tmp/d1.json: OK (140 ids)
+/tmp/steady.json: OK (37 ids)
+root@34094591dd9d:/app#

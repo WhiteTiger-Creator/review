@@ -1,0 +1,61 @@
+New Terminal Output:
+
+root@34094591dd9d:/app# arena --scenario stress --profile burst --order a_then_b --out /app/output/report.json && python3 -c "
+> import json, sys
+> data = json.load(open('/app/output/report.json'))
+> events = data['events']
+> submits = [e for e in events if e['kind'] == 'submit']
+> completes = [e for e in events if e['kind'] == 'complete']
+> notifies = [e for e in events if e['kind'] == 'notify']
+> print(f'Submits: {len(submits)}, Completes: {len(completes)}, Notifies: {len(notifies)}')
+> submit_ids = set(e['id'] for e in submits)
+> complete_ids = set(e['id'] for e in completes)
+> notify_ids = set(e['id'] for e in notifies)
+> print(f'All completes have submit: {complete_ids <= submit_ids}')
+> print(f'All notifies have complete: {notify_ids <= complete_ids}')
+> print(f'All submits have complete: {submit_ids <= complete_ids}')
+> print(f'All completes have notify: {complete_ids <= notify_ids}')
+> print(f'IDs contiguous 1..N: {submit_ids == set(range(1, len(submits)+1))}')
+> print(f'No dup submits: {len(submits) == len(submit_ids)}')
+> print(f'No dup completes: {len(completes) == len(complete_ids)}')
+> print(f'No dup notifies: {len(notifies) == len(notify_ids)}')
+> "
+Submits: 110, Completes: 110, Notifies: 110
+All completes have submit: True
+All notifies have complete: True
+All submits have complete: True
+All completes have notify: True
+IDs contiguous 1..N: True
+No dup submits: True
+No dup completes: True
+No dup notifies: True
+root@34094591dd9d:/app# arena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json && python3 -c "
+> import json, sys
+> data = json.load(open('/app/output/report.json'))
+> events = data['events']
+> submits = [e for e in events if e['kind'] == 'submit']
+> completes = [e for e in events if e['kind'] == 'complete']
+> notifies = [e for e in events if e['kind'] == 'notify']
+> print(f'Submits: {len(submits)}, Completes: {len(completes)}, Notifies: {len(notifies)}')
+> submit_ids = set(e['id'] for e in submits)
+> complete_ids = set(e['id'] for e in completes)
+> notify_ids = set(e['id'] for e in notifies)
+> print(f'All completes have submit: {complete_ids <= submit_ids}')
+> print(f'All notifies have complete: {notify_ids <= complete_ids}')
+> print(f'All submits have complete: {submit_ids <= complete_ids}')
+> print(f'All completes have notify: {complete_ids <= notify_ids}')
+> print(f'IDs contiguous 1..N: {submit_ids == set(range(1, len(submits)+1))}')
+> print(f'No dup submits: {len(submits) == len(submit_ids)}')
+> print(f'No dup completes: {len(completes) == len(complete_ids)}')
+> print(f'No dup notifies: {len(notifies) == len(notify_ids)}')
+> "
+Submits: 140, Completes: 140, Notifies: 140
+All completes have submit: True
+All notifies have complete: True
+All submits have complete: True
+All completes have notify: True
+IDs contiguous 1..N: True
+No dup submits: True
+No dup completes: True
+No dup notifies: True
+root@34094591dd9d:/app#

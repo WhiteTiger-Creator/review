@@ -1,0 +1,343 @@
+New Terminal Output:
+
+root@e252228b7510:/app# sed -n '1,260p' /app/include/core/ev.h
+#pragma once
+
+#include <stdint.h>
+
+typedef enum {
+  TB_EV_SUBMIT = 1,
+  TB_EV_DONE = 2,
+  TB_EV_POKE = 3,
+} tb_ev_kind;
+
+typedef struct {
+  tb_ev_kind kind;
+  uint32_t id;
+} tb_event;
+
+root@e252228b7510:/app# sed -n '1,260p' /app/src/report.c
+#include "report.h"
+
+#include <stdio.h>
+
+static const char *kind_str(tb_ev_kind k) {
+  switch (k) {
+  case TB_EV_SUBMIT:
+    return "submit";
+  case TB_EV_DONE:
+    return "complete";
+  case TB_EV_POKE:
+    return "notify";
+  default:
+    return "unknown";
+  }
+}
+
+int tb_report_write_json(const char *path, tb_scenario scn, tb_profile prof, const tb_vec_ev *evs) {
+  FILE *f = fopen(path, "wb");
+  if (!f)
+    return 1;
+
+  fprintf(f, "{\n");
+  fprintf(f, "  \"scenario\": \"%s\",\n", tb_scenario_str(scn));
+  fprintf(f, "  \"profile\": \"%s\",\n", tb_profile_str(prof));
+  fprintf(f, "  \"events\": [\n");
+  for (size_t i = 0; i < evs->len; i++) {
+    const tb_event *ev = &evs->v[i];
+    fprintf(f, "    {\"kind\": \"%s\", \"id\": %u}%s\n", kind_str(ev->kind), ev->id,
+            (i + 1 == evs->len) ? "" : ",");
+  }
+  fprintf(f, "  ]\n");
+  fprintf(f, "}\n");
+  fclose(f);
+  return 0;
+}
+
+root@e252228b7510:/app# sed -n '1,260p' /app/include/logic/ingest.h
+#pragma once
+
+#include "tb_err.h"
+#include "runtime/runtime.h"
+
+tb_status tb_ingest_tick(tb_rt *rt, tb_profile prof, uint32_t tick, uint32_t *submitted_out);
+
+root@e252228b7510:/app# sed -n '1,360p' /app/src/logic/ingest.c
+#include "logic/ingest.h"
+
+#include "core/ev.h"
+#include "runtime/profile.h"
+
+static uint64_t make_token(uint32_t gen, uint64_t cursor) { return (((uint64_t)gen) << 32) ^ cursor; }
+
+tb_status tb_ingest_tick(tb_rt *rt, tb_profile prof, uint32_t tick, uint32_t *submitted_out) {
+  if (!rt || !submitted_out)
+    return TB_ERR_BAD_ARG;
+
+  uint32_t n = tb_profile_should_submit(prof, tick);
+  *submitted_out = n;
+
+  for (uint32_t i = 0; i < n; i++) {
+    uint32_t id = (uint32_t)(rt->cursor & 0xffffffffu);
+    uint64_t token = make_token(rt->gen, rt->cursor);
+    rt->cursor++;
+
+    if (!tb_map_u64_put(&rt->token_to_id, token, (uint64_t)id))
+      return TB_ERR_OOM;
+    if (!tb_q64_push(&rt->in_q, token))
+      return TB_ERR_CORRUPT;
+
+    tb_event ev = {.kind = TB_EV_SUBMIT, .id = id};
+    if (!tb_vec_ev_push(&rt->evlog, ev))
+      return TB_ERR_OOM;
+  }
+
+  return TB_OK;
+}
+
+root@e252228b7510:/app# sed -n '1,360p' /app/include/logic/link.h
+#pragma once
+
+#include "tb_err.h"
+#include "runtime/runtime.h"
+
+tb_status tb_link_detach(tb_rt *rt, uint32_t tick);
+tb_status tb_link_attach(tb_rt *rt, uint32_t tick);
+
+root@e252228b7510:/app# sed -n '1,460p' /app/src/logic/link.c
+#include "logic/link.h"
+
+#include "io/journal.h"
+
+#include <string.h>
+
+tb_status tb_link_detach(tb_rt *rt, uint32_t tick) {
+  (void)tick;
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+  if (!rt->attached)
+    return TB_OK;
+
+  rt->attached = false;
+
+  tb_stamp s = {.gen = rt->gen, .cursor = rt->cursor};
+  tb_status st = journal_append_stamp(rt->journal_path, s);
+  if (st != TB_OK)
+    return st;
+
+  // A "device-side" queue continues to exist while detached; the notifier doesn't.
+  tb_q64_clear(&rt->notify_q);
+  return TB_OK;
+}
+
+tb_status tb_link_attach(tb_rt *rt, uint32_t tick) {
+  (void)tick;
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+  if (rt->attached)
+    return TB_OK;
+
+  tb_stamp last = {0};
+  bool found = false;
+  tb_status st = journal_load_last(rt->journal_path, &last, &found);
+  if (st != TB_OK)
+    return st;
+  if (found) {
+    rt->gen = last.gen + 1;
+    rt->cursor = last.cursor;
+  }
+
+  rt->attached = true;
+  return TB_OK;
+}
+
+root@e252228b7510:/app# sed -n '1,360p' /app/include/logic/merge.h
+#pragma once
+
+#include "tb_err.h"
+#include "runtime/runtime.h"
+
+tb_status tb_merge_drain(tb_rt *rt, uint32_t tick, tb_order ord);
+
+root@e252228b7510:/app# sed -n '1,520p' /app/src/logic/merge.c
+#include "logic/merge.h"
+
+#include "core/ev.h"
+
+static bool drain_one(tb_rt *rt, tb_q64 *q, uint32_t tick) {
+  (void)tick;
+  uint64_t token = 0;
+  if (!tb_q64_pop(q, &token))
+    return false;
+
+  uint64_t key = (uint32_t)token;
+
+  if (!tb_map_u64_has(&rt->token_done, key)) {
+    uint64_t id64 = 0;
+    if (!tb_map_u64_get(&rt->token_to_id, token, &id64)) {
+      return true;
+    }
+    (void)tb_map_u64_put(&rt->token_done, key, 1);
+    tb_event ev = {.kind = TB_EV_DONE, .id = (uint32_t)id64};
+    (void)tb_vec_ev_push(&rt->evlog, ev);
+  }
+  return true;
+}
+
+tb_status tb_merge_drain(tb_rt *rt, uint32_t tick, tb_order ord) {
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+
+  tb_q64 *a = &rt->done_a;
+  tb_q64 *b = &rt->done_b;
+
+  if (ord == TB_ORDER_A_THEN_B) {
+    while (drain_one(rt, a, tick)) {
+    }
+    while (drain_one(rt, b, tick)) {
+    }
+  } else {
+    while (drain_one(rt, b, tick)) {
+    }
+    while (drain_one(rt, a, tick)) {
+    }
+  }
+
+  return TB_OK;
+}
+root@e252228b7510:/app# sed -n '1,360p' /app/include/logic/nudge.h
+#pragma once
+
+#include "tb_err.h"
+#include "runtime/runtime.h"
+
+tb_status tb_nudge_drain(tb_rt *rt, uint32_t tick);
+
+root@e252228b7510:/app# sed -n '1,420p' /app/src/logic/nudge.c
+#include "logic/nudge.h"
+
+#include "core/ev.h"
+
+tb_status tb_nudge_drain(tb_rt *rt, uint32_t tick) {
+  (void)tick;
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+
+  uint64_t token = 0;
+  while (tb_q64_pop(&rt->notify_q, &token)) {
+    uint64_t key = (uint32_t)token;
+    if (!tb_map_u64_has(&rt->token_done, key)) {
+      continue;
+    }
+    uint64_t id64 = 0;
+    if (!tb_map_u64_get(&rt->token_to_id, token, &id64))
+      continue;
+    tb_event ev = {.kind = TB_EV_POKE, .id = (uint32_t)id64};
+    (void)tb_vec_ev_push(&rt->evlog, ev);
+  }
+  return TB_OK;
+}
+root@e252228b7510:/app# sed -n '1,360p' /app/include/logic/settle.h
+#pragma once
+
+#include "tb_err.h"
+#include "runtime/runtime.h"
+
+tb_status tb_settle_tick(tb_rt *rt, uint32_t tick);
+
+root@e252228b7510:/app# sed -n '1,520p' /app/src/logic/settle.c
+#include "logic/settle.h"
+
+#include "runtime/runtime.h"
+
+// Deterministic "work takes time": only move certain tokens each tick.
+static bool ready(uint64_t token, uint32_t tick) {
+  // spread completion across ticks, but deterministic and input-dependent
+  return (((uint32_t)token) ^ tick) % 3 == 0;
+}
+
+static bool lane_a(uint64_t token, uint32_t tick) {
+  // Choose which completion source produced the "done" record.
+  return ((((uint32_t)(token >> 32)) + (uint32_t)token + tick) & 1u) == 0u;
+}
+
+tb_status tb_settle_tick(tb_rt *rt, uint32_t tick) {
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+
+  // rotate through at most a bounded number so runs are stable
+  size_t spins = rt->in_q.len;
+  for (size_t i = 0; i < spins; i++) {
+    uint64_t token = 0;
+    if (!tb_q64_pop(&rt->in_q, &token))
+      break;
+
+    if (ready(token, tick)) {
+      if (lane_a(token, tick)) {
+        if (!tb_q64_push(&rt->done_a, token))
+          return TB_ERR_CORRUPT;
+      } else {
+        if (!tb_q64_push(&rt->done_b, token))
+          return TB_ERR_CORRUPT;
+      }
+      if (rt->attached) {
+        // The notifier is only live while attached.
+        if (!tb_q64_push(&rt->notify_q, token))
+          return TB_ERR_CORRUPT;
+      }
+    } else {
+      // not ready, requeue at tail
+      if (!tb_q64_push(&rt->in_q, token))
+        return TB_ERR_CORRUPT;
+    }
+  }
+
+  return TB_OK;
+}
+
+root@e252228b7510:/app# apply_patch <<'PATCH'
+> *** Begin Patch
+> *** Update File: /app/src/io/journal.c
+> @@
+>  static tb_status append_rec(FILE *f, tb_stamp s) {
+>    if (!fs_write_u32(f, s.gen))
+>      return TB_ERR_IO;
+> -
+> -  uint32_t lo = (uint32_t)s.cursor;
+> -  if (!fs_write_u32(f, lo))
+> -    return TB_ERR_IO;
+> +
+> +  // Cursor is a full 64-bit value.
+> +  uint32_t lo = (uint32_t)(s.cursor & 0xffffffffu);
+> +  uint32_t hi = (uint32_t)((s.cursor >> 32) & 0xffffffffu);
+> +  if (!fs_write_u32(f, lo))
+> +    return TB_ERR_IO;
+> +  if (!fs_write_u32(f, hi))
+> +    return TB_ERR_IO;
+> @@
+>  static bool read_rec(FILE *f, tb_stamp *out) {
+>    uint32_t gen = 0;
+>    if (!fs_read_u32(f, &gen))
+>      return false;
+> @@
+>    uint32_t lo = 0;
+>    if (!fs_read_u32(f, &lo))
+>      return false;
+> +
+> +  uint32_t hi = 0;
+> +  if (!fs_read_u32(f, &hi))
+> +    return false;
+> @@
+>    out->gen = gen;
+> -  out->cursor = (uint64_t)lo;
+> +  out->cursor = ((uint64_t)hi << 32) | (uint64_t)lo;
+>    return true;
+>  }
+> *** End Patch
+> PATCH
+bash: apply_patch: command not found
+root@e252228b7510:/app# make -C /app -j
+make: Entering directory '/app'
+make: '/usr/local/bin/arena' is up to date.
+make: Leaving directory '/app'
+root@e252228b7510:/app#

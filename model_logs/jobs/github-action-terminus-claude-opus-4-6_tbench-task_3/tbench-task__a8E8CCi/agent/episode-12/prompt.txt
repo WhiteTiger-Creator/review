@@ -1,0 +1,68 @@
+New Terminal Output:
+
+root@0af9d3038c81:/app# arena --scenario basic --profile steady --order a_then_b --out /app/output/basic_steady.json && echo OK
+OK
+root@0af9d3038c81:/app# arena --scenario stress2 --profile steady --order b_then_a --out /app/output/stress2_steady_b.json && echo OK
+OK
+root@0af9d3038c81:/app# python3 -c "
+> import json
+>
+> def load_seq(path):
+>     with open(path) as f:
+>         data = json.load(f)
+>     return [(e['kind'], e['id']) for e in data['events']]
+>
+> pairs = [
+>     ('basic_burst_a', '/app/output/report.json'),
+>     ('basic_steady_a', '/app/output/basic_steady.json'),
+>     ('stress_burst_a', '/app/output/stress_a.json'),
+>     ('stress2_steady_b', '/app/output/stress2_steady_b.json'),
+> ]
+> seqs = {}
+> for name, path in pairs:
+>     seqs[name] = load_seq(path)
+>
+> # All different
+> names = list(seqs.keys())
+> for i in range(len(names)):
+>     for j in range(i+1, len(names)):
+>         same = seqs[names[i]] == seqs[names[j]]
+>         if same:
+>             print(f'FAIL: {names[i]} == {names[j]}')
+>         else:
+>             print(f'OK: {names[i]} != {names[j]}')
+> "
+OK: basic_burst_a != basic_steady_a
+OK: basic_burst_a != stress_burst_a
+OK: basic_burst_a != stress2_steady_b
+OK: basic_steady_a != stress_burst_a
+OK: basic_steady_a != stress2_steady_b
+OK: stress_burst_a != stress2_steady_b
+root@0af9d3038c81:/app# python3 -c "
+> import json
+> # Check tick-driven interleaving: completes should not all be at the end
+> with open('/app/output/stress_a.json') as f:
+>     data = json.load(f)
+> events = data['events']
+> n = len(events)
+> # Check that submits and completes are interleaved (not all submits first then all completes)
+> submit_positions = [i for i,e in enumerate(events) if e['kind']=='submit']
+> complete_positions = [i for i,e in enumerate(events) if e['kind']=='complete']
+> max_submit_pos = max(submit_positions)
+> min_complete_pos = min(complete_positions)
+> print(f'First complete at position {min_complete_pos}, last submit at position {max_submit_pos}')
+> print(f'Interleaved: {min_complete_pos < max_submit_pos}')
+> # Check submits and completes not all bunched
+> third = n // 3
+> mid_completes = [p for p in complete_positions if third <= p <= 2*third]
+> print(f'Completes in middle third: {len(mid_completes)} (should be > 0)')
+> "
+First complete at position 3, last submit at position 325
+Interleaved: True
+Completes in middle third: 39 (should be > 0)
+root@0af9d3038c81:/app# # Verify journal stamp size for stress2 (2 detaches = 24 bytes minimum)
+root@0af9d3038c81:/app# rm -f /app/run/state.bin
+root@0af9d3038c81:/app# arena --scenario stress2 --profile burst --order a_then_b --out /app/output/stress2_check.json
+root@0af9d3038c81:/app# ls -la /app/run/state.bin
+-rw-r--r-- 1 root root 24 May 26 12:52 /app/run/state.bin
+root@0af9d3038c81:/app#

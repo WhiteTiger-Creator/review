@@ -1,0 +1,31 @@
+{
+  "analysis": "Journal stamping is now correct: /app/run/state.bin is 24 bytes with two 12-byte records, matching stress2’s two detach cycles. However, the report got worse: now every id is missing notify (sub+complete exist, notify absent), suggesting notify emission is gated on attached state and we preserved notify_q but never drain it into notify events after reattach (or at all). Also submit ids still duplicated / not contiguous: 140 submits but max id 118, and duplicates increased. That implies id generation/cursor handling still wrong beyond journal truncation; likely cursor is being reset/rewound on attach (cursor=last.cursor) when it should resume from >last.cursor, or cursor represents something else (next id) and we’re restoring incorrectly. We need to inspect runtime/idgen/ingest/nudge/settle to see how ids and cursor are used, and how notify events are produced.",
+  "plan": "1) Locate where TB_EV_NOTIFY is emitted and how notify_q is drained (likely logic/nudge.c). Adjust so notify events are produced for every completion, but only when attached; when detached, queue them, and after reattach drain queued ids into notify events.\n2) Inspect id generation: core/idgen.c and runtime/runtime.c cursor usage. Ensure ids are monotonically increasing and never restored backward. On attach, cursor should likely be last.cursor + 1 (or maintain separate persisted cursor and next_id). Also ensure detach stamps current cursor correctly (maybe should stamp next id).\n3) After changes, rebuild and re-run stress2; validate: submit ids contiguous 1..N, exactly one complete and notify per id, and ordering constraints.",
+  "commands": [
+    {
+      "keystrokes": "grep -RIn --line-number \"TB_EV_NOTIFY\\|notify_q\\|tb_nudge\\|EV_NOTIFY\\|notify\" /app/src/logic /app/src/runtime /app/include/logic /app/include/runtime\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "sed -n '1,240p' /app/src/logic/nudge.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,240p' /app/src/runtime/runtime.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,200p' /app/src/core/idgen.c; sed -n '1,120p' /app/include/core/idgen.h\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,220p' /app/src/logic/ingest.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,260p' /app/src/logic/settle.c\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

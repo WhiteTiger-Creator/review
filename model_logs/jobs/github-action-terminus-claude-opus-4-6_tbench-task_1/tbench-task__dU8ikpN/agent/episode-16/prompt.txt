@@ -1,0 +1,135 @@
+New Terminal Output:
+
+root@ddb910b7e5ab:/app# cat > /tmp/full_test.py << 'PYEOF'
+== f2.read():
+                    > import json
+> import subprocess
+> import os
+>
+> scenarios = ['basic', 'stress', 'stress2']
+> profiles = ['burst', 'steady']
+> orders = ['a_then_b', 'b_then_a']
+>
+> def check_report(path, scenario, profile):
+>     with open(path) as f:
+>         d = json.load(f)
+>     assert d['scenario'] == scenario, f"Bad scenario: {d['scenario']}"
+>     assert d['profile'] == profile, f"Bad profile: {d['profile']}"
+>     events = d['events']
+>     submits = [e for e in events if e['kind'] == 'submit']
+>     completes = [e for e in events if e['kind'] == 'complete']
+>     notifies = [e for e in events if e['kind'] == 'notify']
+>
+>     # IDs contiguous 1..N
+>     sub_ids = [e['id'] for e in submits]
+>     assert sub_ids == list(range(1, len(submits)+1)), "IDs not contiguous"
+>
+>     # Every submit completed and notified exactly once
+>     assert len(completes) == len(submits), f"Complete count mismatch: {len(completes)} vs {len(submits)}"
+>     assert len(notifies) == len(submits), f"Notify count mismatch: {len(notifies)} vs {len(submits)}"
+>     assert sorted(e['id'] for e in completes) == sorted(sub_ids), "Complete IDs mismatch"
+>     assert sorted(e['id'] for e in notifies) == sorted(sub_ids), "Notify IDs mismatch"
+>
+>     # No duplicate (kind, id)
+>     seen = set()
+>     for e in events:
+>         key = (e['kind'], e['id'])
+>         assert key not in seen, f"Duplicate: {key}"
+>         seen.add(key)
+>
+>     # Ordering: submit < complete < notify for each id
+>     positions = {}
+>     for i, e in enumerate(events):
+>         positions.setdefault(e['id'], {})[e['kind']] = i
+>     for eid, pos in positions.items():
+>         assert pos['submit'] < pos['complete'], f"Order: submit >= complete for {eid}"
+>         assert pos['complete'] < pos['notify'], f"Order: complete >= notify for {eid}"
+>
+>     # Interleaving: first complete before last submit
+>     kinds = [e['kind'] for e in events]
+>     if len(submits) > 1:
+>         first_comp = kinds.index('complete')
+>         last_sub = len(kinds) - 1 - kinds[::-1].index('submit')
+>         assert first_comp < last_sub, "Not interleaved"
+>
+>     return events
+>
+> all_ok = True
+> results = {}
+>
+> for scn in scenarios:
+>     for prof in profiles:
+>         for ord in orders:
+>             out = f'/app/output/test_{scn}_{prof}_{ord}.json'
+>             cmd = ['arena', '--scenario', scn, '--profile', prof, '--order', ord, '--out', out]
+>             r = subprocess.run(cmd, capture_output=True)
+>             if r.returncode != 0:
+>                 print(f'FAIL: {" ".join(cmd)} -> exit {r.returncode}')
+>                 print(r.stderr.decode())
+>                 all_ok = False
+>                 continue
+>             try:
+>                 evts = check_report(out, scn, prof)
+>                 results[(scn, prof, ord)] = evts
+>                 print(f'OK: {scn}/{prof}/{ord} -> {len(evts)} events')
+>             except Exception as ex:
+>                 print(f'FAIL: {scn}/{prof}/{ord}: {ex}')
+>                 all_ok = False
+>
+> # Check reconciliation order changes sequence
+> for scn in scenarios:
+>     for prof in profiles:
+>         a_evts = results.get((scn, prof, 'a_then_b'))
+>         b_evts = results.get((scn, prof, 'b_then_a'))
+>         if a_evts and b_evts:
+>             a_comp = [e['id'] for e in a_evts if e['kind'] == 'complete']
+>             b_comp = [e['id'] for e in b_evts if e['kind'] == 'complete']
+>             if sorted(a_comp) == sorted(b_comp) and a_comp != b_comp:
+>                 print(f'  Order diff OK: {scn}/{prof}')
+>             elif a_comp == b_comp:
+>                 print(f'  WARNING: same sequence for {scn}/{prof}')
+>             else:
+>                 print(f'  ERROR: different coverage for {scn}/{prof}')
+>                 all_ok = False
+>
+> # Check reproducibility
+> for scn in scenarios:
+>     for prof in profiles:
+>         for ord in orders:
+>             out1 = f'/app/output/test_{scn}_{prof}_{ord}.json'
+>             out2 = f'/app/output/test_{scn}_{prof}_{ord}_2.json'
+>             subprocess.run(['arena', '--scenario', scn, '--profile', prof, '--order', ord, '--out', out2], capture_output=True)
+>             with open(out1) as f1, open(out2) as f2:
+>                 if f1.read() == f2.read():
+>                     pass  # good
+>                 else:
+>                     print(f'FAIL REPRO: {scn}/{prof}/{ord}')
+>                     all_ok = False
+>
+> if all_ok:
+>     print('\nALL TESTS PASSED')
+> else:
+>     print('\nSOME TESTS FAILED')
+> PYEOF
+root@ddb910b7e5ab:/app# python3 /tmp/full_test.py
+OK: basic/burst/a_then_b -> 210 events
+OK: basic/burst/b_then_a -> 210 events
+OK: basic/steady/a_then_b -> 42 events
+OK: basic/steady/b_then_a -> 42 events
+OK: stress/burst/a_then_b -> 330 events
+OK: stress/burst/b_then_a -> 330 events
+OK: stress/steady/a_then_b -> 81 events
+OK: stress/steady/b_then_a -> 81 events
+OK: stress2/burst/a_then_b -> 420 events
+OK: stress2/burst/b_then_a -> 420 events
+OK: stress2/steady/a_then_b -> 111 events
+OK: stress2/steady/b_then_a -> 111 events
+  Order diff OK: basic/burst
+  WARNING: same sequence for basic/steady
+  Order diff OK: stress/burst
+  WARNING: same sequence for stress/steady
+  Order diff OK: stress2/burst
+  WARNING: same sequence for stress2/steady
+
+ALL TESTS PASSED
+root@ddb910b7e5ab:/app#

@@ -1,0 +1,18 @@
+{
+  "analysis": "All tests pass perfectly:\n- Deterministic output\n- Journal exactly 24 bytes for stress2 (2 × 12 bytes)\n- All ID invariants hold\n- Ordering constraints satisfied\n- Invalid inputs rejected\n- Different flags produce different sequences\n- Same flags produce same sequences\n\nThe test file `/tests/test_outputs.py` doesn't exist yet - it will be created by the verifier during grading. Let me also test a couple more edge cases to make sure everything is solid.",
+  "plan": "Run comprehensive final checks including b_then_a for stress2/steady, and verify the basic/steady combination works.",
+  "commands": [
+    {
+      "keystrokes": "arena --scenario basic --profile steady --order b_then_a --out /tmp/basic_steady_b.json && python3 -c \"\nimport json\nfrom collections import defaultdict, Counter\ndata = json.load(open('/tmp/basic_steady_b.json'))\nassert data['scenario'] == 'basic'\nassert data['profile'] == 'steady'\nevents = data['events']\nsubmits = [e for e in events if e['kind'] == 'submit']\ncompletes = [e for e in events if e['kind'] == 'complete']\nnotifies = [e for e in events if e['kind'] == 'notify']\nassert len(submits) == len(completes) == len(notifies)\nsubmit_ids = set(e['id'] for e in submits)\nassert submit_ids == set(range(1, len(submits)+1))\nassert len(Counter((e['kind'], e['id']) for e in events)) == len(events)  # no dups\npositions = defaultdict(dict)\nfor i, e in enumerate(events):\n    positions[e['id']][e['kind']] = i\nfor id_, pos in positions.items():\n    assert pos['submit'] < pos['complete'] < pos['notify']\nprint(f'basic/steady/b_then_a: PASS ({len(submits)} ids)')\n\"\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "arena --scenario stress2 --profile steady --order b_then_a --out /tmp/s2_steady_b.json && python3 -c \"\nimport json\nfrom collections import defaultdict, Counter\ndata = json.load(open('/tmp/s2_steady_b.json'))\nevents = data['events']\nsubmits = [e for e in events if e['kind'] == 'submit']\nassert len(submits) == len([e for e in events if e['kind'] == 'complete']) == len([e for e in events if e['kind'] == 'notify'])\nsubmit_ids = set(e['id'] for e in submits)\nassert submit_ids == set(range(1, len(submits)+1))\nassert len(Counter((e['kind'], e['id']) for e in events)) == len(events)\npositions = defaultdict(dict)\nfor i, e in enumerate(events):\n    positions[e['id']][e['kind']] = i\nfor id_, pos in positions.items():\n    assert pos['submit'] < pos['complete'] < pos['notify']\nprint(f'stress2/steady/b_then_a: PASS ({len(submits)} ids)')\n# Check different from a_then_b\ndata2 = json.load(open('/tmp/steady.json'))  # stress2/steady/a_then_b\nassert [(e['kind'], e['id']) for e in data['events']] != [(e['kind'], e['id']) for e in data2['events']]\nprint('Different order: PASS')\n\"\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "# Verify submit IDs always appear in order 1, 2, 3, ..., N in the log\npython3 -c \"\nimport json\nfor f in ['/tmp/a.json', '/tmp/b.json', '/tmp/d1.json', '/tmp/steady.json', '/tmp/basic_steady_b.json', '/tmp/s2_steady_b.json']:\n    data = json.load(open(f))\n    submits = [e['id'] for e in data['events'] if e['kind'] == 'submit']\n    assert submits == list(range(1, len(submits)+1)), f'{f}: submits not in order'\n    print(f'{f}: submits in order 1..{len(submits)}')\n\"\n",
+      "duration": 1.0
+    }
+  ]
+}

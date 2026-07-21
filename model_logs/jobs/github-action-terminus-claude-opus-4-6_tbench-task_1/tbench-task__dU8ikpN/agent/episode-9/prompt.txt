@@ -1,0 +1,18 @@
+New Terminal Output:
+
+root@ddb910b7e5ab:/app# mkdir -p /app/output && /usr/local/bin/arena --scenario basic --profile burst --order a_then_b --out /app/output/report.json && echo OK
+OK
+root@ddb910b7e5ab:/app# cat /app/output/report.json | python3 -c "import json,sys; d=json.load(sys.stdin); events=d['events']; print(f'Total events: {len(events
+)}'); kinds={e['kind'] for e in events}; print(f'Kinds: {kinds}'); submits=[e for e in events if e['kind']=='submit']; completes=[e for e in events if e['kind']
+=='complete']; notifies=[e for e in events if e['kind']=='notify']; print(f'Submits: {len(submits)}, Completes: {len(completes)}, Notifies: {len(notifies)}'); s
+ub_ids=[e['id'] for e in submits]; print(f'Submit IDs: {sub_ids[:10]}...{sub_ids[-5:]}'); print(f'IDs contiguous 1..N: {sub_ids == list(range(1, len(submits)+1)
+)}'); comp_ids=sorted(e['id'] for e in completes); print(f'All submitted completed: {comp_ids == sorted(sub_ids)}'); notify_ids=sorted(e['id'] for e in notifies
+); print(f'All completed notified: {notify_ids == comp_ids}')"
+Total events: 210
+Kinds: {'complete', 'submit', 'notify'}
+Submits: 70, Completes: 70, Notifies: 70
+Submit IDs: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]...[66, 67, 68, 69, 70]
+IDs contiguous 1..N: True
+All submitted completed: True
+All completed notified: True
+root@ddb910b7e5ab:/app#

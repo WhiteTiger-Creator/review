@@ -1,0 +1,238 @@
+New Terminal Output:
+
+root@11b6bf757a9f:/app# cat /app/include/core/ev.h
+#pragma once
+
+#include <stdint.h>
+
+typedef enum {
+  TB_EV_SUBMIT = 1,
+  TB_EV_DONE = 2,
+  TB_EV_POKE = 3,
+} tb_ev_kind;
+
+typedef struct {
+  tb_ev_kind kind;
+  uint32_t id;
+} tb_event;
+
+root@11b6bf757a9f:/app# cat /app/src/report.c
+#include "report.h"
+
+#include <stdio.h>
+
+static const char *kind_str(tb_ev_kind k) {
+  switch (k) {
+  case TB_EV_SUBMIT:
+    return "submit";
+  case TB_EV_DONE:
+    return "complete";
+  case TB_EV_POKE:
+    return "notify";
+  default:
+    return "unknown";
+  }
+}
+
+int tb_report_write_json(const char *path, tb_scenario scn, tb_profile prof, const tb_vec_ev *evs) {
+  FILE *f = fopen(path, "wb");
+  if (!f)
+    return 1;
+
+  fprintf(f, "{\n");
+  fprintf(f, "  \"scenario\": \"%s\",\n", tb_scenario_str(scn));
+  fprintf(f, "  \"profile\": \"%s\",\n", tb_profile_str(prof));
+  fprintf(f, "  \"events\": [\n");
+  for (size_t i = 0; i < evs->len; i++) {
+    const tb_event *ev = &evs->v[i];
+    fprintf(f, "    {\"kind\": \"%s\", \"id\": %u}%s\n", kind_str(ev->kind), ev->id,
+            (i + 1 == evs->len) ? "" : ",");
+  }
+  fprintf(f, "  ]\n");
+  fprintf(f, "}\n");
+  fclose(f);
+  return 0;
+}
+
+root@11b6bf757a9f:/app# cat /app/include/report.h
+#pragma once
+
+#include "core/vec_ev.h"
+#include "runtime/profile.h"
+#include "runtime/script.h"
+
+#include <stdint.h>
+
+// Writes report.json as described in instruction.md.
+int tb_report_write_json(const char *path, tb_scenario scn, tb_profile prof, const tb_vec_ev *evs);
+
+root@11b6bf757a9f:/app# cat /app/src/io/journal.c
+#include "io/journal.h"
+
+#include "io/fs.h"
+
+#include <errno.h>
+#include <stdio.h>
+
+static tb_status append_rec(FILE *f, tb_stamp s) {
+  if (!fs_write_u32(f, s.gen))
+    return TB_ERR_IO;
+
+  uint32_t lo = (uint32_t)s.cursor;
+  if (!fs_write_u32(f, lo))
+    return TB_ERR_IO;
+
+  return TB_OK;
+}
+
+static bool read_rec(FILE *f, tb_stamp *out) {
+  uint32_t gen = 0;
+  if (!fs_read_u32(f, &gen))
+    return false;
+
+  uint32_t lo = 0;
+  if (!fs_read_u32(f, &lo))
+    return false;
+
+  out->gen = gen;
+  out->cursor = (uint64_t)lo;
+  return true;
+}
+
+tb_status journal_append_stamp(const char *path, tb_stamp s) {
+  FILE *f = fopen(path, "ab");
+  if (!f)
+    return TB_ERR_IO;
+  tb_status st = append_rec(f, s);
+  if (fclose(f) != 0)
+    return TB_ERR_IO;
+  return st;
+}
+
+tb_status journal_load_last(const char *path, tb_stamp *out, bool *found) {
+  if (!out || !found)
+    return TB_ERR_BAD_ARG;
+
+  FILE *f = fopen(path, "rb");
+  if (!f) {
+    if (errno == ENOENT) {
+      *found = false;
+      return TB_OK;
+    }
+    return TB_ERR_IO;
+  }
+
+  tb_stamp cur = {0};
+  bool any = false;
+  while (read_rec(f, &cur)) {
+    any = true;
+  }
+  fclose(f);
+  if (!any) {
+    *found = false;
+    return TB_OK;
+  }
+  *found = true;
+  *out = cur;
+  return TB_OK;
+}
+root@11b6bf757a9f:/app# cat /app/include/io/journal.h
+#pragma once
+
+#include "tb_err.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+
+typedef struct {
+  uint32_t gen;
+  uint64_t cursor;
+} tb_stamp;
+
+tb_status journal_append_stamp(const char *path, tb_stamp s);
+tb_status journal_load_last(const char *path, tb_stamp *out, bool *found);
+
+root@11b6bf757a9f:/app# cat /app/include/core/queue.h
+#pragma once
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+typedef struct {
+  uint64_t *buf;
+  size_t cap;
+  size_t len;
+  size_t head;
+} tb_q64;
+
+bool tb_q64_init(tb_q64 *q, size_t cap);
+void tb_q64_free(tb_q64 *q);
+
+bool tb_q64_push(tb_q64 *q, uint64_t v);
+bool tb_q64_pop(tb_q64 *q, uint64_t *out);
+bool tb_q64_empty(const tb_q64 *q);
+void tb_q64_clear(tb_q64 *q);
+
+root@11b6bf757a9f:/app# cat /app/src/core/queue.c
+#include "core/queue.h"
+
+#include <stdlib.h>
+#include <string.h>
+
+bool tb_q64_init(tb_q64 *q, size_t cap) {
+  if (!q || cap == 0)
+    return false;
+  q->buf = (uint64_t *)calloc(cap, sizeof(uint64_t));
+  if (!q->buf)
+    return false;
+  q->cap = cap;
+  q->len = 0;
+  q->head = 0;
+  return true;
+}
+
+void tb_q64_free(tb_q64 *q) {
+  if (!q)
+    return;
+  free(q->buf);
+  q->buf = NULL;
+  q->cap = 0;
+  q->len = 0;
+  q->head = 0;
+}
+
+static size_t idx(const tb_q64 *q, size_t i) { return (q->head + i) % q->cap; }
+
+bool tb_q64_push(tb_q64 *q, uint64_t v) {
+  if (!q || !q->buf)
+    return false;
+  if (q->len == q->cap)
+    return false;
+  q->buf[idx(q, q->len)] = v;
+  q->len++;
+  return true;
+}
+
+bool tb_q64_pop(tb_q64 *q, uint64_t *out) {
+  if (!q || !q->buf || !out)
+    return false;
+  if (q->len == 0)
+    return false;
+  *out = q->buf[q->head];
+  q->head = (q->head + 1) % q->cap;
+  q->len--;
+  return true;
+}
+
+bool tb_q64_empty(const tb_q64 *q) { return !q || q->len == 0; }
+
+void tb_q64_clear(tb_q64 *q) {
+  if (!q || !q->buf)
+    return;
+  q->len = 0;
+  q->head = 0;
+  memset(q->buf, 0, q->cap * sizeof(uint64_t));
+}
+
+root@11b6bf757a9f:/app#

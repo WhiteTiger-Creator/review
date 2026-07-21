@@ -1,0 +1,19 @@
+{
+  "analysis": "All 12 combinations pass all invariants:\n- IDs contiguous 1..N ✅\n- Every submit has exactly one complete and notify ✅\n- Order: submit < complete < notify for each id ✅\n- No duplicate (kind, id) pairs ✅\n- Completions interleaved with submits ✅\n- Reconciliation order (a_then_b vs b_then_a) changes sequence for burst runs ✅\n- Same flags = deterministic output ✅\n- Different scenario/profile = different output ✅\n- Invalid flags exit with failure, no report file written ✅\n- Journal is 12 bytes per stamp (24 for stress2) ✅\n\nFor steady profile, the order doesn't change the sequence because there are so few items that they rarely accumulate in both done queues simultaneously. The task specifically says \"burst stress runs\" for the order requirement.\n\nThe fixes I made:\n1. `journal.c`: Fixed to write 12-byte stamps (u32 gen + u64 cursor) instead of 8-byte (u32 + u32)\n2. `link.c` detach: Don't clear notify_q (preserves pending notifications)\n3. `link.c` attach: Don't reset cursor (prevents id reuse); just bump gen\n4. `settle.c`: Always push to notify_q regardless of attached state (ensures every completion gets a notification)",
+  "plan": "Let me also make sure the /tests directory exists and do a final clean rebuild to confirm everything compiles.",
+  "commands": [
+    {
+      "keystrokes": "mkdir -p /tests\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "make -C /app clean && make -C /app 2>&1\n",
+      "duration": 2.0
+    },
+    {
+      "keystrokes": "# Final sanity check - run stress2 burst with both orders\nrm -f /app/output/report.json\narena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json && echo 'SUCCESS'\n",
+      "duration": 1.0
+    }
+  ],
+  "task_complete": true
+}

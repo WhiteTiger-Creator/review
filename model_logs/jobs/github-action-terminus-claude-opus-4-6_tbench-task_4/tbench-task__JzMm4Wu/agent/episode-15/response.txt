@@ -1,0 +1,22 @@
+{
+  "analysis": "All 12 combinations pass perfectly. Let me also verify that order actually matters (different event sequences) for stress scenarios with burst profile, and check a couple more edge cases like missing arguments and the README.",
+  "plan": "Run final checks: order matters for all stress combos, different profiles produce different counts, and verify any remaining test infrastructure requirements.",
+  "commands": [
+    {
+      "keystrokes": "python3 << 'PYEOF'\nimport json\n\n# Verify order matters for each scenario+profile combo\nfor scn in ['basic', 'stress', 'stress2']:\n    for prof in ['burst', 'steady']:\n        ab = json.load(open(f'/app/output/test_{scn}_{prof}_a_then_b.json'))\n        ba = json.load(open(f'/app/output/test_{scn}_{prof}_b_then_a.json'))\n        ab_evs = ab['events']\n        ba_evs = ba['events']\n        same = ab_evs == ba_evs\n        print(f'{scn:8s} {prof:8s}: sequences differ={not same}')\nPYEOF\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "# Test more invalid flags\narena; echo \"exit: $?\"\narena --out /app/output/x.json; echo \"exit: $?\"\narena --scenario basic --profile burst --order a_then_b; echo \"exit: $?\"\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "# Verify no crash with --seed\narena --scenario basic --profile burst --order a_then_b --out /app/output/seeded.json --seed 42 && echo 'OK'\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "cat /app/run/README.txt\n",
+      "duration": 0.3
+    }
+  ]
+}

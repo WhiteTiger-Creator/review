@@ -1,0 +1,18 @@
+{
+  "analysis": "The python one-liner had issues with nested quotes in f-strings. Let me write a proper test script file instead.",
+  "plan": "Write a test script to a file and run it to verify the stress scenario output.",
+  "commands": [
+    {
+      "keystrokes": "cat > /tmp/check.py << 'PYEOF'\nimport json\n\nwith open('/app/output/stress_a.json') as f:\n    a = json.load(f)\nwith open('/app/output/stress_b.json') as f:\n    b = json.load(f)\n\nprint('stress a_then_b events:', len(a['events']))\nprint('stress b_then_a events:', len(b['events']))\n\na_sub = [e['id'] for e in a['events'] if e['kind']=='submit']\nb_sub = [e['id'] for e in b['events'] if e['kind']=='submit']\nprint('Same submits:', a_sub == b_sub)\n\na_comp = [e['id'] for e in a['events'] if e['kind']=='complete']\nb_comp = [e['id'] for e in b['events'] if e['kind']=='complete']\nprint('Same complete coverage:', sorted(a_comp) == sorted(b_comp))\nprint('Different complete sequence:', a_comp != b_comp)\nprint('Submit IDs contiguous 1..N:', a_sub == list(range(1, len(a_sub)+1)))\n\n# Check ordering for stress_a\nevents = a['events']\nfirst_submit = {}\nfirst_complete = {}\nfirst_notify = {}\nfor i, ev in enumerate(events):\n    eid = ev['id']\n    kind = ev['kind']\n    if kind == 'submit':\n        first_submit.setdefault(eid, i)\n    elif kind == 'complete':\n        first_complete.setdefault(eid, i)\n    elif kind == 'notify':\n        first_notify.setdefault(eid, i)\n\nok = True\nfor eid in first_submit:\n    si = first_submit[eid]\n    ci = first_complete.get(eid)\n    ni = first_notify.get(eid)\n    if ci is None:\n        print(f'Missing complete for {eid}')\n        ok = False\n    elif si >= ci:\n        print(f'Order violation submit/complete for {eid}: {si} >= {ci}')\n        ok = False\n    if ni is None:\n        print(f'Missing notify for {eid}')\n        ok = False\n    elif ci is not None and ci >= ni:\n        print(f'Order violation complete/notify for {eid}: {ci} >= {ni}')\n        ok = False\n\nif ok:\n    print('Stress ordering invariants OK')\nelse:\n    print('ORDERING FAILED')\nPYEOF\npython3 /tmp/check.py\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "/usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/stress2.json && echo OK\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "python3 -c '\nimport json\nwith open(\"/app/output/stress2.json\") as f:\n    d = json.load(f)\nevents = d[\"events\"]\nsubmits = [e for e in events if e[\"kind\"]==\"submit\"]\ncompletes = [e for e in events if e[\"kind\"]==\"complete\"]\nnotifies = [e for e in events if e[\"kind\"]==\"notify\"]\nprint(\"Submits:\", len(submits), \"Completes:\", len(completes), \"Notifies:\", len(notifies))\nsub_ids = [e[\"id\"] for e in submits]\nprint(\"IDs contiguous 1..N:\", sub_ids == list(range(1, len(submits)+1)))\nprint(\"All completed:\", sorted(e[\"id\"] for e in completes) == sorted(sub_ids))\nprint(\"All notified:\", sorted(e[\"id\"] for e in notifies) == sorted(sub_ids))\n'\n",
+      "duration": 1.0
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "analysis": "Valid arena invocation works and produces report.json, but invariants are badly broken: submits are duplicated (e.g., submit 57 repeated), ids are not contiguous to submits count (140 submits but max id 118), and there are duplicate notifies too. This matches the described bug: under detach/reattach stress, ring breaks delivery guarantees and reconciliation can replay or drop events. Next step is to inspect runtime + journal + idgen and event logging to see how ids are generated and persisted across detach cycles, and why replay causes duplicate submits/notify. We'll reproduce with both orders and inspect around the first duplicate region to correlate with detach stamps.",
+  "plan": "1) Inspect idgen, journal, runtime, and script/scenario implementation for detach/reattach and replay logic. 2) Print a slice of the event log around the first duplicate to see what happens (and whether it aligns with a detach boundary). 3) Run same scenario with b_then_a to confirm order changes sequence but currently also breaks invariants. 4) After locating root cause, implement fixes likely in journal cursor/generation handling and id generation persistence: ensure id source is monotonic and restored correctly; ensure on reattach we do not re-emit submits already logged; ensure completion+notify are emitted exactly once by tracking delivered sets, not by draining a ring that can be reprocessed.",
+  "commands": [
+    {
+      "keystrokes": "sed -n '1,220p' /app/include/core/idgen.h\nsed -n '1,220p' /app/src/core/idgen.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,260p' /app/include/io/journal.h\nsed -n '1,360p' /app/src/io/journal.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,260p' /app/include/runtime/runtime.h\nsed -n '1,420p' /app/src/runtime/runtime.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,260p' /app/include/runtime/script.h\nsed -n '1,420p' /app/src/runtime/script.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "python3 - <<'PY'\nimport json\np='/app/output/report.json'\nev=json.load(open(p))['events']\n# find first duplicate (kind,id)\nseen=set()\nfor i,e in enumerate(ev):\n    k=(e['kind'],e['id'])\n    if k in seen:\n        start=max(0,i-20); end=min(len(ev),i+20)\n        print('first_dup_at',i,'dup',k,'window',start,end)\n        for j in range(start,end):\n            print(j,ev[j])\n        break\n    seen.add(k)\nPY\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "rm -f /app/output/report_b.json\n/usr/local/bin/arena --scenario stress2 --profile burst --order b_then_a --out /app/output/report_b.json\npython3 - <<'PY'\nimport json\nfor p in ['/app/output/report.json','/app/output/report_b.json']:\n    r=json.load(open(p))\n    ev=r['events']\n    seen=set(); dups=0\n    for e in ev:\n        k=(e['kind'],e['id'])\n        if k in seen: dups+=1\n        else: seen.add(k)\n    subs=[e['id'] for e in ev if e['kind']=='submit']\n    print(p,'events',len(ev),'submits',len(subs),'maxid',max(subs) if subs else None,'dups',dups)\nPY\n",
+      "duration": 3.0
+    }
+  ],
+  "task_complete": false
+}

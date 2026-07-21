@@ -1,0 +1,283 @@
+New Terminal Output:
+
+root@b0eb78f960ec:/app# grep -RIn --line-number "idgen\|next_id\|gen_id\|request_id\|cursor\|generation\|detach\|reattach\|stamp\|journal\|reconcile\|complete\|
+notify" /app/src /app/include | head -n 200
+/app/src/core/idgen.c:1:#include "core/idgen.h"
+/app/src/core/idgen.c:3:void tb_idgen_init(tb_idgen *g, uint64_t seed) { g->x = seed ? seed : 0x9e3779b97f4a7c15ULL; }
+/app/src/core/idgen.c:5:uint64_t tb_idgen_next(tb_idgen *g) {
+/app/src/io/journal.c:1:#include "io/journal.h"
+/app/src/io/journal.c:8:static tb_status append_rec(FILE *f, tb_stamp s) {
+/app/src/io/journal.c:12:  uint32_t lo = (uint32_t)s.cursor;
+/app/src/io/journal.c:19:static bool read_rec(FILE *f, tb_stamp *out) {
+/app/src/io/journal.c:29:  out->cursor = (uint64_t)lo;
+/app/src/io/journal.c:33:tb_status journal_append_stamp(const char *path, tb_stamp s) {
+/app/src/io/journal.c:43:tb_status journal_load_last(const char *path, tb_stamp *out, bool *found) {
+/app/src/io/journal.c:56:  tb_stamp cur = {0};
+/app/src/logic/ingest.c:6:static uint64_t make_token(uint32_t gen, uint64_t cursor) { return (((uint64_t)gen) << 32) ^ cursor; }
+/app/src/logic/ingest.c:16:    uint32_t id = (uint32_t)(rt->cursor & 0xffffffffu);
+/app/src/logic/ingest.c:17:    uint64_t token = make_token(rt->gen, rt->cursor);
+/app/src/logic/ingest.c:18:    rt->cursor++;
+/app/src/logic/link.c:3:#include "io/journal.h"
+/app/src/logic/link.c:7:tb_status tb_link_detach(tb_rt *rt, uint32_t tick) {
+/app/src/logic/link.c:16:  tb_stamp s = {.gen = rt->gen, .cursor = rt->cursor};
+/app/src/logic/link.c:17:  tb_status st = journal_append_stamp(rt->journal_path, s);
+/app/src/logic/link.c:21:  // A "device-side" queue continues to exist while detached; the notifier doesn't.
+/app/src/logic/link.c:22:  tb_q64_clear(&rt->notify_q);
+/app/src/logic/link.c:33:  tb_stamp last = {0};
+/app/src/logic/link.c:35:  tb_status st = journal_load_last(rt->journal_path, &last, &found);
+/app/src/logic/link.c:40:    rt->cursor = last.cursor;
+/app/src/logic/nudge.c:11:  while (tb_q64_pop(&rt->notify_q, &token)) {
+/app/src/logic/settle.c:37:        if (!tb_q64_push(&rt->notify_q, token))
+/app/src/main.c:16:  // Per-invocation: persistence is only meant to model detach/reattach inside a run.
+/app/src/report.c:10:    return "complete";
+/app/src/report.c:12:    return "notify";
+/app/src/runtime/runtime.c:3:#include "core/idgen.h"
+/app/src/runtime/runtime.c:13:tb_status tb_rt_init(tb_rt *rt, const char *journal_path) {
+/app/src/runtime/runtime.c:14:  if (!rt || !journal_path)
+/app/src/runtime/runtime.c:28:  if (!tb_q64_init(&rt->notify_q, 4096))
+/app/src/runtime/runtime.c:34:  rt->cursor = 1;
+/app/src/runtime/runtime.c:36:  rt->journal_path = journal_path;
+/app/src/runtime/runtime.c:48:  tb_q64_free(&rt->notify_q);
+/app/src/runtime/runtime.c:54:static tb_status maybe_detach_attach(tb_rt *rt, const tb_script *sc, uint32_t tick) {
+/app/src/runtime/runtime.c:55:  if (sc->detach_at && tick == sc->detach_at) {
+/app/src/runtime/runtime.c:56:    return tb_link_detach(rt, tick);
+/app/src/runtime/runtime.c:58:  if (sc->detach_at && tick == sc->detach_at + sc->detach_len) {
+/app/src/runtime/runtime.c:61:  if (sc->detach2_at && tick == sc->detach2_at) {
+/app/src/runtime/runtime.c:62:    return tb_link_detach(rt, tick);
+/app/src/runtime/runtime.c:64:  if (sc->detach2_at && tick == sc->detach2_at + sc->detach2_len) {
+/app/src/runtime/runtime.c:79:  tb_stamp last = {0};
+/app/src/runtime/runtime.c:81:  tb_status st = journal_load_last(rt->journal_path, &last, &found);
+/app/src/runtime/runtime.c:86:    rt->cursor = last.cursor;
+/app/src/runtime/runtime.c:90:    st = maybe_detach_attach(rt, &sc, tick);
+/app/src/runtime/script.c:37:    s.detach_at = 0;
+/app/src/runtime/script.c:38:    s.detach_len = 0;
+/app/src/runtime/script.c:39:    s.detach2_at = 0;
+/app/src/runtime/script.c:40:    s.detach2_len = 0;
+/app/src/runtime/script.c:44:    s.detach_at = 22;
+/app/src/runtime/script.c:45:    s.detach_len = 10;
+/app/src/runtime/script.c:46:    s.detach2_at = 0;
+/app/src/runtime/script.c:47:    s.detach2_len = 0;
+/app/src/runtime/script.c:51:    s.detach_at = 26;
+/app/src/runtime/script.c:52:    s.detach_len = 10;
+/app/src/runtime/script.c:53:    s.detach2_at = 68;
+/app/src/runtime/script.c:54:    s.detach2_len = 12;
+/app/include/core/idgen.h:7:} tb_idgen;
+/app/include/core/idgen.h:9:void tb_idgen_init(tb_idgen *g, uint64_t seed);
+/app/include/core/idgen.h:10:uint64_t tb_idgen_next(tb_idgen *g);
+/app/include/io/journal.h:10:  uint64_t cursor;
+/app/include/io/journal.h:11:} tb_stamp;
+/app/include/io/journal.h:13:tb_status journal_append_stamp(const char *path, tb_stamp s);
+/app/include/io/journal.h:14:tb_status journal_load_last(const char *path, tb_stamp *out, bool *found);
+/app/include/logic/link.h:6:tb_status tb_link_detach(tb_rt *rt, uint32_t tick);
+/app/include/runtime/runtime.h:7:#include "io/journal.h"
+/app/include/runtime/runtime.h:31:  tb_q64 notify_q;
+/app/include/runtime/runtime.h:36:  uint64_t cursor;
+/app/incl
+[... output limited to 10000 bytes; 70 interior bytes omitted ...]
+urn 0;
+  if (strcmp(s, "burst") == 0)
+    return TB_PROFILE_BURST;
+  if (strcmp(s, "steady") == 0)
+    return TB_PROFILE_STEADY;
+  return 0;
+}
+
+const char *tb_profile_str(tb_profile p) {
+  switch (p) {
+  case TB_PROFILE_BURST:
+    return "burst";
+  case TB_PROFILE_STEADY:
+    return "steady";
+  default:
+    return "unknown";
+  }
+}
+
+uint32_t tb_profile_should_submit(tb_profile p, uint32_t tick) {
+  switch (p) {
+  case TB_PROFILE_BURST:
+    return tick < 10 ? 3 : (tick < 20 ? 2 : 1);
+  case TB_PROFILE_STEADY:
+    return (tick % 3) == 0 ? 1 : 0;
+  default:
+    return 0;
+  }
+}
+
+root@b0eb78f960ec:/app# sed -n '1,220p' /app/src/logic/ingest.c
+#include "logic/ingest.h"
+
+#include "core/ev.h"
+#include "runtime/profile.h"
+
+static uint64_t make_token(uint32_t gen, uint64_t cursor) { return (((uint64_t)gen) << 32) ^ cursor; }
+
+tb_status tb_ingest_tick(tb_rt *rt, tb_profile prof, uint32_t tick, uint32_t *submitted_out) {
+  if (!rt || !submitted_out)
+    return TB_ERR_BAD_ARG;
+
+  uint32_t n = tb_profile_should_submit(prof, tick);
+  *submitted_out = n;
+
+  for (uint32_t i = 0; i < n; i++) {
+    uint32_t id = (uint32_t)(rt->cursor & 0xffffffffu);
+    uint64_t token = make_token(rt->gen, rt->cursor);
+    rt->cursor++;
+
+    if (!tb_map_u64_put(&rt->token_to_id, token, (uint64_t)id))
+      return TB_ERR_OOM;
+    if (!tb_q64_push(&rt->in_q, token))
+      return TB_ERR_CORRUPT;
+
+    tb_event ev = {.kind = TB_EV_SUBMIT, .id = id};
+    if (!tb_vec_ev_push(&rt->evlog, ev))
+      return TB_ERR_OOM;
+  }
+
+  return TB_OK;
+}
+
+root@b0eb78f960ec:/app# sed -n '1,260p' /app/src/logic/settle.c
+#include "logic/settle.h"
+
+#include "runtime/runtime.h"
+
+// Deterministic "work takes time": only move certain tokens each tick.
+static bool ready(uint64_t token, uint32_t tick) {
+  // spread completion across ticks, but deterministic and input-dependent
+  return (((uint32_t)token) ^ tick) % 3 == 0;
+}
+
+static bool lane_a(uint64_t token, uint32_t tick) {
+  // Choose which completion source produced the "done" record.
+  return ((((uint32_t)(token >> 32)) + (uint32_t)token + tick) & 1u) == 0u;
+}
+
+tb_status tb_settle_tick(tb_rt *rt, uint32_t tick) {
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+
+  // rotate through at most a bounded number so runs are stable
+  size_t spins = rt->in_q.len;
+  for (size_t i = 0; i < spins; i++) {
+    uint64_t token = 0;
+    if (!tb_q64_pop(&rt->in_q, &token))
+      break;
+
+    if (ready(token, tick)) {
+      if (lane_a(token, tick)) {
+        if (!tb_q64_push(&rt->done_a, token))
+          return TB_ERR_CORRUPT;
+      } else {
+        if (!tb_q64_push(&rt->done_b, token))
+          return TB_ERR_CORRUPT;
+      }
+      if (rt->attached) {
+        // The notifier is only live while attached.
+        if (!tb_q64_push(&rt->notify_q, token))
+          return TB_ERR_CORRUPT;
+      }
+    } else {
+      // not ready, requeue at tail
+      if (!tb_q64_push(&rt->in_q, token))
+        return TB_ERR_CORRUPT;
+    }
+  }
+
+  return TB_OK;
+}
+
+root@b0eb78f960ec:/app# sed -n '1,260p' /app/src/logic/merge.c
+#include "logic/merge.h"
+
+#include "core/ev.h"
+
+static bool drain_one(tb_rt *rt, tb_q64 *q, uint32_t tick) {
+  (void)tick;
+  uint64_t token = 0;
+  if (!tb_q64_pop(q, &token))
+    return false;
+
+  uint64_t key = (uint32_t)token;
+
+  if (!tb_map_u64_has(&rt->token_done, key)) {
+    uint64_t id64 = 0;
+    if (!tb_map_u64_get(&rt->token_to_id, token, &id64)) {
+      return true;
+    }
+    (void)tb_map_u64_put(&rt->token_done, key, 1);
+    tb_event ev = {.kind = TB_EV_DONE, .id = (uint32_t)id64};
+    (void)tb_vec_ev_push(&rt->evlog, ev);
+  }
+  return true;
+}
+
+tb_status tb_merge_drain(tb_rt *rt, uint32_t tick, tb_order ord) {
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+
+  tb_q64 *a = &rt->done_a;
+  tb_q64 *b = &rt->done_b;
+
+  if (ord == TB_ORDER_A_THEN_B) {
+    while (drain_one(rt, a, tick)) {
+    }
+    while (drain_one(rt, b, tick)) {
+    }
+  } else {
+    while (drain_one(rt, b, tick)) {
+    }
+    while (drain_one(rt, a, tick)) {
+    }
+  }
+
+  return TB_OK;
+}
+root@b0eb78f960ec:/app# sed -n '1,260p' /app/src/logic/link.c
+#include "logic/link.h"
+
+#include "io/journal.h"
+
+#include <string.h>
+
+tb_status tb_link_detach(tb_rt *rt, uint32_t tick) {
+  (void)tick;
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+  if (!rt->attached)
+    return TB_OK;
+
+  rt->attached = false;
+
+  tb_stamp s = {.gen = rt->gen, .cursor = rt->cursor};
+  tb_status st = journal_append_stamp(rt->journal_path, s);
+  if (st != TB_OK)
+    return st;
+
+  // A "device-side" queue continues to exist while detached; the notifier doesn't.
+  tb_q64_clear(&rt->notify_q);
+  return TB_OK;
+}
+
+tb_status tb_link_attach(tb_rt *rt, uint32_t tick) {
+  (void)tick;
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+  if (rt->attached)
+    return TB_OK;
+
+  tb_stamp last = {0};
+  bool found = false;
+  tb_status st = journal_load_last(rt->journal_path, &last, &found);
+  if (st != TB_OK)
+    return st;
+  if (found) {
+    rt->gen = last.gen + 1;
+    rt->cursor = last.cursor;
+  }
+
+  rt->attached = true;
+  return TB_OK;
+}
+
+root@b0eb78f960ec:/app#

@@ -1,0 +1,161 @@
+New Terminal Output:
+
+root@b0eb78f960ec:/app# ls -la
+total 4
+drwxr-xr-x  7 root root  94 May 26 12:46 .
+drwxr-xr-x 19 root root 265 May 26 12:45 ..
+drwxr-xr-x  3 root root  70 May 26 12:46 .pytest_cache
+-rw-r--r--  1 root root 762 May 26 12:44 Makefile
+drwxr-xr-x  6 root root 101 May 26 12:44 include
+drwxr-xr-x  2 root root   6 May 26 12:45 output
+drwxr-xr-x  2 root root  24 May 26 12:44 run
+drwxr-xr-x  6 root root 115 May 26 12:44 src
+root@b0eb78f960ec:/app# rm -f /app/output/report.json && /usr/local/bin/arena --scenario stress2 --profile steady --order a_then_b --out /app/output/report.json
+root@b0eb78f960ec:/app# wc -c /app/output/report.json && head -n 60 /app/output/report.json
+3367 /app/output/report.json
+{
+  "scenario": "stress2",
+  "profile": "steady",
+  "events": [
+    {"kind": "submit", "id": 1},
+    {"kind": "complete", "id": 1},
+    {"kind": "notify", "id": 1},
+    {"kind": "submit", "id": 2},
+    {"kind": "complete", "id": 2},
+    {"kind": "notify", "id": 2},
+    {"kind": "submit", "id": 3},
+    {"kind": "submit", "id": 4},
+    {"kind": "complete", "id": 3},
+    {"kind": "notify", "id": 3},
+    {"kind": "complete", "id": 4},
+    {"kind": "notify", "id": 4},
+    {"kind": "submit", "id": 5},
+    {"kind": "complete", "id": 5},
+    {"kind": "notify", "id": 5},
+    {"kind": "submit", "id": 6},
+    {"kind": "complete", "id": 6},
+    {"kind": "notify", "id": 6},
+    {"kind": "submit", "id": 7},
+    {"kind": "complete", "id": 7},
+    {"kind": "notify", "id": 7},
+    {"kind": "submit", "id": 8},
+    {"kind": "complete", "id": 8},
+    {"kind": "notify", "id": 8},
+    {"kind": "submit", "id": 9},
+    {"kind": "submit", "id": 10},
+    {"kind": "complete", "id": 9},
+    {"kind": "submit", "id": 11},
+    {"kind": "complete", "id": 11},
+    {"kind": "complete", "id": 10},
+    {"kind": "submit", "id": 12},
+    {"kind": "complete", "id": 12},
+    {"kind": "submit", "id": 10},
+    {"kind": "submit", "id": 11},
+    {"kind": "notify", "id": 10},
+    {"kind": "submit", "id": 12},
+    {"kind": "notify", "id": 11},
+    {"kind": "notify", "id": 12},
+    {"kind": "submit", "id": 13},
+    {"kind": "submit", "id": 14},
+    {"kind": "complete", "id": 13},
+    {"kind": "complete", "id": 14},
+    {"kind": "notify", "id": 13},
+    {"kind": "notify", "id": 14},
+    {"kind": "submit", "id": 15},
+    {"kind": "complete", "id": 15},
+    {"kind": "notify", "id": 15},
+    {"kind": "submit", "id": 16},
+    {"kind": "complete", "id": 16},
+    {"kind": "notify", "id": 16},
+    {"kind": "submit", "id": 17},
+    {"kind": "complete", "id": 17},
+    {"kind": "notify", "id": 17},
+    {"kind": "submit", "id": 18},
+    {"kind": "submit", "id": 19},
+    {"kind": "complete", "id": 18},
+root@b0eb78f960ec:/app# python3 - <<'PY'
+> import json
+> from collections import defaultdict
+> p='/app/output/report.json'
+> r=json.load(open(p))
+> ev=r.get('events',[])
+> print('scenario',r.get('scenario'),'profile',r.get('profile'),'events',len(ev))
+> # duplicates
+> seen=set(); dups=[]
+> for e in ev:
+>   t=(e.get('kind'),e.get('id'))
+>   if t in seen: dups.append(t)
+>   seen.add(t)
+> print('dups',len(dups),dups[:20])
+> subs=[e['id'] for e in ev if e['kind']=='submit']
+> comps=[e['id'] for e in ev if e['kind']=='complete']
+> notifs=[e['id'] for e in ev if e['kind']=='notify']
+> print('counts',len(subs),len(comps),len(notifs))
+> if subs:
+>   mx=max(subs)
+>   print('submit min/max',min(subs),mx,'contiguous',subs==list(range(1,mx+1)))
+>   # coverage
+>   miss_comp=sorted(set(subs)-set(comps))
+>   miss_not=sorted(set(subs)-set(notifs))
+>   extra_comp=sorted(set(comps)-set(subs))
+>   extra_not=sorted(set(notifs)-set(subs))
+>   print('miss_comp',len(miss_comp),'miss_not',len(miss_not),'extra_comp',len(extra_comp),'extra_not',len(extra_not))
+>   print('miss_comp head',miss_comp[:20])
+>   print('extra_comp head',extra_comp[:20])
+> # order constraints
+> pos=defaultdict(dict)
+> for idx,e in enumerate(ev):
+>   pos[e['id']][e['kind']]=idx
+> viol=[]
+> for i in range(1,(max(subs) if subs else 0)+1):
+>   d=pos.get(i,{})
+>   s=d.get('submit'); c=d.get('complete'); n=d.get('notify')
+>   if s is None or c is None or n is None:
+>     viol.append(('missing',i,s,c,n))
+>   elif not (s<c<n):
+>     viol.append(('order',i,s,c,n))
+> print('viol',len(viol),'head',viol[:10])
+> # ensure not all completes clumped at end
+> if comps:
+>   last_submit=max(i for i,e in enumerate(ev) if e['kind']=='submit')
+>   first_complete=min(i for i,e in enumerate(ev) if e['kind']=='complete')
+>   print('first_complete_idx',first_complete,'last_submit_idx',last_submit,'complete_before_last_submit',first_complete<last_submit)
+> PY
+scenario stress2 profile steady events 96
+dups 7 [('submit', 10), ('submit', 11), ('submit', 12), ('submit', 21), ('submit', 22), ('submit', 23), ('submit', 24)]
+counts 37 30 29
+submit min/max 1 30 contiguous False
+miss_comp 0 miss_not 1 extra_comp 0 extra_not 0
+miss_comp head []
+extra_comp head []
+viol 8 head [('missing', 9, 24, 26, None), ('order', 10, 32, 29, 34), ('order', 11, 33, 28, 36), ('order', 12, 35, 31, 37), ('order', 21, 70, 64, 74), ('order',
+ 22, 71, 66, 72), ('order', 23, 73, 67, 75), ('order', 24, 76, 69, 77)]
+first_complete_idx 1 last_submit_idx 91 complete_before_last_submit True
+root@b0eb78f960ec:/app# rm -f /app/output/report_a.json /app/output/report_b.json; /usr/local/bin/arena --scenario stress2 --profile steady --order a_then_b --o
+ut /app/output/report_a.json; /usr/local/bin/arena --scenario stress2 --profile steady --order b_then_a --out /app/output/report_b.json
+root@b0eb78f960ec:/app# python3 - <<'PY'
+> import json,hashlib
+>
+> def sig(path):
+>   r=json.load(open(path))
+>   ev=r['events']
+>   # signature includes full event stream
+>   h=hashlib.sha256(json.dumps(ev,separators=(',',':')).encode()).hexdigest()
+>   subs=[e['id'] for e in ev if e['kind']=='submit']
+>   return len(ev), (max(subs) if subs else 0), h
+> for p in ['/app/output/report_a.json','/app/output/report_b.json']:
+>   print(p, sig(p))
+> ra=json.load(open('/app/output/report_a.json'))
+> rb=json.load(open('/app/output/report_b.json'))
+> suba=[e['id'] for e in ra['events'] if e['kind']=='submit']
+> subb=[e['id'] for e in rb['events'] if e['kind']=='submit']
+> print('same submit coverage',suba==subb,'N',len(suba))
+> print('event stream identical',ra['events']==rb['events'])
+> PY
+/app/output/report_a.json (96, 30, '9c3676744f19ec079b5936a02de01a5fcc363573a7c5e7484f8c242c6f298d6a')
+/app/output/report_b.json (96, 30, 'c4809107cabb67c5fc42308c5850ff05fb10db22f330efcd57b2814f05faafb8')
+same submit coverage True N 37
+event stream identical False
+root@b0eb78f960ec:/app# rg -n "complete|notify|ring|detach|reattach|journal|cursor|generation" /app/src /app/include | head -n 200
+bash: rg: command not found
+root@b0eb78f960ec:/app#

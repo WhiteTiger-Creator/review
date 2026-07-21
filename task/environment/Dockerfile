@@ -1,25 +1,25 @@
-FROM golang:1.22-bookworm
+FROM debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        gcc sqlite3 tmux curl python3 python3-pip \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        tmux=3.3a-3 \
+        asciinema=2.2.0-1 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install --break-system-packages --no-cache-dir \
-    pytest==8.4.1 pytest-json-ctrf==0.5.0 requests==2.32.3
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends binutils=2.40-2 build-essential=12.9 ca-certificates=20230311+deb12u1 clang=1:14.0-55.7~deb12u1 curl=7.88.1-10+deb12u14 make=4.3-4.1 python3=3.11.2-1+b1 python3-pip=23.0.1+dfsg-1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3 /usr/bin/python
+
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+    pytest==8.4.1 \
+    pytest-json-ctrf==0.3.5
 
 WORKDIR /app
 
-RUN mkdir -p /opt/jobqueue /logs/verifier
+COPY Makefile /app/Makefile
+COPY include /app/include
+COPY src /app/src
+COPY run /app/run
 
-COPY task_file/ ./
-
-# Ops config: auto_retry_cancelled is on from the last incident response.
-# This is intentional — toggled by on-call, not application code.
-RUN cp worker_config.json /opt/jobqueue/worker_config.json
-
-RUN CGO_ENABLED=1 go build -mod=vendor -o jobqueue .
-
-ENV DB_PATH=/opt/jobqueue/jobs.db
-ENV PORT=8080
-
-EXPOSE 8080
+RUN mkdir -p /app/output

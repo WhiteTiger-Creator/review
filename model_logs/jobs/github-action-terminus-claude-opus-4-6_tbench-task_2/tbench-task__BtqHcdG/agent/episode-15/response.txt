@@ -1,0 +1,18 @@
+{
+  "analysis": "The ordering difference test failed for stress2/steady - both orders produce the same sequence. This is because the \"steady\" profile submits items sparsely (1 every 3 ticks), so done_a and done_b never have overlapping items at the same time. The task says \"Reconciliation order must keep the same id coverage on burst stress runs but change the emitted sequence\" - this is specifically about burst profiles.\n\nHowever, I need to make sure the ordering invariant works for burst scenarios. Let me verify that basic/burst also produces different sequences for different orders, and check whether the test might expect all combinations to produce different sequences.",
+  "plan": "Check if basic/burst produces different sequences for different orders. Also check if the task specifically requires order difference only for burst+stress.",
+  "commands": [
+    {
+      "keystrokes": "arena --scenario basic --profile burst --order a_then_b --out /tmp/basic_burst_a.json && arena --scenario basic --profile burst --order b_then_a --out /tmp/basic_burst_b.json && python3 -c \"\nimport json\na = json.load(open('/tmp/basic_burst_a.json'))\nb = json.load(open('/tmp/basic_burst_b.json'))\na_seq = [(e['kind'], e['id']) for e in a['events']]\nb_seq = [(e['kind'], e['id']) for e in b['events']]\nprint(f'basic/burst different: {a_seq != b_seq}')\n\"\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "arena --scenario stress2 --profile burst --order b_then_a --out /tmp/s2_burst_b.json && python3 -c \"\nimport json\na = json.load(open('/tmp/d1.json'))  # stress2/burst/a_then_b\nb = json.load(open('/tmp/s2_burst_b.json'))\na_seq = [(e['kind'], e['id']) for e in a['events']]\nb_seq = [(e['kind'], e['id']) for e in b['events']]\nprint(f'stress2/burst different: {a_seq != b_seq}')\na_ids = set(e['id'] for e in a['events'] if e['kind'] == 'submit')\nb_ids = set(e['id'] for e in b['events'] if e['kind'] == 'submit')\nprint(f'Same IDs: {a_ids == b_ids}')\n\"\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "# Check if steady profile produces different order for basic scenario\narena --scenario basic --profile steady --order a_then_b --out /tmp/basic_steady_a.json && python3 -c \"\nimport json\na = json.load(open('/tmp/basic_steady_a.json'))\nb = json.load(open('/tmp/basic_steady_b.json'))\na_seq = [(e['kind'], e['id']) for e in a['events']]\nb_seq = [(e['kind'], e['id']) for e in b['events']]\nprint(f'basic/steady different for order: {a_seq != b_seq}')\n\"\n",
+      "duration": 1.0
+    }
+  ]
+}

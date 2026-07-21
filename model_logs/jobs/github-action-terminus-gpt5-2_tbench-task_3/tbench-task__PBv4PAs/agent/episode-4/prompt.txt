@@ -1,0 +1,163 @@
+New Terminal Output:
+
+root@b0eb78f960ec:/app# sed -n '1,120p' /app/include/runtime/runtime.h
+#pragma once
+
+#include "core/ev.h"
+#include "core/map_u64.h"
+#include "core/queue.h"
+#include "core/vec_ev.h"
+#include "io/journal.h"
+#include "runtime/profile.h"
+#include "runtime/script.h"
+#include "tb_err.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+
+typedef enum {
+  TB_ORDER_A_THEN_B = 1,
+  TB_ORDER_B_THEN_A = 2,
+} tb_order;
+
+tb_order tb_order_parse(const char *s);
+const char *tb_order_str(tb_order o);
+
+typedef struct {
+  // "in-flight" handles are 64-bit tokens; external ids are stable u32.
+  tb_map_u64 token_to_id; // token -> id
+  tb_map_u64 token_done;  // canonical done-set, key depends on reconciliation
+
+  tb_q64 in_q;
+  tb_q64 done_a;
+  tb_q64 done_b;
+  tb_q64 notify_q;
+
+  tb_vec_ev evlog;
+
+  uint32_t gen;
+  uint64_t cursor;
+  bool attached;
+
+  const char *journal_path;
+} tb_rt;
+
+tb_status tb_rt_init(tb_rt *rt, const char *journal_path);
+void tb_rt_free(tb_rt *rt);
+
+tb_status tb_rt_run(tb_rt *rt, tb_scenario scn, tb_profile prof, tb_order ord, uint32_t seed);
+
+// report extraction
+const tb_vec_ev *tb_rt_events(const tb_rt *rt);
+
+root@b0eb78f960ec:/app# sed -n '1,200p' /app/src/logic/nudge.c
+#include "logic/nudge.h"
+
+#include "core/ev.h"
+
+tb_status tb_nudge_drain(tb_rt *rt, uint32_t tick) {
+  (void)tick;
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+
+  uint64_t token = 0;
+  while (tb_q64_pop(&rt->notify_q, &token)) {
+    uint64_t key = (uint32_t)token;
+    if (!tb_map_u64_has(&rt->token_done, key)) {
+      continue;
+    }
+    uint64_t id64 = 0;
+    if (!tb_map_u64_get(&rt->token_to_id, token, &id64))
+      continue;
+    tb_event ev = {.kind = TB_EV_POKE, .id = (uint32_t)id64};
+    (void)tb_vec_ev_push(&rt->evlog, ev);
+  }
+  return TB_OK;
+}
+root@b0eb78f960ec:/app# apply_patch<<'PATCH'
+> *** Begin Patch
+> *** Update File: src/logic/link.c
+> @@
+>    if (st != TB_OK)
+>      return st;
+>
+> -  // A "device-side" queue continues to exist while detached; the notifier doesn't.
+> -  tb_q64_clear(&rt->notify_q);
+> +  // A "device-side" completion/notification backlog continues to exist while detached.
+> +  // We must not drop pending notifications, otherwise completions that happen while
+> +  // detached will never be notified after reattach.
+>    return TB_OK;
+>  }
+> @@
+>    if (found) {
+>      rt->gen = last.gen + 1;
+> -    rt->cursor = last.cursor;
+> +    // Never move the cursor backwards; it is used to generate request ids.
+> +    // Reattaching should advance generation but preserve monotonic cursor.
+> +    if (rt->cursor < last.cursor)
+> +      rt->cursor = last.cursor;
+>    }
+> *** End Patch
+> PATCH
+bash: apply_patch: command not found
+root@b0eb78f960ec:/app# apply_patch<<'PATCH'
+> *** Begin Patch
+> *** Update File: src/logic/merge.c
+> @@
+>    uint64_t token = 0;
+>    if (!tb_q64_pop(q, &token))
+>      return false;
+>
+> -  uint64_t key = (uint32_t)token;
+> +  // Deduplicate by full token (gen+cursor). Using only low 32 bits breaks when
+> +  // a cursor value repeats across generations (detach/reattach).
+> +  uint64_t key = token;
+> *** End Patch
+> PATCH
+bash: apply_patch: command not found
+root@b0eb78f960ec:/app# make -C /app -j"$(nproc)"
+make: Entering directory '/app'
+make: '/usr/local/bin/arena' is up to date.
+make: Leaving directory '/app'
+root@b0eb78f960ec:/app# rm -f /app/output/report.json && /usr/local/bin/arena --scenario stress2 --profile steady --order a_then_b --out /app/output/report.json
+root@b0eb78f960ec:/app# python3 - <<'PY'
+> import json
+> from collections import defaultdict
+> p='/app/output/report.json'
+> r=json.load(open(p))
+> ev=r.get('events',[])
+> print('events',len(ev))
+> seen=set(); dups=[]
+> for e in ev:
+>   t=(e['kind'],e['id'])
+>   if t in seen: dups.append(t)
+>   seen.add(t)
+> print('dups',len(dups),dups[:20])
+> subs=[e['id'] for e in ev if e['kind']=='submit']
+> comps=[e['id'] for e in ev if e['kind']=='complete']
+> notifs=[e['id'] for e in ev if e['kind']=='notify']
+> print('counts',len(subs),len(comps),len(notifs))
+> mx=max(subs) if subs else 0
+> print('submit contiguous',subs==list(range(1,mx+1)),'mx',mx)
+> print('missing complete',sorted(set(subs)-set(comps))[:20])
+> print('missing notify',sorted(set(subs)-set(notifs))[:20])
+> pos=defaultdict(dict)
+> for idx,e in enumerate(ev):
+>   pos[e['id']][e['kind']]=idx
+> viol=[]
+> for i in range(1,mx+1):
+>   d=pos[i]
+>   s=d.get('submit'); c=d.get('complete'); n=d.get('notify')
+>   if s is None or c is None or n is None: viol.append(('missing',i,s,c,n))
+>   elif not (s<c<n): viol.append(('order',i,s,c,n))
+> print('viol',len(viol),viol[:10])
+> PY
+events 96
+dups 7 [('submit', 10), ('submit', 11), ('submit', 12), ('submit', 21), ('submit', 22), ('submit', 23), ('submit', 24)]
+counts 37 30 29
+submit contiguous False mx 30
+missing complete []
+missing notify [9]
+viol 8 [('missing', 9, 24, 26, None), ('order', 10, 32, 29, 34), ('order', 11, 33, 28, 36), ('order', 12, 35, 31, 37), ('order', 21, 70, 64, 74), ('order', 22,
+71, 66, 72), ('order', 23, 73, 67, 75), ('order', 24, 76, 69, 77)]
+root@b0eb78f960ec:/app#

@@ -1,7 +1,7 @@
 {
-    "id": "9a4325d0-0f00-415d-a631-bbe294c2deea",
-    "started_at": "2026-05-26T16:58:05.539101",
-    "finished_at": "2026-05-26T17:04:43.181331",
+    "id": "8be8e1a5-82a8-400e-9da8-0b989ee8cd76",
+    "started_at": "2026-05-26T12:44:51.458339",
+    "finished_at": "2026-05-26T12:50:13.945425",
     "n_total_trials": 1,
     "stats": {
         "n_trials": 1,
@@ -12,14 +12,14 @@
                 "n_errors": 0,
                 "metrics": [
                     {
-                        "mean": 1.0
+                        "mean": 0.0
                     }
                 ],
                 "pass_at_k": {},
                 "reward_stats": {
                     "reward": {
-                        "1.0": [
-                            "tbench-task__RrW6WAa"
+                        "0.0": [
+                            "tbench-task__tCd8j3f"
                         ]
                     }
                 },

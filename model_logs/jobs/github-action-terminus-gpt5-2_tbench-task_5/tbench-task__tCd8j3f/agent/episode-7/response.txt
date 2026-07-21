@@ -1,0 +1,6 @@
+{
+  "analysis": "All required invariants now hold across scenarios (basic/stress/stress2), profiles (steady/burst), and orders (a_then_b/b_then_a): contiguous submit ids starting at 1, exactly one complete and notify per id, correct per-id ordering, and no duplicates. Determinism is confirmed by identical sha256 across reruns with the same flags. Reconciliation order changes the emitted sequence while keeping the same id coverage. Detach stamping is fixed: state.bin is 24 bytes for stress2 (two 12-byte records). CLI correctly rejects unknown scenario/profile/order and does not leave an output file on failure. Source fixes are in /app/src and header change in /app/include/runtime/runtime.h; build succeeds with make -C /app clean all.",
+  "plan": "Mark task complete for grading.",
+  "commands": [],
+  "task_complete": true
+}

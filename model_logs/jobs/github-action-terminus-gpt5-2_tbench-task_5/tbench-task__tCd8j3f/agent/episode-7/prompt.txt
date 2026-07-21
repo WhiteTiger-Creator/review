@@ -1,0 +1,112 @@
+Current terminal state:
+New Terminal Output:
+
+root@0d4ff0619871:/app# python3 - <<'PY'
+> import hashlib,subprocess,os,shlex
+>
+> def run(out,scenario,profile,order):
+>     if os.path.exists(out): os.remove(out)
+>     cmd=f"/usr/local/bin/arena --scenario {scenario} --profile {profile} --order {order} --out {out}"
+>     r=subprocess.run(cmd,shell=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+>     if r.returncode!=0:
+>         print('FAIL',cmd,'rc',r.returncode)
+>         print(r.stderr.decode())
+>         return None
+>     b=open(out,'rb').read()
+>     return hashlib.sha256(b).hexdigest(),len(b)
+>
+> h1=run('/app/output/det1.json','stress2','burst','a_then_b')
+> h2=run('/app/output/det2.json','stress2','burst','a_then_b')
+> print('determinism',h1,h2,'same',h1==h2)
+> ha=run('/app/output/ord_a.json','stress2','burst','a_then_b')
+> hb=run('/app/output/ord_b.json','stress2','burst','b_then_a')
+> print('order differs',ha,hb,'same',ha==hb)
+> PY
+determinism ('b0d17f05bf8c23d0caaa43183fae61df6fa15ee178a4324d31a955142d5ff80a', 14724) ('b0d17f05bf8c23d0caaa43183fae61df6fa15ee178a4324d31a955142d5ff80a', 147
+24) same True
+order differs ('b0d17f05bf8c23d0caaa43183fae61df6fa15ee178a4324d31a955142d5ff80a', 14724) ('0a721b52de6087e74a5c982c56a7f9ff94a2f8577846d260d51a87f89ef0340e', 1
+4724) same False
+root@0d4ff0619871:/app# python3 - <<'PY'
+> import json
+> from collections import Counter
+>
+> def ids(p):
+>     r=json.load(open(p))
+>     c=Counter((e['kind'] for e in r['events']))
+>     subs=[e['id'] for e in r['events'] if e['kind']=='submit']
+>     return len(subs),c
+> for p in ['/app/output/ord_a.json','/app/output/ord_b.json']:
+>     print(p, ids(p))
+> PY
+/app/output/ord_a.json (140, Counter({'submit': 140, 'complete': 140, 'notify': 140}))
+/app/output/ord_b.json (140, Counter({'submit': 140, 'complete': 140, 'notify': 140}))
+root@0d4ff0619871:/app# python3 - <<'PY'
+> import json,subprocess,os
+> from collections import defaultdict
+>
+> def check(out,scenario,profile,order):
+>     if os.path.exists(out): os.remove(out)
+>     cmd=["/usr/local/bin/arena","--scenario",scenario,"--profile",profile,"--order",order,"--out",out]
+>     r=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+>     if r.returncode!=0:
+>         print('run failed',cmd,'rc',r.returncode)
+>         print(r.stderr.decode())
+>         return
+>     ev=json.load(open(out))['events']
+>     by=defaultdict(int)
+>     for e in ev:
+>         by[(e['kind'],e['id'])]+=1
+>     subs=[e['id'] for e in ev if e['kind']=='submit']
+>     ok_sub=(subs==list(range(1,len(subs)+1)))
+>     dups=sum(1 for k,v in by.items() if v>1)
+>     missing=0
+>     for i in range(1,len(subs)+1):
+>         if by[("submit",i)]!=1 or by[("complete",i)]!=1 or by[("notify",i)]!=1:
+>             missing+=1
+>     print(scenario,profile,order,'events',len(ev),'N',len(subs),'sub_ok',ok_sub,'dups',dups,'missing',missing)
+>
+> for sc in ['basic','stress','stress2']:
+>   for prof in ['steady','burst']:
+>     for ord in ['a_then_b','b_then_a']:
+>       check(f'/app/output/{sc}_{prof}_{ord}.json',sc,prof,ord)
+> PY
+basic steady a_then_b events 42 N 14 sub_ok True dups 0 missing 0
+basic steady b_then_a events 42 N 14 sub_ok True dups 0 missing 0
+basic burst a_then_b events 210 N 70 sub_ok True dups 0 missing 0
+basic burst b_then_a events 210 N 70 sub_ok True dups 0 missing 0
+stress steady a_then_b events 81 N 27 sub_ok True dups 0 missing 0
+stress steady b_then_a events 81 N 27 sub_ok True dups 0 missing 0
+stress burst a_then_b events 330 N 110 sub_ok True dups 0 missing 0
+stress burst b_then_a events 330 N 110 sub_ok True dups 0 missing 0
+stress2 steady a_then_b events 111 N 37 sub_ok True dups 0 missing 0
+stress2 steady b_then_a events 111 N 37 sub_ok True dups 0 missing 0
+stress2 burst a_then_b events 420 N 140 sub_ok True dups 0 missing 0
+stress2 burst b_then_a events 420 N 140 sub_ok True dups 0 missing 0
+root@0d4ff0619871:/app# rm -f /app/output/invalid.json; /usr/local/bin/arena --scenario nope --profile burst --order a_then_b --out /app/output/invalid.json; ec
+ho "rc=$?"; test -e /app/output/invalid.json && echo EXISTS || echo ABSENT
+usage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]
+cli: bad_arg
+rc=2
+ABSENT
+root@0d4ff0619871:/app# rm -f /app/output/invalid.json; /usr/local/bin/arena --scenario basic --profile nope --order a_then_b --out /app/output/invalid.json; ec
+ho "rc=$?"; test -e /app/output/invalid.json && echo EXISTS || echo ABSENT
+usage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]
+cli: bad_arg
+rc=2
+ABSENT
+root@0d4ff0619871:/app# rm -f /app/output/invalid.json; /usr/local/bin/arena --scenario basic --profile burst --order z_then_y --out /app/output/invalid.json; e
+cho "rc=$?"; test -e /app/output/invalid.json && echo EXISTS || echo ABSENT
+usage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]
+cli: bad_arg
+rc=2
+ABSENT
+root@0d4ff0619871:/app# grep -RIn --line-number "make_token" /app/src/logic/ingest.c; grep -RIn --line-number "uint64_t key =" /app/src/logic/merge.c /app/src/l
+ogic/nudge.c
+6:static uint64_t make_token(uint32_t gen, uint64_t cursor) {
+19:    uint64_t token = make_token(rt->gen, rt->cursor);
+/app/src/logic/merge.c:13:  uint64_t key = token;
+/app/src/logic/nudge.c:18:    uint64_t key = token;
+root@0d4ff0619871:/app#
+
+
+Are you sure you want to mark the task as complete? This will trigger your solution to be graded and you won't be able to make any further corrections. If so, include "task_complete": true in your JSON response again.

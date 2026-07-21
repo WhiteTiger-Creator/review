@@ -1,0 +1,35 @@
+{
+  "analysis": "We couldn't apply patches because `apply_patch` isn't available. No changes were made, so invariants still fail. Need to edit files using available tools (sed/perl/heredoc) e.g., use python to rewrite, or use `perl -0777 -pe` in-place. We must change: src/logic/link.c (remove notify_q clear; prevent cursor rollback on attach), src/logic/merge.c (dedup key full token), and src/logic/nudge.c (also uses low-32 key; must use full token and only emit notify when attached, otherwise keep in queue). Also settle.c currently only enqueues notify_q when attached; must enqueue regardless, but only drain/emit when attached.",
+  "plan": "Use perl in-place edits to patch the C files reliably. Steps: 1) Modify settle.c to always push token to notify_q when ready (remove attached guard) but keep emission gated elsewhere. 2) Modify nudge.c: if not attached, return without draining; when draining, use key=token and check token_done by token key (after merge.c change) and emit notify. 3) Modify merge.c key. 4) Modify link.c detach to not clear notify_q; attach to not reset cursor backward. 5) Rebuild. 6) Rerun stress2 steady and validate invariants.",
+  "commands": [
+    {
+      "keystrokes": "perl -0777 -i -pe 's/if \\(rt->attached\\) \\{\\n\\s*\\/\\/ The notifier is only live while attached\\.\\n\\s*if \\(!tb_q64_push\\(&rt->notify_q, token\\)\\)\\n\\s*return TB_ERR_CORRUPT;\\n\\s*\\}/\\/\\/ Notifications are generated device-side even while detached; emission is gated in nudge.\\n      if (!tb_q64_push(&rt->notify_q, token))\\n        return TB_ERR_CORRUPT;/s' /app/src/logic/settle.c\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/uint64_t token = 0;\\n  while \\(tb_q64_pop\\(&rt->notify_q, &token\\)\\) \\{/if (!rt->attached)\\n    return TB_OK;\\n\\n  uint64_t token = 0;\\n  while (tb_q64_pop(&rt->notify_q, &token)) {/s; s/uint64_t key = \\(uint32_t\\)token;/uint64_t key = token;/' /app/src/logic/nudge.c\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/uint64_t key = \\(uint32_t\\)token;/\\/\\/ Deduplicate by full token (gen+cursor).\\n  uint64_t key = token;/' /app/src/logic/merge.c\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/\\n\\s*\\/\\/ A \"device-side\" queue continues to exist while detached; the notifier doesn\\x27t\\.\\n\\s*tb_q64_clear\\(&rt->notify_q\\);/\\n\\n  \\/\\/ A device-side completion\\/notification backlog continues while detached.\\n  \\/\\/ Do not drop pending notifications; they must be delivered after reattach./s; s/rt->cursor = last\\.cursor;/if (rt->cursor < last.cursor)\\n      rt->cursor = last.cursor;/' /app/src/logic/link.c\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "make -C /app -j\"$(nproc)\"\n",
+      "duration": 10.0
+    },
+    {
+      "keystrokes": "rm -f /app/output/report.json && /usr/local/bin/arena --scenario stress2 --profile steady --order a_then_b --out /app/output/report.json\n",
+      "duration": 2.0
+    },
+    {
+      "keystrokes": "python3 - <<'PY'\nimport json\nfrom collections import defaultdict\np='/app/output/report.json'\nr=json.load(open(p))\nev=r.get('events',[])\nseen=set(); dups=[]\nfor e in ev:\n  t=(e['kind'],e['id'])\n  if t in seen: dups.append(t)\n  seen.add(t)\nsubs=[e['id'] for e in ev if e['kind']=='submit']\ncomps=[e['id'] for e in ev if e['kind']=='complete']\nnotifs=[e['id'] for e in ev if e['kind']=='notify']\nmx=max(subs) if subs else 0\nprint('events',len(ev),'subs',len(subs),'comps',len(comps),'notifs',len(notifs),'mx',mx)\nprint('dups',len(dups),dups[:10])\nprint('submit contiguous',subs==list(range(1,mx+1)))\nprint('missing complete',len(set(subs)-set(comps)), sorted(set(subs)-set(comps))[:10])\nprint('missing notify',len(set(subs)-set(notifs)), sorted(set(subs)-set(notifs))[:10])\npos=defaultdict(dict)\nfor idx,e in enumerate(ev):\n  pos[e['id']][e['kind']]=idx\nviol=[]\nfor i in range(1,mx+1):\n  d=pos[i]\n  s=d.get('submit'); c=d.get('complete'); n=d.get('notify')\n  if s is None or c is None or n is None: viol.append(('missing',i,s,c,n))\n  elif not (s<c<n): viol.append(('order',i,s,c,n))\nprint('viol',len(viol),viol[:10])\nPY\n",
+      "duration": 1.0
+    }
+  ],
+  "task_complete": false
+}

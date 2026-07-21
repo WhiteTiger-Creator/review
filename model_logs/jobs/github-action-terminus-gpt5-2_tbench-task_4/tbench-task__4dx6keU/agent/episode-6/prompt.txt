@@ -1,0 +1,255 @@
+New Terminal Output:
+
+root@0c4a89e29ee7:/app# sed -n '1,240p' /app/src/main.c
+#include "cli.h"
+#include "report.h"
+#include "runtime/runtime.h"
+#include "tb_err.h"
+
+#include <stdio.h>
+
+int main(int argc, char **argv) {
+  tb_cli cli = {0};
+  tb_status st = tb_cli_parse(&cli, argc, argv);
+  if (st != TB_OK) {
+    fprintf(stderr, "cli: %s\n", tb_status_str(st));
+    return 2;
+  }
+
+  // Per-invocation: persistence is only meant to model detach/reattach inside a run.
+  (void)remove("/app/run/state.bin");
+
+  tb_rt rt = {0};
+  st = tb_rt_init(&rt, "/app/run/state.bin");
+  if (st != TB_OK) {
+    fprintf(stderr, "init: %s\n", tb_status_str(st));
+    return 2;
+  }
+
+  st = tb_rt_run(&rt, cli.scenario, cli.profile, cli.order, cli.seed);
+  if (st != TB_OK) {
+    fprintf(stderr, "run: %s\n", tb_status_str(st));
+    tb_rt_free(&rt);
+    return 1;
+  }
+
+  int rc = tb_report_write_json(cli.out_path, cli.scenario, cli.profile, tb_rt_events(&rt));
+  tb_rt_free(&rt);
+  return rc;
+}
+
+root@0c4a89e29ee7:/app# sed -n '1,260p' /app/src/cli.c
+#include "cli.h"
+
+#include <stdio.h>
+#include <string.h>
+
+static tb_status usage(void) {
+  fprintf(stderr, "usage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]\n");
+  return TB_ERR_BAD_ARG;
+}
+
+tb_order tb_order_parse(const char *s) {
+  if (!s)
+    return 0;
+  if (strcmp(s, "a_then_b") == 0)
+    return TB_ORDER_A_THEN_B;
+  if (strcmp(s, "b_then_a") == 0)
+    return TB_ORDER_B_THEN_A;
+  return 0;
+}
+
+const char *tb_order_str(tb_order o) {
+  switch (o) {
+  case TB_ORDER_A_THEN_B:
+    return "a_then_b";
+  case TB_ORDER_B_THEN_A:
+    return "b_then_a";
+  default:
+    return "unknown";
+  }
+}
+
+tb_status tb_cli_parse(tb_cli *out, int argc, char **argv) {
+  if (!out || argc <= 1)
+    return usage();
+
+  tb_cli c = {0};
+  c.seed = 1;
+
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--scenario") == 0 && i + 1 < argc) {
+      c.scenario = tb_scenario_parse(argv[++i]);
+    } else if (strcmp(argv[i], "--profile") == 0 && i + 1 < argc) {
+      c.profile = tb_profile_parse(argv[++i]);
+    } else if (strcmp(argv[i], "--order") == 0 && i + 1 < argc) {
+      c.order = tb_order_parse(argv[++i]);
+    } else if (strcmp(argv[i], "--out") == 0 && i + 1 < argc) {
+      c.out_path = argv[++i];
+    } else if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
+      unsigned long v = 0;
+      if (sscanf(argv[++i], "%lu", &v) != 1)
+        return usage();
+      c.seed = (uint32_t)v;
+    } else {
+      return usage();
+    }
+  }
+
+  if (!c.scenario || !c.profile || !c.order || !c.out_path)
+    return usage();
+
+  *out = c;
+  return TB_OK;
+}
+
+root@0c4a89e29ee7:/app# sed -n '1,320p' /app/src/runtime/runtime.c
+#include "runtime/runtime.h"
+
+#include "core/idgen.h"
+#include "logic/ingest.h"
+#include "logic/link.h"
+#include "logic/merge.h"
+#include "logic/nudge.h"
+#include "logic/settle.h"
+
+#include <stdio.h>
+#include <string.h>
+
+tb_status tb_rt_init(tb_rt *rt, const char *journal_path) {
+  if (!rt || !journal_path)
+    return TB_ERR_BAD_ARG;
+  memset(rt, 0, sizeof(*rt));
+
+  if (!tb_map_u64_init(&rt->token_to_id, 128))
+    return TB_ERR_OOM;
+  if (!tb_map_u64_init(&rt->token_done, 128))
+    return TB_ERR_OOM;
+  if (!tb_q64_init(&rt->in_q, 4096))
+    return TB_ERR_OOM;
+  if (!tb_q64_init(&rt->done_a, 4096))
+    return TB_ERR_OOM;
+  if (!tb_q64_init(&rt->done_b, 4096))
+    return TB_ERR_OOM;
+  if (!tb_q64_init(&rt->notify_q, 4096))
+    return TB_ERR_OOM;
+  if (!tb_vec_ev_init(&rt->evlog, 2048))
+    return TB_ERR_OOM;
+
+  rt->gen = 1;
+  rt->cursor = 1;
+  rt->attached = true;
+  rt->journal_path = journal_path;
+  return TB_OK;
+}
+
+void tb_rt_free(tb_rt *rt) {
+  if (!rt)
+    return;
+  tb_map_u64_free(&rt->token_to_id);
+  tb_map_u64_free(&rt->token_done);
+  tb_q64_free(&rt->in_q);
+  tb_q64_free(&rt->done_a);
+  tb_q64_free(&rt->done_b);
+  tb_q64_free(&rt->notify_q);
+  tb_vec_ev_free(&rt->evlog);
+}
+
+const tb_vec_ev *tb_rt_events(const tb_rt *rt) { return &rt->evlog; }
+
+static tb_status maybe_detach_attach(tb_rt *rt, const tb_script *sc, uint32_t tick) {
+  if (sc->detach_at && tick == sc->detach_at) {
+    return tb_link_detach(rt, tick);
+  }
+  if (sc->detach_at && tick == sc->detach_at + sc->detach_len) {
+    return tb_link_attach(rt, tick);
+  }
+  if (sc->detach2_at && tick == sc->detach2_at) {
+    return tb_link_detach(rt, tick);
+  }
+  if (sc->detach2_at && tick == sc->detach2_at + sc->detach2_len) {
+    return tb_link_attach(rt, tick);
+  }
+  return TB_OK;
+}
+
+tb_status tb_rt_run(tb_rt *rt, tb_scenario scn, tb_profile prof, tb_order ord, uint32_t seed) {
+  (void)seed;
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+
+  tb_script sc = {0};
+  if (!tb_script_for(scn, &sc))
+    return TB_ERR_BAD_ARG;
+
+  tb_stamp last = {0};
+  bool found = false;
+  tb_status st = journal_load_last(rt->journal_path, &last, &found);
+  if (st != TB_OK)
+    return st;
+  if (found) {
+    rt->gen = last.gen + 1;
+    rt->cursor = last.cursor;
+  }
+
+  for (uint32_t tick = 0; tick < sc.ticks; tick++) {
+    st = maybe_detach_attach(rt, &sc, tick);
+    if (st != TB_OK)
+      return st;
+
+    uint32_t submitted = 0;
+    st = tb_ingest_tick(rt, prof, tick, &submitted);
+    if (st != TB_OK)
+      return st;
+
+    st = tb_settle_tick(rt, tick);
+    if (st != TB_OK)
+      return st;
+
+    st = tb_merge_drain(rt, tick, ord);
+    if (st != TB_OK)
+      return st;
+
+    st = tb_nudge_drain(rt, tick);
+    if (st != TB_OK)
+      return st;
+  }
+
+  // Final drain to avoid leaving work in queues.
+  for (uint32_t i = 0; i < 16; i++) {
+    st = tb_settle_tick(rt, sc.ticks + i);
+    if (st != TB_OK)
+      return st;
+    st = tb_merge_drain(rt, sc.ticks + i, ord);
+    if (st != TB_OK)
+      return st;
+    st = tb_nudge_drain(rt, sc.ticks + i);
+    if (st != TB_OK)
+      return st;
+  }
+
+  return TB_OK;
+}
+
+root@0c4a89e29ee7:/app# grep -RIn "journal" /app/src | head -n 50
+/app/src/io/journal.c:1:#include "io/journal.h"
+/app/src/io/journal.c:34:tb_status journal_append_stamp(const char *path, tb_stamp s) {
+/app/src/io/journal.c:44:tb_status journal_load_last(const char *path, tb_stamp *out, bool *found) {
+/app/src/logic/link.c:3:#include "io/journal.h"
+/app/src/logic/link.c:17:  tb_status st = journal_append_stamp(rt->journal_path, s);
+/app/src/logic/link.c:35:  tb_status st = journal_load_last(rt->journal_path, &last, &found);
+/app/src/runtime/runtime.c:13:tb_status tb_rt_init(tb_rt *rt, const char *journal_path) {
+/app/src/runtime/runtime.c:14:  if (!rt || !journal_path)
+/app/src/runtime/runtime.c:36:  rt->journal_path = journal_path;
+/app/src/runtime/runtime.c:81:  tb_status st = journal_load_last(rt->journal_path, &last, &found);
+root@0c4a89e29ee7:/app# ls -la /app/run && find /app/run -maxdepth 1 -type f -print -exec ls -la {} \;
+total 8
+drwxr-xr-x 2 root root  41 May 26 12:48 .
+drwxr-xr-x 7 root root  94 May 26 12:46 ..
+-rw-r--r-- 1 root root 775 May 26 12:44 README.txt
+-rw-r--r-- 1 root root  24 May 26 12:48 state.bin
+/app/run/README.txt
+-rw-r--r-- 1 root root 775 May 26 12:44 /app/run/README.txt
+/app/run/state.bin
+-rw-r--r-- 1 root root 24 May 26 12:48 /app/run/state.bin
+root@0c4a89e29ee7:/app#

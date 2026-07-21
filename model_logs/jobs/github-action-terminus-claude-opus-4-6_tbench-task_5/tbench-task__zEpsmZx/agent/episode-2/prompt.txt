@@ -1,0 +1,127 @@
+New Terminal Output:
+
+root@11b6bf757a9f:/app# find / -name 'test_outputs.py' 2>/dev/null
+root@11b6bf757a9f:/app# cat /app/src/main.c
+#include "cli.h"
+#include "report.h"
+#include "runtime/runtime.h"
+#include "tb_err.h"
+
+#include <stdio.h>
+
+int main(int argc, char **argv) {
+  tb_cli cli = {0};
+  tb_status st = tb_cli_parse(&cli, argc, argv);
+  if (st != TB_OK) {
+    fprintf(stderr, "cli: %s\n", tb_status_str(st));
+    return 2;
+  }
+
+  // Per-invocation: persistence is only meant to model detach/reattach inside a run.
+  (void)remove("/app/run/state.bin");
+
+  tb_rt rt = {0};
+  st = tb_rt_init(&rt, "/app/run/state.bin");
+  if (st != TB_OK) {
+    fprintf(stderr, "init: %s\n", tb_status_str(st));
+    return 2;
+  }
+
+  st = tb_rt_run(&rt, cli.scenario, cli.profile, cli.order, cli.seed);
+  if (st != TB_OK) {
+    fprintf(stderr, "run: %s\n", tb_status_str(st));
+    tb_rt_free(&rt);
+    return 1;
+  }
+
+  int rc = tb_report_write_json(cli.out_path, cli.scenario, cli.profile, tb_rt_events(&rt));
+  tb_rt_free(&rt);
+  return rc;
+}
+
+root@11b6bf757a9f:/app# cat /app/src/cli.c
+#include "cli.h"
+
+#include <stdio.h>
+#include <string.h>
+
+static tb_status usage(void) {
+  fprintf(stderr, "usage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]\n");
+  return TB_ERR_BAD_ARG;
+}
+
+tb_order tb_order_parse(const char *s) {
+  if (!s)
+    return 0;
+  if (strcmp(s, "a_then_b") == 0)
+    return TB_ORDER_A_THEN_B;
+  if (strcmp(s, "b_then_a") == 0)
+    return TB_ORDER_B_THEN_A;
+  return 0;
+}
+
+const char *tb_order_str(tb_order o) {
+  switch (o) {
+  case TB_ORDER_A_THEN_B:
+    return "a_then_b";
+  case TB_ORDER_B_THEN_A:
+    return "b_then_a";
+  default:
+    return "unknown";
+  }
+}
+
+tb_status tb_cli_parse(tb_cli *out, int argc, char **argv) {
+  if (!out || argc <= 1)
+    return usage();
+
+  tb_cli c = {0};
+  c.seed = 1;
+
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--scenario") == 0 && i + 1 < argc) {
+      c.scenario = tb_scenario_parse(argv[++i]);
+    } else if (strcmp(argv[i], "--profile") == 0 && i + 1 < argc) {
+      c.profile = tb_profile_parse(argv[++i]);
+    } else if (strcmp(argv[i], "--order") == 0 && i + 1 < argc) {
+      c.order = tb_order_parse(argv[++i]);
+    } else if (strcmp(argv[i], "--out") == 0 && i + 1 < argc) {
+      c.out_path = argv[++i];
+    } else if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
+      unsigned long v = 0;
+      if (sscanf(argv[++i], "%lu", &v) != 1)
+        return usage();
+      c.seed = (uint32_t)v;
+    } else {
+      return usage();
+    }
+  }
+
+  if (!c.scenario || !c.profile || !c.order || !c.out_path)
+    return usage();
+
+  *out = c;
+  return TB_OK;
+}
+
+root@11b6bf757a9f:/app# cat /app/include/cli.h
+#pragma once
+
+#include "runtime/profile.h"
+#include "runtime/runtime.h"
+#include "runtime/script.h"
+#include "tb_err.h"
+
+#include <stdint.h>
+
+typedef struct {
+  tb_scenario scenario;
+  tb_profile profile;
+  tb_order order;
+  const char *out_path;
+  uint32_t seed;
+} tb_cli;
+
+tb_status tb_cli_parse(tb_cli *out, int argc, char **argv);
+
+root@11b6bf757a9f:/app#

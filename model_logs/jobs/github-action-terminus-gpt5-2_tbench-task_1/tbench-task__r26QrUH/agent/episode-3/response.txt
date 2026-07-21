@@ -1,0 +1,43 @@
+{
+  "analysis": "No apply_patch utility is available, so the journal fix was not applied. The stress2 burst run still shows duplicated submits and missing complete/notify. Also the journal path appears to be /app/run/state.bin (exists, 16 bytes after stress2 which matches 2 stamps * 8 bytes), confirming stamp is currently 8 bytes and must become 12 bytes (2 stamps => 24 bytes). Next we must edit files using available tools (sed/heredoc with cat > file, perl -0777, or ed). We should patch /app/src/io/journal.c to write/read u64 cursor as two u32s, rebuild, rerun. After that, re-check invariants. If still failing, next culprit is token/keying: merge/nudge dedupe uses key=(uint32_t)token, which collapses tokens across generations/cursor high bits, causing done/notifies mismatch when cursor exceeds 32 bits or when token low32 repeats. Even within small cursor, make_token uses XOR and key uses low32 of token, which can collide across gen/cursor combos. Need to adjust keying to use full token (u64) in token_done map and in nudge/merge checks; map supports u64 keys already. That likely causes missing notifications and ordering violations after detach/reattach where gen changes. We'll fix journal first, then fix dedupe key usage to full token.",
+  "plan": "1) Patch /app/src/io/journal.c using perl in-place to implement 12-byte stamp (u32 gen + u64 cursor as lo/hi u32). 2) Rebuild arena. 3) Remove prior state.bin and rerun stress2 burst; verify state.bin size is 24 bytes minimum (two detaches). 4) If invariants still fail, patch merge.c and nudge.c to use full token as key in token_done (not truncated uint32). Rebuild and rerun invariant checks.",
+  "commands": [
+    {
+      "keystrokes": "grep -n \"append_rec\\|read_rec\\|cursor\" -n /app/src/io/journal.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/uint32_t lo = \\(uint32_t\\)s\\.cursor;\\s*if \\(!fs_write_u32\\(f, lo\\)\\)\\s*return TB_ERR_IO;/\\/\\/ stamp format: u32 generation + u64 cursor (12 bytes)\\n\\n  uint32_t lo = (uint32_t)(s.cursor \\& 0xffffffffu);\\n  uint32_t hi = (uint32_t)((s.cursor >> 32) \\& 0xffffffffu);\\n  if (!fs_write_u32(f, lo))\\n    return TB_ERR_IO;\\n  if (!fs_write_u32(f, hi))\\n    return TB_ERR_IO;/s; s/out->cursor = \\(uint64_t\\)lo;\\s*return true;/out->cursor = ((uint64_t)hi << 32) | (uint64_t)lo;\\n  return true;/s; s/uint32_t lo = 0;\\s*if \\(!fs_read_u32\\(f, &lo\\)\\)\\s*return false;/uint32_t lo = 0;\\n  if (!fs_read_u32(f, &lo))\\n    return false;\\n\\n  uint32_t hi = 0;\\n  if (!fs_read_u32(f, &hi))\\n    return false;/s' /app/src/io/journal.c\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "sed -n '1,120p' /app/src/io/journal.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "make -C /app -B -j4\n",
+      "duration": 20.0
+    },
+    {
+      "keystrokes": "rm -f /app/run/state.bin /app/output/report.json\n/usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json --seed 2\npython3 - <<'PY'\nimport json\nfrom collections import Counter,defaultdict\nr=json.load(open('/app/output/report.json'))\ne=r['events']\nprint('events',len(e),Counter(x['kind'] for x in e))\nseen=set(); dup=[]\nfor x in e:\n t=(x['kind'],x['id'])\n if t in seen: dup.append(t)\n seen.add(t)\nprint('dup_count',len(dup),'sample',dup[:10])\nsubs=[x['id'] for x in e if x['kind']=='submit']\nmx=max(subs) if subs else 0\nprint('submit_ids_contig',subs==list(range(1,mx+1)),'N',mx)\nby=defaultdict(set)\nfor x in e: by[x['id']].add(x['kind'])\nmiss=[(i,{'submit','complete','notify'}-k) for i,k in by.items() if k!={'submit','complete','notify'}]\nprint('missing_rows',len(miss),'sample',miss[:10])\npos=defaultdict(dict)\nfor idx,x in enumerate(e): pos[x['id']][x['kind']]=idx\nbad=[i for i,d in pos.items() if set(d)=={'submit','complete','notify'} and not (d['submit']<d['complete']<d['notify'])]\nprint('order_bad',len(bad),'sample',bad[:10])\nPY\nls -la /app/run/state.bin; wc -c /app/run/state.bin\n",
+      "duration": 5.0
+    },
+    {
+      "keystrokes": "sed -n '1,220p' /app/src/logic/merge.c\nsed -n '1,220p' /app/src/logic/nudge.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "perl -i -pe 's/uint64_t key = \\(uint32_t\\)token;/uint64_t key = token;/g' /app/src/logic/merge.c /app/src/logic/nudge.c\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "make -C /app -B -j4\n",
+      "duration": 20.0
+    },
+    {
+      "keystrokes": "rm -f /app/run/state.bin /app/output/report.json\n/usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json --seed 2\npython3 - <<'PY'\nimport json\nfrom collections import Counter,defaultdict\nr=json.load(open('/app/output/report.json'))\ne=r['events']\nprint('events',len(e),Counter(x['kind'] for x in e))\nseen=set(); dup=[]\nfor x in e:\n t=(x['kind'],x['id'])\n if t in seen: dup.append(t)\n seen.add(t)\nprint('dup_count',len(dup),'sample',dup[:10])\nsubs=[x['id'] for x in e if x['kind']=='submit']\nmx=max(subs) if subs else 0\nprint('submit_ids_contig',subs==list(range(1,mx+1)),'N',mx)\nby=defaultdict(set)\nfor x in e: by[x['id']].add(x['kind'])\nmiss=[(i,{'submit','complete','notify'}-k) for i,k in by.items() if k!={'submit','complete','notify'}]\nprint('missing_rows',len(miss),'sample',miss[:10])\npos=defaultdict(dict)\nfor idx,x in enumerate(e): pos[x['id']][x['kind']]=idx\nbad=[i for i,d in pos.items() if set(d)=={'submit','complete','notify'} and not (d['submit']<d['complete']<d['notify'])]\nprint('order_bad',len(bad),'sample',bad[:10])\nPY\nls -la /app/run/state.bin; wc -c /app/run/state.bin\n",
+      "duration": 5.0
+    }
+  ],
+  "task_complete": false
+}

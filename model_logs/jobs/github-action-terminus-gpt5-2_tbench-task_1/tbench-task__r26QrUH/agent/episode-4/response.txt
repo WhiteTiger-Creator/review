@@ -1,0 +1,43 @@
+{
+  "analysis": "Journal stamp size is now correct (state.bin 24 bytes for two detaches). Using full token as token_done key fixed per-id ordering violations and brought completes up to 140, matching submits, but notifies are still only 119 and we still have duplicated submit ids starting at 57 and non-contiguous ids (max 118 while 140 submits). That indicates id assignment is wrong: ingest uses id = low32(cursor), and cursor is restored on attach from last stamp (cursor at detach time), causing cursor to rewind to an earlier value on attach, reusing ids. Cursor should never move backwards; on attach it should restore cursor from stamp only if it is ahead, or stamp should store a different value. The stamp currently records rt->cursor at detach, but detach happens before ingest_tick that tick, and while detached ingest continues to advance cursor; yet detach code does not persist the later cursor. On attach, resetting cursor to old value causes id reuse. Fix: when detaching, stamp must record the latest cursor value at that point in time, but also subsequent detached ticks must persist cursor advancement so attach does not rewind. Easiest: do not overwrite rt->cursor from journal on attach/run; instead, maintain cursor monotonic in memory. However driver stresses detach/reattach within same run, journal is for recovery; on attach we should set rt->cursor = max(rt->cursor, last.cursor) rather than last.cursor. Also tb_rt_run currently loads last stamp at start and sets cursor=last.cursor; for a fresh run with existing state.bin this could also rewind; should likely start at 1 and ignore prior unless simulating restart, but tests likely reuse output path not state path; still safer: if found, set cursor = max(cursor,last.cursor). And in tb_link_attach it sets cursor=last.cursor; should max as well. Additionally, stamp's cursor should probably be rt->cursor (already monotonic) so with max logic it will not rewind.",
+  "plan": "1) Patch tb_link_attach and tb_rt_run journal-load handling to ensure cursor never decreases: rt->cursor = (rt->cursor > last.cursor ? rt->cursor : last.cursor). Same for gen? gen increments fine. 2) Rebuild and rerun stress2 burst invariants; expect submits==completes==notifies, no duplicate (kind,id), submit ids contiguous 1..N. 3) Re-check both orders and confirm different sequences but same coverage. 4) Quick check invalid flag rejection and that report is not created on failure.",
+  "commands": [
+    {
+      "keystrokes": "grep -n \"cursor = last\\.cursor\" -n /app/src/runtime/runtime.c /app/src/logic/link.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "perl -i -pe 's/rt->cursor = last\\.cursor;/rt->cursor = (rt->cursor > last.cursor) ? rt->cursor : last.cursor;/g' /app/src/logic/link.c\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "perl -i -pe 's/rt->cursor = last\\.cursor;/rt->cursor = (rt->cursor > last.cursor) ? rt->cursor : last.cursor;/g' /app/src/runtime/runtime.c\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "grep -n \"gen = last\\.gen \\+ 1\\|cursor =\" -n /app/src/logic/link.c /app/src/runtime/runtime.c | head -n 80\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "make -C /app -B -j4\n",
+      "duration": 20.0
+    },
+    {
+      "keystrokes": "rm -f /app/run/state.bin /app/output/report.json\n/usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json --seed 2\npython3 - <<'PY'\nimport json\nfrom collections import Counter,defaultdict\nr=json.load(open('/app/output/report.json'))\ne=r['events']\nprint('events',len(e),Counter(x['kind'] for x in e))\nseen=set(); dup=[]\nfor x in e:\n t=(x['kind'],x['id'])\n if t in seen: dup.append(t)\n seen.add(t)\nprint('dup_count',len(dup),'sample',dup[:10])\nsubs=[x['id'] for x in e if x['kind']=='submit']\nmx=max(subs) if subs else 0\nprint('submit_ids_contig',subs==list(range(1,mx+1)),'N',mx)\nby=defaultdict(set)\nfor x in e: by[x['id']].add(x['kind'])\nmiss=[(i,{'submit','complete','notify'}-k) for i,k in by.items() if k!={'submit','complete','notify'}]\nprint('missing_rows',len(miss),'sample',miss[:10])\npos=defaultdict(dict)\nfor idx,x in enumerate(e): pos[x['id']][x['kind']]=idx\nbad=[i for i,d in pos.items() if set(d)=={'submit','complete','notify'} and not (d['submit']<d['complete']<d['notify'])]\nprint('order_bad',len(bad),'sample',bad[:10])\nPY\n",
+      "duration": 5.0
+    },
+    {
+      "keystrokes": "for ord in a_then_b b_then_a; do rm -f /app/run/state.bin /app/output/report.json; /usr/local/bin/arena --scenario stress2 --profile burst --order $ord --out /app/output/report.json --seed 2 >/dev/null; python3 - <<'PY'\nimport json,hashlib\nr=json.load(open('/app/output/report.json'))\nprint(r['order'] if 'order' in r else 'no_order_field', len(r['events']), hashlib.sha256(json.dumps(r['events']).encode()).hexdigest()[:16])\nPY\n; done\n",
+      "duration": 8.0
+    },
+    {
+      "keystrokes": "rm -f /app/output/bad.json; /usr/local/bin/arena --scenario zzz --profile steady --order a_then_b --out /app/output/bad.json; echo EXIT:$?; test -e /app/output/bad.json && echo \"BAD: file exists\" || echo \"OK: no file\"\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "rm -f /app/output/bad.json; /usr/local/bin/arena --scenario basic --profile steady --order z_then_y --out /app/output/bad.json; echo EXIT:$?; test -e /app/output/bad.json && echo \"BAD: file exists\" || echo \"OK: no file\"\n",
+      "duration": 1.0
+    }
+  ],
+  "task_complete": false
+}

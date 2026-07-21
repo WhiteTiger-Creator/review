@@ -1,0 +1,141 @@
+New Terminal Output:
+
+root@0d4ff0619871:/app# apply_patch <<'PATCH'
+> *** Begin Patch
+> *** Update File: /app/src/io/journal.c
+> @@
+>  static tb_status append_rec(FILE *f, tb_stamp s) {
+>    if (!fs_write_u32(f, s.gen))
+>      return TB_ERR_IO;
+> -
+> -  uint32_t lo = (uint32_t)s.cursor;
+> -  if (!fs_write_u32(f, lo))
+> -    return TB_ERR_IO;
+> +
+> +  // On-disk format is 12 bytes: u32 generation + u64 cursor.
+> +  // Cursor must not be truncated; detach/reattach correctness depends on it.
+> +  uint32_t lo = (uint32_t)(s.cursor & 0xffffffffu);
+> +  uint32_t hi = (uint32_t)((s.cursor >> 32) & 0xffffffffu);
+> +  if (!fs_write_u32(f, lo))
+> +    return TB_ERR_IO;
+> +  if (!fs_write_u32(f, hi))
+> +    return TB_ERR_IO;
+> @@
+>  static bool read_rec(FILE *f, tb_stamp *out) {
+>    uint32_t gen = 0;
+>    if (!fs_read_u32(f, &gen))
+>      return false;
+>
+>    uint32_t lo = 0;
+>    if (!fs_read_u32(f, &lo))
+>      return false;
+> +
+> +  uint32_t hi = 0;
+> +  if (!fs_read_u32(f, &hi))
+> +    return false;
+>
+>    out->gen = gen;
+> -  out->cursor = (uint64_t)lo;
+> +  out->cursor = ((uint64_t)hi << 32) | (uint64_t)lo;
+>    return true;
+>  }
+> *** End Patch
+> PATCH
+bash: apply_patch: command not found
+root@0d4ff0619871:/app# apply_patch <<'PATCH'
+> *** Begin Patch
+> *** Update File: /app/src/logic/merge.c
+> @@
+>    if (!tb_q64_pop(q, &token))
+>      return false;
+>
+> -  uint64_t key = (uint32_t)token;
+> +  // Tokens are 64-bit; keying by only the low 32 bits causes collisions under
+> +  // load and leads to dropped completions.
+> +  uint64_t key = token;
+> *** End Patch
+> PATCH
+bash: apply_patch: command not found
+root@0d4ff0619871:/app# apply_patch <<'PATCH'
+> *** Begin Patch
+> *** Update File: /app/src/logic/link.c
+> @@
+>    // A "device-side" queue continues to exist while detached; the notifier doesn't.
+> -  tb_q64_clear(&rt->notify_q);
+> +  // Keep queued notifications so they can be delivered after reattach.
+>    return TB_OK;
+>  }
+> *** End Patch
+> PATCH
+bash: apply_patch: command not found
+root@0d4ff0619871:/app# make -C /app clean all
+make: Entering directory '/app'
+rm -f /usr/local/bin/arena
+mkdir -p /usr/local/bin
+cc -O2 -g -std=c11 -Wall -Wextra -Wshadow -Wconversion -Iinclude -o /usr/local/bin/arena src/main.c src/cli.c src/tb_err.c src/report.c src/runtime/runtime.c sr
+c/runtime/profile.c src/runtime/script.c src/core/idgen.c src/core/queue.c src/core/map_u64.c src/core/vec_u64.c src/core/vec_ev.c src/io/fs.c src/io/journal.c
+src/logic/ingest.c src/logic/settle.c src/logic/nudge.c src/logic/merge.c src/logic/link.c
+make: Leaving directory '/app'
+root@0d4ff0619871:/app# rm -f /app/output/report.json /app/output/report_b.json /app/run/journal.bin 2>/dev/null || true
+root@0d4ff0619871:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json; echo "exit=$?"; /usr/local/bin/a
+rena --scenario stress2 --profile burst --order b_then_a --out /app/output/report_b.json; echo "exit2=$?"
+exit=0
+exit2=0
+root@0d4ff0619871:/app# python3 - <<'PY'
+> import json
+> from collections import defaultdict
+>
+> def check(p):
+>     with open(p) as f: r=json.load(f)
+>     ev=r['events']
+>     by=defaultdict(list)
+>     for i,e in enumerate(ev):
+>         by[(e['kind'],e['id'])].append(i)
+>     sub_ids=[e['id'] for e in ev if e['kind']=='submit']
+>     contig_ok=(sub_ids==list(range(1,len(sub_ids)+1)))
+>     dups=[k for k,v in by.items() if len(v)>1]
+>     bad=[]
+>     for id in range(1,len(sub_ids)+1):
+>         sub=by.get(('submit',id))
+>         com=by.get(('complete',id))
+>         noti=by.get(('notify',id))
+>         if not(sub and com and noti):
+>             bad.append((id,'missing',bool(sub),bool(com),bool(noti)))
+>             continue
+>         if not(sub[0] < com[0] < noti[0]):
+>             bad.append((id,'order',sub[0],com[0],noti[0]))
+>     print(p)
+>     print(' scenario',r.get('scenario'),'profile',r.get('profile'))
+>     print(' events',len(ev),'submits',len(sub_ids),'max_submit',max(sub_ids) if sub_ids else 0)
+>     print(' submit_contiguous',contig_ok)
+>     print(' duplicates',len(dups))
+>     print(' bad',len(bad),'sample',bad[:10])
+>
+> check('/app/output/report.json')
+> check('/app/output/report_b.json')
+> PY
+/app/output/report.json
+ scenario stress2 profile burst
+ events 377 submits 140 max_submit 118
+ submit_contiguous False
+ duplicates 24
+ bad 23 sample [(55, 'missing', True, True, False), (119, 'missing', False, False, False), (120, 'missing', False, False, False), (121, 'missing', False, False,
+ False), (122, 'missing', False, False, False), (123, 'missing', False, False, False), (124, 'missing', False, False, False), (125, 'missing', False, False, Fal
+se), (126, 'missing', False, False, False), (127, 'missing', False, False, False)]
+/app/output/report_b.json
+ scenario stress2 profile burst
+ events 377 submits 140 max_submit 118
+ submit_contiguous False
+ duplicates 24
+ bad 23 sample [(55, 'missing', True, True, False), (119, 'missing', False, False, False), (120, 'missing', False, False, False), (121, 'missing', False, False,
+ False), (122, 'missing', False, False, False), (123, 'missing', False, False, False), (124, 'missing', False, False, False), (125, 'missing', False, False, Fal
+se), (126, 'missing', False, False, False), (127, 'missing', False, False, False)]
+root@0d4ff0619871:/app# ls -la /app/run 2>/dev/null || true; find /app -maxdepth 2 -type f -name "*.bin" -o -name "journal*" -o -name "*.jrnl" 2>/dev/null | xar
+gs -r ls -la
+total 8
+drwxr-xr-x 2 root root  41 May 26 12:47 .
+drwxr-xr-x 7 root root  94 May 26 12:46 ..
+-rw-r--r-- 1 root root 775 May 26 12:44 README.txt
+-rw-r--r-- 1 root root  16 May 26 12:47 state.bin
+-rw-r--r-- 1 root root 16 May 26 12:47 /app/run/state.bin
+root@0d4ff0619871:/app#

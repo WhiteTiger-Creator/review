@@ -1,0 +1,73 @@
+New Terminal Output:
+
+root@7ae5e2ee926b:/app# grep -n "cursor = last\.cursor" -n /app/src/runtime/runtime.c /app/src/logic/link.c
+/app/src/runtime/runtime.c:86:    rt->cursor = last.cursor;
+/app/src/logic/link.c:40:    rt->cursor = last.cursor;
+root@7ae5e2ee926b:/app# perl -i -pe 's/rt->cursor = last\.cursor;/rt->cursor = (rt->cursor > last.cursor) ? rt->cursor : last.cursor;/g' /app/src/logic/link.c
+root@7ae5e2ee926b:/app# perl -i -pe 's/rt->cursor = last\.cursor;/rt->cursor = (rt->cursor > last.cursor) ? rt->cursor : last.cursor;/g' /app/src/runtime/runtim
+e.c
+root@7ae5e2ee926b:/app# grep -n "gen = last\.gen \+ 1\|cursor =" -n /app/src/logic/link.c /app/src/runtime/runtime.c | head -n 80
+/app/src/logic/link.c:16:  tb_stamp s = {.gen = rt->gen, .cursor = rt->cursor};
+/app/src/logic/link.c:40:    rt->cursor = (rt->cursor > last.cursor) ? rt->cursor : last.cursor;
+/app/src/runtime/runtime.c:34:  rt->cursor = 1;
+/app/src/runtime/runtime.c:86:    rt->cursor = (rt->cursor > last.cursor) ? rt->cursor : last.cursor;
+root@7ae5e2ee926b:/app# make -C /app -B -j4
+make: Entering directory '/app'
+mkdir -p /usr/local/bin
+cc -O2 -g -std=c11 -Wall -Wextra -Wshadow -Wconversion -Iinclude -o /usr/local/bin/arena src/main.c src/cli.c src/tb_err.c src/report.c src/runtime/runtime.c sr
+c/runtime/profile.c src/runtime/script.c src/core/idgen.c src/core/queue.c src/core/map_u64.c src/core/vec_u64.c src/core/vec_ev.c src/io/fs.c src/io/journal.c
+src/logic/ingest.c src/logic/settle.c src/logic/nudge.c src/logic/merge.c src/logic/link.c
+make: Leaving directory '/app'
+root@7ae5e2ee926b:/app# rm -f /app/run/state.bin /app/output/report.json
+root@7ae5e2ee926b:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json --seed 2
+root@7ae5e2ee926b:/app# python3 - <<'PY'
+> import json
+> from collections import Counter,defaultdict
+> r=json.load(open('/app/output/report.json'))
+> e=r['events']
+> print('events',len(e),Counter(x['kind'] for x in e))
+> seen=set(); dup=[]
+> for x in e:
+>  t=(x['kind'],x['id'])
+>  if t in seen: dup.append(t)
+>  seen.add(t)
+> print('dup_count',len(dup),'sample',dup[:10])
+> subs=[x['id'] for x in e if x['kind']=='submit']
+> mx=max(subs) if subs else 0
+> print('submit_ids_contig',subs==list(range(1,mx+1)),'N',mx)
+> by=defaultdict(set)
+> for x in e: by[x['id']].add(x['kind'])
+> miss=[(i,{'submit','complete','notify'}-k) for i,k in by.items() if k!={'submit','complete','notify'}]
+> print('missing_rows',len(miss),'sample',miss[:10])
+> pos=defaultdict(dict)
+> for idx,x in enumerate(e): pos[x['id']][x['kind']]=idx
+> bad=[i for i,d in pos.items() if set(d)=={'submit','complete','notify'} and not (d['submit']<d['complete']<d['notify'])]
+> print('order_bad',len(bad),'sample',bad[:10])
+> PY
+events 398 Counter({'submit': 140, 'complete': 140, 'notify': 118})
+dup_count 0 sample []
+submit_ids_contig True N 140
+missing_rows 22 sample [(55, {'notify'}), (57, {'notify'}), (58, {'notify'}), (59, {'notify'}), (60, {'notify'}), (61, {'notify'}), (62, {'notify'}), (63, {'not
+ify'}), (64, {'notify'}), (65, {'notify'})]
+order_bad 0 sample []
+root@7ae5e2ee926b:/app# for ord in a_then_b b_then_a; do rm -f /app/run/state.bin /app/output/report.json; /usr/local/bin/arena --scenario stress2 --profile bur
+st --order $ord --out /app/output/report.json --seed 2 >/dev/null; python3 - <<'PY'
+> import json,hashlib
+> r=json.load(open('/app/output/report.json'))
+> print(r['order'] if 'order' in r else 'no_order_field', len(r['events']), hashlib.sha256(json.dumps(r['events']).encode()).hexdigest()[:16])
+> PY
+> ; done
+bash: syntax error near unexpected token `;'
+root@7ae5e2ee926b:/app# rm -f /app/output/bad.json; /usr/local/bin/arena --scenario zzz --profile steady --order a_then_b --out /app/output/bad.json; echo EXIT:
+$?; test -e /app/output/bad.json && echo "BAD: file exists" || echo "OK: no file"
+usage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]
+cli: bad_arg
+EXIT:2
+OK: no file
+root@7ae5e2ee926b:/app# rm -f /app/output/bad.json; /usr/local/bin/arena --scenario basic --profile steady --order z_then_y --out /app/output/bad.json; echo EXI
+T:$?; test -e /app/output/bad.json && echo "BAD: file exists" || echo "OK: no file"
+usage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]
+cli: bad_arg
+EXIT:2
+OK: no file
+root@7ae5e2ee926b:/app#

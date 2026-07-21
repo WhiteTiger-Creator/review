@@ -1,0 +1,47 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.2, pytest-8.4.1, pluggy-1.6.0
+cachedir: /tmp/pytest_cache
+rootdir: /tests
+plugins: json-ctrf-0.3.5
+collected 35 items
+
+../tests/test_outputs.py ...................................             [100%]
+
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED ../tests/test_outputs.py::test_exactly_once_basic
+PASSED ../tests/test_outputs.py::test_exactly_once_with_reattach
+PASSED ../tests/test_outputs.py::test_no_spurious_notifications
+PASSED ../tests/test_outputs.py::test_multiple_reattaches
+PASSED ../tests/test_outputs.py::test_two_load_profiles
+PASSED ../tests/test_outputs.py::test_reconciliation_order_invariance
+PASSED ../tests/test_outputs.py::test_deterministic_rerun_identical_sequence
+PASSED ../tests/test_outputs.py::test_distinct_scenarios_do_not_share_canned_log
+PASSED ../tests/test_outputs.py::test_distinct_profiles_change_sequence_under_same_scenario
+PASSED ../tests/test_outputs.py::test_stress2_volume_exceeds_stress_for_burst
+PASSED ../tests/test_outputs.py::test_stress2_burst_orders_emit_distinct_sequences
+PASSED ../tests/test_outputs.py::test_stress2_steady_double_detach_contract
+PASSED ../tests/test_outputs.py::test_basic_steady_sparse_submit_pattern
+PASSED ../tests/test_outputs.py::test_burst_early_window_submit_density
+PASSED ../tests/test_outputs.py::test_basic_orders_preserve_multiset_but_may_reorder
+PASSED ../tests/test_outputs.py::test_prefix_ledger_holds_on_stress_burst
+PASSED ../tests/test_outputs.py::test_notify_complete_gap_bounded_under_double_detach
+PASSED ../tests/test_outputs.py::test_no_notify_before_any_complete_in_global_log
+PASSED ../tests/test_outputs.py::test_interleaved_submit_and_complete_across_ids
+PASSED ../tests/test_outputs.py::test_stress_detach_window_ids_still_notify_after_reattach
+PASSED ../tests/test_outputs.py::test_matrix_exactly_once_contract[burst-basic]
+PASSED ../tests/test_outputs.py::test_matrix_exactly_once_contract[burst-stress]
+PASSED ../tests/test_outputs.py::test_matrix_exactly_once_contract[burst-stress2]
+PASSED ../tests/test_outputs.py::test_matrix_exactly_once_contract[steady-basic]
+PASSED ../tests/test_outputs.py::test_matrix_exactly_once_contract[steady-stress]
+PASSED ../tests/test_outputs.py::test_matrix_exactly_once_contract[steady-stress2]
+PASSED ../tests/test_outputs.py::test_stress_burst_respects_order_flag[a_then_b]
+PASSED ../tests/test_outputs.py::test_stress_burst_respects_order_flag[b_then_a]
+PASSED ../tests/test_outputs.py::test_invalid_scenario_rejected
+PASSED ../tests/test_outputs.py::test_missing_required_flag_rejected
+PASSED ../tests/test_outputs.py::test_invalid_order_rejected
+PASSED ../tests/test_outputs.py::test_output_removed_between_runs
+PASSED ../tests/test_outputs.py::test_journal_file_created_on_detach_scenario
+PASSED ../tests/test_outputs.py::test_high_gen_token_path_stress2_burst
+PASSED ../tests/test_outputs.py::test_completes_not_clustered_in_final_fifth
+============================== 35 passed in 0.17s ==============================

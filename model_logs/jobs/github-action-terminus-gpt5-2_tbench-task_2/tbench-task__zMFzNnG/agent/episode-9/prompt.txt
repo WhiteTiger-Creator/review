@@ -1,8 +1,0 @@
-New Terminal Output:
-ts, rows.Err()
-}
-root@ea8f2e4b9576:/app# pwd
-/app
-root@ea8f2e4b9576:/app# echo test
-test
-root@ea8f2e4b9576:/app#

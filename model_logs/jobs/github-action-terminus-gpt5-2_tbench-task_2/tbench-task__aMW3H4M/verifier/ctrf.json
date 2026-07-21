@@ -1,0 +1,335 @@
+{
+    "results": {
+        "tool": {
+            "name": "pytest",
+            "version": "8.4.1"
+        },
+        "summary": {
+            "tests": 29,
+            "passed": 13,
+            "failed": 16,
+            "skipped": 0,
+            "pending": 0,
+            "other": 0,
+            "start": 1779799811.0494084,
+            "stop": 1779799811.5596094
+        },
+        "tests": [
+            {
+                "name": "test_outputs.py::test_exactly_once_basic",
+                "status": "passed",
+                "duration": 0.01978957900007572,
+                "start": 1779799811.0965796,
+                "stop": 1779799811.1166103,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_exactly_once_with_reattach",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0025975150000476788,
+                "start": 1779799811.1168168,
+                "stop": 1779799811.145256,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_exactly_once_with_reattach() -> None:\n        \"\"\"Single detach/reattach mid-flight: counts and per-id ordering still hold.\"\"\"\n        data = _run(\"stress\", \"burst\", \"a_then_b\")\n>       _assert_full_contract(data)\n\n/tests/test_outputs.py:274: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/test_outputs.py:259: in _assert_full_contract\n    _assert_exactly_once_and_notify(data)\n/tests/test_outputs.py:255: in _assert_exactly_once_and_notify\n    _assert_notify_near_complete(data[\"events\"])\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nevents = [{'id': 1, 'kind': 'submit'}, {'id': 2, 'kind': 'submit'}, {'id': 3, 'kind': 'submit'}, {'id': 3, 'kind': 'complete'}, {'id': 3, 'kind': 'notify'}, {'id': 4, 'kind': 'submit'}, ...]\n\n    def _assert_notify_near_complete(events: list[dict], *, max_gap: int = 8) -> None:\n        \"\"\"Notify should follow complete soon after (catches detached-queue replay dumps).\"\"\"\n        first_seen = _first_seen(events)\n        for ev in events:\n            if ev[\"kind\"] != \"notify\":\n                continue\n            rid = ev[\"id\"]\n            gap = first_seen[(\"notify\", rid)] - first_seen[(\"complete\", rid)]\n>           assert 0 < gap <= max_gap, f\"id {rid}: notify too far from complete (gap={gap})\"\nE           AssertionError: id 56: notify too far from complete (gap=14)\nE           assert 14 <= 8\n\n/tests/test_outputs.py:221: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_no_spurious_notifications",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0015552050001588213,
+                "start": 1779799811.1454587,
+                "stop": 1779799811.1706188,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_no_spurious_notifications() -> None:\n        \"\"\"Under reconnect stress: notifications match completions exactly.\"\"\"\n        data = _run(\"stress\", \"steady\", \"a_then_b\")\n>       _assert_full_contract(data)\n\n/tests/test_outputs.py:280: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/test_outputs.py:259: in _assert_full_contract\n    _assert_exactly_once_and_notify(data)\n/tests/test_outputs.py:255: in _assert_exactly_once_and_notify\n    _assert_notify_near_complete(data[\"events\"])\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nevents = [{'id': 1, 'kind': 'submit'}, {'id': 1, 'kind': 'complete'}, {'id': 1, 'kind': 'notify'}, {'id': 2, 'kind': 'submit'}, {'id': 2, 'kind': 'complete'}, {'id': 2, 'kind': 'notify'}, ...]\n\n    def _assert_notify_near_complete(events: list[dict], *, max_gap: int = 8) -> None:\n        \"\"\"Notify should follow complete soon after (catches detached-queue replay dumps).\"\"\"\n        first_seen = _first_seen(events)\n        for ev in events:\n            if ev[\"kind\"] != \"notify\":\n                continue\n            rid = ev[\"id\"]\n            gap = first_seen[(\"notify\", rid)] - first_seen[(\"complete\", rid)]\n>           assert 0 < gap <= max_gap, f\"id {rid}: notify too far from complete (gap={gap})\"\nE           AssertionError: id 8: notify too far from complete (gap=10)\nE           assert 10 <= 8\n\n/tests/test_outputs.py:221: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_multiple_reattaches",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0016739699999561708,
+                "start": 1779799811.1708105,
+                "stop": 1779799811.189421,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_multiple_reattaches() -> None:\n        \"\"\"Two detach/reattach cycles: invariants still hold.\"\"\"\n        data = _run(\"stress2\", \"steady\", \"a_then_b\")\n>       _assert_full_contract(data)\n\n/tests/test_outputs.py:286: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/test_outputs.py:259: in _assert_full_contract\n    _assert_exactly_once_and_notify(data)\n/tests/test_outputs.py:255: in _assert_exactly_once_and_notify\n    _assert_notify_near_complete(data[\"events\"])\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nevents = [{'id': 1, 'kind': 'submit'}, {'id': 1, 'kind': 'complete'}, {'id': 1, 'kind': 'notify'}, {'id': 2, 'kind': 'submit'}, {'id': 2, 'kind': 'complete'}, {'id': 2, 'kind': 'notify'}, ...]\n\n    def _assert_notify_near_complete(events: list[dict], *, max_gap: int = 8) -> None:\n        \"\"\"Notify should follow complete soon after (catches detached-queue replay dumps).\"\"\"\n        first_seen = _first_seen(events)\n        for ev in events:\n            if ev[\"kind\"] != \"notify\":\n                continue\n            rid = ev[\"id\"]\n            gap = first_seen[(\"notify\", rid)] - first_seen[(\"complete\", rid)]\n>           assert 0 < gap <= max_gap, f\"id {rid}: notify too far from complete (gap={gap})\"\nE           AssertionError: id 9: notify too far from complete (gap=10)\nE           assert 10 <= 8\n\n/tests/test_outputs.py:221: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_two_load_profiles",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0032276639999508916,
+                "start": 1779799811.1896143,
+                "stop": 1779799811.209895,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_two_load_profiles() -> None:\n        \"\"\"Both burst and steady profiles satisfy invariants under reconnect.\"\"\"\n        burst = _run(\"stress\", \"burst\", \"a_then_b\")\n        steady = _run(\"stress\", \"steady\", \"a_then_b\")\n>       _assert_full_contract(burst)\n\n/tests/test_outputs.py:293: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/test_outputs.py:259: in _assert_full_contract\n    _assert_exactly_once_and_notify(data)\n/tests/test_outputs.py:255: in _assert_exactly_once_and_notify\n    _assert_notify_near_complete(data[\"events\"])\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nevents = [{'id': 1, 'kind': 'submit'}, {'id': 2, 'kind': 'submit'}, {'id': 3, 'kind': 'submit'}, {'id': 3, 'kind': 'complete'}, {'id': 3, 'kind': 'notify'}, {'id': 4, 'kind': 'submit'}, ...]\n\n    def _assert_notify_near_complete(events: list[dict], *, max_gap: int = 8) -> None:\n        \"\"\"Notify should follow complete soon after (catches detached-queue replay dumps).\"\"\"\n        first_seen = _first_seen(events)\n        for ev in events:\n            if ev[\"kind\"] != \"notify\":\n                continue\n            rid = ev[\"id\"]\n            gap = first_seen[(\"notify\", rid)] - first_seen[(\"complete\", rid)]\n>           assert 0 < gap <= max_gap, f\"id {rid}: notify too far from complete (gap={gap})\"\nE           AssertionError: id 56: notify too far from complete (gap=14)\nE           assert 14 <= 8\n\n/tests/test_outputs.py:221: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_reconciliation_order_invariance",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.00221755799998391,
+                "start": 1779799811.210081,
+                "stop": 1779799811.2293017,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_reconciliation_order_invariance() -> None:\n        \"\"\"Drain order must not change id multisets; burst runs must produce different sequences.\"\"\"\n        steady_a = _run(\"stress\", \"steady\", \"a_then_b\")\n        steady_b = _run(\"stress\", \"steady\", \"b_then_a\")\n>       _assert_full_contract(steady_a)\n\n/tests/test_outputs.py:302: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/test_outputs.py:259: in _assert_full_contract\n    _assert_exactly_once_and_notify(data)\n/tests/test_outputs.py:255: in _assert_exactly_once_and_notify\n    _assert_notify_near_complete(data[\"events\"])\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nevents = [{'id': 1, 'kind': 'submit'}, {'id': 1, 'kind': 'complete'}, {'id': 1, 'kind': 'notify'}, {'id': 2, 'kind': 'submit'}, {'id': 2, 'kind': 'complete'}, {'id': 2, 'kind': 'notify'}, ...]\n\n    def _assert_notify_near_complete(events: list[dict], *, max_gap: int = 8) -> None:\n        \"\"\"Notify should follow complete soon after (catches detached-queue replay dumps).\"\"\"\n        first_seen = _first_seen(events)\n        for ev in events:\n            if ev[\"kind\"] != \"notify\":\n                continue\n            rid = ev[\"id\"]\n            gap = first_seen[(\"notify\", rid)] - first_seen[(\"complete\", rid)]\n>           assert 0 < gap <= max_gap, f\"id {rid}: notify too far from complete (gap={gap})\"\nE           AssertionError: id 8: notify too far from complete (gap=10)\nE           assert 10 <= 8\n\n/tests/test_outputs.py:221: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_deterministic_rerun_identical_sequence",
+                "status": "passed",
+                "duration": 0.0024494499999718755,
+                "start": 1779799811.2294908,
+                "stop": 1779799811.2320957,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_distinct_scenarios_do_not_share_canned_log",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0025103240000134974,
+                "start": 1779799811.2322814,
+                "stop": 1779799811.2521982,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_distinct_scenarios_do_not_share_canned_log() -> None:\n        \"\"\"Anti-hardcoding: basic vs stress2 logs must differ materially.\"\"\"\n        basic = _run(\"basic\", \"steady\", \"a_then_b\")\n        heavy = _run(\"stress2\", \"steady\", \"a_then_b\")\n        _assert_full_contract(basic)\n>       _assert_full_contract(heavy)\n\n/tests/test_outputs.py:337: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/test_outputs.py:259: in _assert_full_contract\n    _assert_exactly_once_and_notify(data)\n/tests/test_outputs.py:255: in _assert_exactly_once_and_notify\n    _assert_notify_near_complete(data[\"events\"])\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nevents = [{'id': 1, 'kind': 'submit'}, {'id': 1, 'kind': 'complete'}, {'id': 1, 'kind': 'notify'}, {'id': 2, 'kind': 'submit'}, {'id': 2, 'kind': 'complete'}, {'id': 2, 'kind': 'notify'}, ...]\n\n    def _assert_notify_near_complete(events: list[dict], *, max_gap: int = 8) -> None:\n        \"\"\"Notify should follow complete soon after (catches detached-queue replay dumps).\"\"\"\n        first_seen = _first_seen(events)\n        for ev in events:\n            if ev[\"kind\"] != \"notify\":\n                continue\n            rid = ev[\"id\"]\n            gap = first_seen[(\"notify\", rid)] - first_seen[(\"complete\", rid)]\n>           assert 0 < gap <= max_gap, f\"id {rid}: notify too far from complete (gap={gap})\"\nE           AssertionError: id 9: notify too far from complete (gap=10)\nE           assert 10 <= 8\n\n/tests/test_outputs.py:221: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_distinct_profiles_change_sequence_under_same_scenario",
+                "status": "passed",
+                "duration": 0.00199749600017185,
+                "start": 1779799811.2523963,
+                "stop": 1779799811.2545426,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_stress2_volume_exceeds_stress_for_burst",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0026940299999296258,
+                "start": 1779799811.254712,
+                "stop": 1779799811.2748203,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_stress2_volume_exceeds_stress_for_burst() -> None:\n        \"\"\"Larger scenario must admit strictly more submits for the same profile.\"\"\"\n        stress_n = _expected_submit_count(\"stress\", \"burst\")\n        stress2_n = _expected_submit_count(\"stress2\", \"burst\")\n        assert stress2_n > stress_n\n        data = _run(\"stress2\", \"burst\", \"a_then_b\")\n>       _assert_full_contract(data)\n\n/tests/test_outputs.py:356: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/test_outputs.py:259: in _assert_full_contract\n    _assert_exactly_once_and_notify(data)\n/tests/test_outputs.py:255: in _assert_exactly_once_and_notify\n    _assert_notify_near_complete(data[\"events\"])\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nevents = [{'id': 1, 'kind': 'submit'}, {'id': 2, 'kind': 'submit'}, {'id': 3, 'kind': 'submit'}, {'id': 3, 'kind': 'complete'}, {'id': 3, 'kind': 'notify'}, {'id': 4, 'kind': 'submit'}, ...]\n\n    def _assert_notify_near_complete(events: list[dict], *, max_gap: int = 8) -> None:\n        \"\"\"Notify should follow complete soon after (catches detached-queue replay dumps).\"\"\"\n        first_seen = _first_seen(events)\n        for ev in events:\n            if ev[\"kind\"] != \"notify\":\n                continue\n            rid = ev[\"id\"]\n            gap = first_seen[(\"notify\", rid)] - first_seen[(\"complete\", rid)]\n>           assert 0 < gap <= max_gap, f\"id {rid}: notify too far from complete (gap={gap})\"\nE           AssertionError: id 62: notify too far from complete (gap=11)\nE           assert 11 <= 8\n\n/tests/test_outputs.py:221: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_stress2_burst_orders_emit_distinct_sequences",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0037790579999636975,
+                "start": 1779799811.274998,
+                "stop": 1779799811.295722,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_stress2_burst_orders_emit_distinct_sequences() -> None:\n        \"\"\"Two detach windows plus burst load: order must reorder observable events.\"\"\"\n        a = _run(\"stress2\", \"burst\", \"a_then_b\")\n        b = _run(\"stress2\", \"burst\", \"b_then_a\")\n>       _assert_full_contract(a)\n\n/tests/test_outputs.py:367: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/test_outputs.py:259: in _assert_full_contract\n    _assert_exactly_once_and_notify(data)\n/tests/test_outputs.py:255: in _assert_exactly_once_and_notify\n    _assert_notify_near_complete(data[\"events\"])\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nevents = [{'id': 1, 'kind': 'submit'}, {'id': 2, 'kind': 'submit'}, {'id': 3, 'kind': 'submit'}, {'id': 3, 'kind': 'complete'}, {'id': 3, 'kind': 'notify'}, {'id': 4, 'kind': 'submit'}, ...]\n\n    def _assert_notify_near_complete(events: list[dict], *, max_gap: int = 8) -> None:\n        \"\"\"Notify should follow complete soon after (catches detached-queue replay dumps).\"\"\"\n        first_seen = _first_seen(events)\n        for ev in events:\n            if ev[\"kind\"] != \"notify\":\n                continue\n            rid = ev[\"id\"]\n            gap = first_seen[(\"notify\", rid)] - first_seen[(\"complete\", rid)]\n>           assert 0 < gap <= max_gap, f\"id {rid}: notify too far from complete (gap={gap})\"\nE           AssertionError: id 62: notify too far from complete (gap=11)\nE           assert 11 <= 8\n\n/tests/test_outputs.py:221: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_stress2_steady_double_detach_contract",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0015636929999800486,
+                "start": 1779799811.295932,
+                "stop": 1779799811.3149352,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_stress2_steady_double_detach_contract() -> None:\n        \"\"\"Two detach cycles on the longest scenario with sparse steady load.\"\"\"\n        data = _run(\"stress2\", \"steady\", \"b_then_a\")\n>       _assert_full_contract(data)\n\n/tests/test_outputs.py:375: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/test_outputs.py:259: in _assert_full_contract\n    _assert_exactly_once_and_notify(data)\n/tests/test_outputs.py:255: in _assert_exactly_once_and_notify\n    _assert_notify_near_complete(data[\"events\"])\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nevents = [{'id': 1, 'kind': 'submit'}, {'id': 1, 'kind': 'complete'}, {'id': 1, 'kind': 'notify'}, {'id': 2, 'kind': 'submit'}, {'id': 2, 'kind': 'complete'}, {'id': 2, 'kind': 'notify'}, ...]\n\n    def _assert_notify_near_complete(events: list[dict], *, max_gap: int = 8) -> None:\n        \"\"\"Notify should follow complete soon after (catches detached-queue replay dumps).\"\"\"\n        first_seen = _first_seen(events)\n        for ev in events:\n            if ev[\"kind\"] != \"notify\":\n                continue\n            rid = ev[\"id\"]\n            gap = first_seen[(\"notify\", rid)] - first_seen[(\"complete\", rid)]\n>           assert 0 < gap <= max_gap, f\"id {rid}: notify too far from complete (gap={gap})\"\nE           AssertionError: id 9: notify too far from complete (gap=10)\nE           assert 10 <= 8\n\n/tests/test_outputs.py:221: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_basic_steady_sparse_submit_pattern",
+                "status": "passed",
+                "duration": 0.001208894000114924,
+                "start": 1779799811.3151143,
+                "stop": 1779799811.316468,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_burst_early_window_submit_density",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.002294621000146435,
+                "start": 1779799811.316635,
+                "stop": 1779799811.336182,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_burst_early_window_submit_density() -> None:\n        \"\"\"Burst profile front-loads submits; early submit ids must dominate the head of the log.\"\"\"\n        data = _run(\"stress\", \"burst\", \"a_then_b\")\n>       _assert_full_contract(data)\n\n/tests/test_outputs.py:388: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/test_outputs.py:259: in _assert_full_contract\n    _assert_exactly_once_and_notify(data)\n/tests/test_outputs.py:255: in _assert_exactly_once_and_notify\n    _assert_notify_near_complete(data[\"events\"])\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nevents = [{'id': 1, 'kind': 'submit'}, {'id': 2, 'kind': 'submit'}, {'id': 3, 'kind': 'submit'}, {'id': 3, 'kind': 'complete'}, {'id': 3, 'kind': 'notify'}, {'id': 4, 'kind': 'submit'}, ...]\n\n    def _assert_notify_near_complete(events: list[dict], *, max_gap: int = 8) -> None:\n        \"\"\"Notify should follow complete soon after (catches detached-queue replay dumps).\"\"\"\n        first_seen = _first_seen(events)\n        for ev in events:\n            if ev[\"kind\"] != \"notify\":\n                continue\n            rid = ev[\"id\"]\n            gap = first_seen[(\"notify\", rid)] - first_seen[(\"complete\", rid)]\n>           assert 0 < gap <= max_gap, f\"id {rid}: notify too far from complete (gap={gap})\"\nE           AssertionError: id 56: notify too far from complete (gap=14)\nE           assert 14 <= 8\n\n/tests/test_outputs.py:221: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_basic_orders_preserve_multiset_but_may_reorder",
+                "status": "passed",
+                "duration": 0.0032009999999900174,
+                "start": 1779799811.336361,
+                "stop": 1779799811.3397076,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_prefix_ledger_holds_on_stress_burst",
+                "status": "passed",
+                "duration": 0.0013130580001643466,
+                "start": 1779799811.3399048,
+                "stop": 1779799811.341373,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_notify_complete_gap_bounded_under_double_detach",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0027124900000217167,
+                "start": 1779799811.3415399,
+                "stop": 1779799811.361076,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_notify_complete_gap_bounded_under_double_detach() -> None:\n        \"\"\"Notifies must land soon after completes even with two journal generations.\"\"\"\n        data = _run(\"stress2\", \"burst\", \"a_then_b\")\n>       _assert_full_contract(data)\n\n/tests/test_outputs.py:415: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/test_outputs.py:259: in _assert_full_contract\n    _assert_exactly_once_and_notify(data)\n/tests/test_outputs.py:255: in _assert_exactly_once_and_notify\n    _assert_notify_near_complete(data[\"events\"])\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nevents = [{'id': 1, 'kind': 'submit'}, {'id': 2, 'kind': 'submit'}, {'id': 3, 'kind': 'submit'}, {'id': 3, 'kind': 'complete'}, {'id': 3, 'kind': 'notify'}, {'id': 4, 'kind': 'submit'}, ...]\n\n    def _assert_notify_near_complete(events: list[dict], *, max_gap: int = 8) -> None:\n        \"\"\"Notify should follow complete soon after (catches detached-queue replay dumps).\"\"\"\n        first_seen = _first_seen(events)\n        for ev in events:\n            if ev[\"kind\"] != \"notify\":\n                continue\n            rid = ev[\"id\"]\n            gap = first_seen[(\"notify\", rid)] - first_seen[(\"complete\", rid)]\n>           assert 0 < gap <= max_gap, f\"id {rid}: notify too far from complete (gap={gap})\"\nE           AssertionError: id 62: notify too far from complete (gap=11)\nE           assert 11 <= 8\n\n/tests/test_outputs.py:221: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_no_notify_before_any_complete_in_global_log",
+                "status": "passed",
+                "duration": 0.001076445999956377,
+                "start": 1779799811.3612692,
+                "stop": 1779799811.3624902,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_interleaved_submit_and_complete_across_ids",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.002718663999871751,
+                "start": 1779799811.3626566,
+                "stop": 1779799811.382405,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_interleaved_submit_and_complete_across_ids() -> None:\n        \"\"\"Reject terminal batch synthesis: work continues while earlier ids complete.\"\"\"\n        data = _run(\"stress2\", \"burst\", \"b_then_a\")\n>       _assert_full_contract(data)\n\n/tests/test_outputs.py:431: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/test_outputs.py:259: in _assert_full_contract\n    _assert_exactly_once_and_notify(data)\n/tests/test_outputs.py:255: in _assert_exactly_once_and_notify\n    _assert_notify_near_complete(data[\"events\"])\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nevents = [{'id': 1, 'kind': 'submit'}, {'id': 2, 'kind': 'submit'}, {'id': 3, 'kind': 'submit'}, {'id': 3, 'kind': 'complete'}, {'id': 3, 'kind': 'notify'}, {'id': 4, 'kind': 'submit'}, ...]\n\n    def _assert_notify_near_complete(events: list[dict], *, max_gap: int = 8) -> None:\n        \"\"\"Notify should follow complete soon after (catches detached-queue replay dumps).\"\"\"\n        first_seen = _first_seen(events)\n        for ev in events:\n            if ev[\"kind\"] != \"notify\":\n                continue\n            rid = ev[\"id\"]\n            gap = first_seen[(\"notify\", rid)] - first_seen[(\"complete\", rid)]\n>           assert 0 < gap <= max_gap, f\"id {rid}: notify too far from complete (gap={gap})\"\nE           AssertionError: id 62: notify too far from complete (gap=11)\nE           assert 11 <= 8\n\n/tests/test_outputs.py:221: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_stress_detach_window_ids_still_notify_after_reattach",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0023835030000327606,
+                "start": 1779799811.3825946,
+                "stop": 1779799811.4021492,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_stress_detach_window_ids_still_notify_after_reattach() -> None:\n        \"\"\"Ids whose work spans detach must still receive exactly one notify.\"\"\"\n        data = _run(\"stress\", \"burst\", \"a_then_b\")\n>       _assert_full_contract(data)\n\n/tests/test_outputs.py:445: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/test_outputs.py:259: in _assert_full_contract\n    _assert_exactly_once_and_notify(data)\n/tests/test_outputs.py:255: in _assert_exactly_once_and_notify\n    _assert_notify_near_complete(data[\"events\"])\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nevents = [{'id': 1, 'kind': 'submit'}, {'id': 2, 'kind': 'submit'}, {'id': 3, 'kind': 'submit'}, {'id': 3, 'kind': 'complete'}, {'id': 3, 'kind': 'notify'}, {'id': 4, 'kind': 'submit'}, ...]\n\n    def _assert_notify_near_complete(events: list[dict], *, max_gap: int = 8) -> None:\n        \"\"\"Notify should follow complete soon after (catches detached-queue replay dumps).\"\"\"\n        first_seen = _first_seen(events)\n        for ev in events:\n            if ev[\"kind\"] != \"notify\":\n                continue\n            rid = ev[\"id\"]\n            gap = first_seen[(\"notify\", rid)] - first_seen[(\"complete\", rid)]\n>           assert 0 < gap <= max_gap, f\"id {rid}: notify too far from complete (gap={gap})\"\nE           AssertionError: id 56: notify too far from complete (gap=14)\nE           assert 14 <= 8\n\n/tests/test_outputs.py:221: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_matrix_exactly_once_contract",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0018643230000634503,
+                "start": 1779799811.40233,
+                "stop": 1779799811.4043434,
+                "retries": 5,
+                "file_path": "test_outputs.py",
+                "tags": [
+                    "parametrize::profile::('burst', 'steady')",
+                    "parametrize::scenario::('basic', 'stress', 'stress2')"
+                ],
+                "trace": "scenario = 'stress2', profile = 'steady'\n\n    @pytest.mark.parametrize(\"scenario\", SCENARIOS)\n    @pytest.mark.parametrize(\"profile\", PROFILES)\n    def test_matrix_exactly_once_contract(scenario: str, profile: str) -> None:\n        \"\"\"Full 3x2 scenario/profile grid must satisfy the contract under default order.\"\"\"\n        data = _run(scenario, profile, \"a_then_b\")\n>       _assert_full_contract(data)\n\n/tests/test_outputs.py:463: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/test_outputs.py:259: in _assert_full_contract\n    _assert_exactly_once_and_notify(data)\n/tests/test_outputs.py:255: in _assert_exactly_once_and_notify\n    _assert_notify_near_complete(data[\"events\"])\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nevents = [{'id': 1, 'kind': 'submit'}, {'id': 1, 'kind': 'complete'}, {'id': 1, 'kind': 'notify'}, {'id': 2, 'kind': 'submit'}, {'id': 2, 'kind': 'complete'}, {'id': 2, 'kind': 'notify'}, ...]\n\n    def _assert_notify_near_complete(events: list[dict], *, max_gap: int = 8) -> None:\n        \"\"\"Notify should follow complete soon after (catches detached-queue replay dumps).\"\"\"\n        first_seen = _first_seen(events)\n        for ev in events:\n            if ev[\"kind\"] != \"notify\":\n                continue\n            rid = ev[\"id\"]\n            gap = first_seen[(\"notify\", rid)] - first_seen[(\"complete\", rid)]\n>           assert 0 < gap <= max_gap, f\"id {rid}: notify too far from complete (gap={gap})\"\nE           AssertionError: id 9: notify too far from complete (gap=10)\nE           assert 10 <= 8\n\n/tests/test_outputs.py:221: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_stress_burst_respects_order_flag",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.002428398000006382,
+                "start": 1779799811.4910266,
+                "stop": 1779799811.5103858,
+                "file_path": "test_outputs.py",
+                "tags": [
+                    "parametrize::order::('a_then_b', 'b_then_a')"
+                ],
+                "trace": "order = 'b_then_a'\n\n    @pytest.mark.parametrize(\"order\", ORDERS)\n    def test_stress_burst_respects_order_flag(order: str) -> None:\n        \"\"\"Both reconciliation orders must yield valid logs for burst reconnect stress.\"\"\"\n        data = _run(\"stress\", \"burst\", order)\n>       _assert_full_contract(data)\n\n/tests/test_outputs.py:470: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/test_outputs.py:259: in _assert_full_contract\n    _assert_exactly_once_and_notify(data)\n/tests/test_outputs.py:255: in _assert_exactly_once_and_notify\n    _assert_notify_near_complete(data[\"events\"])\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nevents = [{'id': 1, 'kind': 'submit'}, {'id': 2, 'kind': 'submit'}, {'id': 3, 'kind': 'submit'}, {'id': 3, 'kind': 'complete'}, {'id': 3, 'kind': 'notify'}, {'id': 4, 'kind': 'submit'}, ...]\n\n    def _assert_notify_near_complete(events: list[dict], *, max_gap: int = 8) -> None:\n        \"\"\"Notify should follow complete soon after (catches detached-queue replay dumps).\"\"\"\n        first_seen = _first_seen(events)\n        for ev in events:\n            if ev[\"kind\"] != \"notify\":\n                continue\n            rid = ev[\"id\"]\n            gap = first_seen[(\"notify\", rid)] - first_seen[(\"complete\", rid)]\n>           assert 0 < gap <= max_gap, f\"id {rid}: notify too far from complete (gap={gap})\"\nE           AssertionError: id 56: notify too far from complete (gap=14)\nE           assert 14 <= 8\n\n/tests/test_outputs.py:221: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_invalid_scenario_rejected",
+                "status": "passed",
+                "duration": 0.0008484190000217495,
+                "start": 1779799811.5302072,
+                "stop": 1779799811.531198,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_missing_required_flag_rejected",
+                "status": "passed",
+                "duration": 0.0008133869999937815,
+                "start": 1779799811.5313632,
+                "stop": 1779799811.5323176,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_invalid_order_rejected",
+                "status": "passed",
+                "duration": 0.0007942500000126529,
+                "start": 1779799811.5324824,
+                "stop": 1779799811.5334249,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_output_removed_between_runs",
+                "status": "passed",
+                "duration": 0.0025298660000316886,
+                "start": 1779799811.5335948,
+                "stop": 1779799811.5362706,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_journal_file_created_on_detach_scenario",
+                "status": "passed",
+                "duration": 0.0012343890000465763,
+                "start": 1779799811.536438,
+                "stop": 1779799811.5378134,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_high_gen_token_path_stress2_burst",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.002719228999922052,
+                "start": 1779799811.5379798,
+                "stop": 1779799811.557862,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_high_gen_token_path_stress2_burst() -> None:\n        \"\"\"Long burst run after reattach bumps generation \u2014 catches truncated token/journal keys.\"\"\"\n        data = _run(\"stress2\", \"burst\", \"b_then_a\")\n>       _assert_full_contract(data)\n\n/tests/test_outputs.py:526: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/test_outputs.py:259: in _assert_full_contract\n    _assert_exactly_once_and_notify(data)\n/tests/test_outputs.py:255: in _assert_exactly_once_and_notify\n    _assert_notify_near_complete(data[\"events\"])\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nevents = [{'id': 1, 'kind': 'submit'}, {'id': 2, 'kind': 'submit'}, {'id': 3, 'kind': 'submit'}, {'id': 3, 'kind': 'complete'}, {'id': 3, 'kind': 'notify'}, {'id': 4, 'kind': 'submit'}, ...]\n\n    def _assert_notify_near_complete(events: list[dict], *, max_gap: int = 8) -> None:\n        \"\"\"Notify should follow complete soon after (catches detached-queue replay dumps).\"\"\"\n        first_seen = _first_seen(events)\n        for ev in events:\n            if ev[\"kind\"] != \"notify\":\n                continue\n            rid = ev[\"id\"]\n            gap = first_seen[(\"notify\", rid)] - first_seen[(\"complete\", rid)]\n>           assert 0 < gap <= max_gap, f\"id {rid}: notify too far from complete (gap={gap})\"\nE           AssertionError: id 62: notify too far from complete (gap=11)\nE           assert 11 <= 8\n\n/tests/test_outputs.py:221: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_completes_not_clustered_in_final_fifth",
+                "status": "passed",
+                "duration": 0.0012527590000672717,
+                "start": 1779799811.5580397,
+                "stop": 1779799811.5594301,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            }
+        ]
+    }
+}

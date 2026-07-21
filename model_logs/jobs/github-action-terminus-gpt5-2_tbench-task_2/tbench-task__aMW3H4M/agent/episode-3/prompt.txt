@@ -1,0 +1,417 @@
+New Terminal Output:
+
+root@e252228b7510:/app# sed -n '1,220p' /app/include/core/idgen.h
+#pragma once
+
+#include <stdint.h>
+
+typedef struct {
+  uint64_t x;
+} tb_idgen;
+
+void tb_idgen_init(tb_idgen *g, uint64_t seed);
+uint64_t tb_idgen_next(tb_idgen *g);
+
+root@e252228b7510:/app# sed -n '1,220p' /app/src/core/idgen.c
+#include "core/idgen.h"
+
+void tb_idgen_init(tb_idgen *g, uint64_t seed) { g->x = seed ? seed : 0x9e3779b97f4a7c15ULL; }
+
+uint64_t tb_idgen_next(tb_idgen *g) {
+  // xorshift64*
+  uint64_t x = g->x;
+  x ^= x >> 12;
+  x ^= x << 25;
+  x ^= x >> 27;
+  g->x = x;
+  return x * 2685821657736338717ULL;
+}
+
+root@e252228b7510:/app# sed -n '1,260p' /app/include/io/journal.h
+#pragma once
+
+#include "tb_err.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+
+typedef struct {
+  uint32_t gen;
+  uint64_t cursor;
+} tb_stamp;
+
+tb_status journal_append_stamp(const char *path, tb_stamp s);
+tb_status journal_load_last(const char *path, tb_stamp *out, bool *found);
+
+root@e252228b7510:/app# sed -n '1,360p' /app/src/io/journal.c
+#include "io/journal.h"
+
+#include "io/fs.h"
+
+#include <errno.h>
+#include <stdio.h>
+
+static tb_status append_rec(FILE *f, tb_stamp s) {
+  if (!fs_write_u32(f, s.gen))
+    return TB_ERR_IO;
+
+  uint32_t lo = (uint32_t)s.cursor;
+  if (!fs_write_u32(f, lo))
+    return TB_ERR_IO;
+
+  return TB_OK;
+}
+
+static bool read_rec(FILE *f, tb_stamp *out) {
+  uint32_t gen = 0;
+  if (!fs_read_u32(f, &gen))
+    return false;
+
+  uint32_t lo = 0;
+  if (!fs_read_u32(f, &lo))
+    return false;
+
+  out->gen = gen;
+  out->cursor = (uint64_t)lo;
+  return true;
+}
+
+tb_status journal_append_stamp(const char *path, tb_stamp s) {
+  FILE *f = fopen(path, "ab");
+  if (!f)
+    return TB_ERR_IO;
+  tb_status st = append_rec(f, s);
+  if (fclose(f) != 0)
+    return TB_ERR_IO;
+  return st;
+}
+
+tb_status journal_load_last(const char *path, tb_stamp *out, bool *found) {
+  if (!out || !found)
+    return TB_ERR_BAD_ARG;
+
+  FILE *f = fopen(path, "rb");
+  if (!f) {
+    if (errno == ENOENT) {
+      *found = false;
+      return TB_OK;
+    }
+    return TB_ERR_IO;
+  }
+
+  tb_stamp cur = {0};
+  bool any = false;
+  while (read_rec(f, &cur)) {
+    any = true;
+  }
+  fclose(f);
+  if (!any) {
+    *found = false;
+    return TB_OK;
+  }
+  *found = true;
+  *out = cur;
+  return TB_OK;
+}
+root@e252228b7510:/app# sed -n '1,260p' /app/include/runtime/runtime.h
+#pragma once
+
+#include "core/ev.h"
+#include "core/map_u64.h"
+#include "core/queue.h"
+#include "core/vec_ev.h"
+#include "io/journal.h"
+#include "runtime/profile.h"
+#include "runtime/script.h"
+#include "tb_err.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+
+typedef enum {
+  TB_ORDER_A_THEN_B = 1,
+  TB_ORDER_B_THEN_A = 2,
+} tb_order;
+
+tb_order tb_order_parse(const char *s);
+const char *tb_order_str(tb_order o);
+
+typedef struct {
+  // "in-flight" handles are 64-bit tokens; external ids are stable u32.
+  tb_map_u64 token_to_id; // token -> id
+  tb_map_u64 token_done;  // canonical done-set, key depends on reconciliation
+
+  tb_q64 in_q;
+  tb_q64 done_a;
+  tb_q64 done_b;
+  tb_q64 notify_q;
+
+  tb_vec_ev evlog;
+
+  uint32_t gen;
+  uint64_t cursor;
+  bool attached;
+
+  const char *journal_path;
+} tb_rt;
+
+tb_status tb_rt_init(tb_rt *rt, const char *journal_path);
+void tb_rt_free(tb_rt *rt);
+
+tb_status tb_rt_run(tb_rt *rt, tb_scenario scn, tb_profile prof, tb_order ord, uint32_t seed);
+
+// report extraction
+const tb_vec_ev *tb_rt_events(const tb_rt *rt);
+
+root@e252228b7510:/app# sed -n '1,420p' /app/src/runtime/runtime.c
+#include "runtime/runtime.h"
+
+#include "core/idgen.h"
+#include "logic/ingest.h"
+#include "logic/link.h"
+#include "logic/merge.h"
+#include "logic/nudge.h"
+#include "logic/settle.h"
+
+#include <stdio.h>
+#include <string.h>
+
+tb_status tb_rt_init(tb_rt *rt, const char *journal_path) {
+  if (!rt || !journal_path)
+    return TB_ERR_BAD_ARG;
+  memset(rt, 0, sizeof(*rt));
+
+  if (!tb_map_u64_init(&rt->token_to_id, 128))
+    return TB_ERR_OOM;
+  if (!tb_map_u64_init(&rt->token_done, 128))
+    return TB_ERR_OOM;
+  if (!tb_q64_init(&rt->in_q, 4096))
+    return TB_ERR_OOM;
+  if (!tb_q64_init(&rt->done_a, 4096))
+    return TB_ERR_OOM;
+  if (!tb_q64_init(&rt->done_b, 4096))
+    return TB_ERR_OOM;
+  if (!tb_q64_init(&rt->notify_q, 4096))
+    return TB_ERR_OOM;
+  if (!tb_vec_ev_init(&rt->evlog, 2048))
+    return TB_ERR_OOM;
+
+  rt->gen = 1;
+  rt->cursor = 1;
+  rt->attached = true;
+  rt->journal_path = journal_path;
+  return TB_OK;
+}
+
+void tb_rt_free(tb_rt *rt) {
+  if (!rt)
+    return;
+  tb_map_u64_free(&rt->token_to_id);
+  tb_map_u64_free(&rt->token_done);
+  tb_q64_free(&rt->in_q);
+  tb_q64_free(&rt->done_a);
+  tb_q64_free(&rt->done_b);
+  tb_q64_free(&rt->notify_q);
+  tb_vec_ev_free(&rt->evlog);
+}
+
+const tb_vec_ev *tb_rt_events(const tb_rt *rt) { return &rt->evlog; }
+
+static tb_status maybe_detach_attach(tb_rt *rt, const tb_script *sc, uint32_t tick) {
+  if (sc->detach_at && tick == sc->detach_at) {
+    return tb_link_detach(rt, tick);
+  }
+  if (sc->detach_at && tick == sc->detach_at + sc->detach_len) {
+    return tb_link_attach(rt, ti
+[... output limited to 10000 bytes; 69 interior bytes omitted ...]
+)
+      return st;
+
+    st = tb_merge_drain(rt, tick, ord);
+    if (st != TB_OK)
+      return st;
+
+    st = tb_nudge_drain(rt, tick);
+    if (st != TB_OK)
+      return st;
+  }
+
+  // Final drain to avoid leaving work in queues.
+  for (uint32_t i = 0; i < 16; i++) {
+    st = tb_settle_tick(rt, sc.ticks + i);
+    if (st != TB_OK)
+      return st;
+    st = tb_merge_drain(rt, sc.ticks + i, ord);
+    if (st != TB_OK)
+      return st;
+    st = tb_nudge_drain(rt, sc.ticks + i);
+    if (st != TB_OK)
+      return st;
+  }
+
+  return TB_OK;
+}
+
+root@e252228b7510:/app# sed -n '1,260p' /app/include/runtime/script.h
+#pragma once
+
+#include <stdbool.h>
+#include <stdint.h>
+
+typedef enum {
+  TB_SCN_BASIC = 1,
+  TB_SCN_STRESS = 2,
+  TB_SCN_STRESS2 = 3,
+} tb_scenario;
+
+tb_scenario tb_scenario_parse(const char *s);
+const char *tb_scenario_str(tb_scenario scn);
+
+typedef struct {
+  uint32_t ticks;
+  uint32_t detach_at;   // 0 means never
+  uint32_t detach_len;  // number of ticks detached
+  uint32_t detach2_at;  // optional second detach
+  uint32_t detach2_len;
+} tb_script;
+
+bool tb_script_for(tb_scenario scn, tb_script *out);
+
+root@e252228b7510:/app# sed -n '1,420p' /app/src/runtime/script.c
+#include "runtime/script.h"
+
+#include <string.h>
+
+tb_scenario tb_scenario_parse(const char *s) {
+  if (!s)
+    return 0;
+  if (strcmp(s, "basic") == 0)
+    return TB_SCN_BASIC;
+  if (strcmp(s, "stress") == 0)
+    return TB_SCN_STRESS;
+  if (strcmp(s, "stress2") == 0)
+    return TB_SCN_STRESS2;
+  return 0;
+}
+
+const char *tb_scenario_str(tb_scenario scn) {
+  switch (scn) {
+  case TB_SCN_BASIC:
+    return "basic";
+  case TB_SCN_STRESS:
+    return "stress";
+  case TB_SCN_STRESS2:
+    return "stress2";
+  default:
+    return "unknown";
+  }
+}
+
+bool tb_script_for(tb_scenario scn, tb_script *out) {
+  if (!out)
+    return false;
+  tb_script s = {0};
+  switch (scn) {
+  case TB_SCN_BASIC:
+    s.ticks = 40;
+    s.detach_at = 0;
+    s.detach_len = 0;
+    s.detach2_at = 0;
+    s.detach2_len = 0;
+    break;
+  case TB_SCN_STRESS:
+    s.ticks = 80;
+    s.detach_at = 22;
+    s.detach_len = 10;
+    s.detach2_at = 0;
+    s.detach2_len = 0;
+    break;
+  case TB_SCN_STRESS2:
+    s.ticks = 110;
+    s.detach_at = 26;
+    s.detach_len = 10;
+    s.detach2_at = 68;
+    s.detach2_len = 12;
+    break;
+  default:
+    return false;
+  }
+  *out = s;
+  return true;
+}
+
+root@e252228b7510:/app# python3 - <<'PY'
+> import json
+> p='/app/output/report.json'
+> ev=json.load(open(p))['events']
+> # find first duplicate (kind,id)
+> seen=set()
+> for i,e in enumerate(ev):
+>     k=(e['kind'],e['id'])
+>     if k in seen:
+>         start=max(0,i-20); end=min(len(ev),i+20)
+>         print('first_dup_at',i,'dup',k,'window',start,end)
+>         for j in range(start,end):
+>             print(j,ev[j])
+>         break
+>     seen.add(k)
+> PY
+first_dup_at 186 dup ('submit', 57) window 166 206
+166 {'kind': 'submit', 'id': 57}
+167 {'kind': 'complete', 'id': 55}
+168 {'kind': 'submit', 'id': 58}
+169 {'kind': 'complete', 'id': 58}
+170 {'kind': 'submit', 'id': 59}
+171 {'kind': 'complete', 'id': 59}
+172 {'kind': 'submit', 'id': 60}
+173 {'kind': 'complete', 'id': 60}
+174 {'kind': 'complete', 'id': 57}
+175 {'kind': 'submit', 'id': 61}
+176 {'kind': 'submit', 'id': 62}
+177 {'kind': 'complete', 'id': 62}
+178 {'kind': 'submit', 'id': 63}
+179 {'kind': 'submit', 'id': 64}
+180 {'kind': 'complete', 'id': 63}
+181 {'kind': 'submit', 'id': 65}
+182 {'kind': 'complete', 'id': 65}
+183 {'kind': 'submit', 'id': 66}
+184 {'kind': 'complete', 'id': 64}
+185 {'kind': 'complete', 'id': 61}
+186 {'kind': 'submit', 'id': 57}
+187 {'kind': 'complete', 'id': 66}
+188 {'kind': 'notify', 'id': 66}
+189 {'kind': 'submit', 'id': 58}
+190 {'kind': 'submit', 'id': 59}
+191 {'kind': 'submit', 'id': 60}
+192 {'kind': 'notify', 'id': 57}
+193 {'kind': 'notify', 'id': 60}
+194 {'kind': 'submit', 'id': 61}
+195 {'kind': 'notify', 'id': 58}
+196 {'kind': 'notify', 'id': 61}
+197 {'kind': 'submit', 'id': 62}
+198 {'kind': 'notify', 'id': 59}
+199 {'kind': 'submit', 'id': 63}
+200 {'kind': 'notify', 'id': 63}
+201 {'kind': 'submit', 'id': 64}
+202 {'kind': 'notify', 'id': 62}
+203 {'kind': 'submit', 'id': 65}
+204 {'kind': 'notify', 'id': 64}
+205 {'kind': 'submit', 'id': 66}
+root@e252228b7510:/app# rm -f /app/output/report_b.json
+root@e252228b7510:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order b_then_a --out /app/output/report_b.json
+root@e252228b7510:/app# python3 - <<'PY'
+> import json
+> for p in ['/app/output/report.json','/app/output/report_b.json']:
+>     r=json.load(open(p))
+>     ev=r['events']
+>     seen=set(); dups=0
+>     for e in ev:
+>         k=(e['kind'],e['id'])
+>         if k in seen: dups+=1
+>         else: seen.add(k)
+>     subs=[e['id'] for e in ev if e['kind']=='submit']
+>     print(p,'events',len(ev),'submits',len(subs),'maxid',max(subs) if subs else None,'dups',dups)
+> PY
+/app/output/report.json events 377 submits 140 maxid 118 dups 24
+/app/output/report_b.json events 377 submits 140 maxid 118 dups 24
+root@e252228b7510:/app#

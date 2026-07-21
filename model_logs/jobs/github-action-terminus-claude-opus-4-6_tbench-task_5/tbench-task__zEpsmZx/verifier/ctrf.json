@@ -1,0 +1,287 @@
+{
+    "results": {
+        "tool": {
+            "name": "pytest",
+            "version": "8.4.1"
+        },
+        "summary": {
+            "tests": 29,
+            "passed": 29,
+            "failed": 0,
+            "skipped": 0,
+            "pending": 0,
+            "other": 0,
+            "start": 1779800308.77313,
+            "stop": 1779800308.9266582
+        },
+        "tests": [
+            {
+                "name": "test_outputs.py::test_exactly_once_basic",
+                "status": "passed",
+                "duration": 0.020231221000130972,
+                "start": 1779800308.8207517,
+                "stop": 1779800308.841281,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_exactly_once_with_reattach",
+                "status": "passed",
+                "duration": 0.002561029000162307,
+                "start": 1779800308.84151,
+                "stop": 1779800308.8442476,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_no_spurious_notifications",
+                "status": "passed",
+                "duration": 0.001553719999947134,
+                "start": 1779800308.8444498,
+                "stop": 1779800308.8461795,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_multiple_reattaches",
+                "status": "passed",
+                "duration": 0.001567836999811334,
+                "start": 1779800308.8463602,
+                "stop": 1779800308.8480747,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_two_load_profiles",
+                "status": "passed",
+                "duration": 0.0034641509998891706,
+                "start": 1779800308.8482516,
+                "stop": 1779800308.8518636,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_reconciliation_order_invariance",
+                "status": "passed",
+                "duration": 0.006460263999997551,
+                "start": 1779800308.8520358,
+                "stop": 1779800308.8586426,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_deterministic_rerun_identical_sequence",
+                "status": "passed",
+                "duration": 0.0025849539999853732,
+                "start": 1779800308.8588192,
+                "stop": 1779800308.8615525,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_distinct_scenarios_do_not_share_canned_log",
+                "status": "passed",
+                "duration": 0.002305248000084248,
+                "start": 1779800308.8617337,
+                "stop": 1779800308.8641853,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_distinct_profiles_change_sequence_under_same_scenario",
+                "status": "passed",
+                "duration": 0.0018931290001091838,
+                "start": 1779800308.8643522,
+                "stop": 1779800308.866396,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_stress2_volume_exceeds_stress_for_burst",
+                "status": "passed",
+                "duration": 0.0026870169999710924,
+                "start": 1779800308.8665574,
+                "stop": 1779800308.8693852,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_stress2_burst_orders_emit_distinct_sequences",
+                "status": "passed",
+                "duration": 0.004953046000309769,
+                "start": 1779800308.869549,
+                "stop": 1779800308.874646,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_stress2_steady_double_detach_contract",
+                "status": "passed",
+                "duration": 0.0014787459999752173,
+                "start": 1779800308.874812,
+                "stop": 1779800308.8764317,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_basic_steady_sparse_submit_pattern",
+                "status": "passed",
+                "duration": 0.0012216029997489386,
+                "start": 1779800308.8766062,
+                "stop": 1779800308.8779676,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_burst_early_window_submit_density",
+                "status": "passed",
+                "duration": 0.0023644739999326703,
+                "start": 1779800308.8781312,
+                "stop": 1779800308.8806472,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_basic_orders_preserve_multiset_but_may_reorder",
+                "status": "passed",
+                "duration": 0.003275793000284466,
+                "start": 1779800308.8808126,
+                "stop": 1779800308.8842347,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_prefix_ledger_holds_on_stress_burst",
+                "status": "passed",
+                "duration": 0.0013496429999122483,
+                "start": 1779800308.884399,
+                "stop": 1779800308.885896,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_notify_complete_gap_bounded_under_double_detach",
+                "status": "passed",
+                "duration": 0.002807702000154677,
+                "start": 1779800308.8860576,
+                "stop": 1779800308.8890069,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_no_notify_before_any_complete_in_global_log",
+                "status": "passed",
+                "duration": 0.0010132019999673503,
+                "start": 1779800308.8891716,
+                "stop": 1779800308.890323,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_interleaved_submit_and_complete_across_ids",
+                "status": "passed",
+                "duration": 0.002807349000022441,
+                "start": 1779800308.8904867,
+                "stop": 1779800308.8934376,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_stress_detach_window_ids_still_notify_after_reattach",
+                "status": "passed",
+                "duration": 0.002334301000018968,
+                "start": 1779800308.8936026,
+                "stop": 1779800308.8960793,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_matrix_exactly_once_contract",
+                "status": "passed",
+                "duration": 0.0018624299998464267,
+                "start": 1779800308.8962445,
+                "stop": 1779800308.8982508,
+                "retries": 5,
+                "file_path": "test_outputs.py",
+                "tags": [
+                    "parametrize::profile::('burst', 'steady')",
+                    "parametrize::scenario::('basic', 'stress', 'stress2')"
+                ]
+            },
+            {
+                "name": "test_outputs.py::test_stress_burst_respects_order_flag",
+                "status": "passed",
+                "duration": 0.002229916999795023,
+                "start": 1779800308.9090168,
+                "stop": 1779800308.9113882,
+                "file_path": "test_outputs.py",
+                "tags": [
+                    "parametrize::order::('a_then_b', 'b_then_a')"
+                ]
+            },
+            {
+                "name": "test_outputs.py::test_invalid_scenario_rejected",
+                "status": "passed",
+                "duration": 0.0009129109998866625,
+                "start": 1779800308.9142213,
+                "stop": 1779800308.9152765,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_missing_required_flag_rejected",
+                "status": "passed",
+                "duration": 0.0008478269999159238,
+                "start": 1779800308.9154403,
+                "stop": 1779800308.9164581,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_invalid_order_rejected",
+                "status": "passed",
+                "duration": 0.0007773580000502989,
+                "start": 1779800308.9166331,
+                "stop": 1779800308.9175475,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_output_removed_between_runs",
+                "status": "passed",
+                "duration": 0.0025632820002101653,
+                "start": 1779800308.9177096,
+                "stop": 1779800308.920415,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_journal_file_created_on_detach_scenario",
+                "status": "passed",
+                "duration": 0.0012538310002128128,
+                "start": 1779800308.92059,
+                "stop": 1779800308.921984,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_high_gen_token_path_stress2_burst",
+                "status": "passed",
+                "duration": 0.0027240570000230946,
+                "start": 1779800308.922146,
+                "stop": 1779800308.9250114,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_completes_not_clustered_in_final_fifth",
+                "status": "passed",
+                "duration": 0.0011897409999619413,
+                "start": 1779800308.9251738,
+                "stop": 1779800308.9264948,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            }
+        ]
+    }
+}

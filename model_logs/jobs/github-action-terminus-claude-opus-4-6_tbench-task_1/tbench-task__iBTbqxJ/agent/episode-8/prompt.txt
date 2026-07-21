@@ -1,5 +1,0 @@
-New Terminal Output:
-
-root@00130fd7ffef:/app# cd /app && go build -o jobqueue .
-bash: go: command not found
-root@00130fd7ffef:/app#

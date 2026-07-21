@@ -1,0 +1,108 @@
+New Terminal Output:
+
+root@7ae5e2ee926b:/app# grep -n "notify_q" -n /app/src/logic/link.c
+22:  tb_q64_clear(&rt->notify_q);
+root@7ae5e2ee926b:/app# perl -i -pe 's/^\s*tb_q64_clear\(&rt->notify_q\);\s*$/  \/\/ Do not clear notify_q on detach: notifications must be delivered after reat
+tach.\n/;' /app/src/logic/link.c
+root@7ae5e2ee926b:/app# sed -n '1,120p' /app/src/logic/link.c
+#include "logic/link.h"
+
+#include "io/journal.h"
+
+#include <string.h>
+
+tb_status tb_link_detach(tb_rt *rt, uint32_t tick) {
+  (void)tick;
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+  if (!rt->attached)
+    return TB_OK;
+
+  rt->attached = false;
+
+  tb_stamp s = {.gen = rt->gen, .cursor = rt->cursor};
+  tb_status st = journal_append_stamp(rt->journal_path, s);
+  if (st != TB_OK)
+    return st;
+
+  // A "device-side" queue continues to exist while detached; the notifier doesn't.
+  // Do not clear notify_q on detach: notifications must be delivered after reattach.
+  return TB_OK;
+}
+
+tb_status tb_link_attach(tb_rt *rt, uint32_t tick) {
+  (void)tick;
+  if (!rt)
+    return TB_ERR_BAD_ARG;
+  if (rt->attached)
+    return TB_OK;
+
+  tb_stamp last = {0};
+  bool found = false;
+  tb_status st = journal_load_last(rt->journal_path, &last, &found);
+  if (st != TB_OK)
+    return st;
+  if (found) {
+    rt->gen = last.gen + 1;
+    rt->cursor = (rt->cursor > last.cursor) ? rt->cursor : last.cursor;
+  }
+
+  rt->attached = true;
+  return TB_OK;
+}
+
+root@7ae5e2ee926b:/app# make -C /app -B -j4
+make: Entering directory '/app'
+mkdir -p /usr/local/bin
+cc -O2 -g -std=c11 -Wall -Wextra -Wshadow -Wconversion -Iinclude -o /usr/local/bin/arena src/main.c src/cli.c src/tb_err.c src/report.c src/runtime/runtime.c sr
+c/runtime/profile.c src/runtime/script.c src/core/idgen.c src/core/queue.c src/core/map_u64.c src/core/vec_u64.c src/core/vec_ev.c src/io/fs.c src/io/journal.c
+src/logic/ingest.c src/logic/settle.c src/logic/nudge.c src/logic/merge.c src/logic/link.c
+make: Leaving directory '/app'
+root@7ae5e2ee926b:/app# rm -f /app/run/state.bin /app/output/report.json
+root@7ae5e2ee926b:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json --seed 2
+root@7ae5e2ee926b:/app# python3 - <<'PY'
+> import json
+> from collections import Counter,defaultdict
+> r=json.load(open('/app/output/report.json'))
+> e=r['events']
+> print('events',len(e),Counter(x['kind'] for x in e))
+> seen=set(); dup=[]
+> for x in e:
+>  t=(x['kind'],x['id'])
+>  if t in seen: dup.append(t)
+>  seen.add(t)
+> print('dup_count',len(dup))
+> subs=[x['id'] for x in e if x['kind']=='submit']
+> mx=max(subs) if subs else 0
+> print('submit_ids_contig',subs==list(range(1,mx+1)),'N',mx)
+> by=defaultdict(set)
+> for x in e: by[x['id']].add(x['kind'])
+> miss=[i for i,k in by.items() if k!={'submit','complete','notify'}]
+> print('missing_rows',len(miss),'sample',miss[:20])
+> PY
+events 398 Counter({'submit': 140, 'complete': 140, 'notify': 118})
+dup_count 0
+submit_ids_contig True N 140
+missing_rows 22 sample [55, 57, 58, 59, 60, 61, 62, 63, 64, 65, 97, 99, 100, 101, 102, 103, 104, 105, 106, 107]
+root@7ae5e2ee926b:/app# for ord in a_then_b b_then_a; do rm -f /app/run/state.bin /app/output/report.json; /usr/local/bin/arena --scenario stress2 --profile bur
+st --order $ord --out /app/output/report.json --seed 2 >/dev/null; python3 - <<'PY'
+> import json,hashlib
+> r=json.load(open('/app/output/report.json'))
+> print(ord:=r.get('order','(no order field)'), len(r['events']), hashlib.sha256(json.dumps(r['events']).encode()).hexdigest()[:16])
+> PY
+> done
+(no order field) 398 bdb4fb43c9e83344
+(no order field) 398 9e4e49caa5764229
+root@7ae5e2ee926b:/app# for sc in basic stress stress2; do for pr in burst steady; do for ord in a_then_b b_then_a; do rm -f /app/run/state.bin /app/output/repo
+rt.json; /usr/local/bin/arena --scenario $sc --profile $pr --order $ord --out /app/output/report.json --seed 1 >/dev/null || { echo FAIL $sc $pr $ord; exit 1; }
+; python3 - <<'PY'
+> import json
+> from collections import Counter
+> r=json.load(open('/app/output/report.json'))
+> c=Counter(e['kind'] for e in r['events'])
+> if len(set(c.values()))!=1:
+>   raise SystemExit(f"kind mismatch {c}")
+> PY
+> ; echo OK $sc $pr $ord; done; done; done
+bash: syntax error near unexpected token `;'
+root@7ae5e2ee926b:/app#

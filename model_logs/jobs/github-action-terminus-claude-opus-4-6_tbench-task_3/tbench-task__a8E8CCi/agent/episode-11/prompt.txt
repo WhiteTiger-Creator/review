@@ -1,0 +1,44 @@
+New Terminal Output:
+
+root@0af9d3038c81:/app# python3 -c "
+> import json
+> with open('/app/output/stress_a.json') as f:
+>     a = json.load(f)
+> with open('/app/output/stress_b.json') as f:
+>     b = json.load(f)
+> a_ids = set(e['id'] for e in a['events'] if e['kind']=='complete')
+> b_ids = set(e['id'] for e in b['events'] if e['kind']=='complete')
+> print(f'Same ID coverage: {a_ids == b_ids}')
+> a_seq = [(e['kind'], e['id']) for e in a['events']]
+> b_seq = [(e['kind'], e['id']) for e in b['events']]
+> print(f'Different sequence: {a_seq != b_seq}')
+> "
+Same ID coverage: True
+Different sequence: True
+root@0af9d3038c81:/app# arena --scenario stress --profile burst --order a_then_b --out /app/output/stress_a2.json && diff /app/output/stress_a.json /app/output/
+stress_a2.json && echo DETERMINISTIC
+DETERMINISTIC
+root@0af9d3038c81:/app# # Test invalid inputs
+root@0af9d3038c81:/app# arena --scenario invalid --profile burst --order a_then_b --out /app/output/bad.json; echo "exit=$?"
+usage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]
+cli: bad_arg
+exit=2
+root@0af9d3038c81:/app# test -f /app/output/bad.json && echo "FILE EXISTS (BAD)" || echo "NO FILE (GOOD)"
+NO FILE (GOOD)
+root@0af9d3038c81:/app# arena --scenario basic --profile burst --order z_then_y --out /app/output/bad2.json; echo "exit=$?"
+usage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]
+cli: bad_arg
+exit=2
+root@0af9d3038c81:/app# test -f /app/output/bad2.json && echo "FILE EXISTS (BAD)" || echo "NO FILE (GOOD)"
+NO FILE (GOOD)
+root@0af9d3038c81:/app# arena --scenario basic --profile invalid --order a_then_b --out /app/output/bad3.json; echo "exit=$?"
+usage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]
+cli: bad_arg
+exit=2
+root@0af9d3038c81:/app# test -f /app/output/bad3.json && echo "FILE EXISTS (BAD)" || echo "NO FILE (GOOD)"
+NO FILE (GOOD)
+root@0af9d3038c81:/app# arena; echo "exit=$?"
+usage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]
+cli: bad_arg
+exit=2
+root@0af9d3038c81:/app#

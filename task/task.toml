@@ -4,36 +4,31 @@ version = "2.0"
 difficulty = "hard"
 category = "debugging"
 tags = [
-    "go",
-    "sqlite",
-    "debugging",
+    "c",
     "concurrency",
-    "worker-pool",
+    "debugging",
+    "state-reconciliation",
+    "journal",
+    "exactly-once",
 ]
-expert_time_estimate_min = 60.0
-junior_time_estimate_min = 480.0
-codebase_size = "Small"
-task_subtypes = [
-    "API Integration",
-]
-subcategories = [
-    "api_integration",
-]
-number_of_milestones = 0
 languages = [
-    "go",
+    "c",
 ]
-
-[verifier]
-timeout_sec = 300.0
+codebase_size = "small"
+number_of_milestones = 0
+subcategories = []
+expert_time_estimate_min = 60
+junior_time_estimate_min = 240
 
 [agent]
-timeout_sec = 1800.0
+timeout_sec = 1800
+
+[verifier]
+timeout_sec = 900
 
 [environment]
 allow_internet = false
-build_timeout_sec = 600.0
+build_timeout_sec = 600
 cpus = 2
-memory_mb = 2048
+memory_mb = 4096
 storage_mb = 10240
-workdir = "/app"

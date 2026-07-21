@@ -1,0 +1,63 @@
+{
+  "analysis": "Root causes are now clear:\n1) ID generation is wrong: ingest uses id = (uint32_t)(rt->cursor & 0xffffffff), while cursor is persisted/restored across detach. In stress2, cursor is restored to earlier values (e.g., 57, 89), causing id reuse and non-contiguous submits. IDs must be per-run contiguous 1..N independent of detach journal cursor.\n2) notify events are only enqueued in settle when attached. While detached, tokens still complete (pushed to done_a/done_b) but no notify tokens are queued, so notifies are permanently missing. We need to enqueue notifications regardless of attached, but only emit TB_EV_POKE while attached.\n3) nudge and previously merge used (uint32_t)token as token_done key; we fixed merge but nudge still uses truncated key, causing potential mismatches. Also nudge checks token_done; good, but should key by full token.\n4) make_token uses XOR; should be OR to combine gen and cursor without collisions.\nWe should decouple request id from cursor: introduce rt->next_id for submit ids (reset to 1 each run), keep cursor for token uniqueness/persistence, and ensure attach restores cursor to last.cursor (ok) but not used for id. Also queue notify tokens always, and in nudge only emit when attached; if detached, keep tokens in queue for later (don’t pop/discard).",
+  "plan": "Implement minimal, deterministic fixes:\nA) Update runtime struct to add uint32_t next_id; init to 1 in tb_rt_init and reset to 1 at start of tb_rt_run.\nB) In ingest.c: id = rt->next_id++ (contiguous), token = make_token(rt->gen, rt->cursor) with make_token using bitwise OR; increment cursor independently.\nC) In settle.c: always push token to notify_q when ready (regardless of attached). This models device-side completion notifying mechanism.\nD) In nudge.c: if not attached, stop draining (return TB_OK) so queued notify tokens remain; when attached, pop and emit TB_EV_POKE only if token is marked done; key token_done by full 64-bit token (no truncation).\nE) Rebuild, delete state.bin, rerun stress2 for both orders, re-check invariants and ensure state.bin is 24 bytes.\nWe will apply edits using perl -pi substitutions and small insertions.",
+  "commands": [
+    {
+      "keystrokes": "sed -n '1,120p' /app/include/runtime/runtime.h\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "perl -0777 -pi -e 's/(tb_q64 notify_q;\\n)(\\s*tb_vec_ev evlog;)/$1\\n  uint32_t next_id;\\n$2/sm' /app/include/runtime/runtime.h\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "perl -0777 -pi -e 's/rt->gen = 1;\\n  rt->cursor = 1;/rt->gen = 1;\\n  rt->cursor = 1;\\n  rt->next_id = 1;/sm' /app/src/runtime/runtime.c\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "perl -0777 -pi -e 's/if \\(found\\) \\{\\n    rt->gen = last\\.gen \\+ 1;\\n    rt->cursor = last\\.cursor;\\n  \\}/if (found) {\\n    rt->gen = last.gen + 1;\\n    rt->cursor = last.cursor;\\n  }\\n\\n  \\/\\/ Per-invocation request ids are logical and must start at 1 each run.\\n  rt->next_id = 1;/sm' /app/src/runtime/runtime.c\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "perl -0777 -pi -e 's/static uint64_t make_token\\(uint32_t gen, uint64_t cursor\\) \\{ return \\(\\(\\(uint64_t\\)gen\\) << 32\\) \\^ cursor; \\}/static uint64_t make_token(uint32_t gen, uint64_t cursor) {\\n  return (((uint64_t)gen) << 32) | (cursor & 0xffffffffULL);\\n}/sm' /app/src/logic/ingest.c\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "perl -0777 -pi -e 's/uint32_t id = \\(uint32_t\\)\\(rt->cursor & 0xffffffffu\\);\\n    uint64_t token = make_token\\(rt->gen, rt->cursor\\);\\n    rt->cursor\\+\\+;/uint32_t id = rt->next_id++;\\n    uint64_t token = make_token(rt->gen, rt->cursor);\\n    rt->cursor++;\\n/sm' /app/src/logic/ingest.c\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "perl -0777 -pi -e 's/\\n      if \\(rt->attached\\) \\{\\n        \\/\\/ The notifier is only live while attached\\.\\n        if \\(!tb_q64_push\\(&rt->notify_q, token\\)\\)\\n          return TB_ERR_CORRUPT;\\n      \\}/\\n      \\/\\/ Completions always enqueue a device-side notification token; delivery\\n      \\/\\/ to the client is gated by rt->attached in tb_nudge_drain().\\n      if (!tb_q64_push(&rt->notify_q, token))\\n        return TB_ERR_CORRUPT;\\n/sm' /app/src/logic/settle.c\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "perl -0777 -pi -e 's/\\(void\\)tick;\\n  if \\(!rt\\)\\n    return TB_ERR_BAD_ARG;/\\(void\\)tick;\\n  if (!rt)\\n    return TB_ERR_BAD_ARG;\\n\\n  if (!rt->attached) {\\n    \\/\\/ While detached, the notifier cannot deliver to the client; keep queued\\n    \\/\\/ notifications for delivery after reattach.\\n    return TB_OK;\\n  }/sm' /app/src/logic/nudge.c\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "perl -0777 -pi -e 's/uint64_t key = \\(uint32_t\\)token;/uint64_t key = token;/sm' /app/src/logic/nudge.c\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "grep -n \"next_id\" -n /app/include/runtime/runtime.h /app/src/runtime/runtime.c; grep -n \"make_token\" -n /app/src/logic/ingest.c; grep -n \"device-side notification\" -n /app/src/logic/settle.c; sed -n '1,80p' /app/src/logic/nudge.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "make -C /app clean all\n",
+      "duration": 10.0
+    },
+    {
+      "keystrokes": "rm -f /app/run/state.bin /app/output/report.json /app/output/report_b.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "/usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json; /usr/local/bin/arena --scenario stress2 --profile burst --order b_then_a --out /app/output/report_b.json; ls -la /app/run/state.bin\n",
+      "duration": 3.0
+    },
+    {
+      "keystrokes": "python3 - <<'PY'\nimport json\nfrom collections import defaultdict\n\ndef check(p):\n    with open(p) as f: r=json.load(f)\n    ev=r['events']\n    by=defaultdict(list)\n    for i,e in enumerate(ev):\n        by[(e['kind'],e['id'])].append(i)\n    sub_ids=[e['id'] for e in ev if e['kind']=='submit']\n    contig_ok=(sub_ids==list(range(1,len(sub_ids)+1)))\n    dups=[k for k,v in by.items() if len(v)>1]\n    bad=[]\n    for id in range(1,len(sub_ids)+1):\n        sub=by.get(('submit',id))\n        com=by.get(('complete',id))\n        noti=by.get(('notify',id))\n        if not(sub and com and noti):\n            bad.append((id,'missing',bool(sub),bool(com),bool(noti)))\n            continue\n        if not(sub[0] < com[0] < noti[0]):\n            bad.append((id,'order',sub[0],com[0],noti[0]))\n    print(p)\n    print(' scenario',r.get('scenario'),'profile',r.get('profile'))\n    print(' events',len(ev),'submits',len(sub_ids),'max_submit',max(sub_ids) if sub_ids else 0)\n    print(' submit_contiguous',contig_ok)\n    print(' duplicates',len(dups))\n    print(' bad',len(bad),'sample',bad[:10])\n\ncheck('/app/output/report.json')\ncheck('/app/output/report_b.json')\nPY\n",
+      "duration": 1.0
+    }
+  ],
+  "task_complete": false
+}

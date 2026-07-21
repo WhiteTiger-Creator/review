@@ -1,0 +1,76 @@
+New Terminal Output:
+
+root@ddb910b7e5ab:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/stress2_check.json && ls -la /app/run/state.b
+in
+-rw-r--r-- 1 root root 24 May 26 12:54 /app/run/state.bin
+root@ddb910b7e5ab:/app# python3 -c '
+> import json
+> # Check no duplicate (kind, id) pairs
+> for fname in ["/app/output/report.json", "/app/output/stress_a.json", "/app/output/stress2.json", "/app/output/steady.json"]:
+>     with open(fname) as f:
+>         d = json.load(f)
+>     events = d["events"]
+>     seen = set()
+>     dups = 0
+>     for e in events:
+>         key = (e["kind"], e["id"])
+>         if key in seen:
+>             dups += 1
+>             print(f"DUPLICATE in {fname}: {key}")
+>         seen.add(key)
+>     if dups == 0:
+>         print(f"{fname}: No duplicates")
+> '
+/app/output/report.json: No duplicates
+/app/output/stress_a.json: No duplicates
+/app/output/stress2.json: No duplicates
+/app/output/steady.json: No duplicates
+root@ddb910b7e5ab:/app# cat /app/include/logic/ingest.h /app/include/logic/settle.h /app/include/logic/merge.h /app/include/logic/link.h /app/include/logic/nudg
+e.h
+#pragma once
+
+#include "tb_err.h"
+#include "runtime/runtime.h"
+
+tb_status tb_ingest_tick(tb_rt *rt, tb_profile prof, uint32_t tick, uint32_t *submitted_out);
+
+#pragma once
+
+#include "tb_err.h"
+#include "runtime/runtime.h"
+
+tb_status tb_settle_tick(tb_rt *rt, uint32_t tick);
+
+#pragma once
+
+#include "tb_err.h"
+#include "runtime/runtime.h"
+
+tb_status tb_merge_drain(tb_rt *rt, uint32_t tick, tb_order ord);
+
+#pragma once
+
+#include "tb_err.h"
+#include "runtime/runtime.h"
+
+tb_status tb_link_detach(tb_rt *rt, uint32_t tick);
+tb_status tb_link_attach(tb_rt *rt, uint32_t tick);
+
+#pragma once
+
+#include "tb_err.h"
+#include "runtime/runtime.h"
+
+tb_status tb_nudge_drain(tb_rt *rt, uint32_t tick);
+
+root@ddb910b7e5ab:/app# find / -path '*/tests*' -name '*.py' 2>/dev/null
+/usr/lib/python3/dist-packages/pip/_vendor/colorama/tests/__init__.py
+/usr/lib/python3/dist-packages/pip/_vendor/colorama/tests/ansi_test.py
+/usr/lib/python3/dist-packages/pip/_vendor/colorama/tests/ansitowin32_test.py
+/usr/lib/python3/dist-packages/pip/_vendor/colorama/tests/initialise_test.py
+/usr/lib/python3/dist-packages/pip/_vendor/colorama/tests/isatty_test.py
+/usr/lib/python3/dist-packages/pip/_vendor/colorama/tests/utils.py
+/usr/lib/python3/dist-packages/pip/_vendor/colorama/tests/winterm_test.py
+/usr/lib/python3/dist-packages/pip/_vendor/webencodings/tests.py
+root@ddb910b7e5ab:/app# find / -name 'pytest.ini' -o -name 'conftest.py' -o -name 'pyproject.toml' 2>/dev/null
+root@ddb910b7e5ab:/app#

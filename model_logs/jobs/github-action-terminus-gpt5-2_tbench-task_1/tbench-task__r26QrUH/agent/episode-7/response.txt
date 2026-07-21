@@ -1,0 +1,31 @@
+{
+  "analysis": "Root cause of missing notifies is in settle.c: notify_q push is conditional on rt->attached. While detached, tokens can complete (moved to done_a/done_b) but are not enqueued for notification, so those completions never get a notify later. This violates invariant that every completion must have exactly one notify. Fix: always enqueue token to notify_q when ready, regardless of attached; then nudge_drain will emit notify events when it runs. While detached, nudge_drain still runs each tick in runtime loop, but should not emit notifies while detached (since notifier isn't live). Currently nudge_drain does not check rt->attached, so it will emit notifies even while detached if queue has tokens and token_done already set by merge. However merge and nudge ordering: merge runs before nudge each tick, so notifies would be emitted while detached, which might be acceptable? Spec says load profiles fire during detach, but notifier doesn’t exist; likely means notify events should be deferred until reattach. Therefore: (a) always push to notify_q, (b) in tb_nudge_drain, if not attached, do not pop/emit (leave queued). On reattach, drain will emit them. This will restore notify count and keep semantics.",
+  "plan": "1) Modify settle.c to always push token to notify_q when ready (remove attached guard). 2) Modify nudge.c to return immediately if !rt->attached (or not pop). 3) Rebuild and rerun stress2 burst invariants; expect submit/complete/notify all 140, missing_rows 0. 4) Quick sanity across scenarios/profiles/orders for kind count equality.",
+  "commands": [
+    {
+      "keystrokes": "perl -i -pe 's/\\s*if \\(rt->attached\\) \\{\\n\\s*\\/\\/ The notifier is only live while attached\\.\\n\\s*if \\(!tb_q64_push\\(&rt->notify_q, token\\)\\)\\n\\s*return TB_ERR_CORRUPT;\\n\\s*\\}//s/      \\/\\/ Notifications are queued device-side even while detached; delivery is gated in nudge.\\n      if (!tb_q64_push(&rt->notify_q, token))\\n        return TB_ERR_CORRUPT;/s' /app/src/logic/settle.c\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "perl -i -pe 's/\\(void\\)tick;/\\(void\\)tick;\\n  if (!rt->attached)\\n    return TB_OK;/s' /app/src/logic/nudge.c\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "sed -n '1,120p' /app/src/logic/settle.c\nsed -n '1,120p' /app/src/logic/nudge.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "make -C /app -B -j4\n",
+      "duration": 20.0
+    },
+    {
+      "keystrokes": "rm -f /app/run/state.bin /app/output/report.json\n/usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json --seed 2\npython3 - <<'PY'\nimport json\nfrom collections import Counter,defaultdict\nr=json.load(open('/app/output/report.json'))\ne=r['events']\nprint('events',len(e),Counter(x['kind'] for x in e))\nby=defaultdict(set)\nfor x in e: by[x['id']].add(x['kind'])\nmiss=[i for i,k in by.items() if k!={'submit','complete','notify'}]\nprint('missing_rows',len(miss),'sample',miss[:30])\n# ordering\npos=defaultdict(dict)\nfor idx,x in enumerate(e): pos[x['id']][x['kind']]=idx\nbad=[i for i,d in pos.items() if set(d)=={'submit','complete','notify'} and not (d['submit']<d['complete']<d['notify'])]\nprint('order_bad',len(bad),'sample',bad[:10])\nPY\n",
+      "duration": 5.0
+    },
+    {
+      "keystrokes": "for sc in basic stress stress2; do for pr in burst steady; do for ord in a_then_b b_then_a; do rm -f /app/run/state.bin /app/output/report.json; /usr/local/bin/arena --scenario $sc --profile $pr --order $ord --out /app/output/report.json --seed 1 >/dev/null || { echo FAIL $sc $pr $ord; exit 1; }; python3 - <<'PY'\nimport json\nfrom collections import Counter\nr=json.load(open('/app/output/report.json'))\nc=Counter(e['kind'] for e in r['events'])\nif len(set(c.values()))!=1:\n  raise SystemExit(f\"kind mismatch {c}\")\nPY\n echo OK $sc $pr $ord; done; done; done\n",
+      "duration": 20.0
+    }
+  ],
+  "task_complete": false
+}

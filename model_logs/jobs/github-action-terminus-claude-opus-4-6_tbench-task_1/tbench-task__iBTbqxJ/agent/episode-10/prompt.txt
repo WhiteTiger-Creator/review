@@ -1,4 +1,0 @@
-New Terminal Output:
-
-root@00130fd7ffef:/app# export PATH=$PATH:/usr/local/go/bin && go build -o jobqueue .
-root@00130fd7ffef:/app#

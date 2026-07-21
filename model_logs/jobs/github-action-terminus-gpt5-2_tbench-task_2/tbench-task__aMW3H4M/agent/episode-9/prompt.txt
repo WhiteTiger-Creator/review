@@ -1,0 +1,101 @@
+New Terminal Output:
+
+root@e252228b7510:/app# python3 - <<'PY'
+> import json, subprocess, os, hashlib
+>
+> def run(scn, prof, ord_, out):
+>     subprocess.check_call(['/usr/local/bin/arena','--scenario',scn,'--profile',prof,'--order',ord_,'--out',out])
+>     r=json.load(open(out))
+>     return r
+>
+> def inv_check(r):
+>     ev=r['events']
+>     seen=set(); kinds={}; subs=[]
+>     for i,e in enumerate(ev):
+>         k=e['kind']; id=e['id']
+>         if (k,id) in seen:
+>             return False, f'dup {(k,id)}'
+>         seen.add((k,id))
+>         kinds.setdefault(id,[]).append(k)
+>         if k=='submit': subs.append(id)
+>     if subs!=list(range(1,len(subs)+1)):
+>         return False, 'id_sequence'
+>     for id,ks in kinds.items():
+>         if ks.count('submit')!=1 or ks.count('complete')!=1 or ks.count('notify')!=1:
+>             return False, f'counts {id} {ks}'
+>     pos={(e['kind'],e['id']):i for i,e in enumerate(ev)}
+>     for id in kinds:
+>         if pos[('submit',id)]>pos[('complete',id)] or pos[('complete',id)]>pos[('notify',id)]:
+>             return False, f'order {id}'
+>     return True, f'ok submits={len(subs)}'
+>
+> def digest(path):
+>     h=hashlib.sha256()
+>     h.update(open(path,'rb').read())
+>     return h.hexdigest()
+>
+> scenarios=['basic','stress','stress2']
+> profiles=['burst','steady']
+> orders=['a_then_b','b_then_a']
+>
+> for scn in scenarios:
+>   for prof in profiles:
+>     for ord_ in orders:
+>       out=f'/app/output/tmp_{scn}_{prof}_{ord_}.json'
+>       r=run(scn,prof,ord_,out)
+>       ok,msg=inv_check(r)
+>       print(scn,prof,ord_,'inv',ok,msg,'events',len(r['events']))
+>
+> # determinism: same flags twice should be byte-identical
+> out1='/app/output/tmp_det1.json'
+> out2='/app/output/tmp_det2.json'
+> subprocess.check_call(['/usr/local/bin/arena','--scenario','stress2','--profile','burst','--order','a_then_b','--out',out1,'--seed','1'])
+> subprocess.check_call(['/usr/local/bin/arena','--scenario','stress2','--profile','burst','--order','a_then_b','--out',out2,'--seed','1'])
+> print('determinism_same',digest(out1)==digest(out2))
+>
+> # order should change sequence but keep id coverage
+> outa='/app/output/tmp_ord_a.json'
+> outb='/app/output/tmp_ord_b.json'
+> subprocess.check_call(['/usr/local/bin/arena','--scenario','stress2','--profile','burst','--order','a_then_b','--out',outa])
+> subprocess.check_call(['/usr/local/bin/arena','--scenario','stress2','--profile','burst','--order','b_then_a','--out',outb])
+> ra=json.load(open(outa)); rb=json.load(open(outb))
+> idsa=[e['id'] for e in ra['events'] if e['kind']=='submit']
+> idsb=[e['id'] for e in rb['events'] if e['kind']=='submit']
+> print('order_same_id_coverage',idsa==idsb,'sequence_diff',open(outa,'rb').read()!=open(outb,'rb').read())
+> PY
+basic burst a_then_b inv True ok submits=70 events 210
+basic burst b_then_a inv True ok submits=70 events 210
+basic steady a_then_b inv True ok submits=14 events 42
+basic steady b_then_a inv True ok submits=14 events 42
+stress burst a_then_b inv True ok submits=110 events 330
+stress burst b_then_a inv True ok submits=110 events 330
+stress steady a_then_b inv True ok submits=27 events 81
+stress steady b_then_a inv True ok submits=27 events 81
+stress2 burst a_then_b inv True ok submits=140 events 420
+stress2 burst b_then_a inv True ok submits=140 events 420
+stress2 steady a_then_b inv True ok submits=37 events 111
+stress2 steady b_then_a inv True ok submits=37 events 111
+determinism_same True
+order_same_id_coverage True sequence_diff True
+root@e252228b7510:/app# rm -f /app/output/bad.json; (/usr/local/bin/arena --scenario stress2 --profile burst --order z_then_y --out /app/output/bad.json; echo r
+c=$?) ; ls -la /app/output/bad.json || echo 'no_report'
+usage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]
+cli: bad_arg
+rc=2
+ls: cannot access '/app/output/bad.json': No such file or directory
+no_report
+root@e252228b7510:/app# rm -f /app/output/bad.json; (/usr/local/bin/arena --scenario nope --profile burst --order a_then_b --out /app/output/bad.json; echo rc=$
+?) ; ls -la /app/output/bad.json || echo 'no_report'
+usage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]
+cli: bad_arg
+rc=2
+ls: cannot access '/app/output/bad.json': No such file or directory
+no_report
+root@e252228b7510:/app# rm -f /app/output/bad.json; (/usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/bad.json --unkno
+wn 1; echo rc=$?) ; ls -la /app/output/bad.json || echo 'no_report'
+usage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]
+cli: bad_arg
+rc=2
+ls: cannot access '/app/output/bad.json': No such file or directory
+no_report
+root@e252228b7510:/app#
