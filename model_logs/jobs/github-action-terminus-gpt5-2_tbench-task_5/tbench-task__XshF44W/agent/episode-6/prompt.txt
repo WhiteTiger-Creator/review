@@ -1,0 +1,106 @@
+New Terminal Output:
+
+root@35c99cb7d4e6:/app/environment# sed -n '1,120p' /app/environment/include/store_bridge.h
+#pragma once
+#include "types.h"
+#include <filesystem>
+#include <string>
+#include <vector>
+
+const char *forge_lane_fingerprint(const forge::UnitSpec *units, size_t count);
+forge::LaneCheckpoint forge_lane_load_checkpoint(const std::filesystem::path &path,
+                                                 const std::string &expected_token);
+std::vector<forge::UnitCheckpoint> forge_lane_merge_checkpoint(
+    const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+    const std::vector<std::string> &requested_resume);
+void forge_lane_save_checkpoint(const std::filesystem::path &path, const char *lane_token,
+                                const std::vector<forge::UnitCheckpoint> &entries);
+root@35c99cb7d4e6:/app/environment# sed -n '1,80p' /app/environment/m14/store_bridge.cpp
+#include "m14_api.h"
+#include "store_bridge.h"
+
+std::vector<forge::UnitCheckpoint> forge_lane_merge_checkpoint(
+    const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+    const std::vector<std::string> &requested_resume) {
+    return m14_merge_entries(existing, updated, requested_resume);
+}
+
+void forge_lane_save_checkpoint(const std::filesystem::path &path, const char *lane_token,
+                                const std::vector<forge::UnitCheckpoint> &entries) {
+    m14_write_checkpoint(path, lane_token, entries);
+}
+root@35c99cb7d4e6:/app/environment# perl -i -pe 's/void forge_lane_save_checkpoint\(([^\)]*),\s*const std::vector<forge::UnitCheckpoint> &entries\);/void forge_
+lane_save_checkpoint($1, int pass_epoch, const std::vector<forge::UnitCheckpoint> &entries);/' /app/environment/include/store_bridge.h
+root@35c99cb7d4e6:/app/environment# grep -n "forge_lane_save_checkpoint" -n /app/environment/include/store_bridge.h
+13:void forge_lane_save_checkpoint(const std::filesystem::path &path, const char *lane_token,
+root@35c99cb7d4e6:/app/environment# cat >/app/environment/m14/store_bridge.cpp<<'EOF'
+> #include "store_bridge.h"
+> #include "m14_api.h"
+>
+> void forge_lane_save_checkpoint(const std::filesystem::path &path, const char *lane_token,
+>                                int pass_epoch, const std::vector<forge::UnitCheckpoint> &entries) {
+>     m14_write_checkpoint(path, lane_token, pass_epoch, entries);
+> }
+> EOF
+root@35c99cb7d4e6:/app/environment# grep -n "m14_lane_token\|m14_merge_entries\|m14_write_checkpoint" -n /app/environment/m14/lane_store.cpp
+94:extern "C" const char *m14_lane_token(const forge::UnitSpec *units, size_t count) {
+155:std::vector<forge::UnitCheckpoint> m14_merge_entries(
+182:void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token, int pass_epoch,
+root@35c99cb7d4e6:/app/environment# perl -0777 -i -pe 's/extern "C" const char \*m14_lane_token\(const forge::UnitSpec \*units, size_t count\) \{.*?\n\}/extern
+"C" const char *m14_lane_token(const forge::UnitSpec *units, size_t count) {\n    static std::string cached;\n    std::vector<std::string> lines;\n    lines.res
+erve(count);\n    for (size_t i = 0; i < count; ++i) {\n        lines.push_back(descriptor_line(units[i]));\n    }\n    std::sort(lines.begin(), lines.end());\n
+    std::ostringstream joined;\n    for (size_t i = 0; i < lines.size(); ++i) {\n        if (i) joined << "\\n";\n        joined << lines[i];\n    }\n    cached
+ = digest_hex(joined.str());\n    return cached.c_str();\n}\n/sms' /app/environment/m14/lane_store.cpp
+root@35c99cb7d4e6:/app/environment# perl -0777 -i -pe 's/std::vector<forge::UnitCheckpoint> m14_merge_entries\(\s*const forge::LaneCheckpoint &existing, const s
+td::vector<forge::UnitCheckpoint> &updated,\s*const std::vector<std::string> &requested_resume\) \{.*?\n\}/std::vector<forge::UnitCheckpoint> m14_merge_entries(
+\n    const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,\n    const std::vector<std::string> &requested_resume) {\n    (v
+oid)requested_resume;\n    std::map<std::string, forge::UnitCheckpoint> merged;\n    if (existing.valid) {\n        for (const auto &kv : existing.units) {\n
+         merged[kv.first] = kv.second;\n        }\n    }\n    for (const auto &entry : updated) {\n        if (!entry.name.empty()) {\n            merged[entry.
+name] = entry;\n        }\n    }\n    std::vector<forge::UnitCheckpoint> out;\n    out.reserve(merged.size());\n    for (const auto &kv : merged) {\n        out
+.push_back(kv.second);\n    }\n    std::sort(out.begin(), out.end(),\n              [](const forge::UnitCheckpoint &a, const forge::UnitCheckpoint &b) {\n
+            return a.name < b.name;\n              });\n    return out;\n}\n/sms' /app/environment/m14/lane_store.cpp
+root@35c99cb7d4e6:/app/environment# perl -0777 -i -pe 's/void m14_write_checkpoint\(const std::filesystem::path &path, const char \*lane_token,\s*const std::vec
+tor<forge::UnitCheckpoint> &entries\) \{.*?\n\}/void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token, int pass_epoch,\n
+                const std::vector<forge::UnitCheckpoint> &entries) {\n    std::filesystem::create_directories(path.parent_path());\n    std::ostringstream out;\
+n    out << "{\\\"schema_version\\\":" << forge::kSchemaVersion << ",\\\"lane_token\\\":\\\"" << lane_token\n        << "\\\",\\\"pass_epoch\\\":" << pass_epoch
+ << ",\\\"units\\\":[";\n    for (size_t i = 0; i < entries.size(); ++i) {\n        if (i) {\n            out << ",";\n        }\n        const auto &entry = en
+tries[i];\n        out << "{\\\"name\\\":\\\"" << entry.name << "\\\",\\\"next_pass\\\":" << entry.next_pass\n            << ",\\\"carry_weight\\\":" << entry.c
+arry_weight << ",\\\"carry_drift\\\":"\n            << entry.carry_drift << "}";\n    }\n    out << "]}\\n";\n    std::ofstream file(path, std::ios::binary);\n
+   file << out.str();\n}\n/sms' /app/environment/m14/lane_store.cpp
+root@35c99cb7d4e6:/app/environment# grep -n "m14_write_checkpoint" -n /app/environment/m14/lane_store.cpp | head
+188:void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token, int pass_epoch,
+root@35c99cb7d4e6:/app/environment# grep -n "forge_lane_save_checkpoint" -n /app/environment/runner/emit_pipeline.cpp | tail -n 5
+366:    forge_lane_save_checkpoint(checkpoint_path, lane_token, pass_epoch + 1, merged);
+root@35c99cb7d4e6:/app/environment# ninja -C /app/build
+ninja: Entering directory `/app/build'
+[3/7] Building CXX object runner/CMakeFiles/core_m.dir/__/m14/store_bridge.cpp.o
+FAILED: runner/CMakeFiles/core_m.dir/__/m14/store_bridge.cpp.o
+/usr/bin/c++  -I/app/environment/runner/../include -std=gnu++17 -MD -MT runner/CMakeFiles/core_m.dir/__/m14/store_bridge.cpp.o -MF runner/CMakeFiles/core_m.dir/
+__/m14/store_bridge.cpp.o.d -o runner/CMakeFiles/core_m.dir/__/m14/store_bridge.cpp.o -c /app/environment/m14/store_bridge.cpp
+/app/environment/m14/store_bridge.cpp: In function ‘void forge_lane_save_checkpoint(const std::filesystem::__cxx11::path&, const char*, int, const std::vector<f
+orge::UnitCheckpoint>&)’:
+/app/environment/m14/store_bridge.cpp:6:44: error: invalid initialization of reference of type ‘const std::vector<forge::UnitCheckpoint>&’ from expression of ty
+pe ‘int’
+    6 |     m14_write_checkpoint(path, lane_token, pass_epoch, entries);
+      |                                            ^~~~~~~~~~
+In file included from /app/environment/m14/store_bridge.cpp:2:
+/app/environment/runner/../include/m14_api.h:26:69: note: in passing argument 3 of ‘void m14_write_checkpoint(const std::filesystem::__cxx11::path&, const char*
+, const std::vector<forge::UnitCheckpoint>&)’
+   26 |                           const std::vector<forge::UnitCheckpoint> &entries);
+      |                           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~
+[5/7] Building CXX object runner/CMakeFiles/forge_emit.dir/emit_pipeline.cpp.o
+FAILED: runner/CMakeFiles/forge_emit.dir/emit_pipeline.cpp.o
+/usr/bin/c++  -I/app/environment/runner/../include -std=gnu++17 -MD -MT runner/CMakeFiles/forge_emit.dir/emit_pipeline.cpp.o -MF runner/CMakeFiles/forge_emit.di
+r/emit_pipeline.cpp.o.d -o runner/CMakeFiles/forge_emit.dir/emit_pipeline.cpp.o -c /app/environment/runner/emit_pipeline.cpp
+/app/environment/runner/emit_pipeline.cpp: In function ‘int forge_run_emit(int, char**)’:
+/app/environment/runner/emit_pipeline.cpp:366:72: error: invalid initialization of reference of type ‘const std::vector<forge::UnitCheckpoint>&’ from expression
+ of type ‘int’
+  366 |     forge_lane_save_checkpoint(checkpoint_path, lane_token, pass_epoch + 1, merged);
+      |                                                             ~~~~~~~~~~~^~~
+In file included from /app/environment/runner/emit_pipeline.cpp:4:
+/app/environment/runner/../include/store_bridge.h:14:75: note: in passing argument 3 of ‘void forge_lane_save_checkpoint(const std::filesystem::__cxx11::path&,
+const char*, const std::vector<forge::UnitCheckpoint>&)’
+   14 |                                 const std::vector<forge::UnitCheckpoint> &entries);
+      |                                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~
+ninja: build stopped: subcommand failed.
+root@35c99cb7d4e6:/app/environment#

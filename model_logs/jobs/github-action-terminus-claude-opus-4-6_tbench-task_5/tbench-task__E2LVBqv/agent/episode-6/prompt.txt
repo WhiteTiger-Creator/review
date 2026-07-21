@@ -1,0 +1,116 @@
+New Terminal Output:
+
+root@dbf8340e129b:/app# cat /app/environment/n21/q5_pack_stamp.cpp
+#include "types.h"
+#include <sstream>
+#include <string>
+
+namespace forge {
+
+std::string q5_row_serial(const UnitRun &run) {
+    std::ostringstream os;
+    os << run.name << '|' << run.manifest_bytes << '|' << run.record_bytes << '|'
+       << run.order_rank << '|' << run.order_weight;
+    return os.str();
+}
+
+std::string unit_row_serial(const UnitRun &run) {
+    return q5_row_serial(run);
+}
+
+}
+root@dbf8340e129b:/app# cat /app/environment/n21/pack_bridge.cpp
+#include "lane_bridge.h"
+#include "n21_api.h"
+#include "types.h"
+
+std::string forge_lane_row_text(const forge::UnitRun &run) {
+    return forge::unit_row_serial(run);
+}
+
+std::string forge_lane_header_text(int schema_version, const std::string &release_id, int base,
+                                   int pass_epoch, int64_t drift_total, int64_t weight_total) {
+    return forge::n21_header_serial(schema_version, release_id, base, pass_epoch, drift_total,
+                                    weight_total);
+}
+root@dbf8340e129b:/app# cat /app/environment/b07/v3_read_scale.c
+#include "types.h"
+#include <ctype.h>
+#include <stdlib.h>
+#include <string.h>
+
+static const char *find_token(const char *line, size_t len, const char *key) {
+    size_t key_len = strlen(key);
+    for (size_t i = 0; i + key_len <= len; ++i) {
+        if (strncmp(line + i, key, key_len) == 0) {
+            return line + i;
+        }
+    }
+    return NULL;
+}
+
+static int line_has_lane_primary(const char *line, size_t len) {
+    return find_token(line, len, "lane=primary") != NULL;
+}
+
+static int64_t read_int_after_eq(const char *line, size_t len, const char *token) {
+    const char *pos = find_token(line, len, token);
+    if (pos == NULL) {
+        return 0;
+    }
+    size_t offset = (size_t)(pos - line) + strlen(token);
+    while (offset < len && isspace((unsigned char)line[offset])) {
+        ++offset;
+    }
+    char *end = NULL;
+    long long value = strtoll(line + offset, &end, 10);
+    if (end == line + offset) {
+        return 0;
+    }
+    return (int64_t)value;
+}
+
+int64_t v3_read_scale(const char *line, size_t len) {
+    if (line == NULL || len == 0) {
+        return 0;
+    }
+    int64_t raw = read_int_after_eq(line, len, "size_bytes=");
+    if (line_has_lane_primary(line, len)) {
+        return raw / 1024;
+    }
+    return raw;
+}
+
+int64_t b07_read_scale(const char *line, size_t len) {
+    return v3_read_scale(line, len);
+}
+root@dbf8340e129b:/app# cat /app/environment/b07/scan_bridge.c
+#include "b07_api.h"
+#include "scan_bridge.h"
+
+int forge_scan_has_key(const char *line, size_t len, const char *token) {
+    return b07_line_has_key(line, len, token);
+}
+
+int64_t forge_scan_record_bytes(const char *line, size_t len) {
+    return b07_read_scale(line, len);
+}
+root@dbf8340e129b:/app# cat /app/environment/m14/read_bridge.cpp
+#include "m14_api.h"
+#include "store_bridge.h"
+
+forge::LaneCheckpoint forge_lane_load_checkpoint(const std::filesystem::path &path,
+                                                 const std::string &expected_token) {
+    return m14_read_checkpoint(path, expected_token);
+}
+root@dbf8340e129b:/app# cat /app/environment/f12/m4_shadow.cpp
+#include "types.h"
+
+namespace forge {
+
+double m4_lane_bias(double base, int slot) {
+    return base + static_cast<double>(slot) * 0.0001;
+}
+
+}
+root@dbf8340e129b:/app#

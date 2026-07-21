@@ -1,0 +1,51 @@
+{
+  "analysis": "We found concrete issues in code: n21/q5_pack_stamp.cpp serializes unit rows as name|manifest_bytes|record_bytes|order_rank|order_weight, missing drift_bytes and wrong field order per spec. m14_write_checkpoint writes schema_version, lane_token, units but omits required pass_epoch. Also earlier snippet shows m14_merge_entries currently ignores existing/requested_resume and just returns updated sorted, which explains dropping unrelated checkpoints on partial invocations and only keeping updated units. Mode resolution likely wrong via c9_resolve_mode. We still need to view the omitted middle of runner/emit_pipeline.cpp (contains read_pass_epoch, checkpoint read/validity, per-unit run analyze_unit), plus c9_resolve_mode implementation, m14/lane_store.cpp for merge/token/read, and types/digest functions to fix digest algorithm/serialization and lane_token computation.",
+  "plan": "1) Re-open emit_pipeline.cpp around the previously truncated section, especially functions: read_pass_epoch, load checkpoint, writing emit JSON, digest composition, checkpoint save. 2) Inspect c9_resolve_mode in c9 sources to see why u_alpha becomes cold. 3) Inspect m14/lane_store.cpp fully (read_checkpoint, merge_entries, lane token) since earlier output was truncated/mixed; confirm current merge behavior and lane_token input format. 4) Inspect f12 and constants for drift abs and digest constants. With this information, we can implement fixes: correct mode semantics, correct unit row serialization, correct checkpoint schema (pass_epoch) and merge semantics, correct lane token computation input (descriptor lines for all manifest units), and correct digest input field order including drift_bytes.",
+  "commands": [
+    {
+      "keystrokes": "grep -n \"int read_pass_epoch\\|LaneCheckpoint\\|load_checkpoint\\|checkpoint\\|pass_epoch\\|digest\\|row_serial\\|unit_row_serial\\|forge_lane_fingerprint\\|forge_lane_save_checkpoint\" -n /app/environment/runner/emit_pipeline.cpp | head -n 200\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "sed -n '200,520p' /app/environment/runner/emit_pipeline.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '520,920p' /app/environment/runner/emit_pipeline.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /app/environment/include/constants.h\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "grep -n \"c9_resolve_mode\" -n /app/environment/c9/*\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,200p' /app/environment/c9/mode_bridge.cpp && echo '---' && sed -n '1,200p' /app/environment/c9/pass_gate.cpp && echo '--- extra_c1.c' && sed -n '1,120p' /app/environment/c9/extra_c1.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,260p' /app/environment/m14/lane_store.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "ls -la /app/environment/m14 && for f in /app/environment/m14/*; do echo \"\\n==== $f\"; sed -n '1,240p' \"$f\"; done\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "grep -R -n \"digest_hex\\|1469598103934665603\\|1099511628211\\|kDigest\" /app/environment | head -n 200\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "grep -R -n \"n21_header_serial\" /app/environment/n21 /app/environment/include | head -n 200\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "sed -n '1,220p' /app/environment/n21/*\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

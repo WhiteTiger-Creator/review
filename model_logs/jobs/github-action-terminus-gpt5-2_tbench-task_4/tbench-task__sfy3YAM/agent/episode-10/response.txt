@@ -1,0 +1,19 @@
+{
+  "analysis": "Rebuild succeeded. The checkpoint now preserves unrelated resume units across partial invocations (u_zeta retained after emitting only u_alpha), and u_alpha mode is now correctly \"resume\" (no name-prefix override). The resumed u_alpha shows pass_index advanced to 1 and order_weight carried (4600 -> 9200), matching resume semantics. Lane token changed (now 2d5837bed1ac6b84), consistent with corrected fingerprint computation. Remaining work: ensure the normal pipeline outputs are regenerated as required (/app/output/forge_emit.json and /app/output/forge_checkpoint.json) for the intended final invocation; likely the full unit list. We'll regenerate by running forge_emit with all units and leave outputs in /app/output.",
+  "plan": "1) Remove existing outputs to ensure clean generation. 2) Run forge_emit for the full requested lane units u_kappa,u_alpha,u_zeta to generate final /app/output/forge_emit.json and /app/output/forge_checkpoint.json. 3) Display outputs to confirm files exist and schema keys look correct.",
+  "commands": [
+    {
+      "keystrokes": "rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "ls -la /app/output && echo '--- forge_emit.json ---' && cat /app/output/forge_emit.json && echo '\\n--- forge_checkpoint.json ---' && cat /app/output/forge_checkpoint.json\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": true
+}

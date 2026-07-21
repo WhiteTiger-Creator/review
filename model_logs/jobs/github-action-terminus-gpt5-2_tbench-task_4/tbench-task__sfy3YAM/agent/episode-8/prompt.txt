@@ -1,0 +1,229 @@
+New Terminal Output:
+
+root@c5c0f1c2990a:/app# python3 -m py_compile /dev/null 2>/dev/null; sed -n '1,260p' /app/environment/m14/lane_store.cpp
+#include "m14_api.h"
+#include "constants.h"
+#include "store_bridge.h"
+#include "types.h"
+
+#include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <numeric>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+namespace forge {
+
+namespace {
+
+std::string pick_string(const std::string &block, const std::string &key) {
+    std::string needle = "\"" + key + "\"";
+    size_t k = block.find(needle);
+    if (k == std::string::npos) {
+        return "";
+    }
+    size_t q = block.find('"', block.find(':', k) + 1);
+    size_t e = block.find('"', q + 1);
+    if (q == std::string::npos || e == std::string::npos) {
+        return "";
+    }
+    return block.substr(q + 1, e - q - 1);
+}
+
+int pick_int(const std::string &block, const std::string &key) {
+    std::string needle = "\"" + key + "\"";
+    size_t k = block.find(needle);
+    if (k == std::string::npos) {
+        return 0;
+    }
+    size_t colon = block.find(':', k);
+    if (colon == std::string::npos) {
+        return 0;
+    }
+    size_t start = colon + 1;
+    while (start < block.size() && std::isspace(static_cast<unsigned char>(block[start]))) {
+        ++start;
+    }
+    return std::stoi(block.substr(start));
+}
+
+int64_t pick_int64(const std::string &block, const std::string &key) {
+    std::string needle = "\"" + key + "\"";
+    size_t k = block.find(needle);
+    if (k == std::string::npos) {
+        return 0;
+    }
+    size_t colon = block.find(':', k);
+    if (colon == std::string::npos) {
+        return 0;
+    }
+    size_t start = colon + 1;
+    while (start < block.size() && std::isspace(static_cast<unsigned char>(block[start]))) {
+        ++start;
+    }
+    return std::stoll(block.substr(start));
+}
+
+std::vector<std::string> split_object_blocks(const std::string &array_text) {
+    std::vector<std::string> out;
+    int depth = 0;
+    size_t start = std::string::npos;
+    for (size_t i = 0; i < array_text.size(); ++i) {
+        if (array_text[i] == '{') {
+            if (depth == 0) {
+                start = i;
+            }
+            ++depth;
+        } else if (array_text[i] == '}') {
+            --depth;
+            if (depth == 0 && start != std::string::npos) {
+                out.push_back(array_text.substr(start, i - start + 1));
+                start = std::string::npos;
+            }
+        }
+    }
+    return out;
+}
+
+} // namespace
+
+} // namespace forge
+
+extern "C" const char *m14_lane_token(const forge::UnitSpec *units, size_t count) {
+    static thread_local std::string cached;
+    std::vector<forge::UnitSpec> sorted;
+    sorted.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        sorted.push_back(units[i]);
+    }
+    std::sort(sorted.begin(), sorted.end(), [](const forge::UnitSpec &a, const forge::UnitSpec &b) {
+        return a.name < b.name;
+    });
+
+    std::ostringstream joined;
+    for (size_t i = 0; i < sorted.size(); ++i) {
+        if (i) {
+            joined << '\n';
+        }
+        joined << sorted[i].name << '|' << sorted[i].mode << '|' << sorted[i].record_path << '|'
+               << sorted[i].manifest_bytes << '|' << sorted[i].start_pass;
+    }
+
+    cached = forge::digest_hex(joined.str());
+    return cached.c_str();
+}
+
+extern "C" int m14_checkpoint_valid(const char *on_disk_token, const char *expected_token) {
+    if (on_disk_token == nullptr || expected_token == nullptr) {
+        return 0;
+    }
+    return std::string(on_disk_token) == std::string(expected_token) ? 1 : 0;
+}
+
+forge::LaneCheckpoint m14_read_checkpoint(const std::filesystem::path &path,
+                                         const std::string &expected_token) {
+    forge::LaneCheckpoint state;
+    std::ifstream in(path);
+    if (!in) {
+        return state;
+    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    const std::string doc = buffer.str();
+    if (doc.find("\"schema_version\"") == std::string::npos) {
+        return state;
+    }
+    state.lane_token = forge::pick_string(doc, "lane_token");
+    if (!m14_checkpoint_valid(state.lane_token.c_str(), expected_token.c_str())) {
+        return state;
+    }
+    state.pass_epoch = forge::pick_int(doc, "pass_epoch");
+
+    size_t units_pos = doc.find("\"units\"");
+    if (units_pos == std::string::npos) {
+        state.valid = true;
+        return state;
+    }
+    size_t arr_start = doc.find('[', units_pos);
+    size_t arr_end = doc.find(']', arr_start);
+    if (arr_start == std::string::npos || arr_end == std::string::npos) {
+        return state;
+    }
+    const std::string arr = doc.substr(arr_start, arr_end - arr_start + 1);
+    for (const auto &block : forge::split_object_blocks(arr)) {
+        forge::UnitCheckpoint entry;
+        entry.name = forge::pick_string(block, "name");
+        entry.next_pass = forge::pick_int(block, "next_pass");
+        entry.carr
+[... output limited to 10000 bytes; 70 interior bytes omitted ...]
+td::ofstream file(path, std::ios::binary);
+    file << out.str();
+}
+root@c5c0f1c2990a:/app# grep -n "=>" -n /app/environment/m14/lane_store.cpp || true
+root@c5c0f1c2990a:/app# perl -0777 -i -pe 's/void m14_write_checkpoint\(const std::filesystem::path &path, const char \*lane_token,\s*\n\s*const std::vector<for
+ge::UnitCheckpoint> &entries\);/void m14_write_checkpoint(const std::filesystem::path \&path, const char *lane_token, int pass_epoch,\n
+ const std::vector<forge::UnitCheckpoint> \&entries);/s' /app/environment/include/m14_api.h
+root@c5c0f1c2990a:/app# perl -0777 -i -pe 's/void forge_lane_save_checkpoint\(const std::filesystem::path &path, const char \*lane_token,\s*\n\s*const std::vect
+or<forge::UnitCheckpoint> &entries\);/void forge_lane_save_checkpoint(const std::filesystem::path \&path, const char *lane_token, int pass_epoch,\n
+                   const std::vector<forge::UnitCheckpoint> \&entries);/s' /app/environment/include/store_bridge.h
+root@c5c0f1c2990a:/app# cat > /app/environment/m14/store_bridge.cpp <<'EOF'
+> #include "m14_api.h"
+> #include "store_bridge.h"
+>
+> std::vector<forge::UnitCheckpoint> forge_lane_merge_checkpoint(
+>     const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+>     const std::vector<std::string> &requested_resume) {
+>     return m14_merge_entries(existing, updated, requested_resume);
+> }
+>
+> void forge_lane_save_checkpoint(const std::filesystem::path &path, const char *lane_token,
+>                                 int pass_epoch,
+>                                 const std::vector<forge::UnitCheckpoint> &entries) {
+>     m14_write_checkpoint(path, lane_token, pass_epoch, entries);
+> }
+> EOF
+root@c5c0f1c2990a:/app# perl -0777 -i -pe 's/forge_lane_save_checkpoint\(checkpoint_path, lane_token, merged\);/forge_lane_save_checkpoint(checkpoint_path, lane
+_token, pass_epoch + 1, merged);/g' /app/environment/runner/emit_pipeline.cpp
+root@c5c0f1c2990a:/app# cmake -S /app/environment -B /app/build -G Ninja
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /app/build
+root@c5c0f1c2990a:/app# ninja -C /app/build
+ninja: Entering directory `/app/build'
+[1/9] Building CXX object runner/CMakeFiles/core_m.dir/__/m14/lane_store.cpp.o
+FAILED: runner/CMakeFiles/core_m.dir/__/m14/lane_store.cpp.o
+/usr/bin/c++  -I/app/environment/runner/../include -std=gnu++17 -MD -MT runner/CMakeFiles/core_m.dir/__/m14/lane_store.cpp.o -MF runner/CMakeFiles/core_m.dir/__
+/m14/lane_store.cpp.o.d -o runner/CMakeFiles/core_m.dir/__/m14/lane_store.cpp.o -c /app/environment/m14/lane_store.cpp
+/app/environment/m14/lane_store.cpp: In function ‘const char* m14_lane_token(const forge::UnitSpec*, size_t)’:
+/app/environment/m14/lane_store.cpp:111:79: error: ‘__gnu_cxx::__alloc_traits<std::allocator<forge::UnitSpec>, forge::UnitSpec>::value_type’ {aka ‘struct forge:
+:UnitSpec’} has no member named ‘record_path’
+  111 |         joined << sorted[i].name << '|' << sorted[i].mode << '|' << sorted[i].record_path << '|'
+      |                                                                               ^~~~~~~~~~~
+/app/environment/m14/lane_store.cpp: In function ‘forge::LaneCheckpoint m14_read_checkpoint(const std::filesystem::__cxx11::path&, const std::string&)’:
+/app/environment/m14/lane_store.cpp:143:11: error: ‘struct forge::LaneCheckpoint’ has no member named ‘pass_epoch’
+  143 |     state.pass_epoch = forge::pick_int(doc, "pass_epoch");
+      |           ^~~~~~~~~~
+rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json
+[3/9] Building CXX object runner/CMakeFiles/core_m.dir/__/m14/token_bridge.cpp.o
+ninja: build stopped: subcommand failed.
+root@c5c0f1c2990a:/app# rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json
+root@c5c0f1c2990a:/app# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta
+root@c5c0f1c2990a:/app# cat /app/output/forge_checkpoint.json
+{"schema_version":1,"lane_token":"6218901b6e584bf4","pass_epoch":1,"units":[{"name":"u_zeta","next_pass":1,"carry_weight":3550,"carry_drift":0}]}
+root@c5c0f1c2990a:/app# rm -f /app/output/forge_emit.json
+root@c5c0f1c2990a:/app# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_alpha
+root@c5c0f1c2990a:/app# echo '--- checkpoint after partial ---' && cat /app/output/forge_checkpoint.json
+--- checkpoint after partial ---
+{"schema_version":1,"lane_token":"6218901b6e584bf4","pass_epoch":2,"units":[]}
+root@c5c0f1c2990a:/app# echo '--- emitted alpha ---' && cat /app/output/forge_emit.json
+--- emitted alpha ---
+{"schema_version":1,"release_id":"forge_r07","order_weight_base":500,"pass_epoch":1,"units":[{"name":"u_alpha","mode":"cold","pass_index":0,"manifest_bytes":410
+0,"record_bytes":4100,"drift_bytes":0,"order_rank":1,"order_weight":4600,"row_digest":"a7aaab485c5e61ce"}],"total_drift_bytes":0,"order_score":4600,"digest":"cb
+529024b9e1f453"}
+root@c5c0f1c2990a:/app#

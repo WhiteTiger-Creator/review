@@ -1,0 +1,137 @@
+{
+    "results": {
+        "tool": {
+            "name": "pytest",
+            "version": "8.4.1"
+        },
+        "summary": {
+            "tests": 11,
+            "passed": 5,
+            "failed": 6,
+            "skipped": 0,
+            "pending": 0,
+            "other": 0,
+            "start": 1779813148.2874327,
+            "stop": 1779813148.4567726
+        },
+        "tests": [
+            {
+                "name": "test_outputs.py::test_q0_cold_lane_baseline",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0303174029999127,
+                "start": 1779813148.315286,
+                "stop": 1779813148.3612359,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_q0_cold_lane_baseline():\n        \"\"\"Cold unit u_kappa reports parsed record bytes, zero drift, and cold weight formula.\"\"\"\n        doc, _ = _run(\"u_kappa\")\n>       _assert_schema(doc, [\"u_kappa\"])\n\n/tests/test_outputs.py:241: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\ndoc = {'digest': '67474b416f5bb70b', 'order_score': 6650, 'order_weight_base': 500, 'pass_epoch': 0, ...}\nrequested = ['u_kappa']\n\n    def _assert_schema(doc: dict, requested: list[str]) -> None:\n        meta = _manifest_meta()\n        assert doc[\"schema_version\"] == 1\n        assert doc[\"release_id\"] == meta[\"release_id\"]\n        assert doc[\"order_weight_base\"] == meta[\"order_weight_base\"]\n        assert isinstance(doc[\"pass_epoch\"], int)\n        assert len(doc[\"digest\"]) == 16\n>       assert doc[\"digest\"] == _digest(_top_serial(doc))\nE       AssertionError: assert '67474b416f5bb70b' == '7669be4021c90903'\nE         \nE         - 7669be4021c90903\nE         + 67474b416f5bb70b\n\n/tests/test_outputs.py:209: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_q1_corrupt_checkpoint_fresh_start",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.003115093000133129,
+                "start": 1779813148.361453,
+                "stop": 1779813148.373257,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_q1_corrupt_checkpoint_fresh_start():\n        \"\"\"Corrupt lane checkpoint is ignored and resume units restart at configured start_pass.\"\"\"\n        seed_doc, seed_state = _run_with_state(UNITS_RESUME_CSV)\n>       _assert_schema(seed_doc, UNITS_RESUME)\n\n/tests/test_outputs.py:254: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\ndoc = {'digest': '4563a787379ac4e9', 'order_score': 8650, 'order_weight_base': 500, 'pass_epoch': 1, ...}\nrequested = ['u_alpha', 'u_zeta']\n\n    def _assert_schema(doc: dict, requested: list[str]) -> None:\n        meta = _manifest_meta()\n        assert doc[\"schema_version\"] == 1\n        assert doc[\"release_id\"] == meta[\"release_id\"]\n        assert doc[\"order_weight_base\"] == meta[\"order_weight_base\"]\n        assert isinstance(doc[\"pass_epoch\"], int)\n        assert len(doc[\"digest\"]) == 16\n>       assert doc[\"digest\"] == _digest(_top_serial(doc))\nE       AssertionError: assert '4563a787379ac4e9' == 'cdb1b1db952e5d82'\nE         \nE         - cdb1b1db952e5d82\nE         + 4563a787379ac4e9\n\n/tests/test_outputs.py:209: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_q2_stale_lane_token_rejected",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0028841429998465173,
+                "start": 1779813148.3734567,
+                "stop": 1779813148.3824506,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_q2_stale_lane_token_rejected():\n        \"\"\"Well-formed but stale lane tokens do not seed resume carry fields.\"\"\"\n        doc, state = _run_with_state(\"u_alpha\")\n        run = _by_name(doc, \"u_alpha\")\n        saved = _state_map(state)\n>       _assert_carry(saved[\"u_alpha\"], run)\n                      ^^^^^^^^^^^^^^^^\nE       KeyError: 'u_alpha'\n\n/tests/test_outputs.py:281: KeyError",
+                "message": "The test failed in the call phase"
+            },
+            {
+                "name": "test_outputs.py::test_q3_resume_carry_weight_chain",
+                "status": "passed",
+                "duration": 0.005300245000171344,
+                "start": 1779813148.3826478,
+                "stop": 1779813148.3881109,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_q4_subset_preserves_other_checkpoints",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0028220650000321257,
+                "start": 1779813148.3883097,
+                "stop": 1779813148.3972206,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_q4_subset_preserves_other_checkpoints():\n        \"\"\"Partial resume requests preserve checkpoints for omitted resume units.\"\"\"\n        if OUT.exists():\n            OUT.unlink()\n        if STATE.exists():\n            STATE.unlink()\n        full_doc, full_state = _run_with_state(UNITS_RESUME_CSV)\n        full_alpha = _by_name(full_doc, \"u_alpha\")\n        full_zeta = _by_name(full_doc, \"u_zeta\")\n        full_map = _state_map(full_state)\n>       _assert_carry(full_map[\"u_alpha\"], full_alpha)\n                      ^^^^^^^^^^^^^^^^^^^\nE       KeyError: 'u_alpha'\n\n/tests/test_outputs.py:333: KeyError",
+                "message": "The test failed in the call phase"
+            },
+            {
+                "name": "test_outputs.py::test_q5_lane_replay_determinism",
+                "status": "passed",
+                "duration": 0.005557258000067122,
+                "start": 1779813148.3974128,
+                "stop": 1779813148.4031308,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_q6_mixed_lane_totals",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.002984448999882261,
+                "start": 1779813148.4033124,
+                "stop": 1779813148.4155233,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_q6_mixed_lane_totals():\n        \"\"\"Full lane request keeps absolute drift totals and manifest-order rank weights.\"\"\"\n        doc, _ = _run(UNITS_ALL_CSV)\n>       _assert_schema(doc, UNITS_ALL)\n\n/tests/test_outputs.py:355: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\ndoc = {'digest': 'd5eb22ba962a4b3d', 'order_score': 15300, 'order_weight_base': 500, 'pass_epoch': 0, ...}\nrequested = ['u_kappa', 'u_alpha', 'u_zeta']\n\n    def _assert_schema(doc: dict, requested: list[str]) -> None:\n        meta = _manifest_meta()\n        assert doc[\"schema_version\"] == 1\n        assert doc[\"release_id\"] == meta[\"release_id\"]\n        assert doc[\"order_weight_base\"] == meta[\"order_weight_base\"]\n        assert isinstance(doc[\"pass_epoch\"], int)\n        assert len(doc[\"digest\"]) == 16\n>       assert doc[\"digest\"] == _digest(_top_serial(doc))\nE       AssertionError: assert 'd5eb22ba962a4b3d' == 'd11c25403fc57705'\nE         \nE         - d11c25403fc57705\nE         + d5eb22ba962a4b3d\n\n/tests/test_outputs.py:209: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_q7_cold_ignores_advanced_checkpoint",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.007757490000017242,
+                "start": 1779813148.415733,
+                "stop": 1779813148.4391894,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_q7_cold_ignores_advanced_checkpoint():\n        \"\"\"Cold u_kappa always recomputes from start_pass even when resume checkpoints are advanced.\"\"\"\n        if OUT.exists():\n            OUT.unlink()\n        if STATE.exists():\n            STATE.unlink()\n        for _ in range(2):\n            _run_with_state(UNITS_RESUME_CSV)\n        doc, _ = _run_with_state(\"u_kappa\")\n>       _assert_schema(doc, [\"u_kappa\"])\n\n/tests/test_outputs.py:374: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\ndoc = {'digest': '67474b416f5bb70b', 'order_score': 6650, 'order_weight_base': 500, 'pass_epoch': 2, ...}\nrequested = ['u_kappa']\n\n    def _assert_schema(doc: dict, requested: list[str]) -> None:\n        meta = _manifest_meta()\n        assert doc[\"schema_version\"] == 1\n        assert doc[\"release_id\"] == meta[\"release_id\"]\n        assert doc[\"order_weight_base\"] == meta[\"order_weight_base\"]\n        assert isinstance(doc[\"pass_epoch\"], int)\n        assert len(doc[\"digest\"]) == 16\n>       assert doc[\"digest\"] == _digest(_top_serial(doc))\nE       AssertionError: assert '67474b416f5bb70b' == '0172267f952d0ca9'\nE         \nE         - 0172267f952d0ca9\nE         + 67474b416f5bb70b\n\n/tests/test_outputs.py:209: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_q8_resume_digest_differs_with_flat_drift",
+                "status": "passed",
+                "duration": 0.005151856000111366,
+                "start": 1779813148.4393861,
+                "stop": 1779813148.4446986,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_q9_triple_resume_chain",
+                "status": "passed",
+                "duration": 0.008466463999980078,
+                "start": 1779813148.444875,
+                "stop": 1779813148.4535053,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_q10_lane_token_matches_descriptor",
+                "status": "passed",
+                "duration": 0.002764572000046428,
+                "start": 1779813148.4536893,
+                "stop": 1779813148.4566061,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            }
+        ]
+    }
+}

@@ -1,0 +1,47 @@
+{
+  "analysis": "We are at /app with no prior command output. Need to inspect the existing /app/environment implementation, identify why checkpoint continuity, lane token, resume semantics, and digest/metrics drift are incorrect, then fix the code and regenerate outputs by running the normal cmake+ninja pipeline and executing forge_emit against the fixture manifest.",
+  "plan": "1) Inspect repository structure and locate forge_emit sources under /app/environment. 2) Build and run the current binary once to observe current outputs. 3) Read the fixture manifest and any existing checkpoint/output formats. 4) Locate and fix bugs: unit mode semantics (manifest-driven), checkpoint validity+lane token, partial invocation preservation of resume units, correct weight/pass computation, drift/aggregate rules, and FNV-1a 64-bit digest serialization. 5) Rebuild and rerun forge_emit for representative unit lists to ensure stable outputs and proper checkpoint evolution.",
+  "commands": [
+    {
+      "keystrokes": "ls -la /app\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "find /app/environment -maxdepth 3 -type f -name '*forge*' -o -name '*.cpp' -o -name '*.c' -o -name '*.h' -o -name '*.hpp' | head\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "ls -la /app/environment\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "ls -la /app/environment/fixtures\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /app/environment/fixtures/lane.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cmake -S /app/environment -B /app/build -G Ninja\n",
+      "duration": 5.0
+    },
+    {
+      "keystrokes": "ninja -C /app/build\n",
+      "duration": 10.0
+    },
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "ls -la /app/output && echo '--- emit ---' && cat /app/output/forge_emit.json && echo '\\n--- checkpoint ---' && cat /app/output/forge_checkpoint.json\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

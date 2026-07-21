@@ -1,0 +1,10 @@
+{
+  "analysis": "I need to see the rest of emit_pipeline.cpp (lines 200+) to find load_manifest completion, analyze_unit, and digest_hex.",
+  "plan": "Get the remaining lines of emit_pipeline.cpp.",
+  "commands": [
+    {
+      "keystrokes": "sed -n '200,373p' /app/environment/runner/emit_pipeline.cpp\n",
+      "duration": 0.1
+    }
+  ]
+}

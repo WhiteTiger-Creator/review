@@ -1,0 +1,30 @@
+{
+  "analysis": "Found multiple bugs:\n1. c9/pass_gate.cpp: Forces u_alpha to 'cold' mode by checking 'u_a' prefix - spec says don't branch on name prefixes\n2. b07/v3_read_scale.c: Divides by 1024 for 'lane=primary' records - should just return raw value\n3. f12/k8_rank_slot.cpp: Uses lexicographic rank instead of manifest array position\n4. n21/q5_pack_stamp.cpp: Missing drift_bytes in row serialization\n5. m14/lane_store.cpp: merge doesn't preserve existing entries; token doesn't sort descriptors; missing pass_epoch in checkpoint\n6. emit_pipeline.cpp: Double-writes checkpoint\n\nNeed to see more of emit_pipeline.cpp (it was truncated) and remaining files.",
+  "plan": "Look at the full emit_pipeline.cpp using head/tail to see the truncated middle portion, plus examine remaining helper files.",
+  "commands": [
+    {
+      "keystrokes": "wc -l /app/environment/runner/emit_pipeline.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '100,200p' /app/environment/runner/emit_pipeline.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '200,300p' /app/environment/runner/emit_pipeline.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /app/environment/b07/j2_shadow.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /app/environment/f12/m4_shadow.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /app/environment/n21/p1_shadow.cpp\n",
+      "duration": 0.1
+    }
+  ]
+}

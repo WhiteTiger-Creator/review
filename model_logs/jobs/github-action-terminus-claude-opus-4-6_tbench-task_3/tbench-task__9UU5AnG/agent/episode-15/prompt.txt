@@ -1,0 +1,12 @@
+New Terminal Output:
+
+root@ba860eb2c572:/app# grep -n 'cp_out.*]}' /app/environment/runner/emit_pipeline.cpp
+372:    cp_out << "]}\ n";
+root@ba860eb2c572:/app# sed -n '265,270p' /app/environment/runner/emit_pipeline.cpp
+}  // namespace forge
+
+int forge_run_emit(int argc, char **argv) {
+    if (argc != 4) {
+        std::cerr << "usage: forge_emit <manifest-json> <output-json> <units-csv>\n";
+        return 2;
+root@ba860eb2c572:/app#

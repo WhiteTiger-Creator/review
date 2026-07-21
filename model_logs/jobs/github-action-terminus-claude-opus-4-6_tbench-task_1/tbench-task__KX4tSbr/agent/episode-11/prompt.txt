@@ -1,0 +1,119 @@
+New Terminal Output:
+
+root@607b4f5bd756:/app# cat > /app/environment/c9/pass_gate.cpp << 'EOF'
+> #include "c9_api.h"
+> #include <string.h>
+>
+> extern "C" const char *c9_resolve_mode(const char *manifest_mode, const char *unit_name,
+>                                          int pass_epoch) {
+>     static thread_local char mode_buf[16];
+>     (void)pass_epoch;
+>     (void)unit_name;
+>     if (manifest_mode == NULL) {
+>         mode_buf[0] = '\0';
+>         return mode_buf;
+>     }
+>     strncpy(mode_buf, manifest_mode, sizeof(mode_buf) - 1);
+>     mode_buf[sizeof(mode_buf) - 1] = '\0';
+>     return mode_buf;
+> }
+> EOF
+root@607b4f5bd756:/app# cat > /app/environment/n21/q5_pack_stamp.cpp << 'EOF'
+> #include "types.h"
+> #include <sstream>
+> #include <string>
+>
+> namespace forge {
+>
+> std::string q5_row_serial(const UnitRun &run) {
+>     std::ostringstream os;
+>     os << run.name << '|' << run.manifest_bytes << '|' << run.record_bytes << '|'
+>        << run.drift_bytes << '|' << run.order_rank << '|' << run.order_weight;
+>     return os.str();
+> }
+>
+> std::string unit_row_serial(const UnitRun &run) {
+>     return q5_row_serial(run);
+> }
+>
+> }
+> EOF
+root@607b4f5bd756:/app# cat > /app/environment/n21/extra_n2.cpp << 'EOF'
+> #include "types.h"
+> #include <sstream>
+>
+> namespace forge {
+>
+> std::string n21_header_serial(int schema_version, const std::string &release_id, int base,
+>                               int pass_epoch, int64_t drift_total, int64_t weight_total) {
+>     std::ostringstream os;
+>     os << schema_version << '|' << release_id << '|' << base << '|' << pass_epoch << '|'
+>        << drift_total << '|' << weight_total;
+>     return os.str();
+> }
+>
+> }
+> EOF
+root@607b4f5bd756:/app# cat > /app/environment/f12/extra_f2.cpp << 'EOF'
+> #include "types.h"
+> #include <vector>
+>
+> namespace forge {
+>
+> int64_t f12_abs_drift(int64_t drift);
+>
+> int64_t f12_drift_total(const std::vector<UnitRun> &units) {
+>     int64_t total = 0;
+>     for (const auto &unit : units) {
+>         total += f12_abs_drift(unit.drift_bytes);
+>     }
+>     return total;
+> }
+>
+> }
+> EOF
+root@607b4f5bd756:/app# cat > /app/environment/b07/v3_read_scale.c << 'EOF'
+> #include "types.h"
+> #include <ctype.h>
+> #include <stdlib.h>
+> #include <string.h>
+>
+> static const char *find_token(const char *line, size_t len, const char *key) {
+>     size_t key_len = strlen(key);
+>     for (size_t i = 0; i + key_len <= len; ++i) {
+>         if (strncmp(line + i, key, key_len) == 0) {
+>             return line + i;
+>         }
+>     }
+>     return NULL;
+> }
+>
+> static int64_t read_int_after_eq(const char *line, size_t len, const char *token) {
+>     const char *pos = find_token(line, len, token);
+>     if (pos == NULL) {
+>         return 0;
+>     }
+>     size_t offset = (size_t)(pos - line) + strlen(token);
+>     while (offset < len && isspace((unsigned char)line[offset])) {
+>         ++offset;
+>     }
+>     char *end = NULL;
+>     long long value = strtoll(line + offset, &end, 10);
+>     if (end == line + offset) {
+>         return 0;
+>     }
+>     return (int64_t)value;
+> }
+>
+> int64_t v3_read_scale(const char *line, size_t len) {
+>     if (line == NULL || len == 0) {
+>         return 0;
+>     }
+>     return read_int_after_eq(line, len, "size_bytes=");
+> }
+>
+> int64_t b07_read_scale(const char *line, size_t len) {
+>     return v3_read_scale(line, len);
+> }
+> EOF
+root@607b4f5bd756:/app#

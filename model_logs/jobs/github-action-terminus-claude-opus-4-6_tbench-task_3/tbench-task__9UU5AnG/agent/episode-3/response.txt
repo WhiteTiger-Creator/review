@@ -1,0 +1,26 @@
+{
+  "analysis": "I can see the main emit_pipeline.cpp but it was truncated. I need to see the full file and the various bridge/helper files that implement the core logic. Let me examine the remaining key source files.",
+  "plan": "Continue examining source files - the lane_bridge, scan_bridge, store_bridge, and the library implementations in f12, m14, n21, etc.",
+  "commands": [
+    {
+      "keystrokes": "cat /app/environment/include/lane_bridge.h\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /app/environment/include/scan_bridge.h\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /app/environment/include/store_bridge.h\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /app/environment/f12/lane_bridge.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /app/environment/f12/total_bridge.cpp\n",
+      "duration": 0.1
+    }
+  ]
+}

@@ -2,29 +2,31 @@ version = "2.0"
 
 [metadata]
 difficulty = "hard"
-category = "debugging"
-tags = [
-    "c",
-    "concurrency",
-    "debugging",
-    "state-reconciliation",
-    "journal",
-    "exactly-once",
-]
-languages = [
-    "c",
-]
-codebase_size = "small"
-number_of_milestones = 0
+category = "software-engineering"
 subcategories = []
-expert_time_estimate_min = 60
+number_of_milestones = 0
+codebase_size = "small"
+languages = [
+    "cpp",
+    "c",
+    "python",
+    "bash",
+]
+tags = [
+    "cpp",
+    "cmake",
+    "checkpoint",
+    "replay",
+    "manifest",
+]
+expert_time_estimate_min = 120
 junior_time_estimate_min = 240
+
+[verifier]
+timeout_sec = 1800
 
 [agent]
 timeout_sec = 1800
-
-[verifier]
-timeout_sec = 900
 
 [environment]
 allow_internet = false
@@ -32,3 +34,4 @@ build_timeout_sec = 600
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
+workdir = "/app"

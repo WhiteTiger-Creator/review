@@ -1,0 +1,75 @@
+New Terminal Output:
+root@35c99cb7d4e6:/app# cmake -S /app/environment -B /app/build -G Ninja
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /app/build
+root@35c99cb7d4e6:/app# ninja -C /app/build
+ninja: Entering directory `/app/build'
+ninja: no work to do.
+root@35c99cb7d4e6:/app# rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json
+root@35c99cb7d4e6:/app# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta
+root@35c99cb7d4e6:/app# ls -la /app/output && echo '--- forge_emit.json ---' && cat /app/output/forge_emit.json && echo '\n--- forge_checkpoint.json ---' && cat
+ /app/output/forge_checkpoint.json
+total 8
+drwxr-xr-x 2 root root  58 May 26 16:28 .
+drwxr-xr-x 5 root root  52 May 26 16:27 ..
+-rw-r--r-- 1 root root 146 May 26 16:28 forge_checkpoint.json
+-rw-r--r-- 1 root root 685 May 26 16:28 forge_emit.json
+--- forge_emit.json ---
+{"schema_version":1,"release_id":"forge_r07","order_weight_base":500,"pass_epoch":0,"units":[{"name":"u_kappa","mode":"cold","pass_index":0,"manifest_bytes":615
+0,"record_bytes":6150,"drift_bytes":0,"order_rank":0,"order_weight":7150,"row_digest":"e678cc59635983bb"},{"name":"u_alpha","mode":"cold","pass_index":0,"manife
+st_bytes":4100,"record_bytes":4100,"drift_bytes":0,"order_rank":1,"order_weight":4600,"row_digest":"a7aaab485c5e61ce"},{"name":"u_zeta","mode":"resume","pass_in
+dex":0,"manifest_bytes":2050,"record_bytes":2050,"drift_bytes":0,"order_rank":2,"order_weight":3550,"row_digest":"6ea975d3f65d6166"}],"total_drift_bytes":0,"ord
+er_score":15300,"digest":"1060e21c240ae1cd"}
+\n--- forge_checkpoint.json ---
+{"schema_version":1,"lane_token":"6218901b6e584bf4","pass_epoch":1,"units":[{"name":"u_zeta","next_pass":1,"carry_weight":3550,"carry_drift":0}]}
+root@35c99cb7d4e6:/app# rm -f /app/output/forge_emit.json
+root@35c99cb7d4e6:/app# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_alpha
+root@35c99cb7d4e6:/app# echo '--- after partial invocation ---' && cat /app/output/forge_checkpoint.json
+--- after partial invocation ---
+{"schema_version":1,"lane_token":"6218901b6e584bf4","pass_epoch":2,"units":[]}
+root@35c99cb7d4e6:/app# cd /app/environment && ls
+CMakeLists.txt  b07  c9  docs  f12  fixtures  include  m14  n21  runner
+root@35c99cb7d4e6:/app/environment# find /app/environment -maxdepth 4 -type f \( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' -o
+ -name 'CMakeLists.txt' \) | sed 's|^|FILE |'
+FILE /app/environment/CMakeLists.txt
+FILE /app/environment/b07/extra_b1.c
+FILE /app/environment/b07/extra_b2.c
+FILE /app/environment/b07/j2_shadow.c
+FILE /app/environment/b07/scan_bridge.c
+FILE /app/environment/b07/v3_read_scale.c
+FILE /app/environment/c9/extra_c1.c
+FILE /app/environment/c9/mode_bridge.cpp
+FILE /app/environment/c9/pass_gate.cpp
+FILE /app/environment/f12/extra_f1.cpp
+FILE /app/environment/f12/extra_f2.cpp
+FILE /app/environment/f12/k8_rank_slot.cpp
+FILE /app/environment/f12/lane_bridge.cpp
+FILE /app/environment/f12/m4_shadow.cpp
+FILE /app/environment/f12/total_bridge.cpp
+FILE /app/environment/include/b07_api.h
+FILE /app/environment/include/c9_api.h
+FILE /app/environment/include/constants.h
+FILE /app/environment/include/emit_pipeline.h
+FILE /app/environment/include/f12_api.h
+FILE /app/environment/include/lane_bridge.h
+FILE /app/environment/include/m14_api.h
+FILE /app/environment/include/n21_api.h
+FILE /app/environment/include/scan_bridge.h
+FILE /app/environment/include/store_bridge.h
+FILE /app/environment/include/types.h
+FILE /app/environment/m14/extra_m1.cpp
+FILE /app/environment/m14/lane_store.cpp
+FILE /app/environment/m14/read_bridge.cpp
+FILE /app/environment/m14/shadow_m2.c
+FILE /app/environment/m14/store_bridge.cpp
+FILE /app/environment/m14/token_bridge.cpp
+FILE /app/environment/n21/extra_n1.cpp
+FILE /app/environment/n21/extra_n2.cpp
+FILE /app/environment/n21/p1_shadow.cpp
+FILE /app/environment/n21/pack_bridge.cpp
+FILE /app/environment/n21/q5_pack_stamp.cpp
+FILE /app/environment/runner/CMakeLists.txt
+FILE /app/environment/runner/emit_pipeline.cpp
+FILE /app/environment/runner/main.cpp
+root@35c99cb7d4e6:/app/environment#

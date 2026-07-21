@@ -1,0 +1,26 @@
+{
+  "analysis": "I've found several bugs:\n1. **c9/pass_gate.cpp**: Overrides 'resume' to 'cold' for units starting with 'u_a' - spec says don't branch on unit-name prefixes\n2. **f12/k8_rank_slot.cpp**: Uses lexicographic rank instead of manifest array index\n3. **n21/q5_pack_stamp.cpp**: Missing drift_bytes in row serialization\n4. **m14/lane_store.cpp - m14_merge_entries**: Discards existing checkpoint entries instead of preserving them\n5. **m14/lane_store.cpp - m14_lane_token**: Descriptor lines not sorted alphabetically\n6. **m14/lane_store.cpp - m14_write_checkpoint**: Missing pass_epoch field\n\nNow I need to see the full emit_pipeline.cpp (it was truncated) and understand the analyze_unit flow.",
+  "plan": "Let me see the full emit_pipeline.cpp and remaining files, then I'll fix all the bugs.",
+  "commands": [
+    {
+      "keystrokes": "wc -l /app/environment/runner/emit_pipeline.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '120,200p' /app/environment/runner/emit_pipeline.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '200,300p' /app/environment/runner/emit_pipeline.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /app/environment/b07/scan_bridge.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /app/environment/b07/v3_read_scale.c\n",
+      "duration": 0.1
+    }
+  ]
+}

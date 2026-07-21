@@ -1,0 +1,233 @@
+New Terminal Output:
+
+root@33b7252c234c:/app# apply_patch<<'PATCH'
+> *** Begin Patch
+> *** Update File: environment/c9/pass_gate.cpp
+> @@
+>  extern "C" const char *c9_resolve_mode(const char *manifest_mode, const char *unit_name,
+>                                           int pass_epoch) {
+>      static thread_local char mode_buf[16];
+> -    (void)pass_epoch;
+> +    (void)unit_name;
+> +    (void)pass_epoch;
+>      if (manifest_mode == NULL) {
+>          mode_buf[0] = '\0';
+>          return mode_buf;
+>      }
+> -    if (strcmp(manifest_mode, "resume") == 0 && strncmp(unit_name, "u_a", 3) == 0) {
+> -        strncpy(mode_buf, "cold", sizeof(mode_buf) - 1);
+> -        mode_buf[sizeof(mode_buf) - 1] = '\0';
+> -        return mode_buf;
+> -    }
+>      strncpy(mode_buf, manifest_mode, sizeof(mode_buf) - 1);
+>      mode_buf[sizeof(mode_buf) - 1] = '\0';
+>      return mode_buf;
+>  }
+> *** End Patch
+> PATCH
+bash: apply_patch: command not found
+root@33b7252c234c:/app# apply_patch<<'PATCH'
+> *** Begin Patch
+> *** Update File: environment/n21/extra_n2.cpp
+> @@
+>  std::string n21_header_serial(int schema_version, const std::string &release_id, int base,
+>                                int pass_epoch, int64_t drift_total, int64_t weight_total) {
+>      std::ostringstream os;
+> -    os << schema_version << '|' << release_id << '|' << base << '|' << drift_total << '|'
+> -       << weight_total;
+> -    (void)pass_epoch;
+> +    os << schema_version << '|' << release_id << '|' << base << '|' << pass_epoch << '|'
+> +       << drift_total << '|' << weight_total;
+>      return os.str();
+>  }
+> *** End Patch
+> PATCH
+bash: apply_patch: command not found
+root@33b7252c234c:/app# apply_patch<<'PATCH'
+> *** Begin Patch
+> *** Update File: environment/n21/q5_pack_stamp.cpp
+> @@
+>  std::string q5_row_serial(const UnitRun &run) {
+>      std::ostringstream os;
+> -    os << run.name << '|' << run.manifest_bytes << '|' << run.record_bytes << '|'
+> -       << run.order_rank << '|' << run.order_weight;
+> +    os << run.name << '|' << run.manifest_bytes << '|' << run.record_bytes << '|' << run.drift_bytes
+> +       << '|' << run.order_rank << '|' << run.order_weight;
+>      return os.str();
+>  }
+> *** End Patch
+> PATCH
+bash: apply_patch: command not found
+root@33b7252c234c:/app# apply_patch<<'PATCH'
+d::string> &requested_resume) {
+-    (void)existing;
+-    (void)requested_resume;
+-    std::vector<forge::UnitCheckpoint> out = updated;
++    // Preserve existing entries when lane token matches, and only overwrite
++    // entries for units updated in this invocation.
++    std::map<std::string, forge::UnitCheckpoint> merged;
++    if (existing.valid) {
++        merged = existing.units;
++    }
++
++    (void)requested_resume; // updated already contains only resume units emitted this pass.
++    for (const auto &e : updated) {
++        merged[e.name] = e;
++    }
++
++    std::vector<forge::UnitCheckpoint> out;
++    out.reserve(merged.size());
++    for (const auto &kv : merged) {
++        out.push_back(kv.second);
++    }
+     std::sort(out.begin(), out.end(),
+               [](const forge::UnitCheckpoint &a, const forge::UnitCheckpoint &b) {
+                   return a.name < b.name;
+               });
+     return out;
+ }
+-
+-void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token,
+-       > *** Begin Patch
+> *** Update File: environment/m14/lane_store.cpp
+> @@
+>  extern "C" const char *m14_lane_token(const forge::UnitSpec *units, size_t count) {
+>      static std::string cached;
+> -    std::ostringstream joined;
+> -    for (size_t i = 0; i < count; ++i) {
+> -        if (i) {
+> -            joined << '\n';
+> -        }
+> -        joined << descriptor_line(units[i]);
+> -    }
+> +    std::vector<std::string> lines;
+> +    lines.reserve(count);
+> +    for (size_t i = 0; i < count; ++i) {
+> +        lines.push_back(descriptor_line(units[i]));
+> +    }
+> +    std::sort(lines.begin(), lines.end());
+> +    std::ostringstream joined;
+> +    for (size_t i = 0; i < lines.size(); ++i) {
+> +        if (i) {
+> +            joined << '\n';
+> +        }
+> +        joined << lines[i];
+> +    }
+>      cached = digest_hex(joined.str());
+>      return cached.c_str();
+>  }
+> @@
+>  std::vector<forge::UnitCheckpoint> m14_merge_entries(
+>      const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+>      const std::vector<std::string> &requested_resume) {
+> -    (void)existing;
+> -    (void)requested_resume;
+> -    std::vector<forge::UnitCheckpoint> out = updated;
+> +    // Preserve existing entries when lane token matches, and only overwrite
+> +    // entries for units updated in this invocation.
+> +    std::map<std::string, forge::UnitCheckpoint> merged;
+> +    if (existing.valid) {
+> +        merged = existing.units;
+> +    }
+> +
+> +    (void)requested_resume; // updated already contains only resume units emitted this pass.
+> +    for (const auto &e : updated) {
+> +        merged[e.name] = e;
+> +    }
+> +
+> +    s
+[... output limited to 10000 bytes; 70 interior bytes omitted ...]
+ane_score_total(units.data(), units.size());
++    int64_t > *** Begin Patch
+> *** Update File: environment/runner/emit_pipeline.cpp
+> @@
+>  UnitRun analyze_unit(const UnitSpec &spec, int order_rank, int order_weight_base, int pass_epoch,
+>                       const fs::path &manifest_dir, const char *const *names, size_t name_count,
+>                       const LaneCheckpoint *checkpoint, int64_t carry_weight) {
+> @@
+> -    int pass_index = spec.start_pass;
+> -    int64_t seeded_weight = 0;
+> -    if (run.mode == "resume" && checkpoint != nullptr && checkpoint->valid) {
+> -        auto it = checkpoint->units.find(spec.name);
+> -        if (it != checkpoint->units.end()) {
+> -            pass_index = it->second.next_pass;
+> -            seeded_weight = it->second.carry_weight;
+> -        }
+> -    }
+> -
+> -    if (run.mode == "resume" && seeded_weight != 0) {
+> -        run.order_weight = seeded_weight + static_cast<int64_t>(order_weight_base) + run.record_bytes;
+> -    } else {
+> -        run.order_weight =
+> -            forge_lane_weight(spec.name.c_str(), names, name_count, order_weight_base, run.record_bytes);
+> -    }
+> -    (void)carry_weight;
+> +    int pass_index = spec.start_pass;
+> +    bool resumed = false;
+> +    if (run.mode == "resume" && checkpoint != nullptr && checkpoint->valid) {
+> +        auto it = checkpoint->units.find(spec.name);
+> +        if (it != checkpoint->units.end()) {
+> +            pass_index = it->second.next_pass;
+> +            carry_weight = it->second.carry_weight;
+> +            resumed = true;
+> +        }
+> +    }
+> +
+> +    if (run.mode == "resume" && resumed) {
+> +        run.order_weight = carry_weight + static_cast<int64_t>(order_weight_base) + run.record_bytes;
+> +    } else {
+> +        run.order_weight = static_cast<int64_t>(order_weight_base) * (order_rank + 1) + run.record_bytes;
+> +    }
+> +    (void)names;
+> +    (void)name_count;
+>      run.pass_index = pass_index;
+> @@
+>      std::vector<forge::UnitRun> units;
+> @@
+> -    int64_t drift_total = forge_lane_drift_total(units.data(), units.size());
+> -    int64_t weight_total = forge_lane_score_total(units.data(), units.size());
+> +    int64_t drift_total = 0;
+> +    int64_t weight_total = 0;
+> +    for (const auto &u : units) {
+> +        drift_total += std::llabs(u.drift_bytes);
+> +        weight_total += u.order_weight;
+> +    }
+> @@
+> -    forge_lane_save_checkpoint(checkpoint_path, lane_token, merged);
+> -
+> -    std::ostringstream cp_patch;
+> -    cp_patch << "{\"schema_version\":" << forge::kSchemaVersion << ",\"lane_token\":\"" << lane_token
+> -             << "\",\"pass_epoch\":" << (pass_epoch + 1) << ",\"units\":[";
+> -    for (size_t i = 0; i < merged.size(); ++i) {
+> -        if (i) {
+> -            cp_patch << ',';
+> -        }
+> -        cp_patch << "{\"name\":\"" << merged[i].name << "\",\"next_pass\":" << merged[i].next_pass
+> -                 << ",\"carry_weight\":" << merged[i].carry_weight << ",\"carry_drift\":"
+> -                 << merged[i].carry_drift << '}';
+> -    }
+> -    cp_patch << "]}\n";
+> -    std::ofstream cp_file(checkpoint_path, std::ios::binary);
+> -    cp_file << cp_patch.str();
+> +    forge_lane_save_checkpoint(checkpoint_path, lane_token, pass_epoch + 1, merged);
+> *** End Patch
+> PATCH
+bash: apply_patch: command not found
+root@33b7252c234c:/app# ninja -C /app/build
+ninja: Entering directory `/app/build'
+ninja: no work to do.
+root@33b7252c234c:/app# rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json
+root@33b7252c234c:/app# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta
+root@33b7252c234c:/app# cat /app/output/forge_emit.json && echo '---' && cat /app/output/forge_checkpoint.json
+{"schema_version":1,"release_id":"forge_r07","order_weight_base":500,"pass_epoch":0,"units":[{"name":"u_kappa","mode":"cold","pass_index":0,"manifest_bytes":615
+0,"record_bytes":6150,"drift_bytes":0,"order_rank":0,"order_weight":7150,"row_digest":"e678cc59635983bb"},{"name":"u_alpha","mode":"cold","pass_index":0,"manife
+st_bytes":4100,"record_bytes":4100,"drift_bytes":0,"order_rank":1,"order_weight":4600,"row_digest":"a7aaab485c5e61ce"},{"name":"u_zeta","mode":"resume","pass_in
+dex":0,"manifest_bytes":2050,"record_bytes":2050,"drift_bytes":0,"order_rank":2,"order_weight":3550,"row_digest":"6ea975d3f65d6166"}],"total_drift_bytes":0,"ord
+er_score":15300,"digest":"1060e21c240ae1cd"}
+---
+{"schema_version":1,"lane_token":"6218901b6e584bf4","pass_epoch":1,"units":[{"name":"u_zeta","next_pass":1,"carry_weight":3550,"carry_drift":0}]}
+root@33b7252c234c:/app# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_zeta
+root@33b7252c234c:/app# echo '--- after partial' && cat /app/output/forge_checkpoint.json
+--- after partial
+{"schema_version":1,"lane_token":"6218901b6e584bf4","pass_epoch":2,"units":[{"name":"u_zeta","next_pass":2,"carry_weight":6100,"carry_drift":0}]}
+root@33b7252c234c:/app#

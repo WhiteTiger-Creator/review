@@ -1,6 +1,0 @@
-{
-  "analysis": "The task is complete. All three source files were fixed:\n\n1. `/app/src/io/journal.c` - Fixed to write/read 12-byte stamps (u32 gen + u64 cursor) instead of the broken 8-byte format (u32 + u32 with cursor truncation).\n\n2. `/app/src/logic/link.c` - Fixed `tb_link_attach` to NOT reset cursor (only bumps generation), preventing ID reuse. Fixed `tb_link_detach` to NOT clear notify_q, preventing lost notifications.\n\n3. `/app/src/logic/settle.c` - Fixed to always push to notify_q regardless of attached state, ensuring completions during detach still get notifications.\n\nAll invariants verified:\n- IDs contiguous 1..N with submits in log order\n- Each ID: exactly one submit, one complete, one notify\n- Event ordering: submit < complete < notify per ID\n- Deterministic output (same flags = same result)\n- Different scenario/profile/order flags = different output\n- Order flag changes burst sequence while preserving ID coverage\n- Invalid inputs rejected (exit 2, no output file)\n- Journal is exactly 24 bytes for stress2 (2 detach cycles × 12 bytes)",
-  "plan": "Task is complete. The simulator has been fixed and all invariants are satisfied.",
-  "commands": [],
-  "task_complete": true
-}

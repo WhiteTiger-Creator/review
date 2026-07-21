@@ -1,6 +1,0 @@
-{
-  "analysis": "I've verified all the correctness invariants across all 12 scenario/profile/order combinations:\n- All IDs contiguous 1..N\n- Every submit has exactly one complete and one notify\n- No duplicate (kind, id) pairs\n- Proper ordering (submit < complete < notify for each id)\n- Events interleaved across ticks\n- Burst stress runs produce different complete sequences with different reconciliation orders\n- Same flags reproduce identical output\n- Invalid flags rejected with exit code 2 and no output file\n- Journal is 24 bytes for stress2 (two 12-byte stamps)\n\nThe three bugs fixed:\n1. **journal.c**: Was writing truncated 8-byte stamps instead of proper 12-byte stamps (u32 gen + u64 cursor)\n2. **link.c attach**: Was resetting cursor to detach-time value causing ID reuse\n3. **settle.c**: Only queued notifications when attached, causing missing notifications for items completed during detach\n4. **link.c detach**: Unnecessarily cleared notify_q, losing pending notifications\n\nThe steady profile warnings are expected - the task specifically requires different sequences \"on burst stress runs.\"",
-  "plan": "The task is complete - all fixes verified.",
-  "commands": [],
-  "task_complete": true
-}

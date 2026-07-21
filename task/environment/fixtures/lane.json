@@ -1,0 +1,27 @@
+{
+  "release_id": "forge_r07",
+  "order_weight_base": 500,
+  "units": [
+    {
+      "name": "u_kappa",
+      "mode": "cold",
+      "record": "records/r0.unit",
+      "manifest_bytes": 6150,
+      "start_pass": 0
+    },
+    {
+      "name": "u_alpha",
+      "mode": "resume",
+      "record": "records/r1.unit",
+      "manifest_bytes": 4100,
+      "start_pass": 0
+    },
+    {
+      "name": "u_zeta",
+      "mode": "resume",
+      "record": "records/r2.unit",
+      "manifest_bytes": 2050,
+      "start_pass": 0
+    }
+  ]
+}

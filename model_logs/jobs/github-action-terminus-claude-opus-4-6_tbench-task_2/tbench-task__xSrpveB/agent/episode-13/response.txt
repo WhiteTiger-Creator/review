@@ -1,0 +1,10 @@
+{
+  "analysis": "CMake configured successfully. Now let's build with ninja.",
+  "plan": "Run ninja to build the project.",
+  "commands": [
+    {
+      "keystrokes": "ninja -C /app/build 2>&1\n",
+      "duration": 15.0
+    }
+  ]
+}

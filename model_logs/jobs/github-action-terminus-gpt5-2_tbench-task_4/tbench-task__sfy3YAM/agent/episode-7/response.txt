@@ -1,0 +1,67 @@
+{
+  "analysis": "We located the call site: emit_pipeline.cpp calls forge_lane_save_checkpoint(checkpoint_path, lane_token, merged). store_bridge.h/.cpp currently define forge_lane_save_checkpoint without pass_epoch. We rewrote m14/lane_store.cpp with new m14_write_checkpoint signature including pass_epoch and added pass_epoch parsing in m14_read_checkpoint plus merge preservation. Now compilation will fail until we update include/m14_api.h and m14/store_bridge.cpp (and store_bridge.h) to match the new signature, and update the emit_pipeline.cpp call to pass pass_epoch+1 (checkpoint pass_epoch should be incremented after invocation). Also need to ensure the rewrite didn't introduce namespace mistakes; the shown output includes a suspicious line \"=> } // namespace forge\" which might have been just display artifact, but we must verify lane_store.cpp compiles.",
+  "plan": "1) Open the rewritten m14/lane_store.cpp to confirm it is syntactically correct (no stray characters). 2) Update /app/environment/include/m14_api.h declaration for m14_write_checkpoint to include pass_epoch. 3) Update store_bridge.h and store_bridge.cpp to accept pass_epoch and forward it. 4) Update runner/emit_pipeline.cpp call to pass (pass_epoch + 1) when saving checkpoint. 5) Rebuild. 6) Rerun reproduction: full run then alpha-only; checkpoint should retain u_zeta and include pass_epoch. Also verify u_alpha mode is no longer forced to cold when manifest says resume.",
+  "commands": [
+    {
+      "keystrokes": "python3 -m py_compile /dev/null 2>/dev/null; sed -n '1,260p' /app/environment/m14/lane_store.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "grep -n \"=>\" -n /app/environment/m14/lane_store.cpp || true\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/void m14_write_checkpoint\\(const std::filesystem::path &path, const char \\*lane_token,\\s*\\n\\s*const std::vector<forge::UnitCheckpoint> &entries\\);/void m14_write_checkpoint(const std::filesystem::path \\&path, const char *lane_token, int pass_epoch,\\n                          const std::vector<forge::UnitCheckpoint> \\&entries);/s' /app/environment/include/m14_api.h\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/void forge_lane_save_checkpoint\\(const std::filesystem::path &path, const char \\*lane_token,\\s*\\n\\s*const std::vector<forge::UnitCheckpoint> &entries\\);/void forge_lane_save_checkpoint(const std::filesystem::path \\&path, const char *lane_token, int pass_epoch,\\n                                const std::vector<forge::UnitCheckpoint> \\&entries);/s' /app/environment/include/store_bridge.h\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "cat > /app/environment/m14/store_bridge.cpp <<'EOF'\n#include \"m14_api.h\"\n#include \"store_bridge.h\"\n\nstd::vector<forge::UnitCheckpoint> forge_lane_merge_checkpoint(\n    const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,\n    const std::vector<std::string> &requested_resume) {\n    return m14_merge_entries(existing, updated, requested_resume);\n}\n\nvoid forge_lane_save_checkpoint(const std::filesystem::path &path, const char *lane_token,\n                                int pass_epoch,\n                                const std::vector<forge::UnitCheckpoint> &entries) {\n    m14_write_checkpoint(path, lane_token, pass_epoch, entries);\n}\nEOF\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/forge_lane_save_checkpoint\\(checkpoint_path, lane_token, merged\\);/forge_lane_save_checkpoint(checkpoint_path, lane_token, pass_epoch + 1, merged);/g' /app/environment/runner/emit_pipeline.cpp\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "cmake -S /app/environment -B /app/build -G Ninja\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "ninja -C /app/build\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "cat /app/output/forge_checkpoint.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "rm -f /app/output/forge_emit.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_alpha\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "echo '--- checkpoint after partial ---' && cat /app/output/forge_checkpoint.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "echo '--- emitted alpha ---' && cat /app/output/forge_emit.json\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

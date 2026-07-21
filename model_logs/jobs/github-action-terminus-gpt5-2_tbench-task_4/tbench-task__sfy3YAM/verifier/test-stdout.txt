@@ -1,0 +1,144 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.2, pytest-8.4.1, pluggy-1.6.0
+cachedir: /tmp/pytest_cache
+rootdir: /tests
+plugins: json-ctrf-0.3.5
+collected 11 items
+
+../tests/test_outputs.py FF....FF...                                     [100%]
+
+=================================== FAILURES ===================================
+__________________________ test_q0_cold_lane_baseline __________________________
+
+    def test_q0_cold_lane_baseline():
+        """Cold unit u_kappa reports parsed record bytes, zero drift, and cold weight formula."""
+        doc, _ = _run("u_kappa")
+>       _assert_schema(doc, ["u_kappa"])
+
+/tests/test_outputs.py:241: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+doc = {'digest': '80707aa39fb35463', 'order_score': 7150, 'order_weight_base': 500, 'pass_epoch': 0, ...}
+requested = ['u_kappa']
+
+    def _assert_schema(doc: dict, requested: list[str]) -> None:
+        meta = _manifest_meta()
+        assert doc["schema_version"] == 1
+        assert doc["release_id"] == meta["release_id"]
+        assert doc["order_weight_base"] == meta["order_weight_base"]
+        assert isinstance(doc["pass_epoch"], int)
+        assert len(doc["digest"]) == 16
+>       assert doc["digest"] == _digest(_top_serial(doc))
+E       AssertionError: assert '80707aa39fb35463' == '711e20fc6fcd217b'
+E         
+E         - 711e20fc6fcd217b
+E         + 80707aa39fb35463
+
+/tests/test_outputs.py:209: AssertionError
+---------------------------- Captured stdout setup -----------------------------
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /app/build
+ninja: Entering directory `/app/build'
+ninja: no work to do.
+____________________ test_q1_corrupt_checkpoint_fresh_start ____________________
+
+    def test_q1_corrupt_checkpoint_fresh_start():
+        """Corrupt lane checkpoint is ignored and resume units restart at configured start_pass."""
+        seed_doc, seed_state = _run_with_state(UNITS_RESUME_CSV)
+>       _assert_schema(seed_doc, UNITS_RESUME)
+
+/tests/test_outputs.py:254: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+doc = {'digest': 'f7c376faf9febc62', 'order_score': 8150, 'order_weight_base': 500, 'pass_epoch': 1, ...}
+requested = ['u_alpha', 'u_zeta']
+
+    def _assert_schema(doc: dict, requested: list[str]) -> None:
+        meta = _manifest_meta()
+        assert doc["schema_version"] == 1
+        assert doc["release_id"] == meta["release_id"]
+        assert doc["order_weight_base"] == meta["order_weight_base"]
+        assert isinstance(doc["pass_epoch"], int)
+        assert len(doc["digest"]) == 16
+>       assert doc["digest"] == _digest(_top_serial(doc))
+E       AssertionError: assert 'f7c376faf9febc62' == '622f27ca905f09d5'
+E         
+E         - 622f27ca905f09d5
+E         + f7c376faf9febc62
+
+/tests/test_outputs.py:209: AssertionError
+__________________________ test_q6_mixed_lane_totals ___________________________
+
+    def test_q6_mixed_lane_totals():
+        """Full lane request keeps absolute drift totals and manifest-order rank weights."""
+        doc, _ = _run(UNITS_ALL_CSV)
+>       _assert_schema(doc, UNITS_ALL)
+
+/tests/test_outputs.py:355: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+doc = {'digest': '1060e21c240ae1cd', 'order_score': 15300, 'order_weight_base': 500, 'pass_epoch': 0, ...}
+requested = ['u_kappa', 'u_alpha', 'u_zeta']
+
+    def _assert_schema(doc: dict, requested: list[str]) -> None:
+        meta = _manifest_meta()
+        assert doc["schema_version"] == 1
+        assert doc["release_id"] == meta["release_id"]
+        assert doc["order_weight_base"] == meta["order_weight_base"]
+        assert isinstance(doc["pass_epoch"], int)
+        assert len(doc["digest"]) == 16
+>       assert doc["digest"] == _digest(_top_serial(doc))
+E       AssertionError: assert '1060e21c240ae1cd' == 'cf371679f692fc9d'
+E         
+E         - cf371679f692fc9d
+E         + 1060e21c240ae1cd
+
+/tests/test_outputs.py:209: AssertionError
+___________________ test_q7_cold_ignores_advanced_checkpoint ___________________
+
+    def test_q7_cold_ignores_advanced_checkpoint():
+        """Cold u_kappa always recomputes from start_pass even when resume checkpoints are advanced."""
+        if OUT.exists():
+            OUT.unlink()
+        if STATE.exists():
+            STATE.unlink()
+        for _ in range(2):
+            _run_with_state(UNITS_RESUME_CSV)
+        doc, _ = _run_with_state("u_kappa")
+>       _assert_schema(doc, ["u_kappa"])
+
+/tests/test_outputs.py:374: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+doc = {'digest': '80707aa39fb35463', 'order_score': 7150, 'order_weight_base': 500, 'pass_epoch': 2, ...}
+requested = ['u_kappa']
+
+    def _assert_schema(doc: dict, requested: list[str]) -> None:
+        meta = _manifest_meta()
+        assert doc["schema_version"] == 1
+        assert doc["release_id"] == meta["release_id"]
+        assert doc["order_weight_base"] == meta["order_weight_base"]
+        assert isinstance(doc["pass_epoch"], int)
+        assert len(doc["digest"]) == 16
+>       assert doc["digest"] == _digest(_top_serial(doc))
+E       AssertionError: assert '80707aa39fb35463' == '4bba3edcddc46b89'
+E         
+E         - 4bba3edcddc46b89
+E         + 80707aa39fb35463
+
+/tests/test_outputs.py:209: AssertionError
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED ../tests/test_outputs.py::test_q2_stale_lane_token_rejected
+PASSED ../tests/test_outputs.py::test_q3_resume_carry_weight_chain
+PASSED ../tests/test_outputs.py::test_q4_subset_preserves_other_checkpoints
+PASSED ../tests/test_outputs.py::test_q5_lane_replay_determinism
+PASSED ../tests/test_outputs.py::test_q8_resume_digest_differs_with_flat_drift
+PASSED ../tests/test_outputs.py::test_q9_triple_resume_chain
+PASSED ../tests/test_outputs.py::test_q10_lane_token_matches_descriptor
+FAILED ../tests/test_outputs.py::test_q0_cold_lane_baseline - AssertionError:...
+FAILED ../tests/test_outputs.py::test_q1_corrupt_checkpoint_fresh_start - Ass...
+FAILED ../tests/test_outputs.py::test_q6_mixed_lane_totals - AssertionError: ...
+FAILED ../tests/test_outputs.py::test_q7_cold_ignores_advanced_checkpoint - A...
+========================= 4 failed, 7 passed in 0.17s ==========================

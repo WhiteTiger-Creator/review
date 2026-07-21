@@ -1,0 +1,12 @@
+New Terminal Output:
+
+root@cdd56a0b6335:/app# sed -i 's/cp_out << "}\\n"/cp_out << "]}\\n"/' /app/environment/runner/emit_pipeline.cpp
+root@cdd56a0b6335:/app# grep -n ']}.n' /app/environment/runner/emit_pipeline.cpp
+374:    cp_out << "]}\n";
+root@cdd56a0b6335:/app# sed -n '374p' /app/environment/runner/emit_pipeline.cpp
+    cp_out << "]}\n";
+root@cdd56a0b6335:/app# cmake -S /app/environment -B /app/build -G Ninja 2>&1
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /app/build
+root@cdd56a0b6335:/app#

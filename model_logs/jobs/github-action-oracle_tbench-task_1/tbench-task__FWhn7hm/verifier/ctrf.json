@@ -1,0 +1,119 @@
+{
+    "results": {
+        "tool": {
+            "name": "pytest",
+            "version": "8.4.1"
+        },
+        "summary": {
+            "tests": 11,
+            "passed": 11,
+            "failed": 0,
+            "skipped": 0,
+            "pending": 0,
+            "other": 0,
+            "start": 1779812704.40481,
+            "stop": 1779812704.5280614
+        },
+        "tests": [
+            {
+                "name": "test_outputs.py::test_q0_cold_lane_baseline",
+                "status": "passed",
+                "duration": 0.03247666499993329,
+                "start": 1779812704.4342656,
+                "stop": 1779812704.4670267,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_q1_corrupt_checkpoint_fresh_start",
+                "status": "passed",
+                "duration": 0.006372853000016221,
+                "start": 1779812704.4672372,
+                "stop": 1779812704.4737933,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_q2_stale_lane_token_rejected",
+                "status": "passed",
+                "duration": 0.006001958000013019,
+                "start": 1779812704.4739902,
+                "stop": 1779812704.4801702,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_q3_resume_carry_weight_chain",
+                "status": "passed",
+                "duration": 0.005592508000006546,
+                "start": 1779812704.480353,
+                "stop": 1779812704.4861052,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_q4_subset_preserves_other_checkpoints",
+                "status": "passed",
+                "duration": 0.005388121999999385,
+                "start": 1779812704.486297,
+                "stop": 1779812704.4918377,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_q5_lane_replay_determinism",
+                "status": "passed",
+                "duration": 0.005916292999984307,
+                "start": 1779812704.492016,
+                "stop": 1779812704.498084,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_q6_mixed_lane_totals",
+                "status": "passed",
+                "duration": 0.003090369999995346,
+                "start": 1779812704.498265,
+                "stop": 1779812704.501508,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_q7_cold_ignores_advanced_checkpoint",
+                "status": "passed",
+                "duration": 0.008044557999937751,
+                "start": 1779812704.501697,
+                "stop": 1779812704.5099156,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_q8_resume_digest_differs_with_flat_drift",
+                "status": "passed",
+                "duration": 0.00516503799997281,
+                "start": 1779812704.5100951,
+                "stop": 1779812704.5154123,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_q9_triple_resume_chain",
+                "status": "passed",
+                "duration": 0.007745414000055462,
+                "start": 1779812704.5155923,
+                "stop": 1779812704.523486,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_q10_lane_token_matches_descriptor",
+                "status": "passed",
+                "duration": 0.00410025699994776,
+                "start": 1779812704.5236566,
+                "stop": 1779812704.527899,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            }
+        ]
+    }
+}

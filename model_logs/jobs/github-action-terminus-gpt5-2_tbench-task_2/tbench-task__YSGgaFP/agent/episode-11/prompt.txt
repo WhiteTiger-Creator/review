@@ -1,0 +1,16 @@
+Current terminal state:
+New Terminal Output:
+
+root@33b7252c234c:/app# rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json
+root@33b7252c234c:/app# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta
+root@33b7252c234c:/app# python3 - <<'PY'
+> import json
+> print('emit:', json.load(open('/app/output/forge_emit.json'))['pass_epoch'])
+> print('checkpoint:', json.load(open('/app/output/forge_checkpoint.json'))['pass_epoch'])
+> PY
+emit: 0
+checkpoint: 1
+root@33b7252c234c:/app#
+
+
+Are you sure you want to mark the task as complete? This will trigger your solution to be graded and you won't be able to make any further corrections. If so, include "task_complete": true in your JSON response again.

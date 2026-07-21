@@ -1,0 +1,26 @@
+{
+  "analysis": "Let me do one final verification by running a chained invocation sequence to make sure resume behavior is fully correct across multiple passes and partial requests.",
+  "plan": "Run a second invocation and then a partial one to confirm the full chain works correctly before marking complete.",
+  "commands": [
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "cat /app/output/forge_emit.json | python3 -m json.tool\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_zeta\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "cat /app/output/forge_emit.json | python3 -m json.tool\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "cat /app/output/forge_checkpoint.json | python3 -m json.tool\n",
+      "duration": 0.5
+    }
+  ]
+}

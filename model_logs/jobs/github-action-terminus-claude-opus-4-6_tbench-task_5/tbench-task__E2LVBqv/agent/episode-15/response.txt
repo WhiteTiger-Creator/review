@@ -1,0 +1,18 @@
+{
+  "analysis": "First invocation looks correct. Now let me test chained invocations (resume behavior) and partial unit requests to verify the checkpoint continuity.",
+  "plan": "Run a second invocation with all units to verify resume behavior, then test partial invocations.",
+  "commands": [
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "cat /app/output/forge_emit.json | python3 -m json.tool\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "cat /app/output/forge_checkpoint.json | python3 -m json.tool\n",
+      "duration": 0.5
+    }
+  ]
+}

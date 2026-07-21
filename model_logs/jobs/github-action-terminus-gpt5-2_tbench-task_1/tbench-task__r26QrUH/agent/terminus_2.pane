@@ -1,1580 +1,0 @@
-[?2004hroot@7ae5e2ee926b:/app# asciinema rec --stdin /logs/agent/recording.cast
-[?2004l[0;32masciinema: recording asciicast to /logs/agent/recording.cast[0m
-[0;32masciinema: press <ctrl-d> or type "exit" when you're done[0m
-[?2004hroot@7ae5e2ee926b:/app# clear
-[?2004l[H[J[3J[?2004hroot@7ae5e2ee926b:/app# ls -la
-[?2004ltotal 4
-drwxr-xr-x  6 root root  73 May 26 12:45 .
-drwxr-xr-x 19 root root 265 May 26 12:46 ..
--rw-r--r--  1 root root 762 May 26 12:44 Makefile
-drwxr-xr-x  6 root root 101 May 26 12:44 include
-drwxr-xr-x  2 root root   6 May 26 12:45 output
-drwxr-xr-x  2 root root  24 May 26 12:44 run
-drwxr-xr-x  6 root root 115 May 26 12:44 src
-[?2004hroot@7ae5e2ee926b:/app# find /app -maxdepth 3 -type f \( -name '*.c' -o -name '*.h' -o -name '*.cpp' -o -name '*.hpp' -o -name '*.cc' -o -name '*.rs' -o -name '*.py' -o -name 'Makefile' \) | sed 's#^#/app#' | head
-[?2004l/app/app/Makefile
-/app/app/include/cli.h
-/app/app/include/core/ev.h
-/app/app/include/core/idgen.h
-/app/app/include/core/map_u64.h
-/app/app/include/core/queue.h
-/app/app/include/core/vec_ev.h
-/app/app/include/core/vec_u64.h
-/app/app/include/io/fs.h
-/app/app/include/io/journal.h
-[?2004hroot@7ae5e2ee926b:/app# make -C /app -j4
-[?2004lmake: Entering directory '/app'
-mkdir -p /usr/local/bin
-cc -O2 -g -std=c11 -Wall -Wextra -Wshadow -Wconversion -Iinclude -o /usr/local/bin/arena src/main.c src/cli.c src/tb_err.c src/report.c src/runtime/runtime.c src/runtime/profile.c src/runtime/script.c src/core/idgen.c src/core/queue.c src/core/map_u64.c src/core/vec_u64.c src/core/vec_ev.c src/io/fs.c src/io/journal.c src/logic/ingest.c src/logic/settle.c src/logic/nudge.c src/logic/merge.c src/logic/link.c 
-make: Leaving directory '/app'
-[?2004hroot@7ae5e2ee926b:/app# pytest -q /tests/test_outputs.py
-[?2004l
-[33m[33mno tests ran[0m[33m in 0.00s[0m[0m
-[31mERROR: file or directory not found: /tests/test_outputs.py
-[0m
-[?2004hroot@7ae5e2ee926b:/app# /usr/local/bin/arena --help | head -n 80
-[?2004lusage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]
-cli: bad_arg
-[?2004hroot@7ae5e2ee926b:/app# ls -la /app/src /app/include
-[?2004l/app/include:
-total 12
-drwxr-xr-x 6 root root 101 May 26 12:44 .
-drwxr-xr-x 7 root root  94 May 26 12:46 ..
--rw-r--r-- 1 root root 336 May 26 12:44 cli.h
-drwxr-xr-x 2 root root  98 May 26 12:44 core
-drwxr-xr-x 2 root root  35 May 26 12:44 io
-drwxr-xr-x 2 root root  82 May 26 12:44 logic
--rw-r--r-- 1 root root 273 May 26 12:44 report.h
-drwxr-xr-x 2 root root  56 May 26 12:44 runtime
--rw-r--r-- 1 root root 219 May 26 12:44 tb_err.h
-
-/app/src:
-total 16
-drwxr-xr-x 6 root root  115 May 26 12:44 .
-drwxr-xr-x 7 root root   94 May 26 12:46 ..
--rw-r--r-- 1 root root 1618 May 26 12:44 cli.c
-drwxr-xr-x 2 root root   86 May 26 12:44 core
-drwxr-xr-x 2 root root   35 May 26 12:44 io
-drwxr-xr-x 2 root root   82 May 26 12:44 logic
--rw-r--r-- 1 root root  899 May 26 12:44 main.c
--rw-r--r-- 1 root root  891 May 26 12:44 report.c
-drwxr-xr-x 2 root root   56 May 26 12:44 runtime
--rw-r--r-- 1 root root  312 May 26 12:44 tb_err.c
-[?2004hroot@7ae5e2ee926b:/app# find /app/src /app/include -maxdepth 2 -type f | sort
-[?2004l/app/include/cli.h
-/app/include/core/ev.h
-/app/include/core/idgen.h
-/app/include/core/map_u64.h
-/app/include/core/queue.h
-/app/include/core/vec_ev.h
-/app/include/core/vec_u64.h
-/app/include/io/fs.h
-/app/include/io/journal.h
-/app/include/logic/ingest.h
-/app/include/logic/link.h
-/app/include/logic/merge.h
-/app/include/logic/nudge.h
-/app/include/logic/settle.h
-/app/include/report.h
-/app/include/runtime/profile.h
-/app/include/runtime/runtime.h
-/app/include/runtime/script.h
-/app/include/tb_err.h
-/app/src/cli.c
-/app/src/core/idgen.c
-/app/src/core/map_u64.c
-/app/src/core/queue.c
-/app/src/core/vec_ev.c
-/app/src/core/vec_u64.c
-/app/src/io/fs.c
-/app/src/io/journal.c
-/app/src/logic/ingest.c
-/app/src/logic/link.c
-/app/src/logic/merge.c
-/app/src/logic/nudge.c
-/app/src/logic/settle.c
-/app/src/main.c
-/app/src/report.c
-/app/src/runtime/profile.c
-/app/src/runtime/runtime.c
-/app/src/runtime/script.c
-/app/src/tb_err.c
-[?2004hroot@7ae5e2ee926b:/app# rm -f /app/output/report.json
-[?2004l[?2004hroot@7ae5e2ee926b:/app# /usr/local/bin/arena --scenario basic --profile steady --order a_then_b --out /app/output/report.json --seed 1; echo EXIT:$?; ls -la /app/output
-[?2004lEXIT:0
-total 4
-drwxr-xr-x 2 root root   25 May 26 12:47 .
-drwxr-xr-x 7 root root   94 May 26 12:46 ..
--rw-r--r-- 1 root root 1496 May 26 12:47 report.json
-[?2004hroot@7ae5e2ee926b:/app# python3 - <<'PY'
-[?2004l[?2004h> import json
-[?2004l[?2004h> p='/app/output/report.json'
-[?2004l[?2004h> with open(p) as f: r=json.load(f)
-[?2004l[?2004h> print('scenario',r.get('scenario'),'profile',r.get('profile'))
-[?2004l[?2004h> e=r['events']
-[?2004l[?2004h> print('events',len(e))
-[?2004l[?2004h> from collections import Counter
-[?2004l[?2004h> c=Counter(x['kind'] for x in e)
-[?2004l[?2004h> print('kinds',c)
-[?2004l[?2004h> # basic invariants
-[?2004l[?2004h> seen=set(); du=[]
-[?2004l[?2004h> for x in e:
-[?2004l[?2004h>  k,i=x['kind'],x['id']
-[?2004l[?2004h>  if (k,i) in seen: du.append((k,i))
-[?2004l[?2004h>  seen.add((k,i))
-[?2004l[?2004h> print('dupes',len(du), du[:10])
-[?2004l[?2004h> sub=[x['id'] for x in e if x['kind']=='submit']
-[?2004l[?2004h> print('submits',len(sub),'min',min(sub),'max',max(sub),'contig',sub==list(range(1,max(sub)+1)))
-[?2004l[?2004h> PY
-[?2004lscenario basic profile steady
-events 42
-kinds Counter({'submit': 14, 'complete': 14, 'notify': 14})
-dupes 0 []
-submits 14 min 1 max 14 contig True
-[?2004hroot@7ae5e2ee926b:/app# python3 - <<'PY'
-[?2004l[?2004h> import json
-[?2004l[?2004h> from collections import defaultdict
-[?2004l[?2004h> p='/app/output/report.json'
-[?2004l[?2004h> r=json.load(open(p))
-[?2004l[?2004h> e=r['events']
-[?2004l[?2004h> pos=defaultdict(dict)
-[?2004l[?2004h> viol=[]
-[?2004l[?2004h> for idx,x in enumerate(e):
-[?2004l[?2004h>  pos[x['id']][x['kind']]=idx
-[?2004l[?2004h> for i,d in pos.items():
-[?2004l[?2004h>  if set(d)!= {'submit','complete','notify'}:
-[?2004l[?2004h>   viol.append(('missing_kind',i,sorted(d)))
-[?2004l[?2004h>   continue
-[?2004l[?2004h>  if not (d['submit']<d['complete']<d['notify']):
-[?2004l[?2004h>   viol.append(('order',i,d))
-[?2004l[?2004h> print('ids',len(pos),'violations',len(viol))
-[?2004l[?2004h> print('sample',viol[:10])
-[?2004l[?2004h> PY
-[?2004lids 14 violations 0
-sample []
-[?2004hroot@7ae5e2ee926b:/app# for sc in basic stress stress2; do for pr in burst steady; do for ord in a_then_b b_then_a; do rm -f /app/output/report.json; /usr/local/bin/arena --scenario $sc --profile $pr --order $ord --out /app/output/report.json --seed 1 >/dev/null; echo $sc $pr $ord exit:$? events:$(python3 -c "import json;print(len(json.load(open('/app/output/report.json'))['events']))" 2>/dev/null || echo NA); done; done; done
-[?2004lbasic burst a_then_b exit:0 events:210
-basic burst b_then_a exit:0 events:210
-basic steady a_then_b exit:0 events:42
-basic steady b_then_a exit:0 events:42
-stress burst a_then_b exit:0 events:311
-stress burst b_then_a exit:0 events:311
-stress steady a_then_b exit:0 events:74
-stress steady b_then_a exit:0 events:74
-stress2 burst a_then_b exit:0 events:377
-stress2 burst b_then_a exit:0 events:377
-stress2 steady a_then_b exit:0 events:96
-stress2 steady b_then_a exit:0 events:96
-[?2004hroot@7ae5e2ee926b:/app# rm -f /app/output/report.json
-[?2004l[?2004hroot@7ae5e2ee926b:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json --seed 2
-[?2004l[?2004hroot@7ae5e2ee926b:/app# python3 - <<'PY'
-[?2004l[?2004h> import json
-[?2004l[?2004h> from collections import Counter,defaultdict
-[?2004l[?2004h> r=json.load(open('/app/output/report.json'))
-[?2004l[?2004h> e=r['events']
-[?2004l[?2004h> print('events',len(e),Counter(x['kind'] for x in e))
-[?2004l[?2004h> # duplicates by (kind,id)
-[?2004l[?2004h> seen=set(); dup=[]
-[?2004l[?2004h> for x in e:
-[?2004l[?2004h>  t=(x['kind'],x['id'])
-[?2004l[?2004h>  if t in seen: dup.append(t)
-[?2004l[?2004h>  seen.add(t)
-[?2004l[?2004h> print('dup_count',len(dup),'sample',dup[:10])
-[?2004l[?2004h> # ids coverage
-[?2004l[?2004h> subs=[x['id'] for x in e if x['kind']=='submit']
-[?2004l[?2004h> mx=max(subs) if subs else 0
-[?2004l[?2004h> print('submit_ids_contig',subs==list(range(1,mx+1)),'N',mx)
-[?2004l[?2004h> # missing complete/notify per id
-[?2004l[?2004h> by=defaultdict(set)
-[?2004l[?2004h> for x in e: by[x['id']].add(x['kind'])
-[?2004l[?2004h> miss=[(i,{'submit','complete','notify'}-k) for i,k in by.items() if k!={'submit','complete','notify'}]
-[?2004l[?2004h> print('missing_rows',len(miss),'sample',miss[:10])
-[?2004l[?2004h> # ordering violations
-[?2004l[?2004h> pos=defaultdict(dict)
-[?2004l[?2004h> for idx,x in enumerate(e): pos[x['id']][x['kind']]=idx
-[?2004l[?2004h> bad=[i for i,d in pos.items() if set(d)=={'submit','complete','notify'} and not (d['submit']<d['complete']<d['notify'])]
-[?2004l[?2004h> print('order_bad',len(bad),'sample',bad[:10])
-[?2004l[?2004h> PY
-[?2004levents 377 Counter({'submit': 140, 'notify': 119, 'complete': 118})
-dup_count 24 sample [('submit', 57), ('submit', 58), ('submit', 59), ('submit', 60), ('submit', 61), ('submit', 62), ('submit', 63), ('submit', 64), ('submit', 65), ('submit', 66)]
-submit_ids_contig False N 118
-missing_rows 1 sample [(55, {'notify'})]
-order_bad 22 sample [57, 58, 59, 60, 61, 62, 63, 64, 65, 66]
-[?2004hroot@7ae5e2ee926b:/app# sed -n '1,200p' /app/src/logic/link.c
-[?2004l#include "logic/link.h"
-
-#include "io/journal.h"
-
-#include <string.h>
-
-tb_status tb_link_detach(tb_rt *rt, uint32_t tick) {
-  (void)tick;
-  if (!rt)
-    return TB_ERR_BAD_ARG;
-  if (!rt->attached)
-    return TB_OK;
-
-  rt->attached = false;
-
-  tb_stamp s = {.gen = rt->gen, .cursor = rt->cursor};
-  tb_status st = journal_append_stamp(rt->journal_path, s);
-  if (st != TB_OK)
-    return st;
-
-  // A "device-side" queue continues to exist while detached; the notifier doesn't.
-  tb_q64_clear(&rt->notify_q);
-  return TB_OK;
-}
-
-tb_status tb_link_attach(tb_rt *rt, uint32_t tick) {
-  (void)tick;
-  if (!rt)
-    return TB_ERR_BAD_ARG;
-  if (rt->attached)
-    return TB_OK;
-
-  tb_stamp last = {0};
-  bool found = false;
-  tb_status st = journal_load_last(rt->journal_path, &last, &found);
-  if (st != TB_OK)
-    return st;
-  if (found) {
-    rt->gen = last.gen + 1;
-    rt->cursor = last.cursor;
-  }
-
-  rt->attached = true;
-  return TB_OK;
-}
-
-[?2004hroot@7ae5e2ee926b:/app# sed -n '1,220p' /app/src/io/journal.c
-[?2004l#include "io/journal.h"
-
-#include "io/fs.h"
-
-#include <errno.h>
-#include <stdio.h>
-
-static tb_status append_rec(FILE *f, tb_stamp s) {
-  if (!fs_write_u32(f, s.gen))
-    return TB_ERR_IO;
-
-  uint32_t lo = (uint32_t)s.cursor;
-  if (!fs_write_u32(f, lo))
-    return TB_ERR_IO;
-
-  return TB_OK;
-}
-
-static bool read_rec(FILE *f, tb_stamp *out) {
-  uint32_t gen = 0;
-  if (!fs_read_u32(f, &gen))
-    return false;
-
-  uint32_t lo = 0;
-  if (!fs_read_u32(f, &lo))
-    return false;
-
-  out->gen = gen;
-  out->cursor = (uint64_t)lo;
-  return true;
-}
-
-tb_status journal_append_stamp(const char *path, tb_stamp s) {
-  FILE *f = fopen(path, "ab");
-  if (!f)
-    return TB_ERR_IO;
-  tb_status st = append_rec(f, s);
-  if (fclose(f) != 0)
-    return TB_ERR_IO;
-  return st;
-}
-
-tb_status journal_load_last(const char *path, tb_stamp *out, bool *found) {
-  if (!out || !found)
-    return TB_ERR_BAD_ARG;
-
-  FILE *f = fopen(path, "rb");
-  if (!f) {
-    if (errno == ENOENT) {
-      *found = false;
-      return TB_OK;
-    }
-    return TB_ERR_IO;
-  }
-
-  tb_stamp cur = {0};
-  bool any = false;
-  while (read_rec(f, &cur)) {
-    any = true;
-  }
-  fclose(f);
-  if (!any) {
-    *found = false;
-    return TB_OK;
-  }
-  *found = true;
-  *out = cur;
-  return TB_OK;
-}
-[?2004hroot@7ae5e2ee926b:/app# sed -n '1,240p' /app/src/runtime/script.c
-[?2004l#include "runtime/script.h"
-
-#include <string.h>
-
-tb_scenario tb_scenario_parse(const char *s) {
-  if (!s)
-    return 0;
-  if (strcmp(s, "basic") == 0)
-    return TB_SCN_BASIC;
-  if (strcmp(s, "stress") == 0)
-    return TB_SCN_STRESS;
-  if (strcmp(s, "stress2") == 0)
-    return TB_SCN_STRESS2;
-  return 0;
-}
-
-const char *tb_scenario_str(tb_scenario scn) {
-  switch (scn) {
-  case TB_SCN_BASIC:
-    return "basic";
-  case TB_SCN_STRESS:
-    return "stress";
-  case TB_SCN_STRESS2:
-    return "stress2";
-  default:
-    return "unknown";
-  }
-}
-
-bool tb_script_for(tb_scenario scn, tb_script *out) {
-  if (!out)
-    return false;
-  tb_script s = {0};
-  switch (scn) {
-  case TB_SCN_BASIC:
-    s.ticks = 40;
-    s.detach_at = 0;
-    s.detach_len = 0;
-    s.detach2_at = 0;
-    s.detach2_len = 0;
-    break;
-  case TB_SCN_STRESS:
-    s.ticks = 80;
-    s.detach_at = 22;
-    s.detach_len = 10;
-    s.detach2_at = 0;
-    s.detach2_len = 0;
-    break;
-  case TB_SCN_STRESS2:
-    s.ticks = 110;
-    s.detach_at = 26;
-    s.detach_len = 10;
-    s.detach2_at = 68;
-    s.detach2_len = 12;
-    break;
-  default:
-    return false;
-  }
-  *out = s;
-  return true;
-}
-
-[?2004hroot@7ae5e2ee926b:/app# sed -n '1,260p' /app/include/io/journal.h
-[?2004l#pragma once
-
-#include "tb_err.h"
-
-#include <stdbool.h>
-#include <stdint.h>
-
-typedef struct {
-  uint32_t gen;
-  uint64_t cursor;
-} tb_stamp;
-
-tb_status journal_append_stamp(const char *path, tb_stamp s);
-tb_status journal_load_last(const char *path, tb_stamp *out, bool *found);
-
-[?2004hroot@7ae5e2ee926b:/app# sed -n '1,260p' /app/src/runtime/runtime.c
-[?2004l#include "runtime/runtime.h"
-
-#include "core/idgen.h"
-#include "logic/ingest.h"
-#include "logic/link.h"
-#include "logic/merge.h"
-#include "logic/nudge.h"
-#include "logic/settle.h"
-
-#include <stdio.h>
-#include <string.h>
-
-tb_status tb_rt_init(tb_rt *rt, const char *journal_path) {
-  if (!rt || !journal_path)
-    return TB_ERR_BAD_ARG;
-  memset(rt, 0, sizeof(*rt));
-
-  if (!tb_map_u64_init(&rt->token_to_id, 128))
-    return TB_ERR_OOM;
-  if (!tb_map_u64_init(&rt->token_done, 128))
-    return TB_ERR_OOM;
-  if (!tb_q64_init(&rt->in_q, 4096))
-    return TB_ERR_OOM;
-  if (!tb_q64_init(&rt->done_a, 4096))
-    return TB_ERR_OOM;
-  if (!tb_q64_init(&rt->done_b, 4096))
-    return TB_ERR_OOM;
-  if (!tb_q64_init(&rt->notify_q, 4096))
-    return TB_ERR_OOM;
-  if (!tb_vec_ev_init(&rt->evlog, 2048))
-    return TB_ERR_OOM;
-
-  rt->gen = 1;
-  rt->cursor = 1;
-  rt->attached = true;
-  rt->journal_path = journal_path;
-  return TB_OK;
-}
-
-void tb_rt_free(tb_rt *rt) {
-  if (!rt)
-    return;
-  tb_map_u64_free(&rt->token_to_id);
-  tb_map_u64_free(&rt->token_done);
-  tb_q64_free(&rt->in_q);
-  tb_q64_free(&rt->done_a);
-  tb_q64_free(&rt->done_b);
-  tb_q64_free(&rt->notify_q);
-  tb_vec_ev_free(&rt->evlog);
-}
-
-const tb_vec_ev *tb_rt_events(const tb_rt *rt) { return &rt->evlog; }
-
-static tb_status maybe_detach_attach(tb_rt *rt, const tb_script *sc, uint32_t tick) {
-  if (sc->detach_at && tick == sc->detach_at) {
-    return tb_link_detach(rt, tick);
-  }
-  if (sc->detach_at && tick == sc->detach_at + sc->detach_len) {
-    return tb_link_attach(rt, tick);
-  }
-  if (sc->detach2_at && tick == sc->detach2_at) {
-    return tb_link_detach(rt, tick);
-  }
-  if (sc->detach2_at && tick == sc->detach2_at + sc->detach2_len) {
-    return tb_link_attach(rt, tick);
-  }
-  return TB_OK;
-}
-
-tb_status tb_rt_run(tb_rt *rt, tb_scenario scn, tb_profile prof, tb_order ord, uint32_t seed) {
-  (void)seed;
-  if (!rt)
-    return TB_ERR_BAD_ARG;
-
-  tb_script sc = {0};
-  if (!tb_script_for(scn, &sc))
-    return TB_ERR_BAD_ARG;
-
-  tb_stamp last = {0};
-  bool found = false;
-  tb_status st = journal_load_last(rt->journal_path, &last, &found);
-  if (st != TB_OK)
-    return st;
-  if (found) {
-    rt->gen = last.gen + 1;
-    rt->cursor = last.cursor;
-  }
-
-  for (uint32_t tick = 0; tick < sc.ticks; tick++) {
-    st = maybe_detach_attach(rt, &sc, tick);
-    if (st != TB_OK)
-      return st;
-
-    uint32_t submitted = 0;
-    st = tb_ingest_tick(rt, prof, tick, &submitted);
-    if (st != TB_OK)
-      return st;
-
-    st = tb_settle_tick(rt, tick);
-    if (st != TB_OK)
-      return st;
-
-    st = tb_merge_drain(rt, tick, ord);
-    if (st != TB_OK)
-      return st;
-
-    st = tb_nudge_drain(rt, tick);
-    if (st != TB_OK)
-      return st;
-  }
-
-  // Final drain to avoid leaving work in queues.
-  for (uint32_t i = 0; i < 16; i++) {
-    st = tb_settle_tick(rt, sc.ticks + i);
-    if (st != TB_OK)
-      return st;
-    st = tb_merge_drain(rt, sc.ticks + i, ord);
-    if (st != TB_OK)
-      return st;
-    st = tb_nudge_drain(rt, sc.ticks + i);
-    if (st != TB_OK)
-      return st;
-  }
-
-  return TB_OK;
-}
-
-[?2004hroot@7ae5e2ee926b:/app# sed -n '1,260p' /app/src/logic/ingest.c
-[?2004l#include "logic/ingest.h"
-
-#include "core/ev.h"
-#include "runtime/profile.h"
-
-static uint64_t make_token(uint32_t gen, uint64_t cursor) { return (((uint64_t)gen) << 32) ^ cursor; }
-
-tb_status tb_ingest_tick(tb_rt *rt, tb_profile prof, uint32_t tick, uint32_t *submitted_out) {
-  if (!rt || !submitted_out)
-    return TB_ERR_BAD_ARG;
-
-  uint32_t n = tb_profile_should_submit(prof, tick);
-  *submitted_out = n;
-
-  for (uint32_t i = 0; i < n; i++) {
-    uint32_t id = (uint32_t)(rt->cursor & 0xffffffffu);
-    uint64_t token = make_token(rt->gen, rt->cursor);
-    rt->cursor++;
-
-    if (!tb_map_u64_put(&rt->token_to_id, token, (uint64_t)id))
-      return TB_ERR_OOM;
-    if (!tb_q64_push(&rt->in_q, token))
-      return TB_ERR_CORRUPT;
-
-    tb_event ev = {.kind = TB_EV_SUBMIT, .id = id};
-    if (!tb_vec_ev_push(&rt->evlog, ev))
-      return TB_ERR_OOM;
-  }
-
-  return TB_OK;
-}
-
-[?2004hroot@7ae5e2ee926b:/app# sed -n '1,260p' /app/src/core/idgen.c
-[?2004l#include "core/idgen.h"
-
-void tb_idgen_init(tb_idgen *g, uint64_t seed) { g->x = seed ? seed : 0x9e3779b97f4a7c15ULL; }
-
-uint64_t tb_idgen_next(tb_idgen *g) {
-  // xorshift64*
-  uint64_t x = g->x;
-  x ^= x >> 12;
-  x ^= x << 25;
-  x ^= x >> 27;
-  g->x = x;
-  return x * 2685821657736338717ULL;
-}
-
-[?2004hroot@7ae5e2ee926b:/app# sed -n '1,320p' /app/src/logic/settle.c
-[?2004l#include "logic/settle.h"
-
-#include "runtime/runtime.h"
-
-// Deterministic "work takes time": only move certain tokens each tick.
-static bool ready(uint64_t token, uint32_t tick) {
-  // spread completion across ticks, but deterministic and input-dependent
-  return (((uint32_t)token) ^ tick) % 3 == 0;
-}
-
-static bool lane_a(uint64_t token, uint32_t tick) {
-  // Choose which completion source produced the "done" record.
-  return ((((uint32_t)(token >> 32)) + (uint32_t)token + tick) & 1u) == 0u;
-}
-
-tb_status tb_settle_tick(tb_rt *rt, uint32_t tick) {
-  if (!rt)
-    return TB_ERR_BAD_ARG;
-
-  // rotate through at most a bounded number so runs are stable
-  size_t spins = rt->in_q.len;
-  for (size_t i = 0; i < spins; i++) {
-    uint64_t token = 0;
-    if (!tb_q64_pop(&rt->in_q, &token))
-      break;
-
-    if (ready(token, tick)) {
-      if (lane_a(token, tick)) {
-        if (!tb_q64_push(&rt->done_a, token))
-          return TB_ERR_CORRUPT;
-      } else {
-        if (!tb_q64_push(&rt->done_b, token))
-          return TB_ERR_CORRUPT;
-      }
-      if (rt->attached) {
-        // The notifier is only live while attached.
-        if (!tb_q64_push(&rt->notify_q, token))
-          return TB_ERR_CORRUPT;
-      }
-    } else {
-      // not ready, requeue at tail
-      if (!tb_q64_push(&rt->in_q, token))
-        return TB_ERR_CORRUPT;
-    }
-  }
-
-  return TB_OK;
-}
-
-[?2004hroot@7ae5e2ee926b:/app# sed -n '1,320p' /app/src/logic/merge.c
-[?2004l#include "logic/merge.h"
-
-#include "core/ev.h"
-
-static bool drain_one(tb_rt *rt, tb_q64 *q, uint32_t tick) {
-  (void)tick;
-  uint64_t token = 0;
-  if (!tb_q64_pop(q, &token))
-    return false;
-
-  uint64_t key = (uint32_t)token;
-
-  if (!tb_map_u64_has(&rt->token_done, key)) {
-    uint64_t id64 = 0;
-    if (!tb_map_u64_get(&rt->token_to_id, token, &id64)) {
-      return true;
-    }
-    (void)tb_map_u64_put(&rt->token_done, key, 1);
-    tb_event ev = {.kind = TB_EV_DONE, .id = (uint32_t)id64};
-    (void)tb_vec_ev_push(&rt->evlog, ev);
-  }
-  return true;
-}
-
-tb_status tb_merge_drain(tb_rt *rt, uint32_t tick, tb_order ord) {
-  if (!rt)
-    return TB_ERR_BAD_ARG;
-
-  tb_q64 *a = &rt->done_a;
-  tb_q64 *b = &rt->done_b;
-
-  if (ord == TB_ORDER_A_THEN_B) {
-    while (drain_one(rt, a, tick)) {
-    }
-    while (drain_one(rt, b, tick)) {
-    }
-  } else {
-    while (drain_one(rt, b, tick)) {
-    }
-    while (drain_one(rt, a, tick)) {
-    }
-  }
-
-  return TB_OK;
-}
-[?2004hroot@7ae5e2ee926b:/app# sed -n '1,320p' /app/src/logic/nudge.c
-[?2004l#include "logic/nudge.h"
-
-#include "core/ev.h"
-
-tb_status tb_nudge_drain(tb_rt *rt, uint32_t tick) {
-  (void)tick;
-  if (!rt)
-    return TB_ERR_BAD_ARG;
-
-  uint64_t token = 0;
-  while (tb_q64_pop(&rt->notify_q, &token)) {
-    uint64_t key = (uint32_t)token;
-    if (!tb_map_u64_has(&rt->token_done, key)) {
-      continue;
-    }
-    uint64_t id64 = 0;
-    if (!tb_map_u64_get(&rt->token_to_id, token, &id64))
-      continue;
-    tb_event ev = {.kind = TB_EV_POKE, .id = (uint32_t)id64};
-    (void)tb_vec_ev_push(&rt->evlog, ev);
-  }
-  return TB_OK;
-}
-[?2004hroot@7ae5e2ee926b:/app# apply_patch <<'PATCH'
-[?2004l[?2004h> *** Begin Patch
-[?2004l[?2004h> *** Update File: /app/src/io/journal.c
-[?2004l[?2004h> @@
-[?2004l[?2004h>  static tb_status append_rec(FILE *f, tb_stamp s) {
-[?2004l[?2004h>    if (!fs_write_u32(f, s.gen))
-[?2004l[?2004h>      return TB_ERR_IO;
-[?2004l[?2004h> -
-[?2004l[?2004h> -  uint32_t lo = (uint32_t)s.cursor;
-[?2004l[?2004h> -  if (!fs_write_u32(f, lo))
-[?2004l[?2004h> -    return TB_ERR_IO;
-[?2004l[?2004h> +
-[?2004l[?2004h> +  // stamp format: u32 generation + u64 cursor (12 bytes)
-[?2004l[?2004h> +  uint32_t lo = (uint32_t)(s.cursor & 0xffffffffu);
-[?2004l[?2004h> +  uint32_t hi = (uint32_t)((s.cursor >> 32) & 0xffffffffu);
-[?2004l[?2004h> +  if (!fs_write_u32(f, lo))
-[?2004l[?2004h> +    return TB_ERR_IO;
-[?2004l[?2004h> +  if (!fs_write_u32(f, hi))
-[?2004l[?2004h> +    return TB_ERR_IO;
-[?2004l[?2004h> @@
-[?2004l[?2004h>  static bool read_rec(FILE *f, tb_stamp *out) {
-[?2004l[?2004h>    uint32_t gen = 0;
-[?2004l[?2004h>    if (!fs_read_u32(f, &gen))
-[?2004l[?2004h>      return false;
-[?2004l[?2004h> @@
-[?2004l[?2004h>    uint32_t lo = 0;
-[?2004l[?2004h>    if (!fs_read_u32(f, &lo))
-[?2004l[?2004h>      return false;
-[?2004l[?2004h> +
-[?2004l[?2004h> +  uint32_t hi = 0;
-[?2004l[?2004h> +  if (!fs_read_u32(f, &hi))
-[?2004l[?2004h> +    return false;
-[?2004l[?2004h> @@
-[?2004l[?2004h>    out->gen = gen;
-[?2004l[?2004h> -  out->cursor = (uint64_t)lo;
-[?2004l[?2004h> +  out->cursor = ((uint64_t)hi << 32) | (uint64_t)lo;
-[?2004l[?2004h>    return true;
-[?2004l[?2004h>  }
-[?2004l[?2004h> *** End Patch
-[?2004l[?2004h> PATCH
-[?2004lbash: apply_patch: command not found
-[?2004hroot@7ae5e2ee926b:/app# make -C /app -j4
-[?2004lmake: Entering directory '/app'
-make: '/usr/local/bin/arena' is up to date.
-make: Leaving directory '/app'
-[?2004hroot@7ae5e2ee926b:/app# rm -f /app/run/journal.bin /app/output/report.json 2>/dev/null || true
-[?2004l[?2004hroot@7ae5e2ee926b:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json --seed 2
-[?2004l[?2004hroot@7ae5e2ee926b:/app# python3 - <<'PY'
-[?2004l[?2004h> import json
-[?2004l[?2004h> from collections import Counter,defaultdict
-[?2004l[?2004h> r=json.load(open('/app/output/report.json'))
-[?2004l[?2004h> e=r['events']
-[?2004l[?2004h> print('events',len(e),Counter(x['kind'] for x in e))
-[?2004l[?2004h> seen=set(); dup=[]
-[?2004l[?2004h> for x in e:
-[?2004l[?2004h>  t=(x['kind'],x['id'])
-[?2004l[?2004h>  if t in seen: dup.append(t)
-[?2004l[?2004h>  seen.add(t)
-[?2004l[?2004h> print('dup_count',len(dup),'sample',dup[:10])
-[?2004l[?2004h> subs=[x['id'] for x in e if x['kind']=='submit']
-[?2004l[?2004h> mx=max(subs) if subs else 0
-[?2004l[?2004h> print('submit_ids_contig',subs==list(range(1,mx+1)),'N',mx)
-[?2004l[?2004h> by=defaultdict(set)
-[?2004l[?2004h> for x in e: by[x['id']].add(x['kind'])
-[?2004l[?2004h> miss=[(i,{'submit','complete','notify'}-k) for i,k in by.items() if k!={'submit','complete','notify'}]
-[?2004l[?2004h> print('missing_rows',len(miss),'sample',miss[:10])
-[?2004l[?2004h> pos=defaultdict(dict)
-[?2004l[?2004h> for idx,x in enumerate(e): pos[x['id']][x['kind']]=idx
-[?2004l[?2004h> bad=[i for i,d in pos.items() if set(d)=={'submit','complete','notify'} and not (d['submit']<d['complete']<d['notify'])]
-[?2004l[?2004h> print('order_bad',len(bad),'sample',bad[:10])
-[?2004l[?2004h> PY
-[?2004levents 377 Counter({'submit': 140, 'notify': 119, 'complete': 118})
-dup_count 24 sample [('submit', 57), ('submit', 58), ('submit', 59), ('submit', 60), ('submit', 61), ('submit', 62), ('submit', 63), ('submit', 64), ('submit', 65), ('submit', 66)]
-submit_ids_contig False N 118
-missing_rows 1 sample [(55, {'notify'})]
-order_bad 22 sample [57, 58, 59, 60, 61, 62, 63, 64, 65, 66]
-[?2004hroot@7ae5e2ee926b:/app# ls -la /app/run 2>/dev/null || true
-[?2004ltotal 8
-drwxr-xr-x 2 root root  41 May 26 12:48 .
-drwxr-xr-x 7 root root  94 May 26 12:46 ..
--rw-r--r-- 1 root root 775 May 26 12:44 README.txt
--rw-r--r-- 1 root root  16 May 26 12:48 state.bin
-[?2004hroot@7ae5e2ee926b:/app# if [ -f /app/run/journal.bin ]; then wc -c /app/run/journal.bin; hexdump -C /app/run/journal.bin | head; fi
-[?2004l[?2004hroot@7ae5e2ee926b:/app# grep -n "append_rec\|read_rec\|cursor" -n /app/src/io/journal.c
-[?2004l8:static tb_status append_rec(FILE *f, tb_stamp s) {
-12:  uint32_t lo = (uint32_t)s.cursor;
-19:static bool read_rec(FILE *f, tb_stamp *out) {
-29:  out->cursor = (uint64_t)lo;
-37:  tb_status st = append_rec(f, s);
-58:  while (read_rec(f, &cur)) {
-[?2004hroot@7ae5e2ee926b:/app# perl -0777 -i -pe 's/uint32_t lo = \(uint32_t\)s\.cursor;\s*if \(!fs_write_u32\(f, lo\)\)\s*return TB_ERR_IO;/\/\/ stamp format: u32 generation + u64 cursor (12 bytes)\n\n  uint32_t lo = (uint32_t)(s.cursor \& 0xffffffffu);\n  uint32_t hi = (uint32_t)((s.cursor >> 32) \& 0xffffffffu);\n  if (!fs_write_u32(f, lo))\n    return TB_ERR_IO;\n  if (!fs_write_u32(f, hi))\n    return TB_ERR_IO;/s; s/out->cursor = \(uint64_t\)lo;\s*return true;/out->cursor = ((uint64_t)hi << 32) | (uint64_t)lo;\n  return true;/s; s/uint32_t lo = 0;\s*if \(!fs_read_u32\(f, &lo\)\)\s*return false;/uint32_t lo = 0;\n  if (!fs_read_u32(f, &lo))\n    return false;\n\n  uint32_t hi = 0;\n  if (!fs_read_u32(f, &hi))\n    return false;/s' /app/src/io/journal.c
-[?2004l[?2004hroot@7ae5e2ee926b:/app# sed -n '1,120p' /app/src/io/journal.c
-[?2004l#include "io/journal.h"
-
-#include "io/fs.h"
-
-#include <errno.h>
-#include <stdio.h>
-
-static tb_status append_rec(FILE *f, tb_stamp s) {
-  if (!fs_write_u32(f, s.gen))
-    return TB_ERR_IO;
-
-  // stamp format: u32 generation + u64 cursor (12 bytes)
-
-  uint32_t lo = (uint32_t)(s.cursor & 0xffffffffu);
-  uint32_t hi = (uint32_t)((s.cursor >> 32) & 0xffffffffu);
-  if (!fs_write_u32(f, lo))
-    return TB_ERR_IO;
-  if (!fs_write_u32(f, hi))
-    return TB_ERR_IO;
-
-  return TB_OK;
-}
-
-static bool read_rec(FILE *f, tb_stamp *out) {
-  uint32_t gen = 0;
-  if (!fs_read_u32(f, &gen))
-    return false;
-
-  uint32_t lo = 0;
-  if (!fs_read_u32(f, &lo))
-    return false;
-
-  uint32_t hi = 0;
-  if (!fs_read_u32(f, &hi))
-    return false;
-
-  out->gen = gen;
-  out->cursor = ((uint64_t)hi << 32) | (uint64_t)lo;
-  return true;
-}
-
-tb_status journal_append_stamp(const char *path, tb_stamp s) {
-  FILE *f = fopen(path, "ab");
-  if (!f)
-    return TB_ERR_IO;
-  tb_status st = append_rec(f, s);
-  if (fclose(f) != 0)
-    return TB_ERR_IO;
-  return st;
-}
-
-tb_status journal_load_last(const char *path, tb_stamp *out, bool *found) {
-  if (!out || !found)
-    return TB_ERR_BAD_ARG;
-
-  FILE *f = fopen(path, "rb");
-  if (!f) {
-    if (errno == ENOENT) {
-      *found = false;
-      return TB_OK;
-    }
-    return TB_ERR_IO;
-  }
-
-  tb_stamp cur = {0};
-  bool any = false;
-  while (read_rec(f, &cur)) {
-    any = true;
-  }
-  fclose(f);
-  if (!any) {
-    *found = false;
-    return TB_OK;
-  }
-  *found = true;
-  *out = cur;
-  return TB_OK;
-}
-[?2004hroot@7ae5e2ee926b:/app# make -C /app -B -j4
-[?2004lmake: Entering directory '/app'
-mkdir -p /usr/local/bin
-cc -O2 -g -std=c11 -Wall -Wextra -Wshadow -Wconversion -Iinclude -o /usr/local/bin/arena src/main.c src/cli.c src/tb_err.c src/report.c src/runtime/runtime.c src/runtime/profile.c src/runtime/script.c src/core/idgen.c src/core/queue.c src/core/map_u64.c src/core/vec_u64.c src/core/vec_ev.c src/io/fs.c src/io/journal.c src/logic/ingest.c src/logic/settle.c src/logic/nudge.c src/logic/merge.c src/logic/link.c 
-make: Leaving directory '/app'
-[?2004hroot@7ae5e2ee926b:/app# rm -f /app/run/state.bin /app/output/report.json
-[?2004l[?2004hroot@7ae5e2ee926b:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json --seed 2
-[?2004l[?2004hroot@7ae5e2ee926b:/app# python3 - <<'PY'
-[?2004l[?2004h> import json
-[?2004l[?2004h> from collections import Counter,defaultdict
-[?2004l[?2004h> r=json.load(open('/app/output/report.json'))
-[?2004l[?2004h> e=r['events']
-[?2004l[?2004h> print('events',len(e),Counter(x['kind'] for x in e))
-[?2004l[?2004h> seen=set(); dup=[]
-[?2004l[?2004h> for x in e:
-[?2004l[?2004h>  t=(x['kind'],x['id'])
-[?2004l[?2004h>  if t in seen: dup.append(t)
-[?2004l[?2004h>  seen.add(t)
-[?2004l[?2004h> print('dup_count',len(dup),'sample',dup[:10])
-[?2004l[?2004h> subs=[x['id'] for x in e if x['kind']=='submit']
-[?2004l[?2004h> mx=max(subs) if subs else 0
-[?2004l[?2004h> print('submit_ids_contig',subs==list(range(1,mx+1)),'N',mx)
-[?2004l[?2004h> by=defaultdict(set)
-[?2004l[?2004h> for x in e: by[x['id']].add(x['kind'])
-[?2004l[?2004h> miss=[(i,{'submit','complete','notify'}-k) for i,k in by.items() if k!={'submit','complete','notify'}]
-[?2004l[?2004h> print('missing_rows',len(miss),'sample',miss[:10])
-[?2004l[?2004h> pos=defaultdict(dict)
-[?2004l[?2004h> for idx,x in enumerate(e): pos[x['id']][x['kind']]=idx
-[?2004l[?2004h> bad=[i for i,d in pos.items() if set(d)=={'submit','complete','notify'} and not (d['submit']<d['complete']<d['notify'])]
-[?2004l[?2004h> print('order_bad',len(bad),'sample',bad[:10])
-[?2004l[?2004h> PY
-[?2004levents 377 Counter({'submit': 140, 'notify': 119, 'complete': 118})
-dup_count 24 sample [('submit', 57), ('submit', 58), ('submit', 59), ('submit', 60), ('submit', 61), ('submit', 62), ('submit', 63), ('submit', 64), ('submit', 65), ('submit', 66)]
-submit_ids_contig False N 118
-missing_rows 1 sample [(55, {'notify'})]
-order_bad 22 sample [57, 58, 59, 60, 61, 62, 63, 64, 65, 66]
-[?2004hroot@7ae5e2ee926b:/app# ls -la /app/run/state.bin; wc -c /app/run/state.bin
-[?2004l-rw-r--r-- 1 root root 24 May 26 12:48 /app/run/state.bin
-24 /app/run/state.bin
-[?2004hroot@7ae5e2ee926b:/app# sed -n '1,220p' /app/src/logic/merge.c
-[?2004l#include "logic/merge.h"
-
-#include "core/ev.h"
-
-static bool drain_one(tb_rt *rt, tb_q64 *q, uint32_t tick) {
-  (void)tick;
-  uint64_t token = 0;
-  if (!tb_q64_pop(q, &token))
-    return false;
-
-  uint64_t key = (uint32_t)token;
-
-  if (!tb_map_u64_has(&rt->token_done, key)) {
-    uint64_t id64 = 0;
-    if (!tb_map_u64_get(&rt->token_to_id, token, &id64)) {
-      return true;
-    }
-    (void)tb_map_u64_put(&rt->token_done, key, 1);
-    tb_event ev = {.kind = TB_EV_DONE, .id = (uint32_t)id64};
-    (void)tb_vec_ev_push(&rt->evlog, ev);
-  }
-  return true;
-}
-
-tb_status tb_merge_drain(tb_rt *rt, uint32_t tick, tb_order ord) {
-  if (!rt)
-    return TB_ERR_BAD_ARG;
-
-  tb_q64 *a = &rt->done_a;
-  tb_q64 *b = &rt->done_b;
-
-  if (ord == TB_ORDER_A_THEN_B) {
-    while (drain_one(rt, a, tick)) {
-    }
-    while (drain_one(rt, b, tick)) {
-    }
-  } else {
-    while (drain_one(rt, b, tick)) {
-    }
-    while (drain_one(rt, a, tick)) {
-    }
-  }
-
-  return TB_OK;
-}
-[?2004hroot@7ae5e2ee926b:/app# sed -n '1,220p' /app/src/logic/nudge.c
-[?2004l#include "logic/nudge.h"
-
-#include "core/ev.h"
-
-tb_status tb_nudge_drain(tb_rt *rt, uint32_t tick) {
-  (void)tick;
-  if (!rt)
-    return TB_ERR_BAD_ARG;
-
-  uint64_t token = 0;
-  while (tb_q64_pop(&rt->notify_q, &token)) {
-    uint64_t key = (uint32_t)token;
-    if (!tb_map_u64_has(&rt->token_done, key)) {
-      continue;
-    }
-    uint64_t id64 = 0;
-    if (!tb_map_u64_get(&rt->token_to_id, token, &id64))
-      continue;
-    tb_event ev = {.kind = TB_EV_POKE, .id = (uint32_t)id64};
-    (void)tb_vec_ev_push(&rt->evlog, ev);
-  }
-  return TB_OK;
-}
-[?2004hroot@7ae5e2ee926b:/app# perl -i -pe 's/uint64_t key = \(uint32_t\)token;/uint64_t key = token;/g' /app/src/logic/merge.c /app/src/logic/nudge.c
-[?2004l[?2004hroot@7ae5e2ee926b:/app# make -C /app -B -j4
-[?2004lmake: Entering directory '/app'
-mkdir -p /usr/local/bin
-cc -O2 -g -std=c11 -Wall -Wextra -Wshadow -Wconversion -Iinclude -o /usr/local/bin/arena src/main.c src/cli.c src/tb_err.c src/report.c src/runtime/runtime.c src/runtime/profile.c src/runtime/script.c src/core/idgen.c src/core/queue.c src/core/map_u64.c src/core/vec_u64.c src/core/vec_ev.c src/io/fs.c src/io/journal.c src/logic/ingest.c src/logic/settle.c src/logic/nudge.c src/logic/merge.c src/logic/link.c 
-make: Leaving directory '/app'
-[?2004hroot@7ae5e2ee926b:/app# rm -f /app/run/state.bin /app/output/report.json
-[?2004l[?2004hroot@7ae5e2ee926b:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json --seed 2
-[?2004l[?2004hroot@7ae5e2ee926b:/app# python3 - <<'PY'
-[?2004l[?2004h> import json
-[?2004l[?2004h> from collections import Counter,defaultdict
-[?2004l[?2004h> r=json.load(open('/app/output/report.json'))
-[?2004l[?2004h> e=r['events']
-[?2004l[?2004h> print('events',len(e),Counter(x['kind'] for x in e))
-[?2004l[?2004h> seen=set(); dup=[]
-[?2004l[?2004h> for x in e:
-[?2004l[?2004h>  t=(x['kind'],x['id'])
-[?2004l[?2004h>  if t in seen: dup.append(t)
-[?2004l[?2004h>  seen.add(t)
-[?2004l[?2004h> print('dup_count',len(dup),'sample',dup[:10])
-[?2004l[?2004h> subs=[x['id'] for x in e if x['kind']=='submit']
-[?2004l[?2004h> mx=max(subs) if subs else 0
-[?2004l[?2004h> print('submit_ids_contig',subs==list(range(1,mx+1)),'N',mx)
-[?2004l[?2004h> by=defaultdict(set)
-[?2004l[?2004h> for x in e: by[x['id']].add(x['kind'])
-[?2004l[?2004h> miss=[(i,{'submit','complete','notify'}-k) for i,k in by.items() if k!={'submit','complete','notify'}]
-[?2004l[?2004h> print('missing_rows',len(miss),'sample',miss[:10])
-[?2004l[?2004h> pos=defaultdict(dict)
-[?2004l[?2004h> for idx,x in enumerate(e): pos[x['id']][x['kind']]=idx
-[?2004l[?2004h> bad=[i for i,d in pos.items() if set(d)=={'submit','complete','notify'} and not (d['submit']<d['complete']<d['notify'])]
-[?2004l[?2004h> print('order_bad',len(bad),'sample',bad[:10])
-[?2004l[?2004h> PY
-[?2004levents 399 Counter({'submit': 140, 'complete': 140, 'notify': 119})
-dup_count 46 sample [('submit', 57), ('submit', 58), ('submit', 59), ('submit', 60), ('complete', 57), ('complete', 60), ('submit', 61), ('complete', 58), ('complete', 61), ('submit', 62)]
-submit_ids_contig False N 118
-missing_rows 1 sample [(55, {'notify'})]
-order_bad 0 sample []
-[?2004hroot@7ae5e2ee926b:/app# ls -la /app/run/state.bin; wc -c /app/run/state.bin
-[?2004l-rw-r--r-- 1 root root 24 May 26 12:49 /app/run/state.bin
-24 /app/run/state.bin
-[?2004hroot@7ae5e2ee926b:/app# grep -n "cursor = last\.cursor" -n /app/src/runtime/runtime.c /app/src/logic/link.c
-[?2004l/app/src/runtime/runtime.c:86:    rt->cursor = last.cursor;
-/app/src/logic/link.c:40:    rt->cursor = last.cursor;
-[?2004hroot@7ae5e2ee926b:/app# perl -i -pe 's/rt->cursor = last\.cursor;/rt->cursor = (rt->cursor > last.cursor) ? rt->cursor : last.cursor;/g' /app/src/logic/link.c
-[?2004l[?2004hroot@7ae5e2ee926b:/app# perl -i -pe 's/rt->cursor = last\.cursor;/rt->cursor = (rt->cursor > last.cursor) ? rt->cursor : last.cursor;/g' /app/src/runtime/runtime.c
-[?2004l[?2004hroot@7ae5e2ee926b:/app# grep -n "gen = last\.gen \+ 1\|cursor =" -n /app/src/logic/link.c /app/src/runtime/runtime.c | head -n 80
-[?2004l/app/src/logic/link.c:16:  tb_stamp s = {.gen = rt->gen, .cursor = rt->cursor};
-/app/src/logic/link.c:40:    rt->cursor = (rt->cursor > last.cursor) ? rt->cursor : last.cursor;
-/app/src/runtime/runtime.c:34:  rt->cursor = 1;
-/app/src/runtime/runtime.c:86:    rt->cursor = (rt->cursor > last.cursor) ? rt->cursor : last.cursor;
-[?2004hroot@7ae5e2ee926b:/app# make -C /app -B -j4
-[?2004lmake: Entering directory '/app'
-mkdir -p /usr/local/bin
-cc -O2 -g -std=c11 -Wall -Wextra -Wshadow -Wconversion -Iinclude -o /usr/local/bin/arena src/main.c src/cli.c src/tb_err.c src/report.c src/runtime/runtime.c src/runtime/profile.c src/runtime/script.c src/core/idgen.c src/core/queue.c src/core/map_u64.c src/core/vec_u64.c src/core/vec_ev.c src/io/fs.c src/io/journal.c src/logic/ingest.c src/logic/settle.c src/logic/nudge.c src/logic/merge.c src/logic/link.c 
-make: Leaving directory '/app'
-[?2004hroot@7ae5e2ee926b:/app# rm -f /app/run/state.bin /app/output/report.json
-[?2004l[?2004hroot@7ae5e2ee926b:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json --seed 2
-[?2004l[?2004hroot@7ae5e2ee926b:/app# python3 - <<'PY'
-[?2004l[?2004h> import json
-[?2004l[?2004h> from collections import Counter,defaultdict
-[?2004l[?2004h> r=json.load(open('/app/output/report.json'))
-[?2004l[?2004h> e=r['events']
-[?2004l[?2004h> print('events',len(e),Counter(x['kind'] for x in e))
-[?2004l[?2004h> seen=set(); dup=[]
-[?2004l[?2004h> for x in e:
-[?2004l[?2004h>  t=(x['kind'],x['id'])
-[?2004l[?2004h>  if t in seen: dup.append(t)
-[?2004l[?2004h>  seen.add(t)
-[?2004l[?2004h> print('dup_count',len(dup),'sample',dup[:10])
-[?2004l[?2004h> subs=[x['id'] for x in e if x['kind']=='submit']
-[?2004l[?2004h> mx=max(subs) if subs else 0
-[?2004l[?2004h> print('submit_ids_contig',subs==list(range(1,mx+1)),'N',mx)
-[?2004l[?2004h> by=defaultdict(set)
-[?2004l[?2004h> for x in e: by[x['id']].add(x['kind'])
-[?2004l[?2004h> miss=[(i,{'submit','complete','notify'}-k) for i,k in by.items() if k!={'submit','complete','notify'}]
-[?2004l[?2004h> print('missing_rows',len(miss),'sample',miss[:10])
-[?2004l[?2004h> pos=defaultdict(dict)
-[?2004l[?2004h> for idx,x in enumerate(e): pos[x['id']][x['kind']]=idx
-[?2004l[?2004h> bad=[i for i,d in pos.items() if set(d)=={'submit','complete','notify'} and not (d['submit']<d['complete']<d['notify'])]
-[?2004l[?2004h> print('order_bad',len(bad),'sample',bad[:10])
-[?2004l[?2004h> PY
-[?2004levents 398 Counter({'submit': 140, 'complete': 140, 'notify': 118})
-dup_count 0 sample []
-submit_ids_contig True N 140
-missing_rows 22 sample [(55, {'notify'}), (57, {'notify'}), (58, {'notify'}), (59, {'notify'}), (60, {'notify'}), (61, {'notify'}), (62, {'notify'}), (63, {'notify'}), (64, {'notify'}), (65, {'notify'})]
-order_bad 0 sample []
-[?2004hroot@7ae5e2ee926b:/app# for ord in a_then_b b_then_a; do rm -f /app/run/state.bin /app/output/report.json; /usr/local/bin/arena --scenario stress2 --profile burst --order $ord --out /app/output/report.json --seed 2 >/dev/null; python3 - <<'PY'
-[?2004l[?2004h> import json,hashlib
-[?2004l[?2004h> r=json.load(open('/app/output/report.json'))
-[?2004l[?2004h> print(r['order'] if 'order' in r else 'no_order_field', len(r['events']), hashlib.sha256(json.dumps(r['events']).encode()).hexdigest()[:16])
-[?2004l[?2004h> PY
-[?2004l[?2004h> ; done
-[?2004lbash: syntax error near unexpected token `;'
-[?2004hroot@7ae5e2ee926b:/app# rm -f /app/output/bad.json; /usr/local/bin/arena --scenario zzz --profile steady --order a_then_b --out /app/output/bad.json; echo EXIT:$?; test -e /app/output/bad.json && echo "BAD: file exists" || echo "OK: no file"
-[?2004lusage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]
-cli: bad_arg
-EXIT:2
-OK: no file
-[?2004hroot@7ae5e2ee926b:/app# rm -f /app/output/bad.json; /usr/local/bin/arena --scenario basic --profile steady --order z_then_y --out /app/output/bad.json; echo EXIT:$?; test -e /app/output/bad.json && echo "BAD: file exists" || echo "OK: no file"
-[?2004lusage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]
-cli: bad_arg
-EXIT:2
-OK: no file
-[?2004hroot@7ae5e2ee926b:/app# grep -n "notify_q" -n /app/src/logic/link.c
-[?2004l22:  tb_q64_clear(&rt->notify_q);
-[?2004hroot@7ae5e2ee926b:/app# perl -i -pe 's/^\s*tb_q64_clear\(&rt->notify_q\);\s*$/  \/\/ Do not clear notify_q on detach: notifications must be delivered after reattach.\n/;' /app/src/logic/link.c
-[?2004l[?2004hroot@7ae5e2ee926b:/app# sed -n '1,120p' /app/src/logic/link.c
-[?2004l#include "logic/link.h"
-
-#include "io/journal.h"
-
-#include <string.h>
-
-tb_status tb_link_detach(tb_rt *rt, uint32_t tick) {
-  (void)tick;
-  if (!rt)
-    return TB_ERR_BAD_ARG;
-  if (!rt->attached)
-    return TB_OK;
-
-  rt->attached = false;
-
-  tb_stamp s = {.gen = rt->gen, .cursor = rt->cursor};
-  tb_status st = journal_append_stamp(rt->journal_path, s);
-  if (st != TB_OK)
-    return st;
-
-  // A "device-side" queue continues to exist while detached; the notifier doesn't.
-  // Do not clear notify_q on detach: notifications must be delivered after reattach.
-  return TB_OK;
-}
-
-tb_status tb_link_attach(tb_rt *rt, uint32_t tick) {
-  (void)tick;
-  if (!rt)
-    return TB_ERR_BAD_ARG;
-  if (rt->attached)
-    return TB_OK;
-
-  tb_stamp last = {0};
-  bool found = false;
-  tb_status st = journal_load_last(rt->journal_path, &last, &found);
-  if (st != TB_OK)
-    return st;
-  if (found) {
-    rt->gen = last.gen + 1;
-    rt->cursor = (rt->cursor > last.cursor) ? rt->cursor : last.cursor;
-  }
-
-  rt->attached = true;
-  return TB_OK;
-}
-
-[?2004hroot@7ae5e2ee926b:/app# make -C /app -B -j4
-[?2004lmake: Entering directory '/app'
-mkdir -p /usr/local/bin
-cc -O2 -g -std=c11 -Wall -Wextra -Wshadow -Wconversion -Iinclude -o /usr/local/bin/arena src/main.c src/cli.c src/tb_err.c src/report.c src/runtime/runtime.c src/runtime/profile.c src/runtime/script.c src/core/idgen.c src/core/queue.c src/core/map_u64.c src/core/vec_u64.c src/core/vec_ev.c src/io/fs.c src/io/journal.c src/logic/ingest.c src/logic/settle.c src/logic/nudge.c src/logic/merge.c src/logic/link.c 
-make: Leaving directory '/app'
-[?2004hroot@7ae5e2ee926b:/app# rm -f /app/run/state.bin /app/output/report.json
-[?2004l[?2004hroot@7ae5e2ee926b:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json --seed 2
-[?2004l[?2004hroot@7ae5e2ee926b:/app# python3 - <<'PY'
-[?2004l[?2004h> import json
-[?2004l[?2004h> from collections import Counter,defaultdict
-[?2004l[?2004h> r=json.load(open('/app/output/report.json'))
-[?2004l[?2004h> e=r['events']
-[?2004l[?2004h> print('events',len(e),Counter(x['kind'] for x in e))
-[?2004l[?2004h> seen=set(); dup=[]
-[?2004l[?2004h> for x in e:
-[?2004l[?2004h>  t=(x['kind'],x['id'])
-[?2004l[?2004h>  if t in seen: dup.append(t)
-[?2004l[?2004h>  seen.add(t)
-[?2004l[?2004h> print('dup_count',len(dup))
-[?2004l[?2004h> subs=[x['id'] for x in e if x['kind']=='submit']
-[?2004l[?2004h> mx=max(subs) if subs else 0
-[?2004l[?2004h> print('submit_ids_contig',subs==list(range(1,mx+1)),'N',mx)
-[?2004l[?2004h> by=defaultdict(set)
-[?2004l[?2004h> for x in e: by[x['id']].add(x['kind'])
-[?2004l[?2004h> miss=[i for i,k in by.items() if k!={'submit','complete','notify'}]
-[?2004l[?2004h> print('missing_rows',len(miss),'sample',miss[:20])
-[?2004l[?2004h> PY
-[?2004levents 398 Counter({'submit': 140, 'complete': 140, 'notify': 118})
-dup_count 0
-submit_ids_contig True N 140
-missing_rows 22 sample [55, 57, 58, 59, 60, 61, 62, 63, 64, 65, 97, 99, 100, 101, 102, 103, 104, 105, 106, 107]
-[?2004hroot@7ae5e2ee926b:/app# for ord in a_then_b b_then_a; do rm -f /app/run/state.bin /app/output/report.json; /usr/local/bin/arena --scenario stress2 --profile burst --order $ord --out /app/output/report.json --seed 2 >/dev/null; python3 - <<'PY'
-[?2004l[?2004h> import json,hashlib
-[?2004l[?2004h> r=json.load(open('/app/output/report.json'))
-[?2004l[?2004h> print(ord:=r.get('order','(no order field)'), len(r['events']), hashlib.sha256(json.dumps(r['events']).encode()).hexdigest()[:16])
-[?2004l[?2004h> PY
-[?2004l[?2004h> done
-[?2004l(no order field) 398 bdb4fb43c9e83344
-(no order field) 398 9e4e49caa5764229
-[?2004hroot@7ae5e2ee926b:/app# for sc in basic stress stress2; do for pr in burst steady; do for ord in a_then_b b_then_a; do rm -f /app/run/state.bin /app/output/report.json; /usr/local/bin/arena --scenario $sc --profile $pr --order $ord --out /app/output/report.json --seed 1 >/dev/null || { echo FAIL $sc $pr $ord; exit 1; }; python3 - <<'PY'
-[?2004l[?2004h> import json
-[?2004l[?2004h> from collections import Counter
-[?2004l[?2004h> r=json.load(open('/app/output/report.json'))
-[?2004l[?2004h> c=Counter(e['kind'] for e in r['events'])
-[?2004l[?2004h> if len(set(c.values()))!=1:
-[?2004l[?2004h>   raise SystemExit(f"kind mismatch {c}")
-[?2004l[?2004h> PY
-[?2004l[?2004h> ; echo OK $sc $pr $ord; done; done; done
-[?2004lbash: syntax error near unexpected token `;'
-[?2004hroot@7ae5e2ee926b:/app# grep -n "make_token" -n /app/src/logic/ingest.c
-[?2004l6:static uint64_t make_token(uint32_t gen, uint64_t cursor) { return (((uint64_t)gen) << 32) ^ cursor; }
-17:    uint64_t token = make_token(rt->gen, rt->cursor);
-[?2004hroot@7ae5e2ee926b:/app# perl -i -pe 's/return \(\(\(uint64_t\)gen\) << 32\) \^ cursor;/return (((uint64_t)gen) << 32) | (cursor \& 0xffffffffu);/g' /app/src/logic/ingest.c
-[?2004l[?2004hroot@7ae5e2ee926b:/app# sed -n '1,80p' /app/src/logic/ingest.c
-[?2004l#include "logic/ingest.h"
-
-#include "core/ev.h"
-#include "runtime/profile.h"
-
-static uint64_t make_token(uint32_t gen, uint64_t cursor) { return (((uint64_t)gen) << 32) | (cursor & 0xffffffffu); }
-
-tb_status tb_ingest_tick(tb_rt *rt, tb_profile prof, uint32_t tick, uint32_t *submitted_out) {
-  if (!rt || !submitted_out)
-    return TB_ERR_BAD_ARG;
-
-  uint32_t n = tb_profile_should_submit(prof, tick);
-  *submitted_out = n;
-
-  for (uint32_t i = 0; i < n; i++) {
-    uint32_t id = (uint32_t)(rt->cursor & 0xffffffffu);
-    uint64_t token = make_token(rt->gen, rt->cursor);
-    rt->cursor++;
-
-    if (!tb_map_u64_put(&rt->token_to_id, token, (uint64_t)id))
-      return TB_ERR_OOM;
-    if (!tb_q64_push(&rt->in_q, token))
-      return TB_ERR_CORRUPT;
-
-    tb_event ev = {.kind = TB_EV_SUBMIT, .id = id};
-    if (!tb_vec_ev_push(&rt->evlog, ev))
-      return TB_ERR_OOM;
-  }
-
-  return TB_OK;
-}
-
-[?2004hroot@7ae5e2ee926b:/app# make -C /app -B -j4
-[?2004lmake: Entering directory '/app'
-mkdir -p /usr/local/bin
-cc -O2 -g -std=c11 -Wall -Wextra -Wshadow -Wconversion -Iinclude -o /usr/local/bin/arena src/main.c src/cli.c src/tb_err.c src/report.c src/runtime/runtime.c src/runtime/profile.c src/runtime/script.c src/core/idgen.c src/core/queue.c src/core/map_u64.c src/core/vec_u64.c src/core/vec_ev.c src/io/fs.c src/io/journal.c src/logic/ingest.c src/logic/settle.c src/logic/nudge.c src/logic/merge.c src/logic/link.c 
-make: Leaving directory '/app'
-[?2004hroot@7ae5e2ee926b:/app# rm -f /app/run/state.bin /app/output/report.json
-[?2004l[?2004hroot@7ae5e2ee926b:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json --seed 2
-[?2004l[?2004hroot@7ae5e2ee926b:/app# python3 - <<'PY'
-[?2004l[?2004h> import json
-[?2004l[?2004h> from collections import Counter,defaultdict
-[?2004l[?2004h> r=json.load(open('/app/output/report.json'))
-[?2004l[?2004h> e=r['events']
-[?2004l[?2004h> print('events',len(e),Counter(x['kind'] for x in e))
-[?2004l[?2004h> # per-id coverage
-[?2004l[?2004h> by=defaultdict(set)
-[?2004l[?2004h> for x in e: by[x['id']].add(x['kind'])
-[?2004l[?2004h> miss=[i for i,k in by.items() if k!={'submit','complete','notify'}]
-[?2004l[?2004h> print('missing_rows',len(miss),'sample',miss[:30])
-[?2004l[?2004h> # duplicates
-[?2004l[?2004h> seen=set(); dup=[]
-[?2004l[?2004h> for x in e:
-[?2004l[?2004h>  t=(x['kind'],x['id'])
-[?2004l[?2004h>  if t in seen: dup.append(t)
-[?2004l[?2004h>  seen.add(t)
-[?2004l[?2004h> print('dup_count',len(dup))
-[?2004l[?2004h> PY
-[?2004levents 398 Counter({'submit': 140, 'complete': 140, 'notify': 118})
-missing_rows 22 sample [55, 57, 58, 59, 60, 61, 62, 63, 64, 65, 97, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 110]
-dup_count 0
-[?2004hroot@7ae5e2ee926b:/app# sed -n '1,260p' /app/src/logic/settle.c
-[?2004l#include "logic/settle.h"
-
-#include "runtime/runtime.h"
-
-// Deterministic "work takes time": only move certain tokens each tick.
-static bool ready(uint64_t token, uint32_t tick) {
-  // spread completion across ticks, but deterministic and input-dependent
-  return (((uint32_t)token) ^ tick) % 3 == 0;
-}
-
-static bool lane_a(uint64_t token, uint32_t tick) {
-  // Choose which completion source produced the "done" record.
-  return ((((uint32_t)(token >> 32)) + (uint32_t)token + tick) & 1u) == 0u;
-}
-
-tb_status tb_settle_tick(tb_rt *rt, uint32_t tick) {
-  if (!rt)
-    return TB_ERR_BAD_ARG;
-
-  // rotate through at most a bounded number so runs are stable
-  size_t spins = rt->in_q.len;
-  for (size_t i = 0; i < spins; i++) {
-    uint64_t token = 0;
-    if (!tb_q64_pop(&rt->in_q, &token))
-      break;
-
-    if (ready(token, tick)) {
-      if (lane_a(token, tick)) {
-        if (!tb_q64_push(&rt->done_a, token))
-          return TB_ERR_CORRUPT;
-      } else {
-        if (!tb_q64_push(&rt->done_b, token))
-          return TB_ERR_CORRUPT;
-      }
-      if (rt->attached) {
-        // The notifier is only live while attached.
-        if (!tb_q64_push(&rt->notify_q, token))
-          return TB_ERR_CORRUPT;
-      }
-    } else {
-      // not ready, requeue at tail
-      if (!tb_q64_push(&rt->in_q, token))
-        return TB_ERR_CORRUPT;
-    }
-  }
-
-  return TB_OK;
-}
-
-[?2004hroot@7ae5e2ee926b:/app# perl -i -pe 's/\s*if \(rt->attached\) \{\n\s*\/\/ The notifier is only live while attached\.\n\s*if \(!tb_q64_push\(&rt->notify_q, token\)\)\n\s*return TB_ERR_CORRUPT;\n\s*\}//s/      \/\/ Notifications are queued device-side even while detached; delivery is gated in nudge.\n      if (!tb_q64_push(&rt->notify_q, token))\n        return TB_ERR_CORRUPT;/s' /app/src/logic/settle.c
-[?2004l[?2004hroot@7ae5e2ee926b:/app# perl -i -pe 's/\(void\)tick;/\(void\)tick;\n  if (!rt->attached)\n    return TB_OK;/s' /app/src/logic/nudge.c
-[?2004l[?2004hroot@7ae5e2ee926b:/app# sed -n '1,120p' /app/src/logic/settle.c
-[?2004l#include "logic/settle.h"
-
-#include "runtime/runtime.h"
-
-// Deterministic "work takes time": only move certain tokens each tick.
-static bool ready(uint64_t token, uint32_t tick) {
-  // spread completion across ticks, but deterministic and input-dependent
-  return (((uint32_t)token) ^ tick) % 3 == 0;
-}
-
-static bool lane_a(uint64_t token, uint32_t tick) {
-  // Choose which completion source produced the "done" record.
-  return ((((uint32_t)(token >> 32)) + (uint32_t)token + tick) & 1u) == 0u;
-}
-
-tb_status tb_settle_tick(tb_rt *rt, uint32_t tick) {
-  if (!rt)
-    return TB_ERR_BAD_ARG;
-
-  // rotate through at most a bounded number so runs are stable
-  size_t spins = rt->in_q.len;
-  for (size_t i = 0; i < spins; i++) {
-    uint64_t token = 0;
-    if (!tb_q64_pop(&rt->in_q, &token))
-      break;
-
-    if (ready(token, tick)) {
-      if (lane_a(token, tick)) {
-        if (!tb_q64_push(&rt->done_a, token))
-          return TB_ERR_CORRUPT;
-      } else {
-        if (!tb_q64_push(&rt->done_b, token))
-          return TB_ERR_CORRUPT;
-      }
-      if (rt->attached) {
-        // The notifier is only live while attached.
-        if (!tb_q64_push(&rt->notify_q, token))
-          return TB_ERR_CORRUPT;
-      }
-    } else {
-      // not ready, requeue at tail
-      if (!tb_q64_push(&rt->in_q, token))
-        return TB_ERR_CORRUPT;
-    }
-  }
-
-  return TB_OK;
-}
-
-[?2004hroot@7ae5e2ee926b:/app# sed -n '1,120p' /app/src/logic/nudge.c
-[?2004l#include "logic/nudge.h"
-
-#include "core/ev.h"
-
-tb_status tb_nudge_drain(tb_rt *rt, uint32_t tick) {
-  (void)tick;
-  if (!rt->attached)
-    return TB_OK;
-  if (!rt)
-    return TB_ERR_BAD_ARG;
-
-  uint64_t token = 0;
-  while (tb_q64_pop(&rt->notify_q, &token)) {
-    uint64_t key = token;
-    if (!tb_map_u64_has(&rt->token_done, key)) {
-      continue;
-    }
-    uint64_t id64 = 0;
-    if (!tb_map_u64_get(&rt->token_to_id, token, &id64))
-      continue;
-    tb_event ev = {.kind = TB_EV_POKE, .id = (uint32_t)id64};
-    (void)tb_vec_ev_push(&rt->evlog, ev);
-  }
-  return TB_OK;
-}
-[?2004hroot@7ae5e2ee926b:/app# make -C /app -B -j4
-[?2004lmake: Entering directory '/app'
-mkdir -p /usr/local/bin
-cc -O2 -g -std=c11 -Wall -Wextra -Wshadow -Wconversion -Iinclude -o /usr/local/bin/arena src/main.c src/cli.c src/tb_err.c src/report.c src/runtime/runtime.c src/runtime/profile.c src/runtime/script.c src/core/idgen.c src/core/queue.c src/core/map_u64.c src/core/vec_u64.c src/core/vec_ev.c src/io/fs.c src/io/journal.c src/logic/ingest.c src/logic/settle.c src/logic/nudge.c src/logic/merge.c src/logic/link.c 
-make: Leaving directory '/app'
-[?2004hroot@7ae5e2ee926b:/app# rm -f /app/run/state.bin /app/output/report.json
-[?2004l[?2004hroot@7ae5e2ee926b:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json --seed 2
-[?2004l[?2004hroot@7ae5e2ee926b:/app# python3 - <<'PY'
-[?2004l[?2004h> import json
-[?2004l[?2004h> from collections import Counter,defaultdict
-[?2004l[?2004h> r=json.load(open('/app/output/report.json'))
-[?2004l[?2004h> e=r['events']
-[?2004l[?2004h> print('events',len(e),Counter(x['kind'] for x in e))
-[?2004l[?2004h> by=defaultdict(set)
-[?2004l[?2004h> for x in e: by[x['id']].add(x['kind'])
-[?2004l[?2004h> miss=[i for i,k in by.items() if k!={'submit','complete','notify'}]
-[?2004l[?2004h> print('missing_rows',len(miss),'sample',miss[:30])
-[?2004l[?2004h> # ordering
-[?2004l[?2004h> pos=defaultdict(dict)
-[?2004l[?2004h> for idx,x in enumerate(e): pos[x['id']][x['kind']]=idx
-[?2004l[?2004h> bad=[i for i,d in pos.items() if set(d)=={'submit','complete','notify'} and not (d['submit']<d['complete']<d['notify'])]
-[?2004l[?2004h> print('order_bad',len(bad),'sample',bad[:10])
-[?2004l[?2004h> PY
-[?2004levents 398 Counter({'submit': 140, 'complete': 140, 'notify': 118})
-missing_rows 22 sample [55, 57, 58, 59, 60, 61, 62, 63, 64, 65, 97, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 110]
-order_bad 0 sample []
-[?2004hroot@7ae5e2ee926b:/app# for sc in basic stress stress2; do for pr in burst steady; do for ord in a_then_b b_then_a; do rm -f /app/run/state.bin /app/output/report.json; /usr/local/bin/arena --scenario $sc --profile $pr --order $ord --out /app/output/report.json --seed 1 >/dev/null || { echo FAIL $sc $pr $ord; exit 1; }; python3 - <<'PY'
-[?2004l[?2004h> import json
-[?2004l[?2004h> from collections import Counter
-[?2004l[?2004h> r=json.load(open('/app/output/report.json'))
-[?2004l[?2004h> c=Counter(e['kind'] for e in r['events'])
-[?2004l[?2004h> if len(set(c.values()))!=1:
-[?2004l[?2004h>   raise SystemExit(f"kind mismatch {c}")
-[?2004l[?2004h> PY
-[?2004l[?2004h>  echo OK $sc $pr $ord; done; done; done
-[?2004lOK basic burst a_then_b
-OK basic burst b_then_a
-OK basic steady a_then_b
-OK basic steady b_then_a
-kind mismatch Counter({'submit': 110, 'complete': 110, 'notify': 101})
-OK stress burst a_then_b
-kind mismatch Counter({'submit': 110, 'complete': 110, 'notify': 101})
-OK stress burst b_then_a
-kind mismatch Counter({'submit': 27, 'complete': 27, 'notify': 23})
-OK stress steady a_then_b
-kind mismatch Counter({'submit': 27, 'complete': 27, 'notify': 23})
-OK stress steady b_then_a
-kind mismatch Counter({'submit': 140, 'complete': 140, 'notify': 118})
-OK stress2 burst a_then_b
-kind mismatch Counter({'submit': 140, 'complete': 140, 'notify': 118})
-OK stress2 burst b_then_a
-kind mismatch Counter({'submit': 37, 'complete': 37, 'notify': 29})
-OK stress2 steady a_then_b
-kind mismatch Counter({'submit': 37, 'complete': 37, 'notify': 29})
-OK stress2 steady b_then_a
-[?2004hroot@7ae5e2ee926b:/app# perl -0777 -i -pe 's/\n\s*if \(rt->attached\) \{\n\s*\/\/ The notifier is only live while attached\.\n\s*if \(!tb_q64_push\(&rt->notify_q, token\)\)\n\s*return TB_ERR_CORRUPT;\n\s*\}\n/\n      \/\/ Notifications are queued device-side even while detached; delivery is gated in nudge.\n      if (!tb_q64_push(&rt->notify_q, token))\n        return TB_ERR_CORRUPT;\n/s' /app/src/logic/settle.c
-[?2004l[?2004hroot@7ae5e2ee926b:/app# perl -0777 -i -pe 's/tb_status tb_nudge_drain\(tb_rt \*rt, uint32_t tick\) \{\n  \(void\)tick;\n  if \(!rt->attached\)\n    return TB_OK;\n  if \(!rt\)\n    return TB_ERR_BAD_ARG;/tb_status tb_nudge_drain(tb_rt *rt, uint32_t tick) {\n  (void)tick;\n  if (!rt)\n    return TB_ERR_BAD_ARG;\n  if (!rt->attached)\n    return TB_OK;/s' /app/src/logic/nudge.c
-[?2004l[?2004hroot@7ae5e2ee926b:/app# grep -n "notify_q" -n /app/src/logic/settle.c | head
-[?2004l36:      if (!tb_q64_push(&rt->notify_q, token))
-[?2004hroot@7ae5e2ee926b:/app# sed -n '20,90p' /app/src/logic/settle.c
-[?2004l  // rotate through at most a bounded number so runs are stable
-  size_t spins = rt->in_q.len;
-  for (size_t i = 0; i < spins; i++) {
-    uint64_t token = 0;
-    if (!tb_q64_pop(&rt->in_q, &token))
-      break;
-
-    if (ready(token, tick)) {
-      if (lane_a(token, tick)) {
-        if (!tb_q64_push(&rt->done_a, token))
-          return TB_ERR_CORRUPT;
-      } else {
-        if (!tb_q64_push(&rt->done_b, token))
-          return TB_ERR_CORRUPT;
-      }
-      // Notifications are queued device-side even while detached; delivery is gated in nudge.
-      if (!tb_q64_push(&rt->notify_q, token))
-        return TB_ERR_CORRUPT;
-    } else {
-      // not ready, requeue at tail
-      if (!tb_q64_push(&rt->in_q, token))
-        return TB_ERR_CORRUPT;
-    }
-  }
-
-  return TB_OK;
-}
-
-[?2004hroot@7ae5e2ee926b:/app# sed -n '1,80p' /app/src/logic/nudge.c
-[?2004l#include "logic/nudge.h"
-
-#include "core/ev.h"
-
-tb_status tb_nudge_drain(tb_rt *rt, uint32_t tick) {
-  (void)tick;
-  if (!rt)
-    return TB_ERR_BAD_ARG;
-  if (!rt->attached)
-    return TB_OK;
-
-  uint64_t token = 0;
-  while (tb_q64_pop(&rt->notify_q, &token)) {
-    uint64_t key = token;
-    if (!tb_map_u64_has(&rt->token_done, key)) {
-      continue;
-    }
-    uint64_t id64 = 0;
-    if (!tb_map_u64_get(&rt->token_to_id, token, &id64))
-      continue;
-    tb_event ev = {.kind = TB_EV_POKE, .id = (uint32_t)id64};
-    (void)tb_vec_ev_push(&rt->evlog, ev);
-  }
-  return TB_OK;
-}
-[?2004hroot@7ae5e2ee926b:/app# make -C /app -B -j4
-[?2004lmake: Entering directory '/app'
-mkdir -p /usr/local/bin
-cc -O2 -g -std=c11 -Wall -Wextra -Wshadow -Wconversion -Iinclude -o /usr/local/bin/arena src/main.c src/cli.c src/tb_err.c src/report.c src/runtime/runtime.c src/runtime/profile.c src/runtime/script.c src/core/idgen.c src/core/queue.c src/core/map_u64.c src/core/vec_u64.c src/core/vec_ev.c src/io/fs.c src/io/journal.c src/logic/ingest.c src/logic/settle.c src/logic/nudge.c src/logic/merge.c src/logic/link.c 
-make: Leaving directory '/app'
-[?2004hroot@7ae5e2ee926b:/app# rm -f /app/run/state.bin /app/output/report.json
-[?2004l[?2004hroot@7ae5e2ee926b:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/report.json --seed 2
-[?2004l[?2004hroot@7ae5e2ee926b:/app# python3 - <<'PY'
-[?2004l[?2004h> import json
-[?2004l[?2004h> from collections import Counter,defaultdict
-[?2004l[?2004h> r=json.load(open('/app/output/report.json'))
-[?2004l[?2004h> e=r['events']
-[?2004l[?2004h> print('events',len(e),Counter(x['kind'] for x in e))
-[?2004l[?2004h> by=defaultdict(set)
-[?2004l[?2004h> for x in e: by[x['id']].add(x['kind'])
-[?2004l[?2004h> miss=[i for i,k in by.items() if k!={'submit','complete','notify'}]
-[?2004l[?2004h> print('missing_rows',len(miss),'sample',miss[:30])
-[?2004l[?2004h> PY
-[?2004levents 420 Counter({'submit': 140, 'complete': 140, 'notify': 140})
-missing_rows 0 sample []
-[?2004hroot@7ae5e2ee926b:/app# for sc in basic stress stress2; do for pr in burst steady; do for ord in a_then_b b_then_a; do rm -f /app/run/state.bin /app/output/report.json; /usr/local/bin/arena --scenario $sc --profile $pr --order $ord --out /app/output/report.json --seed 1 >/dev/null || { echo FAIL $sc $pr $ord; exit 1; }; python3 - <<'PY'
-[?2004l[?2004h> import json
-[?2004l[?2004h> from collections import Counter
-[?2004l[?2004h> r=json.load(open('/app/output/report.json'))
-[?2004l[?2004h> c=Counter(e['kind'] for e in r['events'])
-[?2004l[?2004h> if len(set(c.values()))!=1:
-[?2004l[?2004h>   raise SystemExit(f"kind mismatch {c}")
-[?2004l[?2004h> PY
-[?2004l[?2004h>  echo OK $sc $pr $ord; done; done; done
-[?2004lOK basic burst a_then_b
-OK basic burst b_then_a
-OK basic steady a_then_b
-OK basic steady b_then_a
-OK stress burst a_then_b
-OK stress burst b_then_a
-OK stress steady a_then_b
-OK stress steady b_then_a
-OK stress2 burst a_then_b
-OK stress2 burst b_then_a
-OK stress2 steady a_then_b
-OK stress2 steady b_then_a
-[?2004hroot@7ae5e2ee926b:/app# python3 - <<'PY'
-[?2004l[?2004h> import json
-[?2004l[?2004h> from collections import defaultdict
-[?2004l[?2004h> 
-[?2004l[?2004h> def check(path):
-[?2004l[?2004h>   r=json.load(open(path))
-[?2004l[?2004h>   e=r['events']
-[?2004l[?2004h>   seen=set();
-[?2004l[?2004h>   for ev in e:
-[?2004l[?2004h>     t=(ev['kind'],ev['id'])
-[?2004l[?2004h>     if t in seen:
-[?2004l[?2004h>       return False,f'duplicate {t}'
-[?2004l[?2004h>     seen.add(t)
-[?2004l[?2004h>   subs=[ev['id'] for ev in e if ev['kind']=='submit']
-[?2004l[?2004h>   if subs!=list(range(1,max(subs)+1)):
-[?2004l[?2004h>     return False,'submit ids not contiguous'
-[?2004l[?2004h>   pos=defaultdict(dict)
-[?2004l[?2004h>   for idx,ev in enumerate(e):
-[?2004l[?2004h>     pos[ev['id']][ev['kind']]=idx
-[?2004l[?2004h>   for i,d in pos.items():
-[?2004l[?2004h>     if set(d)!={'submit','complete','notify'}:
-[?2004l[?2004h>       return False,f'missing kind for id {i}: {d}'
-[?2004l[?2004h>     if not (d['submit']<d['complete']<d['notify']):
-[?2004l[?2004h>       return False,f'order violation for id {i}: {d}'
-[?2004l[?2004h>   return True,f'OK ids={len(pos)} events={len(e)}'
-[?2004l[?2004h> 
-[?2004l[?2004h> ok,msg=check('/app/output/report.json')
-[?2004l[?2004h> print(msg)
-[?2004l[?2004h> raise SystemExit(0 if ok else 1)
-[?2004l[?2004h> PY
-[?2004lOK ids=37 events=111
-[?2004hroot@7ae5e2ee926b:/app# for ord in a_then_b b_then_a; do rm -f /app/run/state.bin /app/output/report.json; /usr/local/bin/arena --scenario stress2 --profile burst --order $ord --out /app/output/report.json --seed 2 >/dev/null; python3 - <<'PY'
-[?2004l[?2004h> import json,hashlib
-[?2004l[?2004h> r=json.load(open('/app/output/report.json'))
-[?2004l[?2004h> h=hashlib.sha256(json.dumps(r['events']).encode()).hexdigest()
-[?2004l[?2004h> print('$ord',len(r['events']),h[:20])
-[?2004l[?2004h> PY
-[?2004l[?2004h> done
-[?2004l$ord 420 b117c4c935f3b3e8f86a
-$ord 420 ac970ec50cd6fb22568b
-[?2004hroot@7ae5e2ee926b:/app# rm -f /app/run/state.bin /app/output/rerun1.json /app/output/rerun2.json
-[?2004l[?2004hroot@7ae5e2ee926b:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/rerun1.json --seed 2 >/dev/null
-[?2004l[?2004hroot@7ae5e2ee926b:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/rerun2.json --seed 2 >/dev/null
-[?2004l[?2004hroot@7ae5e2ee926b:/app# python3 - <<'PY'
-[?2004l[?2004h> import json,hashlib
-[?2004l[?2004h> 
-[?2004l[?2004h> def h(p):
-[?2004l[?2004h>   r=json.load(open(p))
-[?2004l[?2004h>   return hashlib.sha256(json.dumps(r['events']).encode()).hexdigest()
-[?2004l[?2004h> print('same', h('/app/output/rerun1.json')==h('/app/output/rerun2.json'))
-[?2004l[?2004h> PY
-[?2004lsame True
-[?2004hroot@7ae5e2ee926b:/app# rm -f /app/output/bad.json; /usr/local/bin/arena --scenario basic --profile steady --order z_then_y --out /app/output/bad.json >/dev/null 2>&1; echo EXIT:$?; test -e /app/output/bad.json && echo "BAD: file exists" || echo "OK: no file"
-[?2004lEXIT:2
-OK: no file
-[?2004hroot@7ae5e2ee926b:/app# 

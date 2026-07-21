@@ -1,0 +1,30 @@
+{
+  "analysis": "I need to find where analyze_unit, read_pass_epoch, f12_slot_sum, f12_drift_total, n21_header_serial, and the b07 functions are implemented.",
+  "plan": "Look at the remaining source files to find all implementations.",
+  "commands": [
+    {
+      "keystrokes": "cat /app/environment/f12/extra_f1.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /app/environment/f12/extra_f2.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /app/environment/n21/p1_shadow.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /app/environment/n21/extra_n1.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /app/environment/n21/extra_n2.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /app/environment/b07/v3_read_scale.c\n",
+      "duration": 0.1
+    }
+  ]
+}

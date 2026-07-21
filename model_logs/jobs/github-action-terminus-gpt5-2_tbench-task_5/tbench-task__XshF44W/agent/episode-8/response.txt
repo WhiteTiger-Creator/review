@@ -1,0 +1,27 @@
+{
+  "analysis": "Checkpoint persistence is now correct across partial invocations: after running only u_alpha, the checkpoint still contains u_zeta. The checkpoint file now includes pass_epoch. Lane token changed (now 2d5837bed1ac6b84) due to descriptor sorting fix, which is expected. We still need to ensure emit JSON and digest semantics meet the full spec (top-level keys exactly, unit fields exactly, order_weight fresh/resume formulas, pass_epoch read-before-processing, lane token uses all manifest units, checkpoint units sorted and only resume-mode). Also we must ensure forge_lane_merge_checkpoint compilation and lane_store includes <map> due to our merge implementation; build succeeded so includes are okay. Next verify emitted JSON schema and digest stability, and ensure resume units advance pass_index and weights on subsequent runs when requested.",
+  "plan": "1) Inspect current forge_emit.json output for schema/fields ordering/keys correctness and unit mode/weights. 2) Run a second invocation requesting u_zeta to confirm resume path uses checkpoint next_pass and carry_weight, updating pass_index and order_weight accordingly. 3) Confirm checkpoint next_pass increments and carry_weight updated. 4) If output JSON contains extra/missing keys or digest mismatches, adjust serialization/digest code. Then run full rebuild pipeline (cmake+ninja already done) and regenerate final outputs in /app/output.",
+  "commands": [
+    {
+      "keystrokes": "cat /app/output/forge_emit.json\n",
+      "duration": 0.2
+    },
+    {
+      "keystrokes": "rm -f /app/output/forge_emit.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_zeta\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "echo '--- emit u_zeta after resume ---' && cat /app/output/forge_emit.json\n",
+      "duration": 0.2
+    },
+    {
+      "keystrokes": "echo '--- checkpoint after u_zeta ---' && cat /app/output/forge_checkpoint.json\n",
+      "duration": 0.2
+    }
+  ],
+  "task_complete": false
+}

@@ -1,0 +1,30 @@
+{
+  "analysis": "More bugs found:\n1. n21/extra_n2.cpp: header serial missing pass_epoch, wrong field order (should be schema_version|release_id|order_weight_base|pass_epoch|total_drift_bytes|order_score)\n2. n21/q5_pack_stamp.cpp: row serial missing drift_bytes\n3. f12/extra_f2.cpp: drift_total sums raw drift instead of absolute values\n4. b07/v3_read_scale.c: divides by 1024 if line has \"lane=primary\" (should just return raw value)\n5. f12/k8_rank_slot.cpp: uses lexicographic rank instead of manifest order_rank\n\nNeed to find analyze_unit and read_pass_epoch implementations.",
+  "plan": "Look at remaining files to find analyze_unit and read_pass_epoch.",
+  "commands": [
+    {
+      "keystrokes": "cat /app/environment/b07/j2_shadow.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /app/environment/b07/extra_b1.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /app/environment/b07/extra_b2.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /app/environment/c9/extra_c1.c\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /app/environment/m14/extra_m1.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /app/environment/m14/shadow_m2.c\n",
+      "duration": 0.1
+    }
+  ]
+}

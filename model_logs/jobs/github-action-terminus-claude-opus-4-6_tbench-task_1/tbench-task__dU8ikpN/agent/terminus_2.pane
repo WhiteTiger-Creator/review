@@ -1,2023 +1,0 @@
-[?2004hroot@ddb910b7e5ab:/app# asciinema rec --stdin /logs/agent/recording.cast
-[?2004l[0;32masciinema: recording asciicast to /logs/agent/recording.cast[0m
-[0;32masciinema: press <ctrl-d> or type "exit" when you're done[0m
-[?2004hroot@ddb910b7e5ab:/app# clear
-[?2004l[H[J[3J[?2004hroot@ddb910b7e5ab:/app# find /app -type f | head -60
-[?2004l/app/Makefile
-/app/include/cli.h
-/app/include/core/ev.h
-/app/include/core/idgen.h
-/app/include/core/map_u64.h
-/app/include/core/queue.h
-/app/include/core/vec_ev.h
-/app/include/core/vec_u64.h
-/app/include/io/fs.h
-/app/include/io/journal.h
-/app/include/logic/ingest.h
-/app/include/logic/link.h
-/app/include/logic/merge.h
-/app/include/logic/nudge.h
-/app/include/logic/settle.h
-/app/include/report.h
-/app/include/runtime/profile.h
-/app/include/runtime/runtime.h
-/app/include/runtime/script.h
-/app/include/tb_err.h
-/app/run/README.txt
-/app/src/cli.c
-/app/src/core/idgen.c
-/app/src/core/map_u64.c
-/app/src/core/queue.c
-/app/src/core/vec_ev.c
-/app/src/core/vec_u64.c
-/app/src/io/fs.c
-/app/src/io/journal.c
-/app/src/logic/ingest.c
-/app/src/logic/link.c
-/app/src/logic/merge.c
-/app/src/logic/nudge.c
-/app/src/logic/settle.c
-/app/src/main.c
-/app/src/report.c
-/app/src/runtime/profile.c
-/app/src/runtime/runtime.c
-/app/src/runtime/script.c
-/app/src/tb_err.c
-[?2004hroot@ddb910b7e5ab:/app# cat /app/Makefile
-[?2004lCC ?= cc
-CFLAGS ?= -O2 -g -std=c11 -Wall -Wextra -Wshadow -Wconversion -Iinclude
-LDFLAGS ?=
-
-BIN_DIR := /usr/local/bin
-OUT := $(BIN_DIR)/arena
-
-SRC := \
-  src/main.c \
-  src/cli.c \
-  src/tb_err.c \
-  src/report.c \
-  src/runtime/runtime.c \
-  src/runtime/profile.c \
-  src/runtime/script.c \
-  src/core/idgen.c \
-  src/core/queue.c \
-  src/core/map_u64.c \
-  src/core/vec_u64.c \
-  src/core/vec_ev.c \
-  src/io/fs.c \
-  src/io/journal.c \
-  src/logic/ingest.c \
-  src/logic/settle.c \
-  src/logic/nudge.c \
-  src/logic/merge.c \
-  src/logic/link.c
-
-$(OUT): $(SRC) include/*.h include/runtime/*.h include/core/*.h include/io/*.h include/logic/*.h
-	mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
-
-.PHONY: all clean
-all: $(OUT)
-
-clean:
-	rm -f $(OUT)
-[?2004hroot@ddb910b7e5ab:/app# ls /app/src/
-[?2004lcli.c  core  io  logic	main.c	report.c  runtime  tb_err.c
-[?2004hroot@ddb910b7e5ab:/app# ls /app/include/
-[?2004lcli.h  core  io  logic	report.h  runtime  tb_err.h
-[?2004hroot@ddb910b7e5ab:/app# cat /app/src/main.c
-[?2004l#include "cli.h"
-#include "report.h"
-#include "runtime/runtime.h"
-#include "tb_err.h"
-
-#include <stdio.h>
-
-int main(int argc, char **argv) {
-  tb_cli cli = {0};
-  tb_status st = tb_cli_parse(&cli, argc, argv);
-  if (st != TB_OK) {
-    fprintf(stderr, "cli: %s\n", tb_status_str(st));
-    return 2;
-  }
-
-  // Per-invocation: persistence is only meant to model detach/reattach inside a run.
-  (void)remove("/app/run/state.bin");
-
-  tb_rt rt = {0};
-  st = tb_rt_init(&rt, "/app/run/state.bin");
-  if (st != TB_OK) {
-    fprintf(stderr, "init: %s\n", tb_status_str(st));
-    return 2;
-  }
-
-  st = tb_rt_run(&rt, cli.scenario, cli.profile, cli.order, cli.seed);
-  if (st != TB_OK) {
-    fprintf(stderr, "run: %s\n", tb_status_str(st));
-    tb_rt_free(&rt);
-    return 1;
-  }
-
-  int rc = tb_report_write_json(cli.out_path, cli.scenario, cli.profile, tb_rt_events(&rt));
-  tb_rt_free(&rt);
-  return rc;
-}
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/src/cli.c
-[?2004l#include "cli.h"
-
-#include <stdio.h>
-#include <string.h>
-
-static tb_status usage(void) {
-  fprintf(stderr, "usage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]\n");
-  return TB_ERR_BAD_ARG;
-}
-
-tb_order tb_order_parse(const char *s) {
-  if (!s)
-    return 0;
-  if (strcmp(s, "a_then_b") == 0)
-    return TB_ORDER_A_THEN_B;
-  if (strcmp(s, "b_then_a") == 0)
-    return TB_ORDER_B_THEN_A;
-  return 0;
-}
-
-const char *tb_order_str(tb_order o) {
-  switch (o) {
-  case TB_ORDER_A_THEN_B:
-    return "a_then_b";
-  case TB_ORDER_B_THEN_A:
-    return "b_then_a";
-  default:
-    return "unknown";
-  }
-}
-
-tb_status tb_cli_parse(tb_cli *out, int argc, char **argv) {
-  if (!out || argc <= 1)
-    return usage();
-
-  tb_cli c = {0};
-  c.seed = 1;
-
-  for (int i = 1; i < argc; i++) {
-    if (strcmp(argv[i], "--scenario") == 0 && i + 1 < argc) {
-      c.scenario = tb_scenario_parse(argv[++i]);
-    } else if (strcmp(argv[i], "--profile") == 0 && i + 1 < argc) {
-      c.profile = tb_profile_parse(argv[++i]);
-    } else if (strcmp(argv[i], "--order") == 0 && i + 1 < argc) {
-      c.order = tb_order_parse(argv[++i]);
-    } else if (strcmp(argv[i], "--out") == 0 && i + 1 < argc) {
-      c.out_path = argv[++i];
-    } else if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
-      unsigned long v = 0;
-      if (sscanf(argv[++i], "%lu", &v) != 1)
-        return usage();
-      c.seed = (uint32_t)v;
-    } else {
-      return usage();
-    }
-  }
-
-  if (!c.scenario || !c.profile || !c.order || !c.out_path)
-    return usage();
-
-  *out = c;
-  return TB_OK;
-}
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/include/cli.h
-[?2004l#pragma once
-
-#include "runtime/profile.h"
-#include "runtime/runtime.h"
-#include "runtime/script.h"
-#include "tb_err.h"
-
-#include <stdint.h>
-
-typedef struct {
-  tb_scenario scenario;
-  tb_profile profile;
-  tb_order order;
-  const char *out_path;
-  uint32_t seed;
-} tb_cli;
-
-tb_status tb_cli_parse(tb_cli *out, int argc, char **argv);
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/include/runtime/runtime.h
-[?2004l#pragma once
-
-#include "core/ev.h"
-#include "core/map_u64.h"
-#include "core/queue.h"
-#include "core/vec_ev.h"
-#include "io/journal.h"
-#include "runtime/profile.h"
-#include "runtime/script.h"
-#include "tb_err.h"
-
-#include <stdbool.h>
-#include <stdint.h>
-
-typedef enum {
-  TB_ORDER_A_THEN_B = 1,
-  TB_ORDER_B_THEN_A = 2,
-} tb_order;
-
-tb_order tb_order_parse(const char *s);
-const char *tb_order_str(tb_order o);
-
-typedef struct {
-  // "in-flight" handles are 64-bit tokens; external ids are stable u32.
-  tb_map_u64 token_to_id; // token -> id
-  tb_map_u64 token_done;  // canonical done-set, key depends on reconciliation
-
-  tb_q64 in_q;
-  tb_q64 done_a;
-  tb_q64 done_b;
-  tb_q64 notify_q;
-
-  tb_vec_ev evlog;
-
-  uint32_t gen;
-  uint64_t cursor;
-  bool attached;
-
-  const char *journal_path;
-} tb_rt;
-
-tb_status tb_rt_init(tb_rt *rt, const char *journal_path);
-void tb_rt_free(tb_rt *rt);
-
-tb_status tb_rt_run(tb_rt *rt, tb_scenario scn, tb_profile prof, tb_order ord, uint32_t seed);
-
-// report extraction
-const tb_vec_ev *tb_rt_events(const tb_rt *rt);
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/src/runtime/runtime.c
-[?2004l#include "runtime/runtime.h"
-
-#include "core/idgen.h"
-#include "logic/ingest.h"
-#include "logic/link.h"
-#include "logic/merge.h"
-#include "logic/nudge.h"
-#include "logic/settle.h"
-
-#include <stdio.h>
-#include <string.h>
-
-tb_status tb_rt_init(tb_rt *rt, const char *journal_path) {
-  if (!rt || !journal_path)
-    return TB_ERR_BAD_ARG;
-  memset(rt, 0, sizeof(*rt));
-
-  if (!tb_map_u64_init(&rt->token_to_id, 128))
-    return TB_ERR_OOM;
-  if (!tb_map_u64_init(&rt->token_done, 128))
-    return TB_ERR_OOM;
-  if (!tb_q64_init(&rt->in_q, 4096))
-    return TB_ERR_OOM;
-  if (!tb_q64_init(&rt->done_a, 4096))
-    return TB_ERR_OOM;
-  if (!tb_q64_init(&rt->done_b, 4096))
-    return TB_ERR_OOM;
-  if (!tb_q64_init(&rt->notify_q, 4096))
-    return TB_ERR_OOM;
-  if (!tb_vec_ev_init(&rt->evlog, 2048))
-    return TB_ERR_OOM;
-
-  rt->gen = 1;
-  rt->cursor = 1;
-  rt->attached = true;
-  rt->journal_path = journal_path;
-  return TB_OK;
-}
-
-void tb_rt_free(tb_rt *rt) {
-  if (!rt)
-    return;
-  tb_map_u64_free(&rt->token_to_id);
-  tb_map_u64_free(&rt->token_done);
-  tb_q64_free(&rt->in_q);
-  tb_q64_free(&rt->done_a);
-  tb_q64_free(&rt->done_b);
-  tb_q64_free(&rt->notify_q);
-  tb_vec_ev_free(&rt->evlog);
-}
-
-const tb_vec_ev *tb_rt_events(const tb_rt *rt) { return &rt->evlog; }
-
-static tb_status maybe_detach_attach(tb_rt *rt, const tb_script *sc, uint32_t tick) {
-  if (sc->detach_at && tick == sc->detach_at) {
-    return tb_link_detach(rt, tick);
-  }
-  if (sc->detach_at && tick == sc->detach_at + sc->detach_len) {
-    return tb_link_attach(rt, tick);
-  }
-  if (sc->detach2_at && tick == sc->detach2_at) {
-    return tb_link_detach(rt, tick);
-  }
-  if (sc->detach2_at && tick == sc->detach2_at + sc->detach2_len) {
-    return tb_link_attach(rt, tick);
-  }
-  return TB_OK;
-}
-
-tb_status tb_rt_run(tb_rt *rt, tb_scenario scn, tb_profile prof, tb_order ord, uint32_t seed) {
-  (void)seed;
-  if (!rt)
-    return TB_ERR_BAD_ARG;
-
-  tb_script sc = {0};
-  if (!tb_script_for(scn, &sc))
-    return TB_ERR_BAD_ARG;
-
-  tb_stamp last = {0};
-  bool found = false;
-  tb_status st = journal_load_last(rt->journal_path, &last, &found);
-  if (st != TB_OK)
-    return st;
-  if (found) {
-    rt->gen = last.gen + 1;
-    rt->cursor = last.cursor;
-  }
-
-  for (uint32_t tick = 0; tick < sc.ticks; tick++) {
-    st = maybe_detach_attach(rt, &sc, tick);
-    if (st != TB_OK)
-      return st;
-
-    uint32_t submitted = 0;
-    st = tb_ingest_tick(rt, prof, tick, &submitted);
-    if (st != TB_OK)
-      return st;
-
-    st = tb_settle_tick(rt, tick);
-    if (st != TB_OK)
-      return st;
-
-    st = tb_merge_drain(rt, tick, ord);
-    if (st != TB_OK)
-      return st;
-
-    st = tb_nudge_drain(rt, tick);
-    if (st != TB_OK)
-      return st;
-  }
-
-  // Final drain to avoid leaving work in queues.
-  for (uint32_t i = 0; i < 16; i++) {
-    st = tb_settle_tick(rt, sc.ticks + i);
-    if (st != TB_OK)
-      return st;
-    st = tb_merge_drain(rt, sc.ticks + i, ord);
-    if (st != TB_OK)
-      return st;
-    st = tb_nudge_drain(rt, sc.ticks + i);
-    if (st != TB_OK)
-      return st;
-  }
-
-  return TB_OK;
-}
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/include/runtime/script.h
-[?2004l#pragma once
-
-#include <stdbool.h>
-#include <stdint.h>
-
-typedef enum {
-  TB_SCN_BASIC = 1,
-  TB_SCN_STRESS = 2,
-  TB_SCN_STRESS2 = 3,
-} tb_scenario;
-
-tb_scenario tb_scenario_parse(const char *s);
-const char *tb_scenario_str(tb_scenario scn);
-
-typedef struct {
-  uint32_t ticks;
-  uint32_t detach_at;   // 0 means never
-  uint32_t detach_len;  // number of ticks detached
-  uint32_t detach2_at;  // optional second detach
-  uint32_t detach2_len;
-} tb_script;
-
-bool tb_script_for(tb_scenario scn, tb_script *out);
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/src/runtime/script.c
-[?2004l#include "runtime/script.h"
-
-#include <string.h>
-
-tb_scenario tb_scenario_parse(const char *s) {
-  if (!s)
-    return 0;
-  if (strcmp(s, "basic") == 0)
-    return TB_SCN_BASIC;
-  if (strcmp(s, "stress") == 0)
-    return TB_SCN_STRESS;
-  if (strcmp(s, "stress2") == 0)
-    return TB_SCN_STRESS2;
-  return 0;
-}
-
-const char *tb_scenario_str(tb_scenario scn) {
-  switch (scn) {
-  case TB_SCN_BASIC:
-    return "basic";
-  case TB_SCN_STRESS:
-    return "stress";
-  case TB_SCN_STRESS2:
-    return "stress2";
-  default:
-    return "unknown";
-  }
-}
-
-bool tb_script_for(tb_scenario scn, tb_script *out) {
-  if (!out)
-    return false;
-  tb_script s = {0};
-  switch (scn) {
-  case TB_SCN_BASIC:
-    s.ticks = 40;
-    s.detach_at = 0;
-    s.detach_len = 0;
-    s.detach2_at = 0;
-    s.detach2_len = 0;
-    break;
-  case TB_SCN_STRESS:
-    s.ticks = 80;
-    s.detach_at = 22;
-    s.detach_len = 10;
-    s.detach2_at = 0;
-    s.detach2_len = 0;
-    break;
-  case TB_SCN_STRESS2:
-    s.ticks = 110;
-    s.detach_at = 26;
-    s.detach_len = 10;
-    s.detach2_at = 68;
-    s.detach2_len = 12;
-    break;
-  default:
-    return false;
-  }
-  *out = s;
-  return true;
-}
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/src/logic/ingest.c
-[?2004l#include "logic/ingest.h"
-
-#include "core/ev.h"
-#include "runtime/profile.h"
-
-static uint64_t make_token(uint32_t gen, uint64_t cursor) { return (((uint64_t)gen) << 32) ^ cursor; }
-
-tb_status tb_ingest_tick(tb_rt *rt, tb_profile prof, uint32_t tick, uint32_t *submitted_out) {
-  if (!rt || !submitted_out)
-    return TB_ERR_BAD_ARG;
-
-  uint32_t n = tb_profile_should_submit(prof, tick);
-  *submitted_out = n;
-
-  for (uint32_t i = 0; i < n; i++) {
-    uint32_t id = (uint32_t)(rt->cursor & 0xffffffffu);
-    uint64_t token = make_token(rt->gen, rt->cursor);
-    rt->cursor++;
-
-    if (!tb_map_u64_put(&rt->token_to_id, token, (uint64_t)id))
-      return TB_ERR_OOM;
-    if (!tb_q64_push(&rt->in_q, token))
-      return TB_ERR_CORRUPT;
-
-    tb_event ev = {.kind = TB_EV_SUBMIT, .id = id};
-    if (!tb_vec_ev_push(&rt->evlog, ev))
-      return TB_ERR_OOM;
-  }
-
-  return TB_OK;
-}
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/src/logic/settle.c
-[?2004l#include "logic/settle.h"
-
-#include "runtime/runtime.h"
-
-// Deterministic "work takes time": only move certain tokens each tick.
-static bool ready(uint64_t token, uint32_t tick) {
-  // spread completion across ticks, but deterministic and input-dependent
-  return (((uint32_t)token) ^ tick) % 3 == 0;
-}
-
-static bool lane_a(uint64_t token, uint32_t tick) {
-  // Choose which completion source produced the "done" record.
-  return ((((uint32_t)(token >> 32)) + (uint32_t)token + tick) & 1u) == 0u;
-}
-
-tb_status tb_settle_tick(tb_rt *rt, uint32_t tick) {
-  if (!rt)
-    return TB_ERR_BAD_ARG;
-
-  // rotate through at most a bounded number so runs are stable
-  size_t spins = rt->in_q.len;
-  for (size_t i = 0; i < spins; i++) {
-    uint64_t token = 0;
-    if (!tb_q64_pop(&rt->in_q, &token))
-      break;
-
-    if (ready(token, tick)) {
-      if (lane_a(token, tick)) {
-        if (!tb_q64_push(&rt->done_a, token))
-          return TB_ERR_CORRUPT;
-      } else {
-        if (!tb_q64_push(&rt->done_b, token))
-          return TB_ERR_CORRUPT;
-      }
-      if (rt->attached) {
-        // The notifier is only live while attached.
-        if (!tb_q64_push(&rt->notify_q, token))
-          return TB_ERR_CORRUPT;
-      }
-    } else {
-      // not ready, requeue at tail
-      if (!tb_q64_push(&rt->in_q, token))
-        return TB_ERR_CORRUPT;
-    }
-  }
-
-  return TB_OK;
-}
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/src/logic/merge.c
-[?2004l#include "logic/merge.h"
-
-#include "core/ev.h"
-
-static bool drain_one(tb_rt *rt, tb_q64 *q, uint32_t tick) {
-  (void)tick;
-  uint64_t token = 0;
-  if (!tb_q64_pop(q, &token))
-    return false;
-
-  uint64_t key = (uint32_t)token;
-
-  if (!tb_map_u64_has(&rt->token_done, key)) {
-    uint64_t id64 = 0;
-    if (!tb_map_u64_get(&rt->token_to_id, token, &id64)) {
-      return true;
-    }
-    (void)tb_map_u64_put(&rt->token_done, key, 1);
-    tb_event ev = {.kind = TB_EV_DONE, .id = (uint32_t)id64};
-    (void)tb_vec_ev_push(&rt->evlog, ev);
-  }
-  return true;
-}
-
-tb_status tb_merge_drain(tb_rt *rt, uint32_t tick, tb_order ord) {
-  if (!rt)
-    return TB_ERR_BAD_ARG;
-
-  tb_q64 *a = &rt->done_a;
-  tb_q64 *b = &rt->done_b;
-
-  if (ord == TB_ORDER_A_THEN_B) {
-    while (drain_one(rt, a, tick)) {
-    }
-    while (drain_one(rt, b, tick)) {
-    }
-  } else {
-    while (drain_one(rt, b, tick)) {
-    }
-    while (drain_one(rt, a, tick)) {
-    }
-  }
-
-  return TB_OK;
-}
-[?2004hroot@ddb910b7e5ab:/app# cat /app/src/logic/link.c
-[?2004l#include "logic/link.h"
-
-#include "io/journal.h"
-
-#include <string.h>
-
-tb_status tb_link_detach(tb_rt *rt, uint32_t tick) {
-  (void)tick;
-  if (!rt)
-    return TB_ERR_BAD_ARG;
-  if (!rt->attached)
-    return TB_OK;
-
-  rt->attached = false;
-
-  tb_stamp s = {.gen = rt->gen, .cursor = rt->cursor};
-  tb_status st = journal_append_stamp(rt->journal_path, s);
-  if (st != TB_OK)
-    return st;
-
-  // A "device-side" queue continues to exist while detached; the notifier doesn't.
-  tb_q64_clear(&rt->notify_q);
-  return TB_OK;
-}
-
-tb_status tb_link_attach(tb_rt *rt, uint32_t tick) {
-  (void)tick;
-  if (!rt)
-    return TB_ERR_BAD_ARG;
-  if (rt->attached)
-    return TB_OK;
-
-  tb_stamp last = {0};
-  bool found = false;
-  tb_status st = journal_load_last(rt->journal_path, &last, &found);
-  if (st != TB_OK)
-    return st;
-  if (found) {
-    rt->gen = last.gen + 1;
-    rt->cursor = last.cursor;
-  }
-
-  rt->attached = true;
-  return TB_OK;
-}
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/src/logic/nudge.c
-[?2004l#include "logic/nudge.h"
-
-#include "core/ev.h"
-
-tb_status tb_nudge_drain(tb_rt *rt, uint32_t tick) {
-  (void)tick;
-  if (!rt)
-    return TB_ERR_BAD_ARG;
-
-  uint64_t token = 0;
-  while (tb_q64_pop(&rt->notify_q, &token)) {
-    uint64_t key = (uint32_t)token;
-    if (!tb_map_u64_has(&rt->token_done, key)) {
-      continue;
-    }
-    uint64_t id64 = 0;
-    if (!tb_map_u64_get(&rt->token_to_id, token, &id64))
-      continue;
-    tb_event ev = {.kind = TB_EV_POKE, .id = (uint32_t)id64};
-    (void)tb_vec_ev_push(&rt->evlog, ev);
-  }
-  return TB_OK;
-}
-[?2004hroot@ddb910b7e5ab:/app# cat /app/src/runtime/profile.c
-[?2004l#include "runtime/profile.h"
-
-#include <string.h>
-
-tb_profile tb_profile_parse(const char *s) {
-  if (!s)
-    return 0;
-  if (strcmp(s, "burst") == 0)
-    return TB_PROFILE_BURST;
-  if (strcmp(s, "steady") == 0)
-    return TB_PROFILE_STEADY;
-  return 0;
-}
-
-const char *tb_profile_str(tb_profile p) {
-  switch (p) {
-  case TB_PROFILE_BURST:
-    return "burst";
-  case TB_PROFILE_STEADY:
-    return "steady";
-  default:
-    return "unknown";
-  }
-}
-
-uint32_t tb_profile_should_submit(tb_profile p, uint32_t tick) {
-  switch (p) {
-  case TB_PROFILE_BURST:
-    return tick < 10 ? 3 : (tick < 20 ? 2 : 1);
-  case TB_PROFILE_STEADY:
-    return (tick % 3) == 0 ? 1 : 0;
-  default:
-    return 0;
-  }
-}
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/include/runtime/profile.h
-[?2004l#pragma once
-
-#include <stdint.h>
-
-typedef enum {
-  TB_PROFILE_BURST = 1,
-  TB_PROFILE_STEADY = 2,
-} tb_profile;
-
-tb_profile tb_profile_parse(const char *s);
-const char *tb_profile_str(tb_profile p);
-
-// Deterministic submission cadence.
-uint32_t tb_profile_should_submit(tb_profile p, uint32_t tick);
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/src/io/journal.c
-[?2004l#include "io/journal.h"
-
-#include "io/fs.h"
-
-#include <errno.h>
-#include <stdio.h>
-
-static tb_status append_rec(FILE *f, tb_stamp s) {
-  if (!fs_write_u32(f, s.gen))
-    return TB_ERR_IO;
-
-  uint32_t lo = (uint32_t)s.cursor;
-  if (!fs_write_u32(f, lo))
-    return TB_ERR_IO;
-
-  return TB_OK;
-}
-
-static bool read_rec(FILE *f, tb_stamp *out) {
-  uint32_t gen = 0;
-  if (!fs_read_u32(f, &gen))
-    return false;
-
-  uint32_t lo = 0;
-  if (!fs_read_u32(f, &lo))
-    return false;
-
-  out->gen = gen;
-  out->cursor = (uint64_t)lo;
-  return true;
-}
-
-tb_status journal_append_stamp(const char *path, tb_stamp s) {
-  FILE *f = fopen(path, "ab");
-  if (!f)
-    return TB_ERR_IO;
-  tb_status st = append_rec(f, s);
-  if (fclose(f) != 0)
-    return TB_ERR_IO;
-  return st;
-}
-
-tb_status journal_load_last(const char *path, tb_stamp *out, bool *found) {
-  if (!out || !found)
-    return TB_ERR_BAD_ARG;
-
-  FILE *f = fopen(path, "rb");
-  if (!f) {
-    if (errno == ENOENT) {
-      *found = false;
-      return TB_OK;
-    }
-    return TB_ERR_IO;
-  }
-
-  tb_stamp cur = {0};
-  bool any = false;
-  while (read_rec(f, &cur)) {
-    any = true;
-  }
-  fclose(f);
-  if (!any) {
-    *found = false;
-    return TB_OK;
-  }
-  *found = true;
-  *out = cur;
-  return TB_OK;
-}
-[?2004hroot@ddb910b7e5ab:/app# cat /app/include/io/journal.h
-[?2004l#pragma once
-
-#include "tb_err.h"
-
-#include <stdbool.h>
-#include <stdint.h>
-
-typedef struct {
-  uint32_t gen;
-  uint64_t cursor;
-} tb_stamp;
-
-tb_status journal_append_stamp(const char *path, tb_stamp s);
-tb_status journal_load_last(const char *path, tb_stamp *out, bool *found);
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/src/report.c
-[?2004l#include "report.h"
-
-#include <stdio.h>
-
-static const char *kind_str(tb_ev_kind k) {
-  switch (k) {
-  case TB_EV_SUBMIT:
-    return "submit";
-  case TB_EV_DONE:
-    return "complete";
-  case TB_EV_POKE:
-    return "notify";
-  default:
-    return "unknown";
-  }
-}
-
-int tb_report_write_json(const char *path, tb_scenario scn, tb_profile prof, const tb_vec_ev *evs) {
-  FILE *f = fopen(path, "wb");
-  if (!f)
-    return 1;
-
-  fprintf(f, "{\n");
-  fprintf(f, "  \"scenario\": \"%s\",\n", tb_scenario_str(scn));
-  fprintf(f, "  \"profile\": \"%s\",\n", tb_profile_str(prof));
-  fprintf(f, "  \"events\": [\n");
-  for (size_t i = 0; i < evs->len; i++) {
-    const tb_event *ev = &evs->v[i];
-    fprintf(f, "    {\"kind\": \"%s\", \"id\": %u}%s\n", kind_str(ev->kind), ev->id,
-            (i + 1 == evs->len) ? "" : ",");
-  }
-  fprintf(f, "  ]\n");
-  fprintf(f, "}\n");
-  fclose(f);
-  return 0;
-}
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/include/report.h
-[?2004l#pragma once
-
-#include "core/vec_ev.h"
-#include "runtime/profile.h"
-#include "runtime/script.h"
-
-#include <stdint.h>
-
-// Writes report.json as described in instruction.md.
-int tb_report_write_json(const char *path, tb_scenario scn, tb_profile prof, const tb_vec_ev *evs);
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/include/core/ev.h
-[?2004l#pragma once
-
-#include <stdint.h>
-
-typedef enum {
-  TB_EV_SUBMIT = 1,
-  TB_EV_DONE = 2,
-  TB_EV_POKE = 3,
-} tb_ev_kind;
-
-typedef struct {
-  tb_ev_kind kind;
-  uint32_t id;
-} tb_event;
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/include/core/queue.h
-[?2004l#pragma once
-
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
-
-typedef struct {
-  uint64_t *buf;
-  size_t cap;
-  size_t len;
-  size_t head;
-} tb_q64;
-
-bool tb_q64_init(tb_q64 *q, size_t cap);
-void tb_q64_free(tb_q64 *q);
-
-bool tb_q64_push(tb_q64 *q, uint64_t v);
-bool tb_q64_pop(tb_q64 *q, uint64_t *out);
-bool tb_q64_empty(const tb_q64 *q);
-void tb_q64_clear(tb_q64 *q);
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/include/core/map_u64.h
-[?2004l#pragma once
-
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
-
-typedef struct {
-  uint64_t k;
-  uint64_t v;
-  uint8_t used;
-} tb_map_u64_ent;
-
-typedef struct {
-  tb_map_u64_ent *ents;
-  size_t cap;
-  size_t len;
-} tb_map_u64;
-
-bool tb_map_u64_init(tb_map_u64 *m, size_t cap);
-void tb_map_u64_free(tb_map_u64 *m);
-
-bool tb_map_u64_put(tb_map_u64 *m, uint64_t k, uint64_t v);
-bool tb_map_u64_get(const tb_map_u64 *m, uint64_t k, uint64_t *out_v);
-bool tb_map_u64_has(const tb_map_u64 *m, uint64_t k);
-void tb_map_u64_clear(tb_map_u64 *m);
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/include/core/vec_ev.h
-[?2004l#pragma once
-
-#include "core/ev.h"
-
-#include <stdbool.h>
-#include <stddef.h>
-
-typedef struct {
-  tb_event *v;
-  size_t len;
-  size_t cap;
-} tb_vec_ev;
-
-bool tb_vec_ev_init(tb_vec_ev *a, size_t cap);
-void tb_vec_ev_free(tb_vec_ev *a);
-bool tb_vec_ev_push(tb_vec_ev *a, tb_event ev);
-void tb_vec_ev_clear(tb_vec_ev *a);
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/src/core/queue.c
-[?2004l#include "core/queue.h"
-
-#include <stdlib.h>
-#include <string.h>
-
-bool tb_q64_init(tb_q64 *q, size_t cap) {
-  if (!q || cap == 0)
-    return false;
-  q->buf = (uint64_t *)calloc(cap, sizeof(uint64_t));
-  if (!q->buf)
-    return false;
-  q->cap = cap;
-  q->len = 0;
-  q->head = 0;
-  return true;
-}
-
-void tb_q64_free(tb_q64 *q) {
-  if (!q)
-    return;
-  free(q->buf);
-  q->buf = NULL;
-  q->cap = 0;
-  q->len = 0;
-  q->head = 0;
-}
-
-static size_t idx(const tb_q64 *q, size_t i) { return (q->head + i) % q->cap; }
-
-bool tb_q64_push(tb_q64 *q, uint64_t v) {
-  if (!q || !q->buf)
-    return false;
-  if (q->len == q->cap)
-    return false;
-  q->buf[idx(q, q->len)] = v;
-  q->len++;
-  return true;
-}
-
-bool tb_q64_pop(tb_q64 *q, uint64_t *out) {
-  if (!q || !q->buf || !out)
-    return false;
-  if (q->len == 0)
-    return false;
-  *out = q->buf[q->head];
-  q->head = (q->head + 1) % q->cap;
-  q->len--;
-  return true;
-}
-
-bool tb_q64_empty(const tb_q64 *q) { return !q || q->len == 0; }
-
-void tb_q64_clear(tb_q64 *q) {
-  if (!q || !q->buf)
-    return;
-  q->len = 0;
-  q->head = 0;
-  memset(q->buf, 0, q->cap * sizeof(uint64_t));
-}
-
-[?2004hroot@ddb910b7e5ab:/app# cat /tests/test_outputs.py
-[?2004lcat: /tests/test_outputs.py: No such file or directory
-[?2004hroot@ddb910b7e5ab:/app# find / -name 'test_outputs.py' 2>/dev/null
-[?2004l[?2004hroot@ddb910b7e5ab:/app# cat /app/src/core/map_u64.c
-[?2004l#include "core/map_u64.h"
-
-#include <stdlib.h>
-#include <string.h>
-
-static uint64_t mix(uint64_t x) {
-  x ^= x >> 33;
-  x *= 0xff51afd7ed558ccdULL;
-  x ^= x >> 33;
-  x *= 0xc4ceb9fe1a85ec53ULL;
-  x ^= x >> 33;
-  return x;
-}
-
-static bool grow(tb_map_u64 *m);
-
-bool tb_map_u64_init(tb_map_u64 *m, size_t cap) {
-  if (!m)
-    return false;
-  if (cap < 16)
-    cap = 16;
-  size_t pow2 = 1;
-  while (pow2 < cap)
-    pow2 <<= 1;
-  m->ents = (tb_map_u64_ent *)calloc(pow2, sizeof(tb_map_u64_ent));
-  if (!m->ents)
-    return false;
-  m->cap = pow2;
-  m->len = 0;
-  return true;
-}
-
-void tb_map_u64_free(tb_map_u64 *m) {
-  if (!m)
-    return;
-  free(m->ents);
-  m->ents = NULL;
-  m->cap = 0;
-  m->len = 0;
-}
-
-static size_t probe(const tb_map_u64 *m, uint64_t k) {
-  return (size_t)mix(k) & (m->cap - 1);
-}
-
-static tb_map_u64_ent *find_ent(tb_map_u64 *m, uint64_t k) {
-  size_t i = probe(m, k);
-  for (;;) {
-    tb_map_u64_ent *e = &m->ents[i];
-    if (!e->used || e->k == k)
-      return e;
-    i = (i + 1) & (m->cap - 1);
-  }
-}
-
-static const tb_map_u64_ent *find_ent_c(const tb_map_u64 *m, uint64_t k) {
-  size_t i = probe(m, k);
-  for (;;) {
-    const tb_map_u64_ent *e = &m->ents[i];
-    if (!e->used)
-      return NULL;
-    if (e->k == k)
-      return e;
-    i = (i + 1) & (m->cap - 1);
-  }
-}
-
-bool tb_map_u64_put(tb_map_u64 *m, uint64_t k, uint64_t v) {
-  if (!m || !m->ents)
-    return false;
-  if ((m->len + 1) * 10 >= m->cap * 7) {
-    if (!grow(m))
-      return false;
-  }
-  tb_map_u64_ent *e = find_ent(m, k);
-  if (!e->used) {
-    e->used = 1;
-    e->k = k;
-    m->len++;
-  }
-  e->v = v;
-  return true;
-}
-
-bool tb_map_u64_get(const tb_map_u64 *m, uint64_t k, uint64_t *out_v) {
-  if (!m || !m->ents || !out_v)
-    return false;
-  const tb_map_u64_ent *e = find_ent_c(m, k);
-  if (!e)
-    return false;
-  *out_v = e->v;
-  return true;
-}
-
-bool tb_map_u64_has(const tb_map_u64 *m, uint64_t k) {
-  uint64_t tmp = 0;
-  return tb_map_u64_get(m, k, &tmp);
-}
-
-void tb_map_u64_clear(tb_map_u64 *m) {
-  if (!m || !m->ents)
-    return;
-  memset(m->ents, 0, m->cap * sizeof(tb_map_u64_ent));
-  m->len = 0;
-}
-
-static bool grow(tb_map_u64 *m) {
-  size_t ncap = m->cap * 2;
-  tb_map_u64_ent *nents = (tb_map_u64_ent *)calloc(ncap, sizeof(tb_map_u64_ent));
-  if (!nents)
-    return false;
-
-  tb_map_u64_ent *old = m->ents;
-  size_t old_cap = m->cap;
-  m->ents = nents;
-  m->cap = ncap;
-  m->len = 0;
-
-  for (size_t i = 0; i < old_cap; i++) {
-    if (!old[i].used)
-      continue;
-    if (!tb_map_u64_put(m, old[i].k, old[i].v)) {
-      free(old);
-      return false;
-    }
-  }
-  free(old);
-  return true;
-}
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/src/core/vec_ev.c
-[?2004l#include "core/vec_ev.h"
-
-#include <stdlib.h>
-
-bool tb_vec_ev_init(tb_vec_ev *a, size_t cap) {
-  if (!a)
-    return false;
-  if (cap == 0)
-    cap = 16;
-  a->v = (tb_event *)malloc(sizeof(tb_event) * cap);
-  if (!a->v)
-    return false;
-  a->len = 0;
-  a->cap = cap;
-  return true;
-}
-
-void tb_vec_ev_free(tb_vec_ev *a) {
-  if (!a)
-    return;
-  free(a->v);
-  a->v = NULL;
-  a->len = 0;
-  a->cap = 0;
-}
-
-bool tb_vec_ev_push(tb_vec_ev *a, tb_event ev) {
-  if (!a || !a->v)
-    return false;
-  if (a->len == a->cap) {
-    size_t ncap = a->cap * 2;
-    tb_event *nv = (tb_event *)realloc(a->v, ncap * sizeof(tb_event));
-    if (!nv)
-      return false;
-    a->v = nv;
-    a->cap = ncap;
-  }
-  a->v[a->len++] = ev;
-  return true;
-}
-
-void tb_vec_ev_clear(tb_vec_ev *a) {
-  if (!a)
-    return;
-  a->len = 0;
-}
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/src/io/fs.c
-[?2004l#include "io/fs.h"
-
-bool fs_write_u32(FILE *f, uint32_t v) { return fwrite(&v, sizeof(v), 1, f) == 1; }
-bool fs_read_u32(FILE *f, uint32_t *out) { return fread(out, sizeof(*out), 1, f) == 1; }
-
-bool fs_write_u64(FILE *f, uint64_t v) { return fwrite(&v, sizeof(v), 1, f) == 1; }
-bool fs_read_u64(FILE *f, uint64_t *out) { return fread(out, sizeof(*out), 1, f) == 1; }
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/include/io/fs.h
-[?2004l#pragma once
-
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-
-bool fs_write_u32(FILE *f, uint32_t v);
-bool fs_read_u32(FILE *f, uint32_t *out);
-
-bool fs_write_u64(FILE *f, uint64_t v);
-bool fs_read_u64(FILE *f, uint64_t *out);
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/src/tb_err.c
-[?2004l#include "tb_err.h"
-
-const char *tb_status_str(tb_status st) {
-  switch (st) {
-  case TB_OK:
-    return "ok";
-  case TB_ERR_IO:
-    return "io";
-  case TB_ERR_BAD_ARG:
-    return "bad_arg";
-  case TB_ERR_CORRUPT:
-    return "corrupt";
-  case TB_ERR_OOM:
-    return "oom";
-  default:
-    return "unknown";
-  }
-}
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/include/tb_err.h
-[?2004l#pragma once
-
-#include <stdbool.h>
-#include <stdint.h>
-
-typedef enum {
-  TB_OK = 0,
-  TB_ERR_IO = 1,
-  TB_ERR_BAD_ARG = 2,
-  TB_ERR_CORRUPT = 3,
-  TB_ERR_OOM = 4,
-} tb_status;
-
-const char *tb_status_str(tb_status st);
-
-[?2004hroot@ddb910b7e5ab:/app# cat > /app/src/io/journal.c << 'EOF'
-[?2004l[?2004h> #include "io/journal.h"
-[?2004l[?2004h> 
-[?2004l[?2004h> #include "io/fs.h"
-[?2004l[?2004h> 
-[?2004l[?2004h> #include <errno.h>
-[?2004l[?2004h> #include <stdio.h>
-[?2004l[?2004h> 
-[?2004l[?2004h> static tb_status append_rec(FILE *f, tb_stamp s) {
-[?2004l[?2004h>   if (!fs_write_u32(f, s.gen))
-[?2004l[?2004h>     return TB_ERR_IO;
-[?2004l[?2004h> 
-[?2004l[?2004h>   if (!fs_write_u64(f, s.cursor))
-[?2004l[?2004h>     return TB_ERR_IO;
-[?2004l[?2004h> 
-[?2004l[?2004h>   return TB_OK;
-[?2004l[?2004h> }
-[?2004l[?2004h> 
-[?2004l[?2004h> static bool read_rec(FILE *f, tb_stamp *out) {
-[?2004l[?2004h>   uint32_t gen = 0;
-[?2004l[?2004h>   if (!fs_read_u32(f, &gen))
-[?2004l[?2004h>     return false;
-[?2004l[?2004h> 
-[?2004l[?2004h>   uint64_t cursor = 0;
-[?2004l[?2004h>   if (!fs_read_u64(f, &cursor))
-[?2004l[?2004h>     return false;
-[?2004l[?2004h> 
-[?2004l[?2004h>   out->gen = gen;
-[?2004l[?2004h>   out->cursor = cursor;
-[?2004l[?2004h>   return true;
-[?2004l[?2004h> }
-[?2004l[?2004h> 
-[?2004l[?2004h> tb_status journal_append_stamp(const char *path, tb_stamp s) {
-[?2004l[?2004h>   FILE *f = fopen(path, "ab");
-[?2004l[?2004h>   if (!f)
-[?2004l[?2004h>     return TB_ERR_IO;
-[?2004l[?2004h>   tb_status st = append_rec(f, s);
-[?2004l[?2004h>   if (fclose(f) != 0)
-[?2004l[?2004h>     return TB_ERR_IO;
-[?2004l[?2004h>   return st;
-[?2004l[?2004h> }
-[?2004l[?2004h> 
-[?2004l[?2004h> tb_status journal_load_last(const char *path, tb_stamp *out, bool *found) {
-[?2004l[?2004h>   if (!out || !found)
-[?2004l[?2004h>     return TB_ERR_BAD_ARG;
-[?2004l[?2004h> 
-[?2004l[?2004h>   FILE *f = fopen(path, "rb");
-[?2004l[?2004h>   if (!f) {
-[?2004l[?2004h>     if (errno == ENOENT) {
-[?2004l[?2004h>       *found = false;
-[?2004l[?2004h>       return TB_OK;
-[?2004l[?2004h>     }
-[?2004l[?2004h>     return TB_ERR_IO;
-[?2004l[?2004h>   }
-[?2004l[?2004h> 
-[?2004l[?2004h>   tb_stamp cur = {0};
-[?2004l[?2004h>   bool any = false;
-[?2004l[?2004h>   while (read_rec(f, &cur)) {
-[?2004l[?2004h>     any = true;
-[?2004l[?2004h>   }
-[?2004l[?2004h>   fclose(f);
-[?2004l[?2004h>   if (!any) {
-[?2004l[?2004h>     *found = false;
-[?2004l[?2004h>     return TB_OK;
-[?2004l[?2004h>   }
-[?2004l[?2004h>   *found = true;
-[?2004l[?2004h>   *out = cur;
-[?2004l[?2004h>   return TB_OK;
-[?2004l[?2004h> }
-[?2004l[?2004h> EOF
-[?2004l[?2004hroot@ddb910b7e5ab:/app# cat > /app/src/logic/link.c << 'EOF'
-[?2004l[?2004h> #include "logic/link.h"
-[?2004l[?2004h> 
-[?2004l[?2004h> #include "io/journal.h"
-[?2004l[?2004h> 
-[?2004l[?2004h> #include <string.h>
-[?2004l[?2004h> 
-[?2004l[?2004h> tb_status tb_link_detach(tb_rt *rt, uint32_t tick) {
-[?2004l[?2004h>   (void)tick;
-[?2004l[?2004h>   if (!rt)
-[?2004l[?2004h>     return TB_ERR_BAD_ARG;
-[?2004l[?2004h>   if (!rt->attached)
-[?2004l[?2004h>     return TB_OK;
-[?2004l[?2004h> 
-[?2004l[?2004h>   rt->attached = false;
-[?2004l[?2004h> 
-[?2004l[?2004h>   tb_stamp s = {.gen = rt->gen, .cursor = rt->cursor};
-[?2004l[?2004h>   tb_status st = journal_append_stamp(rt->journal_path, s);
-[?2004l[?2004h>   if (st != TB_OK)
-[?2004l[?2004h>     return st;
-[?2004l[?2004h> 
-[?2004l[?2004h>   return TB_OK;
-[?2004l[?2004h> }
-[?2004l[?2004h> 
-[?2004l[?2004h> tb_status tb_link_attach(tb_rt *rt, uint32_t tick) {
-[?2004l[?2004h>   (void)tick;
-[?2004l[?2004h>   if (!rt)
-[?2004l[?2004h>     return TB_ERR_BAD_ARG;
-[?2004l[?2004h>   if (rt->attached)
-[?2004l[?2004h>     return TB_OK;
-[?2004l[?2004h> 
-[?2004l[?2004h>   tb_stamp last = {0};
-[?2004l[?2004h>   bool found = false;
-[?2004l[?2004h>   tb_status st = journal_load_last(rt->journal_path, &last, &found);
-[?2004l[?2004h>   if (st != TB_OK)
-[?2004l[?2004h>     return st;
-[?2004l[?2004h>   if (found) {
-[?2004l[?2004h>     rt->gen = last.gen + 1;
-[?2004l[?2004h>     /* Do NOT reset cursor - it has advanced during detach and must not go back */
-[?2004l[?2004h>   }
-[?2004l[?2004h> 
-[?2004l[?2004h>   rt->attached = true;
-[?2004l[?2004h>   return TB_OK;
-[?2004l[?2004h> }
-[?2004l[?2004h> EOF
-[?2004l[?2004hroot@ddb910b7e5ab:/app# cat > /app/src/logic/settle.c << 'EOF'
-[?2004l[?2004h> #include "logic/settle.h"
-[?2004l[?2004h> 
-[?2004l[?2004h> #include "runtime/runtime.h"
-[?2004l[?2004h> 
-[?2004l[?2004h> // Deterministic "work takes time": only move certain tokens each tick.
-[?2004l[?2004h> static bool ready(uint64_t token, uint32_t tick) {
-[?2004l[?2004h>   // spread completion across ticks, but deterministic and input-dependent
-[?2004l[?2004h>   return (((uint32_t)token) ^ tick) % 3 == 0;
-[?2004l[?2004h> }
-[?2004l[?2004h> 
-[?2004l[?2004h> static bool lane_a(uint64_t token, uint32_t tick) {
-[?2004l[?2004h>   // Choose which completion source produced the "done" record.
-[?2004l[?2004h>   return ((((uint32_t)(token >> 32)) + (uint32_t)token + tick) & 1u) == 0u;
-[?2004l[?2004h> }
-[?2004l[?2004h> 
-[?2004l[?2004h> tb_status tb_settle_tick(tb_rt *rt, uint32_t tick) {
-[?2004l[?2004h>   if (!rt)
-[?2004l[?2004h>     return TB_ERR_BAD_ARG;
-[?2004l[?2004h> 
-[?2004l[?2004h>   // rotate through at most a bounded number so runs are stable
-[?2004l[?2004h>   size_t spins = rt->in_q.len;
-[?2004l[?2004h>   for (size_t i = 0; i < spins; i++) {
-[?2004l[?2004h>     uint64_t token = 0;
-[?2004l[?2004h>     if (!tb_q64_pop(&rt->in_q, &token))
-[?2004l[?2004h>       break;
-[?2004l[?2004h> 
-[?2004l[?2004h>     if (ready(token, tick)) {
-[?2004l[?2004h>       if (lane_a(token, tick)) {
-[?2004l[?2004h>         if (!tb_q64_push(&rt->done_a, token))
-[?2004l[?2004h>           return TB_ERR_CORRUPT;
-[?2004l[?2004h>       } else {
-[?2004l[?2004h>         if (!tb_q64_push(&rt->done_b, token))
-[?2004l[?2004h>           return TB_ERR_CORRUPT;
-[?2004l[?2004h>       }
-[?2004l[?2004h>       // Always queue notification regardless of attach state.
-[?2004l[?2004h>       if (!tb_q64_push(&rt->notify_q, token))
-[?2004l[?2004h>         return TB_ERR_CORRUPT;
-[?2004l[?2004h>     } else {
-[?2004l[?2004h>       // not ready, requeue at tail
-[?2004l[?2004h>       if (!tb_q64_push(&rt->in_q, token))
-[?2004l[?2004h>         return TB_ERR_CORRUPT;
-[?2004l[?2004h>     }
-[?2004l[?2004h>   }
-[?2004l[?2004h> 
-[?2004l[?2004h>   return TB_OK;
-[?2004l[?2004h> }
-[?2004l[?2004h> EOF
-[?2004l[?2004hroot@ddb910b7e5ab:/app# make -C /app
-[?2004lmake: Entering directory '/app'
-mkdir -p /usr/local/bin
-cc -O2 -g -std=c11 -Wall -Wextra -Wshadow -Wconversion -Iinclude -o /usr/local/bin/arena src/main.c src/cli.c src/tb_err.c src/report.c src/runtime/runtime.c src/runtime/profile.c src/runtime/script.c src/core/idgen.c src/core/queue.c src/core/map_u64.c src/core/vec_u64.c src/core/vec_ev.c src/io/fs.c src/io/journal.c src/logic/ingest.c src/logic/settle.c src/logic/nudge.c src/logic/merge.c src/logic/link.c 
-make: Leaving directory '/app'
-[?2004hroot@ddb910b7e5ab:/app# mkdir -p /app/output && /usr/local/bin/arena --scenario basic --profile burst --order a_then_b --out /app/output/report.json && echo OK
-[?2004lOK
-[?2004hroot@ddb910b7e5ab:/app# cat /app/output/report.json | python3 -c "import json,sys; d=json.load(sys.stdin); events=d['events']; print(f'Total events: {len(events)}'); kinds={e['kind'] for e in events}; print(f'Kinds: {kinds}'); submits=[e for e in events if e['kind']=='submit']; completes=[e for e in events if e['kind']=='complete']; notifies=[e for e in events if e['kind']=='notify']; print(f'Submits: {len(submits)}, Completes: {len(completes)}, Notifies: {len(notifies)}'); sub_ids=[e['id'] for e in submits]; print(f'Submit IDs: {sub_ids[:10]}...{sub_ids[-5:]}'); print(f'IDs contiguous 1..N: {sub_ids == list(range(1, len(submits)+1))}'); comp_ids=sorted(e['id'] for e in completes); print(f'All submitted completed: {comp_ids == sorted(sub_ids)}'); notify_ids=sorted(e['id'] for e in notifies); print(f'All completed notified: {notify_ids == comp_ids}')"
-[?2004lTotal events: 210
-Kinds: {'complete', 'submit', 'notify'}
-Submits: 70, Completes: 70, Notifies: 70
-Submit IDs: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]...[66, 67, 68, 69, 70]
-IDs contiguous 1..N: True
-All submitted completed: True
-All completed notified: True
-[?2004hroot@ddb910b7e5ab:/app# python3 -c "
-[?2004l[?2004h> import json
-[?2004l[?2004h> with open('/app/output/report.json') as f:
-[?2004l[?2004h>     d = json.load(f)
-[?2004l[?2004h> events = d['events']
-[?2004l[?2004h> # Check ordering: for each id, submit must come before complete, complete before notify
-[?2004l[?2004h> first_submit = {}
-[?2004l[?2004h> first_complete = {}
-[?2004l[?2004h> first_notify = {}
-[?2004l[?2004h> for i, ev in enumerate(events):
-[?2004l= ci:
-        print(f'Order violation submit/complete for {eid}: {si} >= {ci}')
-        ok = False
-    if ni is None:
-        print(f'Missing notify for {eid}')
-        ok = False
-    elif ci is not None and ci >= ni:
-        print(f'Order violation complete/notify for {eid}: {ci} >= {ni}')
-        ok = False
-if ok:
-    print('All ordering invariants OK')
-"
-[?2004h>     eid = ev['id']
-[?2004l[?2004h>     kind = ev['kind']
-[?2004l[?2004h>     if kind == 'submit':
-[?2004l[?2004h>         if eid in first_submit:
-[?2004l[?2004h>             print(f'DUPLICATE submit for {eid}')
-[?2004l[?2004h>         else:
-[?2004l[?2004h>             first_submit[eid] = i
-[?2004l[?2004h>     elif kind == 'complete':
-[?2004l[?2004h>         if eid in first_complete:
-[?2004l[?2004h>             print(f'DUPLICATE complete for {eid}')
-[?2004l[?2004h>         else:
-[?2004l[?2004h>             first_complete[eid] = i
-[?2004l[?2004h>     elif kind == 'notify':
-[?2004l[?2004h>         if eid in first_notify:
-[?2004l[?2004h>             print(f'DUPLICATE notify for {eid}')
-[?2004l[?2004h>         else:
-[?2004l[?2004h>             first_notify[eid] = i
-[?2004l[?2004h> 
-[?2004l[?2004h> ok = True
-[?2004l[?2004h> for eid in first_submit:
-[?2004l[?2004h>     si = first_submit[eid]
-[?2004l[?2004h>     ci = first_complete.get(eid)
-[?2004l[?2004h>     ni = first_notify.get(eid)
-[?2004l[?2004h>     if ci is None:
-[?2004l[?2004h>         print(f'Missing complete for {eid}')
-[?2004l[?2004h>         ok = False
-[?2004l[?2004h>     elif si >= ci:
-[?2004l[?2004h>         print(f'Order violation submit/complete for {eid}: {si} >= {ci}')
-[?2004l[?2004h>         ok = False
-[?2004l[?2004h>     if ni is None:
-[?2004l[?2004h>         print(f'Missing notify for {eid}')
-[?2004l[?2004h>         ok = False
-[?2004l[?2004h>     elif ci is not None and ci >= ni:
-[?2004l[?2004h>         print(f'Order violation complete/notify for {eid}: {ci} >= {ni}')
-[?2004l[?2004h>         ok = False
-[?2004l[?2004h> if ok:
-[?2004l[?2004h>     print('All ordering invariants OK')
-[?2004l[?2004h> "
-[?2004lAll ordering invariants OK
-[?2004hroot@ddb910b7e5ab:/app# /usr/local/bin/arena --scenario stress --profile burst --order a_then_b --out /app/output/stress_a.json && echo OK
-[?2004lOK
-[?2004hroot@ddb910b7e5ab:/app# /usr/local/bin/arena --scenario stress --profile burst --order b_then_a --out /app/output/stress_b.json && echo OK
-[?2004lOK
-[?2004hroot@ddb910b7e5ab:/app# python3 -c "
-[?2004l[?2004h> import json
-[?2004l[?2004h> with open('/app/output/stress_a.json') as f:
-[?2004l[?2004h>     a = json.load(f)
-[?2004l[?2004h> with open('/app/output/stress_b.json') as f:
-[?2004l[?2004h>     b = json.load(f)
-[?2004l[?2004h> print(f'stress a_then_b events: {len(a["events"])}')
-[?2004l[?2004h> print(f'stress b_then_a events: {len(b["events"])}')
-[?2004l[?2004h> 
-[?2004l[?2004h> a_sub = [e['id'] for e in a['events'] if e['kind']=='submit']
-[?2004l[?2004h> b_sub = [e['id'] for e in b['events'] if e['kind']=='submit']
-[?2004l[?2004h> print(f'Same submits: {a_sub == b_sub}')
-[?2004l[?2004h> 
-[?2004l[?2004h> a_comp = [e['id'] for e in a['events'] if e['kind']=='complete']
-[?2004l[?2004h> b_comp = [e['id'] for e in b['events'] if e['kind']=='complete']
-[?2004l[?2004h> print(f'Same complete coverage: {sorted(a_comp) == sorted(b_comp)}')
-[?2004l[?2004h> print(f'Different complete sequence: {a_comp != b_comp}')
-[?2004l[?2004h> print(f'Submit IDs contiguous 1..N: {a_sub == list(range(1, len(a_sub)+1))}')
-[?2004l[?2004h> "
-[?2004lTraceback (most recent call last):
-  File "<string>", line 7, in <module>
-NameError: name 'events' is not defined
-[?2004hroot@ddb910b7e5ab:/app# cat > /tmp/check.py << 'PYEOF'
-[?2004l[?2004h> import json
-[?2004l[?2004h> 
-[?2004l[?2004h> with open('/app/output/stress_a.json') as f:
-[?2004l[?2004h>     a = json.load(f)
-[?2004l[?2004h> with open('/app/output/stress_b.json') as f:
-[?2004l[?2004h>     b = json.load(f)
-[?2004l[?2004h> 
-[?2004l[?2004h> print('stress a_then_b events:', len(a['events']))
-[?2004l[?2004h> print('stress b_then_a events:', len(b['events']))
-[?2004l[?2004h> 
-[?2004l[?2004h> a_sub = [e['id'] for e in a['events'] if e['kind']=='submit']
-[?2004l[?2004h> b_sub = [e['id'] for e in b['events'] if e['kind']=='submit']
-[?2004l[?2004h> print('Same submits:', a_sub == b_sub)
-[?2004l[?2004h> 
-[?2004l[?2004h> a_comp = [e['id'] for e in a['events'] if e['kind']=='complete']
-[?2004l[?2004h> b_comp = [e['id'] for e in b['events'] if e['kind']=='complete']
-[?2004l[?2004h> print('Same complete coverage:', sorted(a_comp) == sorted(b_comp))
-[?2004l[?2004h> print('Different complete sequence:', a_comp != b_comp)
-[?2004l[?2004h> print('Submit IDs contiguous 1..N:', a_sub == list(range(1, len(a_sub)+1)))
-[?2004l[?2004h> 
-[?2004l[?2004h> # Check ordering for stress_a
-[?2004l[?2004h> events = a['events']
-[?2004l[?2004h> first_submit = {}
-[?2004l[?2004h> first_complete = {}
-[?2004l[?2004h> first_notify = {}
-[?2004l[?2004h> for i, ev in enumerate(events):
-[?2004l[?2004h>     eid = ev['id']
-[?2004l[?2004h>     kind = ev['kind']
-[?2004l[?2004h>     if kind == 'submit':
-[?2004l[?2004h>         first_submit.setdefault(eid, i)
-[?2004l[?2004h>     elif kind == 'complete':
-[?2004l[?2004h>         first_complete.setdefault(eid, i)
-[?2004l[?2004h>     elif kind == 'notify':
-[?2004l[?2004h>         first_notify.setdefault(eid, i)
-[?2004l[?2004h> 
-[?2004l[?2004h> ok = True
-[?2004l[?2004h> for eid in first_submit:
-[?2004l[?2004h>     si = first_submit[eid]
-[?2004l[?2004h>     ci = first_complete.get(eid)
-[?2004l[?2004h>     ni = first_notify.get(eid)
-[?2004l[?2004h>     if ci is None:
-[?2004l[?2004h>         print(f'Missing complete for {eid}')
-[?2004l[?2004h>         ok = False
-[?2004l[?2004h>     elif si >= ci:
-[?2004l[?2004h>         print(f'Order violation submit/complete for {eid}: {si} >= {ci}')
-[?2004l[?2004h>         ok = False
-[?2004l[?2004h>     if ni is None:
-[?2004l[?2004h>         print(f'Missing notify for {eid}')
-[?2004l[?2004h>         ok = False
-[?2004l[?2004h>     elif ci is not None and ci >= ni:
-[?2004l[?2004h>         print(f'Order violation complete/notify for {eid}: {ci} >= {ni}')
-[?2004l[?2004h>         ok = False
-[?2004l[?2004h> 
-[?2004l[?2004h> if ok:
-[?2004l[?2004h>     print('Stress ordering invariants OK')
-[?2004l[?2004h> else:
-[?2004l[?2004h>     print('ORDERING FAILED')
-[?2004l[?2004h> PYEOF
-[?2004l[?2004hroot@ddb910b7e5ab:/app# python3 /tmp/check.py
-[?2004lstress a_then_b events: 330
-stress b_then_a events: 330
-Same submits: True
-Same complete coverage: True
-Different complete sequence: True
-Submit IDs contiguous 1..N: True
-Stress ordering invariants OK
-[?2004hroot@ddb910b7e5ab:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/stress2.json && echo OK
-[?2004lOK
-[?2004hroot@ddb910b7e5ab:/app# python3 -c '
-[?2004l[?2004h> import json
-[?2004l[?2004h> with open("/app/output/stress2.json") as f:
-[?2004l[?2004h>     d = json.load(f)
-[?2004l[?2004h> events = d["events"]
-[?2004l[?2004h> submits = [e for e in events if e["kind"]=="submit"]
-[?2004l[?2004h> completes = [e for e in events if e["kind"]=="complete"]
-[?2004l[?2004h> notifies = [e for e in events if e["kind"]=="notify"]
-[?2004l[?2004h> print("Submits:", len(submits), "Completes:", len(completes), "Notifies:", len(notifies))
-[?2004l[?2004h> sub_ids = [e["id"] for e in submits]
-[?2004l[?2004h> print("IDs contiguous 1..N:", sub_ids == list(range(1, len(submits)+1)))
-[?2004l[?2004h> print("All completed:", sorted(e["id"] for e in completes) == sorted(sub_ids))
-[?2004l[?2004h> print("All notified:", sorted(e["id"] for e in notifies) == sorted(sub_ids))
-[?2004l[?2004h> '
-[?2004lSubmits: 140 Completes: 140 Notifies: 140
-IDs contiguous 1..N: True
-All completed: True
-All notified: True
-[?2004hroot@ddb910b7e5ab:/app# python3 -c '
-[?2004l[?2004h> import json
-[?2004l[?2004h> with open("/app/output/stress2.json") as f:
-[?2004l[?2004h>     d = json.load(f)
-[?2004l[?2004h> events = d["events"]
-[?2004l[?2004h> first_submit = {}
-[?2004l[?2004h> first_complete = {}
-[?2004l[?2004h> first_notify = {}
-[?2004l[?2004h> for i, ev in enumerate(events):
-[?2004l[?2004h>     eid = ev["id"]
-[?2004l[?2004h>     kind = ev["kind"]
-[?2004l[?2004h>     if kind == "submit":
-[?2004l[?2004h>         first_submit.setdefault(eid, i)
-[?2004l[?2004h>     elif kind == "complete":
-[?2004l[?2004h>         first_complete.setdefault(eid, i)
-[?2004l[?2004h>     elif kind == "notify":
-[?2004l[?2004h>         first_notify.setdefault(eid, i)
-[?2004l[?2004h> ok = True
-[?2004l[?2004h> for eid in first_submit:
-[?2004l[?2004h>     si = first_submit[eid]
-[?2004l[?2004h>     ci = first_complete.get(eid)
-[?2004l[?2004h>     ni = first_notify.get(eid)
-[?2004l[?2004h>     if ci is None:
-[?2004l[?2004h>         print(f"Missing complete for {eid}")
-[?2004l[?2004h>         ok = False
-[?2004l[?2004h>     elif si >= ci:
-[?2004l[?2004h>         print(f"Order violation submit/complete for {eid}: {si} >= {ci}")
-[?2004l[?2004h>         ok = False
-[?2004l[?2004h>     if ni is None:
-[?2004l[?2004h>         print(f"Missing notify for {eid}")
-[?2004l[?2004h>         ok = False
-[?2004l[?2004h>     elif ci is not None and ci >= ni:
-[?2004l[?2004h>         print(f"Order violation complete/notify for {eid}: {ci} >= {ni}")
-[?2004l[?2004h>         ok = False
-[?2004l[?2004h> if ok:
-[?2004l[?2004h>     print("stress2 ordering OK")
-[?2004l[?2004h> else:
-[?2004l[?2004h>     print("FAILED")
-[?2004l[?2004h> '
-[?2004lstress2 ordering OK
-[?2004hroot@ddb910b7e5ab:/app# /usr/local/bin/arena --scenario basic --profile burst --order z_then_y --out /app/output/bad.json; echo "Exit: $?"
-[?2004lusage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]
-cli: bad_arg
-Exit: 2
-[?2004hroot@ddb910b7e5ab:/app# test -f /app/output/bad.json && echo 'BAD: file exists' || echo 'GOOD: no file'
-[?2004lGOOD: no file
-[?2004hroot@ddb910b7e5ab:/app# /usr/local/bin/arena --scenario invalid --profile burst --order a_then_b --out /app/output/bad2.json; echo "Exit: $?"
-[?2004lusage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]
-cli: bad_arg
-Exit: 2
-[?2004hroot@ddb910b7e5ab:/app# /usr/local/bin/arena --scenario basic --profile invalid --order a_then_b --out /app/output/bad3.json; echo "Exit: $?"
-[?2004lusage: arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]
-cli: bad_arg
-Exit: 2
-[?2004hroot@ddb910b7e5ab:/app# test -f /app/output/bad2.json && echo 'BAD' || echo 'GOOD'
-[?2004lGOOD
-[?2004hroot@ddb910b7e5ab:/app# test -f /app/output/bad3.json && echo 'BAD' || echo 'GOOD'
-[?2004lGOOD
-[?2004hroot@ddb910b7e5ab:/app# /usr/local/bin/arena --scenario stress --profile burst --order a_then_b --out /app/output/repro1.json && /usr/local/bin/arena --scenario stress --profile burst --order a_then_b --out /app/output/repro2.json && diff /app/output/repro1.json /app/output/repro2.json && echo 'REPRODUCIBLE'
-[?2004lREPRODUCIBLE
-[?2004hroot@ddb910b7e5ab:/app# /usr/local/bin/arena --scenario basic --profile steady --order a_then_b --out /app/output/steady.json && echo OK
-[?2004lOK
-[?2004hroot@ddb910b7e5ab:/app# python3 -c '
-[?2004l[?2004h> import json
-[?2004l[?2004h> with open("/app/output/steady.json") as f:
-[?2004l[?2004h>     d = json.load(f)
-[?2004l[?2004h> events = d["events"]
-[?2004l[?2004h> submits = [e for e in events if e["kind"]=="submit"]
-[?2004l[?2004h> completes = [e for e in events if e["kind"]=="complete"]
-[?2004l[?2004h> notifies = [e for e in events if e["kind"]=="notify"]
-[?2004l[?2004h> print("Steady - Submits:", len(submits), "Completes:", len(completes), "Notifies:", len(notifies))
-[?2004l[?2004h> sub_ids = [e["id"] for e in submits]
-[?2004l[?2004h> print("IDs contiguous:", sub_ids == list(range(1, len(submits)+1)))
-[?2004l[?2004h> print("All completed:", sorted(e["id"] for e in completes) == sorted(sub_ids))
-[?2004l[?2004h> print("All notified:", sorted(e["id"] for e in notifies) == sorted(sub_ids))
-[?2004l[?2004h> '
-[?2004lSteady - Submits: 14 Completes: 14 Notifies: 14
-IDs contiguous: True
-All completed: True
-All notified: True
-[?2004hroot@ddb910b7e5ab:/app# python3 -c '
-[?2004l[?2004h> import json
-[?2004l[?2004h> # Check interleaving - submits and completes should be spread across the log
-[?2004l[?2004h> with open("/app/output/report.json") as f:
-[?2004l[?2004h>     d = json.load(f)
-[?2004l[?2004h> events = d["events"]
-[?2004l[?2004h> kinds = [e["kind"] for e in events]
-[?2004l[?2004h> # Find first complete and check it is not after all submits
-[?2004l[?2004h> first_complete_idx = kinds.index("complete")
-[?2004l[?2004h> last_submit_idx = len(kinds) - 1 - kinds[::-1].index("submit")
-[?2004l[?2004h> print(f"First complete at index {first_complete_idx}, last submit at {last_submit_idx}")
-[?2004l[?2004h> print(f"Interleaved: {first_complete_idx < last_submit_idx}")
-[?2004l[?2004h> '
-[?2004lFirst complete at index 3, last submit at 205
-Interleaved: True
-[?2004hroot@ddb910b7e5ab:/app# python3 -c '
-[?2004l[?2004h> import json
-[?2004l[?2004h> # Different scenario/profile must not reuse same output
-[?2004l[?2004h> with open("/app/output/report.json") as f:
-[?2004l[?2004h>     a = json.load(f)  # basic/burst/a_then_b
-[?2004l[?2004h> with open("/app/output/steady.json") as f:
-[?2004l[?2004h>     b = json.load(f)  # basic/steady/a_then_b
-[?2004l[?2004h> print("Different profile gives different events:", a["events"] != b["events"])
-[?2004l[?2004h> '
-[?2004lDifferent profile gives different events: True
-[?2004hroot@ddb910b7e5ab:/app# /usr/local/bin/arena --scenario stress2 --profile burst --order a_then_b --out /app/output/stress2_check.json && ls -la /app/run/state.bin
-[?2004l-rw-r--r-- 1 root root 24 May 26 12:54 /app/run/state.bin
-[?2004hroot@ddb910b7e5ab:/app# python3 -c '
-[?2004l[?2004h> import json
-[?2004l[?2004h> # Check no duplicate (kind, id) pairs
-[?2004l[?2004h> for fname in ["/app/output/report.json", "/app/output/stress_a.json", "/app/output/stress2.json", "/app/output/steady.json"]:
-[?2004l[?2004h>     with open(fname) as f:
-[?2004l[?2004h>         d = json.load(f)
-[?2004l[?2004h>     events = d["events"]
-[?2004l[?2004h>     seen = set()
-[?2004l[?2004h>     dups = 0
-[?2004l[?2004h>     for e in events:
-[?2004l[?2004h>         key = (e["kind"], e["id"])
-[?2004l[?2004h>         if key in seen:
-[?2004l[?2004h>             dups += 1
-[?2004l[?2004h>             print(f"DUPLICATE in {fname}: {key}")
-[?2004l[?2004h>         seen.add(key)
-[?2004l[?2004h>     if dups == 0:
-[?2004l[?2004h>         print(f"{fname}: No duplicates")
-[?2004l[?2004h> '
-[?2004l/app/output/report.json: No duplicates
-/app/output/stress_a.json: No duplicates
-/app/output/stress2.json: No duplicates
-/app/output/steady.json: No duplicates
-[?2004hroot@ddb910b7e5ab:/app# cat /app/include/logic/ingest.h /app/include/logic/settle.h /app/include/logic/merge.h /app/include/logic/link.h /app/include/logic/nudge.h
-[?2004l#pragma once
-
-#include "tb_err.h"
-#include "runtime/runtime.h"
-
-tb_status tb_ingest_tick(tb_rt *rt, tb_profile prof, uint32_t tick, uint32_t *submitted_out);
-
-#pragma once
-
-#include "tb_err.h"
-#include "runtime/runtime.h"
-
-tb_status tb_settle_tick(tb_rt *rt, uint32_t tick);
-
-#pragma once
-
-#include "tb_err.h"
-#include "runtime/runtime.h"
-
-tb_status tb_merge_drain(tb_rt *rt, uint32_t tick, tb_order ord);
-
-#pragma once
-
-#include "tb_err.h"
-#include "runtime/runtime.h"
-
-tb_status tb_link_detach(tb_rt *rt, uint32_t tick);
-tb_status tb_link_attach(tb_rt *rt, uint32_t tick);
-
-#pragma once
-
-#include "tb_err.h"
-#include "runtime/runtime.h"
-
-tb_status tb_nudge_drain(tb_rt *rt, uint32_t tick);
-
-[?2004hroot@ddb910b7e5ab:/app# find / -path '*/tests*' -name '*.py' 2>/dev/null
-[?2004l/usr/lib/python3/dist-packages/pip/_vendor/colorama/tests/__init__.py
-/usr/lib/python3/dist-packages/pip/_vendor/colorama/tests/ansi_test.py
-/usr/lib/python3/dist-packages/pip/_vendor/colorama/tests/ansitowin32_test.py
-/usr/lib/python3/dist-packages/pip/_vendor/colorama/tests/initialise_test.py
-/usr/lib/python3/dist-packages/pip/_vendor/colorama/tests/isatty_test.py
-/usr/lib/python3/dist-packages/pip/_vendor/colorama/tests/utils.py
-/usr/lib/python3/dist-packages/pip/_vendor/colorama/tests/winterm_test.py
-/usr/lib/python3/dist-packages/pip/_vendor/webencodings/tests.py
-[?2004hroot@ddb910b7e5ab:/app# find / -name 'pytest.ini' -o -name 'conftest.py' -o -name 'pyproject.toml' 2>/dev/null
-[?2004l[?2004hroot@ddb910b7e5ab:/app# cat /app/src/core/idgen.c
-[?2004l#include "core/idgen.h"
-
-void tb_idgen_init(tb_idgen *g, uint64_t seed) { g->x = seed ? seed : 0x9e3779b97f4a7c15ULL; }
-
-uint64_t tb_idgen_next(tb_idgen *g) {
-  // xorshift64*
-  uint64_t x = g->x;
-  x ^= x >> 12;
-  x ^= x << 25;
-  x ^= x >> 27;
-  g->x = x;
-  return x * 2685821657736338717ULL;
-}
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/src/core/vec_u64.c
-[?2004l#include "core/vec_u64.h"
-
-#include <stdlib.h>
-
-bool tb_vec_u64_init(tb_vec_u64 *a, size_t cap) {
-  if (!a)
-    return false;
-  if (cap == 0)
-    cap = 8;
-  a->v = (uint64_t *)malloc(sizeof(uint64_t) * cap);
-  if (!a->v)
-    return false;
-  a->len = 0;
-  a->cap = cap;
-  return true;
-}
-
-void tb_vec_u64_free(tb_vec_u64 *a) {
-  if (!a)
-    return;
-  free(a->v);
-  a->v = NULL;
-  a->len = 0;
-  a->cap = 0;
-}
-
-bool tb_vec_u64_push(tb_vec_u64 *a, uint64_t x) {
-  if (!a || !a->v)
-    return false;
-  if (a->len == a->cap) {
-    size_t ncap = a->cap * 2;
-    uint64_t *nv = (uint64_t *)realloc(a->v, ncap * sizeof(uint64_t));
-    if (!nv)
-      return false;
-    a->v = nv;
-    a->cap = ncap;
-  }
-  a->v[a->len++] = x;
-  return true;
-}
-
-void tb_vec_u64_clear(tb_vec_u64 *a) {
-  if (!a)
-    return;
-  a->len = 0;
-}
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/include/core/idgen.h /app/include/core/vec_u64.h
-[?2004l#pragma once
-
-#include <stdint.h>
-
-typedef struct {
-  uint64_t x;
-} tb_idgen;
-
-void tb_idgen_init(tb_idgen *g, uint64_t seed);
-uint64_t tb_idgen_next(tb_idgen *g);
-
-#pragma once
-
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
-
-typedef struct {
-  uint64_t *v;
-  size_t len;
-  size_t cap;
-} tb_vec_u64;
-
-bool tb_vec_u64_init(tb_vec_u64 *a, size_t cap);
-void tb_vec_u64_free(tb_vec_u64 *a);
-bool tb_vec_u64_push(tb_vec_u64 *a, uint64_t x);
-void tb_vec_u64_clear(tb_vec_u64 *a);
-
-[?2004hroot@ddb910b7e5ab:/app# cat /app/run/README.txt
-[?2004lRuntime state files for the simulator. The built driver is installed to /usr/local/bin/arena.
-
-## CLI
-
-```
-arena --scenario <basic|stress|stress2> --profile <burst|steady> --order <a_then_b|b_then_a> --out <path> [--seed <n>]
-```
-
-Load profiles fire on every tick for the full scenario length, including ticks while the client is detached. Detach stops notification handoff to the live client, not submission ingestion.
-
-Detach writes a journal stamp (u32 generation, u64 cursor — 12 bytes per stamp). The stress2 scenario performs two detach cycles.
-
-## Report JSON
-
-Path: `/app/output/report.json`
-
-Top-level keys: `scenario` (string), `profile` (string), `events` (array).
-
-Each event object has `kind` (`submit`, `complete`, or `notify`) and `id` (integer request id).
-[?2004hroot@ddb910b7e5ab:/app# cat > /tmp/full_test.py << 'PYEOF'
-[?2004l== f2.read():
-                    [?2004h> import json
-[?2004l[?2004h> import subprocess
-[?2004l[?2004h> import os
-[?2004l[?2004h> 
-[?2004l[?2004h> scenarios = ['basic', 'stress', 'stress2']
-[?2004l[?2004h> profiles = ['burst', 'steady']
-[?2004l[?2004h> orders = ['a_then_b', 'b_then_a']
-[?2004l[?2004h> 
-[?2004l[?2004h> def check_report(path, scenario, profile):
-[?2004l[?2004h>     with open(path) as f:
-[?2004l[?2004h>         d = json.load(f)
-[?2004l[?2004h>     assert d['scenario'] == scenario, f"Bad scenario: {d['scenario']}"
-[?2004l[?2004h>     assert d['profile'] == profile, f"Bad profile: {d['profile']}"
-[?2004l[?2004h>     events = d['events']
-[?2004l[?2004h>     submits = [e for e in events if e['kind'] == 'submit']
-[?2004l[?2004h>     completes = [e for e in events if e['kind'] == 'complete']
-[?2004l[?2004h>     notifies = [e for e in events if e['kind'] == 'notify']
-[?2004l[?2004h>     
-[?2004l[?2004h>     # IDs contiguous 1..N
-[?2004l[?2004h>     sub_ids = [e['id'] for e in submits]
-[?2004l[?2004h>     assert sub_ids == list(range(1, len(submits)+1)), "IDs not contiguous"
-[?2004l[?2004h>     
-[?2004l[?2004h>     # Every submit completed and notified exactly once
-[?2004l[?2004h>     assert len(completes) == len(submits), f"Complete count mismatch: {len(completes)} vs {len(submits)}"
-[?2004l[?2004h>     assert len(notifies) == len(submits), f"Notify count mismatch: {len(notifies)} vs {len(submits)}"
-[?2004l[?2004h>     assert sorted(e['id'] for e in completes) == sorted(sub_ids), "Complete IDs mismatch"
-[?2004l[?2004h>     assert sorted(e['id'] for e in notifies) == sorted(sub_ids), "Notify IDs mismatch"
-[?2004l[?2004h>     
-[?2004l[?2004h>     # No duplicate (kind, id)
-[?2004l[?2004h>     seen = set()
-[?2004l[?2004h>     for e in events:
-[?2004l[?2004h>         key = (e['kind'], e['id'])
-[?2004l[?2004h>         assert key not in seen, f"Duplicate: {key}"
-[?2004l[?2004h>         seen.add(key)
-[?2004l[?2004h>     
-[?2004l[?2004h>     # Ordering: submit < complete < notify for each id
-[?2004l[?2004h>     positions = {}
-[?2004l[?2004h>     for i, e in enumerate(events):
-[?2004l[?2004h>         positions.setdefault(e['id'], {})[e['kind']] = i
-[?2004l[?2004h>     for eid, pos in positions.items():
-[?2004l[?2004h>         assert pos['submit'] < pos['complete'], f"Order: submit >= complete for {eid}"
-[?2004l[?2004h>         assert pos['complete'] < pos['notify'], f"Order: complete >= notify for {eid}"
-[?2004l[?2004h>     
-[?2004l[?2004h>     # Interleaving: first complete before last submit
-[?2004l[?2004h>     kinds = [e['kind'] for e in events]
-[?2004l[?2004h>     if len(submits) > 1:
-[?2004l[?2004h>         first_comp = kinds.index('complete')
-[?2004l[?2004h>         last_sub = len(kinds) - 1 - kinds[::-1].index('submit')
-[?2004l[?2004h>         assert first_comp < last_sub, "Not interleaved"
-[?2004l[?2004h>     
-[?2004l[?2004h>     return events
-[?2004l[?2004h> 
-[?2004l[?2004h> all_ok = True
-[?2004l[?2004h> results = {}
-[?2004l[?2004h> 
-[?2004l[?2004h> for scn in scenarios:
-[?2004l[?2004h>     for prof in profiles:
-[?2004l[?2004h>         for ord in orders:
-[?2004l[?2004h>             out = f'/app/output/test_{scn}_{prof}_{ord}.json'
-[?2004l[?2004h>             cmd = ['arena', '--scenario', scn, '--profile', prof, '--order', ord, '--out', out]
-[?2004l[?2004h>             r = subprocess.run(cmd, capture_output=True)
-[?2004l[?2004h>             if r.returncode != 0:
-[?2004l[?2004h>                 print(f'FAIL: {" ".join(cmd)} -> exit {r.returncode}')
-[?2004l[?2004h>                 print(r.stderr.decode())
-[?2004l[?2004h>                 all_ok = False
-[?2004l[?2004h>                 continue
-[?2004l[?2004h>             try:
-[?2004l[?2004h>                 evts = check_report(out, scn, prof)
-[?2004l[?2004h>                 results[(scn, prof, ord)] = evts
-[?2004l[?2004h>                 print(f'OK: {scn}/{prof}/{ord} -> {len(evts)} events')
-[?2004l[?2004h>             except Exception as ex:
-[?2004l[?2004h>                 print(f'FAIL: {scn}/{prof}/{ord}: {ex}')
-[?2004l[?2004h>                 all_ok = False
-[?2004l[?2004h> 
-[?2004l[?2004h> # Check reconciliation order changes sequence
-[?2004l[?2004h> for scn in scenarios:
-[?2004l[?2004h>     for prof in profiles:
-[?2004l[?2004h>         a_evts = results.get((scn, prof, 'a_then_b'))
-[?2004l[?2004h>         b_evts = results.get((scn, prof, 'b_then_a'))
-[?2004l[?2004h>         if a_evts and b_evts:
-[?2004l[?2004h>             a_comp = [e['id'] for e in a_evts if e['kind'] == 'complete']
-[?2004l[?2004h>             b_comp = [e['id'] for e in b_evts if e['kind'] == 'complete']
-[?2004l[?2004h>             if sorted(a_comp) == sorted(b_comp) and a_comp != b_comp:
-[?2004l[?2004h>                 print(f'  Order diff OK: {scn}/{prof}')
-[?2004l[?2004h>             elif a_comp == b_comp:
-[?2004l[?2004h>                 print(f'  WARNING: same sequence for {scn}/{prof}')
-[?2004l[?2004h>             else:
-[?2004l[?2004h>                 print(f'  ERROR: different coverage for {scn}/{prof}')
-[?2004l[?2004h>                 all_ok = False
-[?2004l[?2004h> 
-[?2004l[?2004h> # Check reproducibility
-[?2004l[?2004h> for scn in scenarios:
-[?2004l[?2004h>     for prof in profiles:
-[?2004l[?2004h>         for ord in orders:
-[?2004l[?2004h>             out1 = f'/app/output/test_{scn}_{prof}_{ord}.json'
-[?2004l[?2004h>             out2 = f'/app/output/test_{scn}_{prof}_{ord}_2.json'
-[?2004l[?2004h>             subprocess.run(['arena', '--scenario', scn, '--profile', prof, '--order', ord, '--out', out2], capture_output=True)
-[?2004l[?2004h>             with open(out1) as f1, open(out2) as f2:
-[?2004l[?2004h>                 if f1.read() == f2.read():
-[?2004l[?2004h>                     pass  # good
-[?2004l[?2004h>                 else:
-[?2004l[?2004h>                     print(f'FAIL REPRO: {scn}/{prof}/{ord}')
-[?2004l[?2004h>                     all_ok = False
-[?2004l[?2004h> 
-[?2004l[?2004h> if all_ok:
-[?2004l[?2004h>     print('\nALL TESTS PASSED')
-[?2004l[?2004h> else:
-[?2004l[?2004h>     print('\nSOME TESTS FAILED')
-[?2004l[?2004h> PYEOF
-[?2004l[?2004hroot@ddb910b7e5ab:/app# python3 /tmp/full_test.py
-[?2004lOK: basic/burst/a_then_b -> 210 events
-OK: basic/burst/b_then_a -> 210 events
-OK: basic/steady/a_then_b -> 42 events
-OK: basic/steady/b_then_a -> 42 events
-OK: stress/burst/a_then_b -> 330 events
-OK: stress/burst/b_then_a -> 330 events
-OK: stress/steady/a_then_b -> 81 events
-OK: stress/steady/b_then_a -> 81 events
-OK: stress2/burst/a_then_b -> 420 events
-OK: stress2/burst/b_then_a -> 420 events
-OK: stress2/steady/a_then_b -> 111 events
-OK: stress2/steady/b_then_a -> 111 events
-  Order diff OK: basic/burst
-  WARNING: same sequence for basic/steady
-  Order diff OK: stress/burst
-  WARNING: same sequence for stress/steady
-  Order diff OK: stress2/burst
-  WARNING: same sequence for stress2/steady
-
-ALL TESTS PASSED
-[?2004hroot@ddb910b7e5ab:/app# 

@@ -1,0 +1,220 @@
+New Terminal Output:
+
+root@33b7252c234c:/app# nl -ba /app/environment/runner/emit_pipeline.cpp | sed -n '280,460p'
+   280
+   281      std::vector<const char *> name_ptrs;
+   282      for (const auto &unit : manifest.units) {
+   283          name_ptrs.push_back(unit.name.c_str());
+   284      }
+   285
+   286      std::map<std::string, forge::UnitSpec> spec_by_name;
+   287      for (const auto &unit : manifest.units) {
+   288          spec_by_name[unit.name] = unit;
+   289      }
+   290
+   291      std::vector<forge::UnitRun> units;
+   292      std::vector<forge::UnitCheckpoint> updated_entries;
+   293      std::vector<std::string> requested_resume;
+   294      for (const auto &name : requested) {
+   295          auto it = spec_by_name.find(name);
+   296          if (it == spec_by_name.end()) {
+   297              continue;
+   298          }
+   299          int order_rank = static_cast<int>(std::distance(
+   300              manifest.units.begin(),
+   301              std::find_if(manifest.units.begin(), manifest.units.end(),
+   302                           [&](const forge::UnitSpec &u) { return u.name == name; })));
+   303          int64_t carry_weight = 0;
+   304          if (checkpoint.valid) {
+   305              auto cp = checkpoint.units.find(name);
+   306              if (cp != checkpoint.units.end()) {
+   307                  carry_weight = cp->second.carry_weight;
+   308              }
+   309          }
+   310          forge::UnitRun run = forge::analyze_unit(it->second, order_rank, manifest.order_weight_base,
+   311                                                   pass_epoch, manifest_dir, name_ptrs.data(),
+   312                                                   name_ptrs.size(), &checkpoint, carry_weight);
+   313          units.push_back(run);
+   314          if (run.mode == "resume") {
+   315              requested_resume.push_back(name);
+   316              forge::UnitCheckpoint entry;
+   317              entry.name = run.name;
+   318              entry.next_pass = run.pass_index + 1;
+   319              entry.carry_weight = run.order_weight;
+   320              entry.carry_drift = run.drift_bytes;
+   321              updated_entries.push_back(entry);
+   322          }
+   323      }
+   324
+   325      int64_t drift_total = forge_lane_drift_total(units.data(), units.size());
+   326      int64_t weight_total = forge_lane_score_total(units.data(), units.size());
+   327
+   328      std::ostringstream serial;
+   329      serial << forge_lane_header_text(forge::kSchemaVersion, manifest.release_id,
+   330                                       manifest.order_weight_base, pass_epoch, drift_total,
+   331                                       weight_total);
+   332      for (const auto &unit : units) {
+   333          serial << '\n' << unit.row_serial;
+   334      }
+   335      std::string top_digest = forge::digest_hex(serial.str());
+   336
+   337      fs::create_directories(output_path.parent_path());
+   338      std::ostringstream out;
+   339      out << "{\"schema_version\":" << forge::kSchemaVersion << ",\"release_id\":\""
+   340          << manifest.release_id << "\",\"order_weight_base\":" << manifest.order_weight_base
+   341          << ",\"pass_epoch\":" << pass_epoch << ",\"units\":[";
+   342      for (std::size_t i = 0; i < units.size(); ++i) {
+   343          if (i) {
+   344              out << ',';
+   345          }
+   346          out << units[i].json;
+   347      }
+   348      out << "],\"total_drift_bytes\":" << drift_total << ",\"order_score\":" << weight_total
+   349          << ",\"digest\":\"" << top_digest << "\"}\n";
+   350      std::ofstream file(output_path, std::ios::binary);
+   351      file << out.str();
+   352
+   353      std::vector<forge::UnitCheckpoint> merged =
+   354          forge_lane_merge_checkpoint(checkpoint, updated_entries, requested_resume);
+   355      forge_lane_save_checkpoint(checkpoint_path, lane_token, merged);
+   356
+   357      std::ostringstream cp_patch;
+   358      cp_patch << "{\"schema_version\":" << forge::kSchemaVersion << ",\"lane_token\":\"" << lane_token
+   359               << "\",\"pass_epoch\":" << (pass_epoch + 1) << ",\"units\":[";
+   360      for (size_t i = 0; i < merged.size(); ++i) {
+   361          if (i) {
+   362              cp_patch << ',';
+   363          }
+   364          cp_patch << "{\"name\":\"" << merged[i].name << "\",\"next_pass\":" << merged[i].next_pass
+   365                   << ",\"carry_weight\":" << merged[i].carry_weight << ",\"carry_drift\":"
+   366                   << merged[i].carry_drift << '}';
+   367      }
+   368      cp_patch << "]}\n";
+   369      std::ofstream cp_file(checkpoint_path, std::ios::binary);
+   370      cp_file << cp_patch.str();
+   371
+   372      return 0;
+   373  }
+root@33b7252c234c:/app# nl -ba /app/environment/c9/pass_gate.cpp | sed -n '1,260p'
+     1  #include "c9_api.h"
+     2  #include <string.h>
+     3
+     4  extern "C" const char *c9_resolve_mode(const char *manifest_mode, const char 
+[... output limited to 10000 bytes; 70 interior bytes omitted ...]
+t_blocks(const std::string &array_text) {
+    72      std::vector<std::string> out;
+    73      int depth = 0;
+    74      size_t start = std::string::npos;
+    75      for (size_t i = 0; i < array_text.size(); ++i) {
+    76          if (array_text[i] == '{') {
+    77              if (depth == 0) {
+    78                  start = i;
+    79              }
+    80              ++depth;
+    81          } else if (array_text[i] == '}') {
+    82              --depth;
+    83              if (depth == 0 && start != std::string::npos) {
+    84                  out.push_back(array_text.substr(start, i - start + 1));
+    85                  start = std::string::npos;
+    86              }
+    87          }
+    88      }
+    89      return out;
+    90  }
+    91
+    92  }  // namespace
+    93
+    94  extern "C" const char *m14_lane_token(const forge::UnitSpec *units, size_t count) {
+    95      static std::string cached;
+    96      std::ostringstream joined;
+    97      for (size_t i = 0; i < count; ++i) {
+    98          if (i) {
+    99              joined << '\n';
+   100          }
+   101          joined << descriptor_line(units[i]);
+   102      }
+   103      cached = digest_hex(joined.str());
+   104      return cached.c_str();
+   105  }
+   106
+   107  extern "C" int m14_checkpoint_valid(const char *on_disk_token, const char *expected_token) {
+   108      if (on_disk_token == nullptr || expected_token == nullptr) {
+   109          return 0;
+   110      }
+   111      return std::string(on_disk_token) == std::string(expected_token) ? 1 : 0;
+   112  }
+   113
+   114  forge::LaneCheckpoint m14_read_checkpoint(const std::filesystem::path &path,
+   115                                                     const std::string &expected_token) {
+   116      forge::LaneCheckpoint state;
+   117      std::ifstream in(path);
+   118      if (!in) {
+   119          return state;
+   120      }
+   121      std::ostringstream buffer;
+   122      buffer << in.rdbuf();
+   123      const std::string doc = buffer.str();
+   124      if (doc.find("\"schema_version\"") == std::string::npos) {
+   125          return state;
+   126      }
+   127      state.lane_token = pick_string(doc, "lane_token");
+   128      if (!m14_checkpoint_valid(state.lane_token.c_str(), expected_token.c_str())) {
+   129          return state;
+   130      }
+   131      size_t units_pos = doc.find("\"units\"");
+   132      if (units_pos == std::string::npos) {
+   133          return state;
+   134      }
+   135      size_t arr_start = doc.find('[', units_pos);
+   136      size_t arr_end = doc.find(']', arr_start);
+   137      if (arr_start == std::string::npos || arr_end == std::string::npos) {
+   138          return state;
+   139      }
+   140      const std::string arr = doc.substr(arr_start, arr_end - arr_start + 1);
+   141      for (const auto &block : split_object_blocks(arr)) {
+   142          forge::UnitCheckpoint entry;
+   143          entry.name = pick_string(block, "name");
+   144          entry.next_pass = pick_int(block, "next_pass");
+   145          entry.carry_weight = pick_int64(block, "carry_weight");
+   146          entry.carry_drift = pick_int64(block, "carry_drift");
+   147          if (!entry.name.empty()) {
+   148              state.units[entry.name] = entry;
+   149          }
+   150      }
+   151      state.valid = true;
+   152      return state;
+   153  }
+   154
+   155  std::vector<forge::UnitCheckpoint> m14_merge_entries(
+   156      const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+   157      const std::vector<std::string> &requested_resume) {
+   158      (void)existing;
+   159      (void)requested_resume;
+   160      std::vector<forge::UnitCheckpoint> out = updated;
+   161      std::sort(out.begin(), out.end(),
+   162                [](const forge::UnitCheckpoint &a, const forge::UnitCheckpoint &b) {
+   163                    return a.name < b.name;
+   164                });
+   165      return out;
+   166  }
+   167
+   168  void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token,
+   169                                       const std::vector<forge::UnitCheckpoint> &entries) {
+   170      std::filesystem::create_directories(path.parent_path());
+   171      std::ostringstream out;
+   172      out << "{\"schema_version\":" << forge::kSchemaVersion << ",\"lane_token\":\"" << lane_token
+   173          << "\",\"units\":[";
+   174      for (size_t i = 0; i < entries.size(); ++i) {
+   175          if (i) {
+   176              out << ',';
+   177          }
+   178          const auto &entry = entries[i];
+   179          out << "{\"name\":\"" << entry.name << "\",\"next_pass\":" << entry.next_pass
+   180              << ",\"carry_weight\":" << entry.carry_weight << ",\"carry_drift\":"
+   181              << entry.carry_drift << '}';
+   182      }
+   183      out << "]}\n";
+   184      std::ofstream file(path, std::ios::binary);
+   185      file << out.str();
+   186  }
+root@33b7252c234c:/app#

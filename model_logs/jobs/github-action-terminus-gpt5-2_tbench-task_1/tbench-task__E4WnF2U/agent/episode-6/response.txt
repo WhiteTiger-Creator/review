@@ -1,0 +1,31 @@
+{
+  "analysis": "Fixes are now taking effect: u_alpha emits mode \"resume\" (correct) and checkpoint after full run contains both resume units sorted alphabetically (u_alpha, u_zeta). After partial invocation (u_zeta only), checkpoint preserved u_alpha entry and advanced only u_zeta (correct continuity). Row digests/top digest changed, consistent with corrected row serialization including drift_bytes. Remaining to verify: lane_token computation includes all manifest units and correct descriptor fields/order; checkpoint validity handling; and that resume-path uses next_pass and carry_weight correctly. We should run a third invocation requesting u_alpha to ensure it resumes (pass_index increments and weight uses carry_weight + base + record_bytes). Also verify cold unit never appears in checkpoint and that total_drift_bytes uses absolute drift (currently drift_total function may be wrong).",
+  "plan": "1) Run invocation requesting u_alpha only and inspect emitted pass_index/order_weight to confirm resume uses checkpoint next_pass and carry_weight formula. 2) Create a record with drift (optional) or at least inspect drift_total implementation to ensure it sums absolute drift. 3) Inspect lane token descriptor_line implementation in m14/lane_store.cpp to confirm it matches required `name|mode|record|manifest_bytes|start_pass` sorted by unit name and FNV-1a accumulator producing 16 hex chars lowercase. If mismatched, patch accordingly and rebuild.",
+  "commands": [
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_alpha\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "echo '--- emit (u_alpha resume) ---' && cat /app/output/forge_emit.json && echo '\\n--- checkpoint ---' && cat /app/output/forge_checkpoint.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "grep -RIn --line-number \"descriptor_line\\|lane_token\\|m14_lane_token\\|kDigestSeed\\|kDigestStep\\|1469598103934665603\" /app/environment/m14/lane_store.cpp /app/environment/b07/j2_shadow.c /app/environment/include/constants.h\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "sed -n '1,220p' /app/environment/m14/lane_store.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "grep -RIn --line-number \"forge_lane_drift_total\\|drift_total\" /app/environment | head -n 80\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "sed -n '1,200p' /app/environment/f12/total_bridge.cpp\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

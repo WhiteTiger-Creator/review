@@ -1,0 +1,241 @@
+New Terminal Output:
+
+root@071d4af3a22a:/app# wc -l /app/environment/runner/emit_pipeline.cpp
+373 /app/environment/runner/emit_pipeline.cpp
+root@071d4af3a22a:/app# sed -n '100,200p' /app/environment/runner/emit_pipeline.cpp
+            if (depth == 0) {
+                start = i;
+            }
+            ++depth;
+        } else if (array_text[i] == '}') {
+            --depth;
+            if (depth == 0 && start != std::string::npos) {
+                out.push_back(array_text.substr(start, i - start + 1));
+                start = std::string::npos;
+            }
+        }
+    }
+    return out;
+}
+
+int64_t read_record_bytes(const fs::path &path) {
+    std::string blob = read_file(path);
+    size_t offset = 0;
+    while (offset < blob.size()) {
+        size_t end = blob.find('\n', offset);
+        if (end == std::string::npos) {
+            end = blob.size();
+        }
+        if (end > offset) {
+            const char *line = blob.data() + offset;
+            size_t len = end - offset;
+            if (forge_scan_has_key(line, len, "size_bytes=")) {
+                return forge_scan_record_bytes(line, len);
+            }
+        }
+        if (end >= blob.size()) {
+            break;
+        }
+        offset = end + 1;
+    }
+    return 0;
+}
+
+std::uint64_t digest_update(std::uint64_t h, const std::string &text) {
+    for (unsigned char ch : text) {
+        h ^= static_cast<std::uint64_t>(ch);
+        h = (h * kDigestStep) & kDigestMask;
+    }
+    return h;
+}
+
+std::string json_escape(const std::string &s) {
+    std::string out;
+    for (char c : s) {
+        if (c == '"' || c == '\\') {
+            out.push_back('\\');
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+}  // namespace
+
+std::vector<std::string> split_units_csv(const std::string &text) {
+    std::vector<std::string> out;
+    std::string cur;
+    for (char ch : text) {
+        if (ch == ',') {
+            if (!cur.empty()) {
+                out.push_back(cur);
+            }
+            cur.clear();
+        } else if (!std::isspace(static_cast<unsigned char>(ch))) {
+            cur.push_back(ch);
+        }
+    }
+    if (!cur.empty()) {
+        out.push_back(cur);
+    }
+    return out;
+}
+
+int read_pass_epoch(const fs::path &checkpoint_path) {
+    std::ifstream in(checkpoint_path);
+    if (!in) {
+        return 0;
+    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    const std::string doc = buffer.str();
+    size_t pos = doc.find("\"pass_epoch\"");
+    if (pos == std::string::npos) {
+        return 0;
+    }
+    return pick_int(doc, "pass_epoch");
+}
+
+Manifest load_manifest(const fs::path &path) {
+    std::string doc = read_file(path);
+    Manifest manifest{};
+    manifest.release_id = pick_string(doc, "release_id");
+    manifest.order_weight_base = pick_int(doc, "order_weight_base");
+    std::string arr = extract_array(doc, "units");
+    for (const auto &block : split_object_blocks(arr)) {
+        UnitSpec spec;
+root@071d4af3a22a:/app# sed -n '200,300p' /app/environment/runner/emit_pipeline.cpp
+        UnitSpec spec;
+        spec.name = pick_string(block, "name");
+        spec.mode = pick_string(block, "mode");
+        spec.record = pick_string(block, "record");
+        spec.manifest_bytes = pick_int(block, "manifest_bytes");
+        spec.start_pass = pick_int(block, "start_pass");
+        if (!spec.name.empty()) {
+            manifest.units.push_back(spec);
+        }
+    }
+    return manifest;
+}
+
+std::string digest_hex(const std::string &text) {
+    std::uint64_t h = digest_update(kDigestSeed, text);
+    std::ostringstream os;
+    os << std::hex << std::nouppercase << std::setfill('0') << std::setw(16) << h;
+    return os.str();
+}
+
+UnitRun analyze_unit(const UnitSpec &spec, int order_rank, int order_weight_base, int pass_epoch,
+                     const fs::path &manifest_dir, const char *const *names, size_t name_count,
+                     const LaneCheckpoint *checkpoint, int64_t carry_weight) {
+    fs::path record_path = manifest_dir / spec.record;
+    UnitRun run{};
+    run.name = spec.name;
+    run.mode = forge_lane_mode(spec.mode.c_str(), spec.name.c_str(), pass_epoch);
+    run.manifest_bytes = spec.manifest_bytes;
+    run.record_bytes = read_record_bytes(record_path);
+    run.drift_bytes = run.record_bytes - static_cast<int64_t>(run.manifest_bytes);
+    run.order_rank = order_rank;
+
+    int pass_index = spec.start_pass;
+    int64_t seeded_weight = 0;
+    if (run.mode == "resume" && checkpoint != nullptr && checkpoint->valid) {
+        auto it = checkpoint->units.find(spec.name);
+        if (it != checkpoint->units.end()) {
+            pass_index = it->second.next_pass;
+            seeded_weight = it->second.carry_weight;
+        }
+    }
+
+    if (run.mode == "resume" && seeded_weight != 0) {
+        run.order_weight = seeded_weight + static_cast<int64_t>(order_weight_base) + run.record_bytes;
+    } else {
+        run.order_weight =
+            forge_lane_weight(spec.name.c_str(), names, name_count, order_weight_base, run.record_bytes);
+    }
+    (void)carry_weight;
+    run.pass_index = pass_index;
+    run.row_serial = forge_lane_row_text(run);
+    run.row_digest = digest_hex(run.row_serial);
+
+    std::ostringstream js;
+    js << "{\"name\":\"" << json_escape(run.name) << "\",\"mode\":\"" << json_escape(run.mode)
+       << "\",\"pass_index\":" << run.pass_index << ",\"manifest_bytes\":" << run.manifest_bytes
+       << ",\"record_bytes\":" << run.record_bytes << ",\"drift_bytes\":" << run.drift_bytes
+       << ",\"order_rank\":" << run.order_rank << ",\"order_weight\":" << run.order_weight
+       << ",\"row_digest\":\"" << run.row_digest << "\"}";
+    run.json = js.str();
+    return run;
+}
+
+}  // namespace forge
+
+int forge_run_emit(int argc, char **argv) {
+    if (argc != 4) {
+        std::cerr << "usage: forge_emit <manifest-json> <output-json> <units-csv>\n";
+        return 2;
+    }
+    fs::path manifest_path = argv[1];
+    fs::path output_path = argv[2];
+    std::vector<std::string> requested = forge::split_units_csv(argv[3]);
+    forge::Manifest manifest = forge::load_manifest(manifest_path);
+    fs::path manifest_dir = manifest_path.parent_path();
+
+    const char *lane_token = forge_lane_fingerprint(manifest.units.data(), manifest.units.size());
+    fs::path checkpoint_path = forge::kCheckpointPath;
+    int pass_epoch = forge::read_pass_epoch(checkpoint_path);
+    forge::LaneCheckpoint checkpoint = forge_lane_load_checkpoint(checkpoint_path, lane_token);
+
+    std::vector<const char *> name_ptrs;
+    for (const auto &unit : manifest.units) {
+        name_ptrs.push_back(unit.name.c_str());
+    }
+
+    std::map<std::string, forge::UnitSpec> spec_by_name;
+    for (const auto &unit : manifest.units) {
+        spec_by_name[unit.name] = unit;
+    }
+
+    std::vector<forge::UnitRun> units;
+    std::vector<forge::UnitCheckpoint> updated_entries;
+    std::vector<std::string> requested_resume;
+    for (const auto &name : requested) {
+        auto it = spec_by_name.find(name);
+        if (it == spec_by_name.end()) {
+            continue;
+        }
+        int order_rank = static_cast<int>(std::distance(
+            manifest.units.begin(),
+root@071d4af3a22a:/app# cat /app/environment/b07/j2_shadow.c
+#include "types.h"
+#include <stddef.h>
+
+unsigned long j2_fold_line(unsigned long seed, const char *line, size_t len) {
+    unsigned long h = seed;
+    for (size_t i = 0; i < len; ++i) {
+        h ^= (unsigned char)line[i];
+        h *= 1099511628211UL;
+    }
+    return h;
+}
+root@071d4af3a22a:/app# cat /app/environment/f12/m4_shadow.cpp
+#include "types.h"
+
+namespace forge {
+
+double m4_lane_bias(double base, int slot) {
+    return base + static_cast<double>(slot) * 0.0001;
+}
+
+}
+root@071d4af3a22a:/app# cat /app/environment/n21/p1_shadow.cpp
+#include "types.h"
+
+namespace forge {
+
+double p1_probe_bias(double base, int slot) {
+    return base - static_cast<double>(slot) * 0.0001;
+}
+
+}
+root@071d4af3a22a:/app#

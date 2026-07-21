@@ -1,0 +1,59 @@
+{
+  "analysis": "We found the direct cause of the partial-invocation checkpoint loss: m14_merge_entries() ignores existing checkpoints and requested_resume and returns only the updated entries, so if a run updates no resume units it writes an empty units array. Also m14_write_checkpoint() omits required pass_epoch. Additionally, m14_lane_token() does not sort descriptor lines alphabetically by unit name as required, which can cause lane token mismatches vs recomputation. In analyze_unit(), resume weighting is gated on seeded_weight != 0, which fails when a valid checkpoint carry_weight can legitimately be 0; it should use presence of checkpoint entry, not nonzero weight. Further, analyze_unit() uses forge_lane_weight() for fresh computation, which likely implements incorrect semantics; spec requires order_weight_base*(order_rank+1)+record_bytes for fresh-path. We need to implement proper checkpoint merge/persistence, add pass_epoch to checkpoint write, sort token descriptor inputs, and fix resume decision and weight formulas. Then rebuild and rerun to verify checkpoint retains u_zeta after emitting only u_alpha, and that resume units advance pass_index/weights correctly.",
+  "plan": "1) Patch m14_merge_entries() to start from existing valid checkpoints and overlay updated resume entries; preserve unrelated resume entries when lane_token matches; then output only resume-mode units (we can only store what caller provides—ensure caller only passes resume units). Sort alphabetically. 2) Patch m14_write_checkpoint() signature/implementation to include pass_epoch in JSON output per schema, and update callers accordingly. 3) Patch m14_lane_token() to sort descriptor lines alphabetically by unit name and include all manifest units. 4) Patch analyze_unit() to compute fresh-path order_weight exactly as specified using order_rank and order_weight_base, and resume-path order_weight using checkpoint carry_weight regardless of it being zero, based on entry existence. 5) Patch forge_run_emit() logic where it builds updated checkpoint entries to ensure partial invocations merge correctly and that pass_epoch in emitted JSON is the value read before processing; checkpoint file pass_epoch becomes pass_epoch+1. 6) Rebuild and rerun: full invocation then partial u_alpha invocation and confirm forge_checkpoint.json still contains u_zeta entry and correct pass_epoch.",
+  "commands": [
+    {
+      "keystrokes": "apply_patch<<'PATCH'\n*** Begin Patch\n*** Update File: /app/environment/m14/lane_store.cpp\n@@\n extern \"C\" const char *m14_lane_token(const forge::UnitSpec *units, size_t count) {\n     static std::string cached;\n-    std::ostringstream joined;\n-    for (size_t i = 0; i < count; ++i) {\n-        if (i) {\n-            joined << '\\n';\n-        }\n-        joined << descriptor_line(units[i]);\n-    }\n+    // Lane token must be stable and computed over *all* manifest units using\n+    // descriptor lines sorted alphabetically by unit name.\n+    std::vector<std::string> lines;\n+    lines.reserve(count);\n+    for (size_t i = 0; i < count; ++i) {\n+        lines.push_back(descriptor_line(units[i]));\n+    }\n+    std::sort(lines.begin(), lines.end());\n+    std::ostringstream joined;\n+    for (size_t i = 0; i < lines.size(); ++i) {\n+        if (i) joined << '\\n';\n+        joined << lines[i];\n+    }\n     cached = digest_hex(joined.str());\n     return cached.c_str();\n }\n@@\n std::vector<forge::UnitCheckpoint> m14_merge_entries(\n     const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,\n     const std::vector<std::string> &requested_resume) {\n-    (void)existing;\n-    (void)requested_resume;\n-    std::vector<forge::UnitCheckpoint> out = updated;\n+    // Preserve prior resume-mode checkpoints across partial invocations.\n+    // When a unit is updated in this run, it overwrites the prior entry.\n+    // Units in requested_resume that are not updated are preserved as-is.\n+    (void)requested_resume;\n+    std::map<std::string, forge::UnitCheckpoint> merged;\n+    if (existing.valid) {\n+        for (const auto &kv : existing.units) {\n+            merged[kv.first] = kv.second;\n+        }\n+    }\n+    for (const auto &entry : updated) {\n+        if (!entry.name.empty()) {\n+            merged[entry.name] = entry;\n+        }\n+    }\n+\n+    std::vector<forge::UnitCheckpoint> out;\n+    out.reserve(merged.size());\n+    for (const auto &kv : merged) {\n+        out.push_back(kv.second);\n+    }\n     std::sort(out.begin(), out.end(),\n               [](const forge::UnitCheckpoint &a, const forge::UnitCheckpoint &b) {\n                   return a.name < b.name;\n               });\n     return out;\n }\n \n-void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token,\n-                                     const std::vector<forge::UnitCheckpoint> &entries) {\n+void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token, int pass_epoch,\n+                          const std::vector<forge::UnitCheckpoint> &entries) {\n     std::filesystem::create_directories(path.parent_path());\n     std::ostringstream out;\n     out << \"{\\\"schema_version\\\":\" << forge::kSchemaVersion << \",\\\"lane_token\\\":\\\"\" << lane_token\n-        << \"\\\",\\\"units\\\":[\";\n+        << \"\\\",\\\"pass_epoch\\\":\" << pass_epoch << \",\\\"units\\\":[\";\n     for (size_t i = 0; i < entries.size(); ++i) {\n         if (i) {\n             out << ',';\n         }\n*** End Patch\nPATCH\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "apply_patch<<'PATCH'\n*** Begin Patch\n*** Update File: /app/environment/m14/store_bridge.cpp\n@@\n void forge_lane_save_checkpoint(const std::filesystem::path &path, const char *lane_token,\n-                               const std::vector<forge::UnitCheckpoint> &entries) {\n-    m14_write_checkpoint(path, lane_token, entries);\n+                               int pass_epoch, const std::vector<forge::UnitCheckpoint> &entries) {\n+    m14_write_checkpoint(path, lane_token, pass_epoch, entries);\n }\n*** End Patch\nPATCH\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "apply_patch<<'PATCH'\n*** Begin Patch\n*** Update File: /app/environment/include/store_bridge.h\n@@\n void forge_lane_save_checkpoint(const std::filesystem::path &path, const char *lane_token,\n-                               const std::vector<forge::UnitCheckpoint> &entries);\n+                               int pass_epoch, const std::vector<forge::UnitCheckpoint> &entries);\n*** End Patch\nPATCH\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "apply_patch<<'PATCH'\n*** Begin Patch\n*** Update File: /app/environment/runner/emit_pipeline.cpp\n@@\n UnitRun analyze_unit(const UnitSpec &spec, int order_rank, int order_weight_base, int pass_epoch,\n                      const fs::path &manifest_dir, const char *const *names, size_t name_count,\n                      const LaneCheckpoint *checkpoint, int64_t carry_weight) {\n@@\n-    int pass_index = spec.start_pass;\n-    int64_t seeded_weight = 0;\n-    if (run.mode == \"resume\" && checkpoint != nullptr && checkpoint->valid) {\n-        auto it = checkpoint->units.find(spec.name);\n-        if (it != checkpoint->units.end()) {\n-            pass_index = it->second.next_pass;\n-            seeded_weight = it->second.carry_weight;\n-        }\n-    }\n-\n-    if (run.mode == \"resume\" && seeded_weight != 0) {\n-        run.order_weight = seeded_weight + static_cast<int64_t>(order_weight_base) + run.record_bytes;\n-    } else {\n-        run.order_weight =\n-            forge_lane_weight(spec.name.c_str(), names, name_count, order_weight_base, run.record_bytes);\n-    }\n-    (void)carry_weight;\n+    int pass_index = spec.start_pass;\n+    bool has_resume_seed = false;\n+    int64_t seeded_weight = 0;\n+    if (run.mode == \"resume\" && checkpoint != nullptr && checkpoint->valid) {\n+        auto it = checkpoint->units.find(spec.name);\n+        if (it != checkpoint->units.end()) {\n+            pass_index = it->second.next_pass;\n+            seeded_weight = it->second.carry_weight;\n+            has_resume_seed = true;\n+        }\n+    }\n+\n+    // Weight semantics come directly from the manifest/resume rules.\n+    if (run.mode == \"resume\" && has_resume_seed) {\n+        run.order_weight = seeded_weight + static_cast<int64_t>(order_weight_base) + run.record_bytes;\n+    } else {\n+        run.order_weight = static_cast<int64_t>(order_weight_base) * (order_rank + 1) + run.record_bytes;\n+    }\n+    (void)names;\n+    (void)name_count;\n+    (void)carry_weight;\n     run.pass_index = pass_index;\n     run.row_serial = forge_lane_row_text(run);\n     run.row_digest = digest_hex(run.row_serial);\n@@\n-    forge_lane_save_checkpoint(checkpoint_path, lane_token, merged);\n+    forge_lane_save_checkpoint(checkpoint_path, lane_token, pass_epoch + 1, merged);\n*** End Patch\nPATCH\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "grep -RIn \"forge_lane_save_checkpoint\" -n /app/environment | head -n 20\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "cmake -S /app/environment -B /app/build -G Ninja\n",
+      "duration": 2.0
+    },
+    {
+      "keystrokes": "ninja -C /app/build\n",
+      "duration": 5.0
+    },
+    {
+      "keystrokes": "rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "cat /app/output/forge_checkpoint.json\n",
+      "duration": 0.2
+    },
+    {
+      "keystrokes": "rm -f /app/output/forge_emit.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_alpha\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "echo '--- checkpoint after partial ---' && cat /app/output/forge_checkpoint.json\n",
+      "duration": 0.2
+    }
+  ],
+  "task_complete": false
+}

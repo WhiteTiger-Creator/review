@@ -1,0 +1,32 @@
+New Terminal Output:
+
+root@35c99cb7d4e6:/app/environment# cat >/app/environment/m14/store_bridge.cpp<<'EOF'
+> #include "m14_api.h"
+> #include "store_bridge.h"
+>
+> std::vector<forge::UnitCheckpoint> forge_lane_merge_checkpoint(
+>     const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+>     const std::vector<std::string> &requested_resume) {
+>     return m14_merge_entries(existing, updated, requested_resume);
+> }
+>
+> void forge_lane_save_checkpoint(const std::filesystem::path &path, const char *lane_token,
+>                                int pass_epoch,
+>                                const std::vector<forge::UnitCheckpoint> &entries) {
+>     m14_write_checkpoint(path, lane_token, pass_epoch, entries);
+> }
+> EOF
+root@35c99cb7d4e6:/app/environment# ninja -C /app/build
+ninja: Entering directory `/app/build'
+[3/3] Linking CXX executable forge_emit
+root@35c99cb7d4e6:/app/environment# rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json
+root@35c99cb7d4e6:/app/environment# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta
+root@35c99cb7d4e6:/app/environment# echo '--- checkpoint after full ---' && cat /app/output/forge_checkpoint.json
+--- checkpoint after full ---
+{"schema_version":1,"lane_token":"2d5837bed1ac6b84","pass_epoch":1,"units":[{"name":"u_zeta","next_pass":1,"carry_weight":3550,"carry_drift":0}]}
+root@35c99cb7d4e6:/app/environment# rm -f /app/output/forge_emit.json
+root@35c99cb7d4e6:/app/environment# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_alpha
+root@35c99cb7d4e6:/app/environment# echo '--- checkpoint after partial ---' && cat /app/output/forge_checkpoint.json
+--- checkpoint after partial ---
+{"schema_version":1,"lane_token":"2d5837bed1ac6b84","pass_epoch":2,"units":[{"name":"u_zeta","next_pass":1,"carry_weight":3550,"carry_drift":0}]}
+root@35c99cb7d4e6:/app/environment#

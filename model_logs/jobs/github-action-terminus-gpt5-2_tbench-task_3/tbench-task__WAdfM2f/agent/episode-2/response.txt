@@ -1,0 +1,55 @@
+{
+  "analysis": "The patch didn’t apply because `apply_patch` isn’t available. Current behavior still drops checkpoints on partial invocations: after running only u_alpha, forge_checkpoint.json becomes units:[]. Also, code shows m14_merge_entries ignores existing and requested_resume and simply returns updated entries sorted, which guarantees unrelated resume checkpoints are lost unless included in the current run. We need to fix merge logic in m14/lane_store.cpp (m14_merge_entries) to preserve existing entries when lane is valid and only update requested resume units; and we need to ensure checkpoint write includes pass_epoch (currently m14_write_checkpoint omits pass_epoch, but runner/emit_pipeline.cpp appears to write pass_epoch elsewhere—need to inspect full file to confirm who writes checkpoint). We'll patch using sed/heredoc with cat > file edits or perl -pi. Then rebuild and re-test full then partial then resume.",
+  "plan": "1) Inspect m14/lane_store.cpp around merge and write functions to confirm responsibilities (pass_epoch field, lane_token validation). 2) Implement correct merge in m14_merge_entries: start from existing.units map; apply updates for names in requested_resume only; keep other existing resume entries; output sorted vector. 3) Ensure writer includes schema_version, lane_token, pass_epoch, units. If current writer lacks pass_epoch and is actually used, add pass_epoch param and update callers; otherwise leave. 4) Rebuild and rerun the earlier scenario to ensure u_zeta remains after running only u_alpha and that subsequent u_zeta run resumes with pass_index=1 and order_weight = carry_weight + base + record_bytes (3550+500+2050=6100).",
+  "commands": [
+    {
+      "keystrokes": "sed -n '1,260p' /app/environment/m14/lane_store.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "grep -RIn \"m14_merge_entries\\|m14_write_checkpoint\\|forge_lane_merge_checkpoint\\|forge_lane_save_checkpoint\\|pass_epoch\\\"\" /app/environment | head -n 200\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/std::vector<forge::UnitCheckpoint> m14_merge_entries\\(\\n\\s*const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,\\n\\s*const std::vector<std::string> &requested_resume\\) \\{\\n\\s*\\(void\\)existing;\\n\\s*\\(void\\)requested_resume;\\n\\s*std::vector<forge::UnitCheckpoint> out = updated;\\n\\s*std::sort\\(out.begin\\(\\), out.end\\(\\),\\n\\s*\\[\\]\\(const forge::UnitCheckpoint &a, const forge::UnitCheckpoint &b\\) \\{\\n\\s*\\s*return a.name < b.name;\\n\\s*\\}\\);\\n\\s*return out;\\n\\}\\n/std::vector<forge::UnitCheckpoint> m14_merge_entries(\\n    const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,\\n    const std::vector<std::string> &requested_resume) {\\n    // Preserve existing resume checkpoints when the lane is valid and we only update\\n    // a subset of resume units in the current invocation.\\n    std::map<std::string, forge::UnitCheckpoint> merged;\\n\\n    // Start with existing entries.\\n    for (const auto &kv : existing.units) {\\n        merged.emplace(kv.first, kv.second);\\n    }\\n\\n    // Apply updates for requested resume units only.\\n    std::set<std::string> requested_set(requested_resume.begin(), requested_resume.end());\\n    for (const auto &u : updated) {\\n        if (requested_set.find(u.name) != requested_set.end()) {\\n            merged[u.name] = u;\\n        }\\n    }\\n\\n    std::vector<forge::UnitCheckpoint> out;\\n    out.reserve(merged.size());\\n    for (const auto &kv : merged) {\\n        out.push_back(kv.second);\\n    }\\n\\n    std::sort(out.begin(), out.end(),\\n              [](const forge::UnitCheckpoint &a, const forge::UnitCheckpoint &b) {\\n                  return a.name < b.name;\\n              });\\n    return out;\\n}\\n/smg' /app/environment/m14/lane_store.cpp\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "grep -n \"m14_merge_entries\" -n -A60 /app/environment/m14/lane_store.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "ninja -C /app/build\n",
+      "duration": 10.0
+    },
+    {
+      "keystrokes": "rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "cat /app/output/forge_checkpoint.json; echo\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_alpha\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "cat /app/output/forge_checkpoint.json; echo\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_zeta\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "cat /app/output/forge_emit.json; echo\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

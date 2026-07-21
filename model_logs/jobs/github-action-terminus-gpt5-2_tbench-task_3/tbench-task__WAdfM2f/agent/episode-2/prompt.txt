@@ -1,0 +1,224 @@
+New Terminal Output:
+
+root@1c64306e7dec:/app# sed -n '200,430p' /app/environment/runner/emit_pipeline.cpp
+        UnitSpec spec;
+        spec.name = pick_string(block, "name");
+        spec.mode = pick_string(block, "mode");
+        spec.record = pick_string(block, "record");
+        spec.manifest_bytes = pick_int(block, "manifest_bytes");
+        spec.start_pass = pick_int(block, "start_pass");
+        if (!spec.name.empty()) {
+            manifest.units.push_back(spec);
+        }
+    }
+    return manifest;
+}
+
+std::string digest_hex(const std::string &text) {
+    std::uint64_t h = digest_update(kDigestSeed, text);
+    std::ostringstream os;
+    os << std::hex << std::nouppercase << std::setfill('0') << std::setw(16) << h;
+    return os.str();
+}
+
+UnitRun analyze_unit(const UnitSpec &spec, int order_rank, int order_weight_base, int pass_epoch,
+                     const fs::path &manifest_dir, const char *const *names, size_t name_count,
+                     const LaneCheckpoint *checkpoint, int64_t carry_weight) {
+    fs::path record_path = manifest_dir / spec.record;
+    UnitRun run{};
+    run.name = spec.name;
+    run.mode = forge_lane_mode(spec.mode.c_str(), spec.name.c_str(), pass_epoch);
+    run.manifest_bytes = spec.manifest_bytes;
+    run.record_bytes = read_record_bytes(record_path);
+    run.drift_bytes = run.record_bytes - static_cast<int64_t>(run.manifest_bytes);
+    run.order_rank = order_rank;
+
+    int pass_index = spec.start_pass;
+    int64_t seeded_weight = 0;
+    if (run.mode == "resume" && checkpoint != nullptr && checkpoint->valid) {
+        auto it = checkpoint->units.find(spec.name);
+        if (it != checkpoint->units.end()) {
+            pass_index = it->second.next_pass;
+            seeded_weight = it->second.carry_weight;
+        }
+    }
+
+    if (run.mode == "resume" && seeded_weight != 0) {
+        run.order_weight = seeded_weight + static_cast<int64_t>(order_weight_base) + run.record_bytes;
+    } else {
+        run.order_weight =
+            forge_lane_weight(spec.name.c_str(), names, name_count, order_weight_base, run.record_bytes);
+    }
+    (void)carry_weight;
+    run.pass_index = pass_index;
+    run.row_serial = forge_lane_row_text(run);
+    run.row_digest = digest_hex(run.row_serial);
+
+    std::ostringstream js;
+    js << "{\"name\":\"" << json_escape(run.name) << "\",\"mode\":\"" << json_escape(run.mode)
+       << "\",\"pass_index\":" << run.pass_index << ",\"manifest_bytes\":" << run.manifest_bytes
+       << ",\"record_bytes\":" << run.record_bytes << ",\"drift_bytes\":" << run.drift_bytes
+       << ",\"order_rank\":" << run.order_rank << ",\"order_weight\":" << run.order_weight
+       << ",\"row_digest\":\"" << run.row_digest << "\"}";
+    run.json = js.str();
+    return run;
+}
+
+}  // namespace forge
+
+int forge_run_emit(int argc, char **argv) {
+    if (argc != 4) {
+        std::cerr << "usage: forge_emit <manifest-json> <output-json> <units-csv>\n";
+        return 2;
+    }
+    fs::path manifest_path = argv[1];
+    fs::path output_path = argv[2];
+    std::vector<std::string> requested = forge::split_units_csv(argv[3]);
+    forge::Manifest manifest = forge::load_manifest(manifest_path);
+    fs::path manifest_dir = manifest_path.parent_path();
+
+    const char *lane_token = forge_lane_fingerprint(manifest.units.data(), manifest.units.size());
+    fs::path checkpoint_path = forge::kCheckpointPath;
+    int pass_epoch = forge::read_pass_epoch(checkpoint_path);
+    forge::LaneCheckpoint checkpoint = forge_lane_load_checkpoint(checkpoint_path, lane_token);
+
+    std::vector<const char *> name_ptrs;
+    for (const auto &unit : manifest.units) {
+        name_ptrs.push_back(unit.name.c_str());
+    }
+
+    std::map<std::string, forge::UnitSpec> spec_by_name;
+    for (const auto &unit : manifest.units) {
+        spec_by_name[unit.name] = unit;
+    }
+
+    std::vector<forge::UnitRun> units;
+    std::vector<forge::UnitCheckpoint> updated_entries;
+    std::vector<std::string> requested_resume;
+    for (const auto &name : requested) {
+        auto it = spec_by_name.find(name);
+        if (it == spec_by_name.end()) {
+            continue;
+        }
+        int order_rank = static_cast<int>(std::distance(
+            manifest.units.begin(),
+            std::find_if(manifest.units.begin(), manifest.units.end(),
+                         [&](const forge::UnitSpec &u) { return u.name == name; })));
+        int64_t carry_weight = 0;
+        if (checkpoint.valid) {
+            auto cp = checkpoint.units.find(name);
+            if (cp != checkpoint.units.end()) {
+                carry_weight = cp->second.carry_weight;
+            }
+        }
+        forge::UnitRun run = forge::analyze_unit(it->second, order_rank, manifest.order_weight_base,
+                                                 pass_epoch, manifest_dir, name_ptrs.data(),
+                                                 name_ptrs.size(), &checkpoint, carry_weight);
+        units.push_back(run);
+        if (run.mode == "resume") {
+            re
+[... output limited to 10000 bytes; 70 interior bytes omitted ...]
+ = entry;
+        }
+    }
+    state.valid = true;
+    return state;
+}
+
+std::vector<forge::UnitCheckpoint> m14_merge_entries(
+    const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+    const std::vector<std::string> &requested_resume) {
+    (void)existing;
+    (void)requested_resume;
+    std::vector<forge::UnitCheckpoint> out = updated;
+    std::sort(out.begin(), out.end(),
+              [](const forge::UnitCheckpoint &a, const forge::UnitCheckpoint &b) {
+                  return a.name < b.name;
+              });
+    return out;
+}
+
+void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token,
+                                     const std::vector<forge::UnitCheckpoint> &entries) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ostringstream out;
+    out << "{\"schema_version\":" << forge::kSchemaVersion << ",\"lane_token\":\"" << lane_token
+        << "\",\"units\":[";
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (i) {
+            out << ',';
+        }
+        const auto &entry = entries[i];
+        out << "{\"name\":\"" << entry.name << "\",\"next_pass\":" << entry.next_pass
+            << ",\"carry_weight\":" << entry.carry_weight << ",\"carry_drift\":"
+            << entry.carry_drift << '}';
+    }
+    out << "]}\n";
+    std::ofstream file(path, std::ios::binary);
+    file << out.str();
+}
+root@1c64306e7dec:/app# sed -n '1,220p' /app/environment/m14/token_bridge.cpp
+#include "m14_api.h"
+#include "store_bridge.h"
+
+const char *forge_lane_fingerprint(const forge::UnitSpec *units, size_t count) {
+    return m14_lane_token(units, count);
+}
+root@1c64306e7dec:/app# apply_patch<<'PATCH'
+> *** Begin Patch
+> *** Update File: environment/runner/emit_pipeline.cpp
+> @@
+> -    std::vector<forge::CheckpointEntry> merged;
+> -    if (requested_resume.size() > 0) {
+> -        forge_lane_merge_checkpoint(checkpoint, updated_entries, requested_resume);
+> -        merged = forge_lane_export_checkpoint(checkpoint);
+> -    }
+> -    forge_lane_save_checkpoint(checkpoint_path, lane_token, merged);
+> +    // Persist lane checkpoint every invocation. When the on-disk checkpoint is valid and
+> +    // lane-matched, we must preserve previously stored resume entries even if the current
+> +    // invocation did not request any resume units (partial invocation).
+> +    //
+> +    // Only resume-mode units are ever stored in checkpoint state.
+> +    if (checkpoint.valid) {
+> +        // Merge updates for requested resume units (if any) into existing checkpoint.
+> +        if (!requested_resume.empty()) {
+> +            forge_lane_merge_checkpoint(checkpoint, updated_entries, requested_resume);
+> +        }
+> +    } else {
+> +        // Invalid/mismatched/stale checkpoint: start fresh and only keep updates from this run.
+> +        checkpoint.units.clear();
+> +        if (!requested_resume.empty()) {
+> +            forge_lane_merge_checkpoint(checkpoint, updated_entries, requested_resume);
+> +        }
+> +        // Mark valid now that it matches the active lane_token for subsequent reads.
+> +        checkpoint.valid = true;
+> +    }
+> +
+> +    std::vector<forge::CheckpointEntry> merged = forge_lane_export_checkpoint(checkpoint);
+> +    forge_lane_save_checkpoint(checkpoint_path, lane_token, merged);
+> *** End Patch
+> PATCH
+bash: apply_patch: command not found
+root@1c64306e7dec:/app# ninja -C /app/build
+ninja: Entering directory `/app/build'
+ninja: no work to do.
+root@1c64306e7dec:/app# rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json
+root@1c64306e7dec:/app# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta
+root@1c64306e7dec:/app# cat /app/output/forge_checkpoint.json; echo
+{"schema_version":1,"lane_token":"6218901b6e584bf4","pass_epoch":1,"units":[{"name":"u_zeta","next_pass":1,"carry_weight":3550,"carry_drift":0}]}
+
+root@1c64306e7dec:/app# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_alpha
+root@1c64306e7dec:/app# cat /app/output/forge_checkpoint.json; echo
+{"schema_version":1,"lane_token":"6218901b6e584bf4","pass_epoch":2,"units":[]}
+
+root@1c64306e7dec:/app# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_zeta
+root@1c64306e7dec:/app# echo '--- emit'; cat /app/output/forge_emit.json; echo; echo '--- checkpoint'; cat /app/output/forge_checkpoint.json; echo
+--- emit
+{"schema_version":1,"release_id":"forge_r07","order_weight_base":500,"pass_epoch":2,"units":[{"name":"u_zeta","mode":"resume","pass_index":0,"manifest_bytes":20
+50,"record_bytes":2050,"drift_bytes":0,"order_rank":2,"order_weight":3550,"row_digest":"6ea975d3f65d6166"}],"total_drift_bytes":0,"order_score":3550,"digest":"9
+b918d50a5f881a6"}
+
+--- checkpoint
+{"schema_version":1,"lane_token":"6218901b6e584bf4","pass_epoch":3,"units":[{"name":"u_zeta","next_pass":1,"carry_weight":3550,"carry_drift":0}]}
+
+root@1c64306e7dec:/app#

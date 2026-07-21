@@ -1,0 +1,55 @@
+{
+  "analysis": "We updated m14/lane_store.cpp function definitions, and rewrote m14/store_bridge.cpp to call a 4-arg m14_write_checkpoint, but headers are still declaring old signatures: include/store_bridge.h still shows 3-arg forge_lane_save_checkpoint, and include/m14_api.h still declares m14_write_checkpoint with 3 args. The attempted perl edit to store_bridge.h did not change the line. We must directly edit store_bridge.h and m14_api.h to update function prototypes to match the new implementations. Then rebuild.",
+  "plan": "1) Manually rewrite /app/environment/include/store_bridge.h to correct forge_lane_save_checkpoint signature with pass_epoch. 2) Update /app/environment/include/m14_api.h declaration of m14_write_checkpoint to include int pass_epoch. 3) Verify no other compilation units still expect old signatures (grep). 4) Rebuild with ninja; then rerun the forge_emit invocations to confirm checkpoint persistence and schema fields.",
+  "commands": [
+    {
+      "keystrokes": "sed -n '1,120p' /app/environment/include/m14_api.h\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat >/app/environment/include/store_bridge.h<<'EOF'\n#pragma once\n#include \"types.h\"\n#include <filesystem>\n#include <string>\n#include <vector>\n\nconst char *forge_lane_fingerprint(const forge::UnitSpec *units, size_t count);\nforge::LaneCheckpoint forge_lane_load_checkpoint(const std::filesystem::path &path,\n                                                 const std::string &expected_token);\nstd::vector<forge::UnitCheckpoint> forge_lane_merge_checkpoint(\n    const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,\n    const std::vector<std::string> &requested_resume);\nvoid forge_lane_save_checkpoint(const std::filesystem::path &path, const char *lane_token,\n                                int pass_epoch,\n                                const std::vector<forge::UnitCheckpoint> &entries);\nEOF\n",
+      "duration": 0.2
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/void m14_write_checkpoint\\(const std::filesystem::path &path, const char \\*lane_token,\\s*const std::vector<forge::UnitCheckpoint> &entries\\);/void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token, int pass_epoch,\\n                          const std::vector<forge::UnitCheckpoint> &entries);/s' /app/environment/include/m14_api.h\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "grep -n \"m14_write_checkpoint\" -n /app/environment/include/m14_api.h\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "grep -RIn \"forge_lane_save_checkpoint\\(\" /app/environment | head -n 20\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "ninja -C /app/build\n",
+      "duration": 5.0
+    },
+    {
+      "keystrokes": "rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "cat /app/output/forge_checkpoint.json\n",
+      "duration": 0.2
+    },
+    {
+      "keystrokes": "rm -f /app/output/forge_emit.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_alpha\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "echo '--- checkpoint after partial ---' && cat /app/output/forge_checkpoint.json\n",
+      "duration": 0.2
+    }
+  ],
+  "task_complete": false
+}

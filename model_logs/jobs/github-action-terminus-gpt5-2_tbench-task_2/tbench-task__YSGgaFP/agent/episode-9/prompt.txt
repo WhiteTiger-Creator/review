@@ -1,0 +1,211 @@
+New Terminal Output:
+
+root@33b7252c234c:/app# cat > /app/environment/c9/pass_gate.cpp <<'EOF'
+> #include "c9_api.h"
+> #include <string.h>
+>
+> extern "C" const char *c9_resolve_mode(const char *manifest_mode, const char *unit_name,
+>                                        int pass_epoch) {
+>     static thread_local char mode_buf[16];
+>     (void)unit_name;
+>     (void)pass_epoch;
+>     if (manifest_mode == NULL) {
+>         mode_buf[0] = '\0';
+>         return mode_buf;
+>     }
+>     strncpy(mode_buf, manifest_mode, sizeof(mode_buf) - 1);
+>     mode_buf[sizeof(mode_buf) - 1] = '\0';
+>     return mode_buf;
+> }
+> EOF
+root@33b7252c234c:/app# cat > /app/environment/n21/extra_n2.cpp <<'EOF'
+> #include "types.h"
+> #include <sstream>
+>
+> namespace forge {
+>
+> std::string n21_header_serial(int schema_version, const std::string &release_id, int base,
+>                               int pass_epoch, int64_t drift_total, int64_t weight_total) {
+>     std::ostringstream os;
+>     os << schema_version << '|' << release_id << '|' << base << '|' << pass_epoch << '|' << drift_total
+>        << '|' << weight_total;
+>     return os.str();
+> }
+>
+> }
+> EOF
+root@33b7252c234c:/app# cat > /app/environment/n21/q5_pack_stamp.cpp <<'EOF'
+> #include "types.h"
+> #include <sstream>
+> #include <string>
+>
+> namespace forge {
+>
+> std::string q5_row_serial(const UnitRun &run) {
+>     std::ostringstream os;
+>     os << run.name << '|' << run.manifest_bytes << '|' << run.record_bytes << '|' << run.drift_bytes
+>        << '|' << run.order_rank << '|' << run.order_weight;
+>     return os.str();
+> }
+>
+> std::string unit_row_serial(const UnitRun &run) {
+>     return q5_row_serial(run);
+> }
+>
+> }
+> EOF
+root@33b7252c234c:/app# perl -0777 -i -pe 's/void m14_write_checkpoint\(const std::filesystem::path &path, const char \*lane_token,\s*const std::vector<forge::U
+nitCheckpoint> &entries\);/void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token,\n                          int pass_epoch, const
+ std::vector<forge::UnitCheckpoint> &entries);/s' /app/environment/include/m14_api.h
+root@33b7252c234c:/app# perl -0777 -i -pe 's/void forge_lane_save_checkpoint\(const std::filesystem::path &path, const char \*lane_token,\s*const std::vector<fo
+rge::UnitCheckpoint> &entries\);/void forge_lane_save_checkpoint(const std::filesystem::path &path, const char *lane_token,\n                               int
+pass_epoch, const std::vector<forge::UnitCheckpoint> &entries);/s' /app/environment/include/store_bridge.h
+root@33b7252c234c:/app# cat > /app/environment/m14/store_bridge.cpp<<'EOF'
+> #include "m14_api.h"
+> #include "store_bridge.h"
+>
+> std::vector<forge::UnitCheckpoint> forge_lane_merge_checkpoint(
+>     const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+>     const std::vector<std::string> &requested_resume) {
+>     return m14_merge_entries(existing, updated, requested_resume);
+> }
+>
+> void forge_lane_save_checkpoint(const std::filesystem::path &path, const char *lane_token,
+>                                 int pass_epoch,
+>                                 const std::vector<forge::UnitCheckpoint> &entries) {
+>     m14_write_checkpoint(path, lane_token, pass_epoch, entries);
+> }
+> EOF
+root@33b7252c234c:/app# cat > /app/environment/m14/lane_store.cpp<<'EOF'
+> #include "constants.h"
+> #include "m14_api.h"
+> #include "types.h"
+> #include <algorithm>
+> #include <cctype>
+> #include <fstream>
+> #include <map>
+> #include <sstream>
+> #include <stdexcept>
+ > #include <string>
+> #include <vector>
+>
+> namespace {
+>
+> std::uint64_t digest_update(std::uint64_t h, const std::string &text) {
+>     for (unsigned char ch : text) {
+>         h ^= static_cast<std::uint64_t>(ch);
+>         h = (h * forge::kDigestStep) & forge::kDigestMask;
+>     }
+>     return h;
+> }
+>
+ > std::string digest_hex(const std::string &text) {
+>     std::uint64_t h = digest_update(forge::kDigestSeed, text);
+>     std::ostringstream os;
+>     os << std::hex << std::nouppercase;
+bl>     os.width(16);
+>     os.fill('0');
+>     os << h;
+=>     return os.str();
+> }
+>
+> std::string descriptor_line(const forge::UnitSpec &unit) {
+>     std::ostringstream os;
+>     os << unit.name << '|' << unit.mode << '|' << unit.record << '|' << unit.manifest_bytes << '|'
+>        << unit.start_pass;
+>     return os.str();
+> }
+>
+> std::string pick_string(const std::string &block, const std::string &key) {
+>     std::string needle = "\"" + key + "\"";
+>     size_t k = block.find(needle);
+>     if (k == std::string::npos) {
+>         return "";
+>     }
+>     size_t q = block.find('"', block.find(':', k) + 1);
+>     size_t e = block.find('"', q + 1);
+>     return block.substr(q + 1, e - q - 1);
+> }
+>
+> int pick_int(const std::string &block, const std::string &key) {
+>     std::string needle = "\"" + key + "\"";
+>     size_t k = block.find(needle);
+>     if (k == std::string::npos) {
+>         return 0;
+>     }
+>     size_t p = block.find(':', k) + 1;
+>     while (
+[... output limited to 10000 bytes; 70 interior bytes omitted ...]
+sting, const std::vector<forge::UnitCheckpoint> &updated,
+>     const std::vector<std::string> &requested_resume) {
+>     (void)requested_resume;
+>
+>     std::map<std::string, forge::UnitCheckpoint> merged;
+>     if (existing.valid) {
+>         merged = existing.units;
+>     }
+>     for (const auto &e : updated) {
+>         merged[e.name] = e;
+>     }
+>
+>     std::vector<forge::UnitCheckpoint> out;
+>     out.reserve(merged.size());
+>     for (const auto &kv : merged) {
+>         out.push_back(kv.second);
+>     }
+>     std::sort(out.begin(), out.end(),
+>               [](const forge::UnitCheckpoint &a, const forge::UnitCheckpoint &b) {
+>                   return a.name < b.name;
+>               });
+>     return out;
+> }
+>
+> void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token, int pass_epoch,
+>                           const std::vector<forge::UnitCheckpoint> &entries) {
+>     std::filesystem::create_directories(path.parent_path());
+>     std::ostringstream out;
+>     out << "{\"schema_version\":" << forge::kSchemaVersion << ",\"lane_token\":\"" << lane_token
+>         << "\",\"pass_epoch\":" << pass_epoch << ",\"units\":[";
+>     for (size_t i = 0; i < entries.size(); ++i) {
+>         if (i) {
+>             out << ',';
+>         }
+>         const auto &entry = entries[i];
+>         out << "{\"name\":\"" << entry.name << "\",\"next_pass\":" << entry.next_pass
+>             << ",\"carry_weight\":" << entry.carry_weight << ",\"carry_drift\":"
+>             << entry.carry_drift << '}';
+>     }
+>     out << "]}\n";
+>     std::ofstream file(path, std::ios::binary);
+>     file << out.str();
+> }
+> EOF
+root@33b7252c234c:/app# perl -0777 -i -pe 's/forge_lane_save_checkpoint\(([^\)]*?)\);/forge_lane_save_checkpoint(checkpoint_path, lane_token, pass_epoch + 1, me
+rged);/s' /app/environment/runner/emit_pipeline.cpp
+root@33b7252c234c:/app# perl -0777 -i -pe 's/\n\s*std::ostringstream cp_patch.*?cp_file << cp_patch\.str\(\);\n/\n/s' /app/environment/runner/emit_pipeline.cpp
+root@33b7252c234c:/app# perl -0777 -i -pe 's/int64_t drift_total = forge_lane_drift_total\(units\.data\(\), units\.size\(\)\);\s*int64_t weight_total = forge_la
+ne_score_total\(units\.data\(\), units\.size\(\)\);/int64_t drift_total = 0;\n    int64_t weight_total = 0;\n    for (const auto &u : units) {\n        drift_to
+tal += std::llabs(u.drift_bytes);\n        weight_total += u.order_weight;\n    }/s' /app/environment/runner/emit_pipeline.cpp
+root@33b7252c234c:/app# perl -0777 -i -pe 's/\n\s*int pass_index = spec\.start_pass;\s*int64_t seeded_weight = 0;.*?\(void\)carry_weight;\n/\n    int pass_index
+ = spec.start_pass;\n    bool resumed = false;\n    if (run.mode == "resume" && checkpoint != nullptr && checkpoint->valid) {\n        auto it = checkpoint->uni
+ts.find(spec.name);\n        if (it != checkpoint->units.end()) {\n            pass_index = it->second.next_pass;\n            carry_weight = it->second.carry_w
+eight;\n            resumed = true;\n        }\n    }\n\n    if (run.mode == "resume" && resumed) {\n        run.order_weight = carry_weight + static_cast<int64
+_t>(order_weight_base) + run.record_bytes;\n    } else {\n        run.order_weight = static_cast<int64_t>(order_weight_base) * (order_rank + 1) + run.record_byt
+es;\n    }\n    (void)names;\n    (void)name_count;\n/sms' /app/environment/runner/emit_pipeline.cpp
+root@33b7252c234c:/app# grep -n "llabs" /app/environment/runner/emit_pipeline.cpp >/dev/null || perl -0777 -i -pe 's/#include <iomanip>/#include <iomanip>\n#inc
+lude <cstdlib>\n/s' /app/environment/runner/emit_pipeline.cpp
+root@33b7252c234c:/app# ninja -C /app/build
+ninja: Entering directory `/app/build'
+[12/12] Linking CXX executable forge_emit
+root@33b7252c234c:/app# rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json
+root@33b7252c234c:/app# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta
+root@33b7252c234c:/app# cat /app/output/forge_emit.json && echo '---' && cat /app/output/forge_checkpoint.json
+{"schema_version":1,"release_id":"forge_r07","order_weight_base":500,"pass_epoch":0,"units":[{"name":"u_kappa","mode":"cold","pass_index":0,"manifest_bytes":615
+0,"record_bytes":6150,"drift_bytes":0,"order_rank":0,"order_weight":6650,"row_digest":"1a2630f75c85fe7b"},{"name":"u_alpha","mode":"resume","pass_index":0,"mani
+fest_bytes":4100,"record_bytes":4100,"drift_bytes":0,"order_rank":1,"order_weight":5100,"row_digest":"8040b55cf040e57e"},{"name":"u_zeta","mode":"resume","pass_
+index":0,"manifest_bytes":2050,"record_bytes":2050,"drift_bytes":0,"order_rank":2,"order_weight":3550,"row_digest":"8f3fc36e887afc0a"}],"total_drift_bytes":0,"o
+rder_score":15300,"digest":"d11c25403fc57705"}
+---
+{"schema_version":1,"lane_token":"2d5837bed1ac6b84","pass_epoch":1,"units":[{"name":"u_alpha","next_pass":1,"carry_weight":5100,"carry_drift":0},{"name":"u_zeta
+","next_pass":1,"carry_weight":3550,"carry_drift":0}]}
+root@33b7252c234c:/app#

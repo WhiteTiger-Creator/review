@@ -15,10 +15,10 @@
         "include_exceptions": null,
         "exclude_exceptions": [
             "AgentTimeoutError",
-            "RewardFileNotFoundError",
+            "VerifierTimeoutError",
             "RewardFileEmptyError",
-            "VerifierOutputParseError",
-            "VerifierTimeoutError"
+            "RewardFileNotFoundError",
+            "VerifierOutputParseError"
         ],
         "wait_multiplier": 1.0,
         "min_wait_sec": 1.0,

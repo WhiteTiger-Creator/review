@@ -1,0 +1,18 @@
+{
+  "analysis": "The implementation looks correct. Let me do one more verification - test with only a cold unit to make sure it doesn't break the checkpoint, and also verify the idempotent fresh-start behavior.",
+  "plan": "Test with only u_kappa (cold unit) to ensure checkpoint is preserved unchanged for resume units. Then verify the output is correct by manually checking the digest calculation.",
+  "commands": [
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "cat /app/output/forge_emit.json | python3 -m json.tool\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "cat /app/output/forge_checkpoint.json | python3 -m json.tool\n",
+      "duration": 0.5
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "analysis": "Root causes identified:\n1) Mode bug: c9_resolve_mode forces manifest_mode==\"resume\" to \"cold\" for unit names starting with \"u_a\"; violates requirement to not branch on unit-name prefixes and to follow manifest semantics.\n2) Checkpoint continuity bug: m14_merge_entries discards existing entries and returns only updated.\n3) Digest bug: unit_row_serial in n21/q5_pack_stamp.cpp omits drift_bytes field (required serialization is name|manifest_bytes|record_bytes|drift_bytes|order_rank|order_weight).\n4) Checkpoint writer duplication: runner writes checkpoint twice (forge_lane_save_checkpoint then overwrites with cp_patch). m14_write_checkpoint omits pass_epoch; runner’s patch adds it. Better: make forge_lane_save_checkpoint write correct schema including pass_epoch and remove cp_patch block.\nNext: implement fixes in c9/pass_gate.cpp, n21/q5_pack_stamp.cpp, m14/lane_store.cpp merge+write with pass_epoch (or adjust bridge signature), and runner/emit_pipeline.cpp to call single writer with pass_epoch+1 and stop manual overwrite.",
+  "plan": "Apply minimal targeted patches:\n- c9/pass_gate.cpp: return manifest_mode unchanged (copy into buffer) when non-null.\n- n21/q5_pack_stamp.cpp: include drift_bytes in serialization in the correct position.\n- m14/lane_store.cpp: implement real merge that preserves existing entries not updated; keep alphabetical order.\n- store_bridge/m14_write_checkpoint: extend write function to include pass_epoch. Since forge_lane_save_checkpoint currently lacks pass_epoch param, easiest is: remove m14_write_checkpoint usage entirely and do all checkpoint writing in runner using the correct merged vector (already does). But runner currently overwrites anyway, so we can instead: remove forge_lane_save_checkpoint call and keep a single correct write block OR modify bridge API to accept pass_epoch. We'll do simplest: delete forge_lane_save_checkpoint call and rely on the existing cp_patch writer, but ensure merged is correct and only resume units present. Also ensure checkpoint load reads pass_epoch only for epoch (already), and validity uses lane_token.\nAfter patching, rebuild and rerun a sequence: full invocation then partial invocation (u_zeta) and verify checkpoint retains u_alpha entry and mode is resume. Also verify digests change appropriately and unit row_digest uses correct serialization.",
+  "commands": [
+    {
+      "keystrokes": "apply_patch<<'PATCH'\n*** Begin Patch\n*** Update File: /app/environment/c9/pass_gate.cpp\n@@\n extern \"C\" const char *c9_resolve_mode(const char *manifest_mode, const char *unit_name,\n                                          int pass_epoch) {\n     static thread_local char mode_buf[16];\n-    (void)pass_epoch;\n-    if (manifest_mode == NULL) {\n+    (void)unit_name;\n+    (void)pass_epoch;\n+    if (manifest_mode == NULL) {\n         mode_buf[0] = '\\0';\n         return mode_buf;\n     }\n-    if (strcmp(manifest_mode, \"resume\") == 0 && strncmp(unit_name, \"u_a\", 3) == 0) {\n-        strncpy(mode_buf, \"cold\", sizeof(mode_buf) - 1);\n-        mode_buf[sizeof(mode_buf) - 1] = '\\0';\n-        return mode_buf;\n-    }\n     strncpy(mode_buf, manifest_mode, sizeof(mode_buf) - 1);\n     mode_buf[sizeof(mode_buf) - 1] = '\\0';\n     return mode_buf;\n }\n*** End Patch\nPATCH\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "apply_patch<<'PATCH'\n*** Begin Patch\n*** Update File: /app/environment/n21/q5_pack_stamp.cpp\n@@\n std::string q5_row_serial(const UnitRun &run) {\n     std::ostringstream os;\n-    os << run.name << '|' << run.manifest_bytes << '|' << run.record_bytes << '|'\n-       << run.order_rank << '|' << run.order_weight;\n+    // Digest row serialization must match the emit contract (values only).\n+    os << run.name << '|' << run.manifest_bytes << '|' << run.record_bytes << '|' << run.drift_bytes\n+       << '|' << run.order_rank << '|' << run.order_weight;\n     return os.str();\n }\n*** End Patch\nPATCH\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "apply_patch<<'PATCH'\n*** Begin Patch\n*** Update File: /app/environment/m14/lane_store.cpp\n@@\n std::vector<forge::UnitCheckpoint> m14_merge_entries(\n     const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,\n     const std::vector<std::string> &requested_resume) {\n-    (void)existing;\n-    (void)requested_resume;\n-    std::vector<forge::UnitCheckpoint> out = updated;\n+    // Merge semantics:\n+    // - Preserve existing resume checkpoints for units not updated this invocation.\n+    // - Apply updated entries for any requested resume units.\n+    // - The output list must be sorted alphabetically by unit name.\n+    (void)requested_resume;\n+\n+    std::map<std::string, forge::UnitCheckpoint> merged;\n+    if (existing.valid) {\n+        for (const auto &kv : existing.units) {\n+            merged[kv.first] = kv.second;\n+        }\n+    }\n+    for (const auto &e : updated) {\n+        if (!e.name.empty()) {\n+            merged[e.name] = e;\n+        }\n+    }\n+\n+    std::vector<forge::UnitCheckpoint> out;\n+    out.reserve(merged.size());\n+    for (const auto &kv : merged) {\n+        out.push_back(kv.second);\n+    }\n     std::sort(out.begin(), out.end(),\n               [](const forge::UnitCheckpoint &a, const forge::UnitCheckpoint &b) {\n                   return a.name < b.name;\n               });\n     return out;\n }\n*** End Patch\nPATCH\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "apply_patch<<'PATCH'\n*** Begin Patch\n*** Update File: /app/environment/runner/emit_pipeline.cpp\n@@\n     std::vector<forge::UnitCheckpoint> merged =\n         forge_lane_merge_checkpoint(checkpoint, updated_entries, requested_resume);\n-    forge_lane_save_checkpoint(checkpoint_path, lane_token, merged);\n-\n-    std::ostringstream cp_patch;\n-    cp_patch << \"{\\\"schema_version\\\":\" << forge::kSchemaVersion << \",\\\"lane_token\\\":\\\"\" << lane_token\n-             << \"\\\",\\\"pass_epoch\\\":\" << (pass_epoch + 1) << \",\\\"units\\\":[\";\n-    for (size_t i = 0; i < merged.size(); ++i) {\n-        if (i) {\n-            cp_patch << ',';\n-        }\n-        cp_patch << \"{\\\"name\\\":\\\"\" << merged[i].name << \"\\\",\\\"next_pass\\\":\" << merged[i].next_pass\n-                 << \",\\\"carry_weight\\\":\" << merged[i].carry_weight << \",\\\"carry_drift\\\":\"\n-                 << merged[i].carry_drift << '}';\n-    }\n-    cp_patch << \"]}\\n\";\n-    std::ofstream cp_file(checkpoint_path, std::ios::binary);\n-    cp_file << cp_patch.str();\n+    // Write checkpoint once (schema v1), including pass_epoch increment.\n+    std::ostringstream cp;\n+    cp << \"{\\\"schema_version\\\":\" << forge::kSchemaVersion << \",\\\"lane_token\\\":\\\"\" << lane_token\n+       << \"\\\",\\\"pass_epoch\\\":\" << (pass_epoch + 1) << \",\\\"units\\\":[\";\n+    for (size_t i = 0; i < merged.size(); ++i) {\n+        if (i) {\n+            cp << ',';\n+        }\n+        cp << \"{\\\"name\\\":\\\"\" << merged[i].name << \"\\\",\\\"next_pass\\\":\" << merged[i].next_pass\n+           << \",\\\"carry_weight\\\":\" << merged[i].carry_weight << \",\\\"carry_drift\\\":\"\n+           << merged[i].carry_drift << '}';\n+    }\n+    cp << \"]}\\n\";\n+    std::ofstream cp_file(checkpoint_path, std::ios::binary);\n+    cp_file << cp.str();\n \n     return 0;\n }\n*** End Patch\nPATCH\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "cmake -S /app/environment -B /app/build -G Ninja\n",
+      "duration": 5.0
+    },
+    {
+      "keystrokes": "ninja -C /app/build\n",
+      "duration": 10.0
+    },
+    {
+      "keystrokes": "rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "echo '--- emit ---' && cat /app/output/forge_emit.json && echo '\\n--- checkpoint ---' && cat /app/output/forge_checkpoint.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_zeta\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "echo '--- checkpoint after partial ---' && cat /app/output/forge_checkpoint.json\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

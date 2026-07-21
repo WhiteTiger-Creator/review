@@ -1,0 +1,35 @@
+{
+  "analysis": "The container lacks the helper `apply_patch`, so patches were not applied. We need to edit files using available tools (e.g., sed/perl/heredoc rewrite). We also found m14_write_checkpoint is declared in include/m14_api.h and called from m14/store_bridge.cpp, so any signature change must be propagated. Next: modify c9/pass_gate.cpp and m14/lane_store.cpp (and header + store_bridge.cpp) using perl -0777 or cat > file, then rebuild and rerun checks.",
+  "plan": "1) Use perl in-place editing to remove the forbidden name-prefix override in c9/pass_gate.cpp. 2) Update m14/lane_store.cpp: implement merge logic and update writer to include pass_epoch and accept it as parameter. 3) Update /app/environment/include/m14_api.h declaration and /app/environment/m14/store_bridge.cpp call to pass pass_epoch (we need to find where pass_epoch value is sourced; likely store_bridge currently only writes entries and token—inspect store_bridge.cpp and upstream caller). 4) Rebuild and rerun the earlier scenario to ensure partial invocation preserves u_zeta in checkpoint and manifest resume modes are emitted unchanged.",
+  "commands": [
+    {
+      "keystrokes": "sed -n '1,120p' /app/environment/c9/pass_gate.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "perl -0777 -i -pe 's/\\s*if \\(strcmp\\(manifest_mode, \"resume\"\\) == 0 && strncmp\\(unit_name, \"u_a\", 3\\) == 0\\) \\{\\n\\s*strncpy\\(mode_buf, \"cold\", sizeof\\(mode_buf\\) - 1\\);\\n\\s*mode_buf\\[sizeof\\(mode_buf\\) - 1\\] = \\'\\\\0\\';\\n\\s*return mode_buf;\\n\\s*\\}\\n//s; s/\\(void\\)pass_epoch;/\\(void\\)unit_name;\\n    \\(void\\)pass_epoch;/s' /app/environment/c9/pass_gate.cpp\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "sed -n '1,120p' /app/environment/c9/pass_gate.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,260p' /app/environment/m14/store_bridge.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,120p' /app/environment/include/m14_api.h\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "grep -n \"m14_merge_entries\" -n /app/environment/m14/lane_store.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '130,220p' /app/environment/m14/lane_store.cpp\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

@@ -1,0 +1,6 @@
+New Terminal Output:
+
+root@dbf8340e129b:/app# ninja -C /app/build 2>&1
+ninja: Entering directory `/app/build'
+[33/33] Linking CXX executable forge_emit
+root@dbf8340e129b:/app#

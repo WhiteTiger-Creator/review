@@ -1,0 +1,39 @@
+{
+  "analysis": "Rebuild succeeded and outputs changed: u_alpha now correctly emits mode \"resume\". Fresh-path order_weight for u_kappa is now 500*(0+1)+6150=6650, correct. Checkpoint now contains both resume units sorted alphabetically and includes pass_epoch=1; lane_token changed due to sorting descriptor lines, expected. Remaining concerns: total_drift_bytes currently equals 0 so can’t verify abs-sum behavior; order_score matches sum weights. Need to ensure digest serialization is now correct (header includes pass_epoch; rows include drift_bytes). Also need to verify partial invocation preserves unrelated checkpoints and resume advancement affects pass_index/order_weight, and checkpoint writer JSON closes properly (currently ends with \"]}\\n\"? it shows missing trailing brace in output: it prints ...\"units\":[{...},{...}] with no final }? Actually output shown is truncated by terminal wrapping; should verify exact file. Also m14/lane_store.cpp heredoc got some stray characters (\"bl>\" and \"=>\") visible in terminal output, which may have been inserted into the file and could be problematic even if it compiled; we should inspect file to ensure it’s clean.\nNext: inspect m14/lane_store.cpp for corruption, verify checkpoint JSON validity, then run a partial invocation (u_zeta) and confirm checkpoint retains u_alpha and u_zeta updated, and emitted u_zeta uses advanced pass_index and updated order_weight per resume formula.",
+  "plan": "1) Validate source file m14/lane_store.cpp is clean (no stray prompt artifacts) and checkpoint JSON is well-formed. 2) Run forge_emit with a partial unit list (u_zeta) and inspect emitted JSON and checkpoint to confirm: pass_epoch read from checkpoint before processing, u_zeta pass_index advances to next_pass, order_weight uses carry_weight+base+record_bytes, and checkpoint retains u_alpha entry unchanged while updating u_zeta. 3) Run another partial for u_alpha to confirm independent advancement and retention.",
+  "commands": [
+    {
+      "keystrokes": "python3 - <<'PY'\nimport json\nfor p in ['/app/output/forge_emit.json','/app/output/forge_checkpoint.json']:\n    with open(p,'rb') as f:\n        data=f.read()\n    print(p, 'bytes', len(data))\n    j=json.loads(data)\n    print(' keys:', sorted(j.keys()))\nPY\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "grep -n \"bl>\\|=>\" -n /app/environment/m14/lane_store.cpp || echo 'lane_store.cpp clean'\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "rm -f /app/output/forge_emit.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_zeta\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "cat /app/output/forge_emit.json && echo '---' && cat /app/output/forge_checkpoint.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "rm -f /app/output/forge_emit.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_alpha\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "cat /app/output/forge_emit.json && echo '---' && cat /app/output/forge_checkpoint.json\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

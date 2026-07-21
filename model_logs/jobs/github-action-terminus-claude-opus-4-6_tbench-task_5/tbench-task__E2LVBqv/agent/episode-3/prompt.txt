@@ -1,0 +1,135 @@
+New Terminal Output:
+
+root@dbf8340e129b:/app# cat /app/environment/include/types.h
+#pragma once
+#ifdef __cplusplus
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <map>
+#include <string>
+#include <vector>
+
+namespace forge {
+struct UnitSpec {
+    std::string name;
+    std::string mode;
+    std::string record;
+    int manifest_bytes{};
+    int start_pass{};
+};
+
+struct Manifest {
+    std::string release_id;
+    int order_weight_base{};
+    std::vector<UnitSpec> units;
+};
+
+struct UnitCheckpoint {
+    std::string name;
+    int next_pass{};
+    int64_t carry_weight{};
+    int64_t carry_drift{};
+};
+
+struct LaneCheckpoint {
+    bool valid{false};
+    std::string lane_token;
+    std::map<std::string, UnitCheckpoint> units;
+};
+
+struct UnitRun {
+    std::string name;
+    std::string mode;
+    int pass_index{};
+    int manifest_bytes{};
+    int64_t record_bytes{};
+    int64_t drift_bytes{};
+    int order_rank{};
+    int64_t order_weight{};
+    std::string row_digest;
+    std::string row_serial;
+    std::string json;
+};
+
+Manifest load_manifest(const std::filesystem::path &path);
+std::string digest_hex(const std::string &text);
+std::string unit_row_serial(const UnitRun &run);
+int64_t f12_slot_sum(const std::vector<UnitRun> &units);
+int64_t f12_abs_drift(int64_t drift);
+int64_t f12_drift_total(const std::vector<UnitRun> &units);
+std::string n21_header_serial(int schema_version, const std::string &release_id, int base,
+                              int pass_epoch, int64_t drift_total, int64_t weight_total);
+UnitRun analyze_unit(const UnitSpec &spec, int order_rank, int order_weight_base, int pass_epoch,
+                     const std::filesystem::path &manifest_dir, const char *const *names,
+                     size_t name_count, const LaneCheckpoint *checkpoint, int64_t carry_weight);
+}
+#endif
+root@dbf8340e129b:/app# cat /app/environment/include/constants.h
+#pragma once
+#include <cstdint>
+
+namespace forge {
+constexpr std::uint64_t kDigestSeed = 1469598103934665603ull;
+constexpr std::uint64_t kDigestStep = 1099511628211ull;
+constexpr std::uint64_t kDigestMask = 0xffffffffffffffffull;
+constexpr int kSchemaVersion = 1;
+}
+root@dbf8340e129b:/app# cat /app/environment/include/emit_pipeline.h
+#pragma once
+
+int forge_run_emit(int argc, char **argv);
+root@dbf8340e129b:/app# cat /app/environment/include/lane_bridge.h
+#pragma once
+#include "types.h"
+#include <cstddef>
+#include <string>
+#include <vector>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int64_t forge_lane_weight(const char *target, const char *const *names, size_t count, int base,
+                          int64_t record_bytes);
+int64_t forge_lane_drift_total(const forge::UnitRun *units, size_t count);
+int64_t forge_lane_score_total(const forge::UnitRun *units, size_t count);
+
+#ifdef __cplusplus
+}
+const char *forge_lane_mode(const char *manifest_mode, const char *unit_name, int pass_epoch);
+std::string forge_lane_row_text(const forge::UnitRun &run);
+std::string forge_lane_header_text(int schema_version, const std::string &release_id, int base,
+                                   int pass_epoch, int64_t drift_total, int64_t weight_total);
+#endif
+root@dbf8340e129b:/app# cat /app/environment/include/scan_bridge.h
+#pragma once
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int forge_scan_has_key(const char *line, size_t len, const char *token);
+int64_t forge_scan_record_bytes(const char *line, size_t len);
+
+#ifdef __cplusplus
+}
+#endif
+root@dbf8340e129b:/app# cat /app/environment/include/store_bridge.h
+#pragma once
+#include "types.h"
+#include <filesystem>
+#include <string>
+#include <vector>
+
+const char *forge_lane_fingerprint(const forge::UnitSpec *units, size_t count);
+forge::LaneCheckpoint forge_lane_load_checkpoint(const std::filesystem::path &path,
+                                                 const std::string &expected_token);
+std::vector<forge::UnitCheckpoint> forge_lane_merge_checkpoint(
+    const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+    const std::vector<std::string> &requested_resume);
+void forge_lane_save_checkpoint(const std::filesystem::path &path, const char *lane_token,
+                                const std::vector<forge::UnitCheckpoint> &entries);
+root@dbf8340e129b:/app#

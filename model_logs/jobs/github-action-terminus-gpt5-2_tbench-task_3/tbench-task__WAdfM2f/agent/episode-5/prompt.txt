@@ -1,0 +1,206 @@
+New Terminal Output:
+
+root@1c64306e7dec:/app# wc -l /app/environment/m14/lane_store.cpp
+342 /app/environment/m14/lane_store.cpp
+root@1c64306e7dec:/app# nl -ba /app/environment/m14/lane_store.cpp | sed -n '1,120p'
+     1  #include "constants.h"
+     2  #include "constants.h"
+     3  #include "m14_api.h"
+     4  #include "m14_api.h"
+     5  #include "types.h"
+     6  #include "types.h"
+     7  #include <algorithm>
+     8  #include <algorithm>
+     9  #include <cctype>
+    10  #include <cctype>
+    11  #include <fstream>
+    12  #include <fstream>
+    13  #include <sstream>
+    14  #include <sstream>
+    15  #include <stdexcept>
+    16  #include <stdexcept>
+    17  #include <string>
+    18  #include <string>
+    19  #include <vector>
+    20  #include <vector>
+    21  #include <map>
+    22  #include <map>
+    23  #include <set>
+    24  #include <set>
+    25
+    26
+    27  namespace {
+    28  namespace {
+    29
+    30
+    31  std::uint64_t digest_update(std::uint64_t h, const std::string &text) {
+    32  std::uint64_t digest_update(std::uint64_t h, const std::string &text) {
+    33      for (unsigned char ch : text) {
+    34      for (unsigned char ch : text) {
+    35          h ^= static_cast<std::uint64_t>(ch);
+    36          h ^= static_cast<std::uint64_t>(ch);
+    37          h = (h * forge::kDigestStep) & forge::kDigestMask;
+    38          h = (h * forge::kDigestStep) & forge::kDigestMask;
+    39      }
+    40      }
+    41      return h;
+    42      return h;
+    43  }
+    44  }
+    45
+    46
+    47  std::string digest_hex(const std::string &text) {
+    48  std::string digest_hex(const std::string &text) {
+    49      std::uint64_t h = digest_update(forge::kDigestSeed, text);
+    50      std::uint64_t h = digest_update(forge::kDigestSeed, text);
+    51      std::ostringstream os;
+    52      std::ostringstream os;
+    53      os << std::hex << std::nouppercase;
+    54      os << std::hex << std::nouppercase;
+    55      os.width(16);
+    56      os.width(16);
+    57      os.fill('0');
+    58      os.fill('0');
+    59      os << h;
+    60      os << h;
+    61      return os.str();
+    62      return os.str();
+    63  }
+    64  }
+    65
+    66
+    67  std::string descriptor_line(const forge::UnitSpec &unit) {
+    68  std::string descriptor_line(const forge::UnitSpec &unit) {
+    69      std::ostringstream os;
+    70      std::ostringstream os;
+    71      os << unit.name << '|' << unit.mode << '|' << unit.record << '|' << unit.manifest_bytes << '|'
+    72      os << unit.name << '|' << unit.mode << '|' << unit.record << '|' << unit.manifest_bytes << '|'
+    73         << unit.start_pass;
+    74         << unit.start_pass;
+    75      return os.str();
+    76      return os.str();
+    77  }
+    78  }
+    79
+    80
+    81  std::string pick_string(const std::string &block, const std::string &key) {
+    82  std::string pick_string(const std::string &block, const std::string &key) {
+    83      std::string needle = "\"" + key + "\"";
+    84      std::string needle = "\"" + key + "\"";
+    85      size_t k = block.find(needle);
+    86      size_t k = block.find(needle);
+    87      if (k == std::string::npos) {
+    88      if (k == std::string::npos) {
+    89          return "";
+    90          return "";
+    91      }
+    92      }
+    93      size_t q = block.find('"', block.find(':', k) + 1);
+    94      size_t q = block.find('"', block.find(':', k) + 1);
+    95      size_t e = block.find('"', q + 1);
+    96      size_t e = block.find('"', q + 1);
+    97      return block.substr(q + 1, e - q - 1);
+    98      return block.substr(q + 1, e - q - 1);
+    99  }
+   100  }
+   101
+   102
+   103  int pick_int(const std::string &block, const std::string &key) {
+   104  int pick_int(const std::string &block, const std::string &key) {
+   105      std::string needle = "\"" + key + "\"";
+   106      std::string needle = "\"" + key + "\"";
+   107      size_t k = block.find(needle);
+   108      size_t k = block.find(needle);
+   109      if (k == std::string::npos) {
+   110      if (k == std::string::npos) {
+   111          return 0;
+   112          return 0;
+   113      }
+   114      }
+   115      size_t p = block.find(':', k) + 1;
+   116      size_t p = block.find(':', k) + 1;
+   117      while (p < block.size() && !std::isdigit(static_cast<unsigned char>(block[p])) && block[p] != '-') {
+   118      while (p < block.size() && !std::isdigit(static_cast<unsigned char>(block[p])) && block[p] != '-') {
+   119          ++p;
+   120          ++p;
+root@1c64306e7dec:/app# nl -ba /app/environment/m14/lane_store.cpp | sed -n '260,380p'
+   260      if (!m14_checkpoint_valid(state.lane_token.c_str(), expected_token.c_str())) {
+   261          return state;
+   262          return state;
+   263      }
+   264      }
+   265      size_t units_pos = doc.find("\"units\"");
+   266      size_t units_pos = doc.find("\"units\"");
+   267      if (units_pos == std::string::npos) {
+   268      if (units_pos == std::string::npos) {
+   269          ret
+[... output limited to 10000 bytes; 70 interior bytes omitted ...]
+t/m14/lane_store.cpp:100:1: warning: no return statement in function returning non-void [-Wreturn-type]
+  100 | }
+      | ^
+/app/environment/m14/lane_store.cpp: In function ‘int {anonymous}::{anonymous}::pick_int(const std::string&, const std::string&)’:
+/app/environment/m14/lane_store.cpp:104:64: error: a function-definition is not allowed here before ‘{’ token
+  104 | int pick_int(const std::string &block, const std::string &key) {
+      |                                                                ^
+/app/environment/m14/lane_store.cpp:134:1: warning: no return statement in function returning non-void [-Wreturn-type]
+  134 | }
+      | ^
+/app/environment/m14/lane_store.cpp: In function ‘int64_t {anonymous}::{anonymous}::pick_int64(const std::string&, const std::string&)’:
+/app/environment/m14/lane_store.cpp:138:70: error: a function-definition is not allowed here before ‘{’ token
+  138 | int64_t pick_int64(const std::string &block, const std::string &key) {
+      |                                                                      ^
+/app/environment/m14/lane_store.cpp:142:1: warning: no return statement in function returning non-void [-Wreturn-type]
+  142 | }
+      | ^
+/app/environment/m14/lane_store.cpp: In function ‘std::vector<std::__cxx11::basic_string<char> > {anonymous}::{anonymous}::split_object_blocks(const std::string
+&)’:
+/app/environment/m14/lane_store.cpp:146:77: error: a function-definition is not allowed here before ‘{’ token
+  146 | std::vector<std::string> split_object_blocks(const std::string &array_text) {
+      |                                                                             ^
+/app/environment/m14/lane_store.cpp:184:1: warning: no return statement in function returning non-void [-Wreturn-type]
+  184 | }
+      | ^
+/app/environment/m14/lane_store.cpp: In function ‘const char* m14_lane_token(const forge::UnitSpec*, size_t)’:
+/app/environment/m14/lane_store.cpp:192:8: error: expected unqualified-id before string constant
+  192 | extern "C" const char *m14_lane_token(const forge::UnitSpec *units, size_t count) {
+      |        ^~~
+/app/environment/m14/lane_store.cpp:214:1: warning: no return statement in function returning non-void [-Wreturn-type]
+  214 | }
+      | ^
+/app/environment/m14/lane_store.cpp: In function ‘int m14_checkpoint_valid(const char*, const char*)’:
+/app/environment/m14/lane_store.cpp:218:8: error: expected unqualified-id before string constant
+  218 | extern "C" int m14_checkpoint_valid(const char *on_disk_token, const char *expected_token) {
+      |        ^~~
+/app/environment/m14/lane_store.cpp:228:1: warning: no return statement in function returning non-void [-Wreturn-type]
+  228 | }
+      | ^
+/app/environment/m14/lane_store.cpp: At global scope:
+/app/environment/m14/lane_store.cpp:233:86: error: expected ‘)’ before ‘{’ token
+  233 |                                                    const std::string &expected_token) {
+      |                                                                                      ^~
+      |                                                                                      )
+/app/environment/m14/lane_store.cpp:231:42: note: to match this ‘(’
+  231 | forge::LaneCheckpoint m14_read_checkpoint(const std::filesystem::path &path,
+      |                                          ^
+/app/environment/m14/lane_store.cpp: In function ‘forge::LaneCheckpoint m14_read_checkpoint(const std::filesystem::__cxx11::path&, forge::LaneCheckpoint (*)(con
+st std::filesystem::__cxx11::path&, const std::string&))’:
+/app/environment/m14/lane_store.cpp:234:85: error: expected initializer before ‘)’ token
+  234 |                                                    const std::string &expected_token) {
+      |                                                                                     ^
+/app/environment/m14/lane_store.cpp:313:55: error: a function-definition is not allowed here before ‘{’ token
+  313 |     const std::vector<std::string> &requested_resume) {
+      |                                                       ^
+/app/environment/m14/lane_store.cpp:325:89: error: a function-definition is not allowed here before ‘{’ token
+  325 |                                      const std::vector<forge::UnitCheckpoint> &entries) {
+      |                                                                                         ^
+/app/environment/m14/lane_store.cpp:342:2: error: expected ‘}’ at end of input
+  342 | }
+      |  ^
+/app/environment/m14/lane_store.cpp:233:87: note: to match this ‘{’
+  233 |                                                    const std::string &expected_token) {
+      |                                                                                       ^
+/app/environment/m14/lane_store.cpp:342:2: warning: no return statement in function returning non-void [-Wreturn-type]
+  342 | }
+      |  ^
+ninja: build stopped: subcommand failed.
+root@1c64306e7dec:/app#

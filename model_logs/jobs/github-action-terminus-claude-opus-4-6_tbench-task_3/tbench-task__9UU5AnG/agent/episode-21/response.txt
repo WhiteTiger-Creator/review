@@ -1,0 +1,22 @@
+{
+  "analysis": "Partial invocation works correctly:\n- u_alpha: pass_index=2 (from checkpoint next_pass=2), weight = 9700 + 500 + 4100 = 14300 ✓\n- u_zeta's checkpoint is preserved with next_pass=2, carry_weight=6100 ✓\n- pass_epoch correctly reads as 2 and checkpoint gets epoch 3 ✓\n\nLet me verify a fresh start scenario and also test that cold units never use checkpoint data.",
+  "plan": "Reset checkpoint and test fresh start to ensure everything works from scratch. Also verify the lane token independently.",
+  "commands": [
+    {
+      "keystrokes": "rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta 2>&1\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "cat /app/output/forge_emit.json | python3 -m json.tool\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "python3 -c \"\nimport struct\n\ndef fnv_digest(text):\n    h = 1469598103934665603\n    for b in text.encode():\n        h ^= b\n        h = (h * 1099511628211) & 0xffffffffffffffff\n    return format(h, '016x')\n\n# Lane token: sorted by unit name\nlines = [\n    'u_alpha|resume|records/r1.unit|4100|0',\n    'u_kappa|cold|records/r0.unit|6150|0',\n    'u_zeta|resume|records/r2.unit|2050|0',\n]\ntoken = fnv_digest('\\\\n'.join(lines))\nprint(f'lane_token: {token}')\n\n# Row serial: name|manifest_bytes|record_bytes|drift_bytes|order_rank|order_weight\nrow1 = 'u_kappa|6150|6150|0|0|6650'\nrow2 = 'u_alpha|4100|4100|0|1|5100'\nrow3 = 'u_zeta|2050|2050|0|2|3550'\nprint(f'row1_digest: {fnv_digest(row1)}')\nprint(f'row2_digest: {fnv_digest(row2)}')\nprint(f'row3_digest: {fnv_digest(row3)}')\n\n# Header: schema_version|release_id|order_weight_base|pass_epoch|total_drift_bytes|order_score\nheader = '1|forge_r07|500|0|0|15300'\nfull = header + '\\\\n' + row1 + '\\\\n' + row2 + '\\\\n' + row3\nprint(f'top_digest: {fnv_digest(full)}')\n\" 2>&1\n",
+      "duration": 1.0
+    }
+  ]
+}

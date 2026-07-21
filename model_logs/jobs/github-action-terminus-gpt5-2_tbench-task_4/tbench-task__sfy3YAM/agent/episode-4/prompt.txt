@@ -1,0 +1,32 @@
+New Terminal Output:
+
+root@c5c0f1c2990a:/app# sed -n '1,120p' /app/environment/c9/pass_gate.cpp
+#include "c9_api.h"
+#include <string.h>
+
+extern "C" const char *c9_resolve_mode(const char *manifest_mode, const char *unit_name,
+                                         int pass_epoch) {
+    static thread_local char mode_buf[16];
+    (void)pass_epoch;
+    if (manifest_mode == NULL) {
+        mode_buf[0] = '\0';
+        return mode_buf;
+    }
+    if (strcmp(manifest_mode, "resume") == 0 && strncmp(unit_name, "u_a", 3) == 0) {
+        strncpy(mode_buf, "cold", sizeof(mode_buf) - 1);
+        mode_buf[sizeof(mode_buf) - 1] = '\0';
+        return mode_buf;
+    }
+    strncpy(mode_buf, manifest_mode, sizeof(mode_buf) - 1);
+    mode_buf[sizeof(mode_buf) - 1] = '\0';
+    return mode_buf;
+}
+root@c5c0f1c2990a:/app# perl -0777 -i -pe 's/\s*if \(strcmp\(manifest_mode, "resume"\) == 0 && strncmp\(unit_name, "u_a", 3\) == 0\) \{\n\s*strncpy\(mode_buf, "
+cold", sizeof\(mode_buf\) - 1\);\n\s*mode_buf\[sizeof\(mode_buf\) - 1\] = \'\\0\';\n\s*return mode_buf;\n\s*\}\n//s; s/\(void\)pass_epoch;/\(void\)unit_name;\n
+   \(void\)pass_epoch;/s' /app/environment/c9/pass_gate.cpp
+> sed -n '1,120p' /app/environment/c9/pass_gate.cpp
+> sed -n '1,260p' /app/environment/m14/store_bridge.cpp
+> sed -n '1,120p' /app/environment/include/m14_api.h
+> grep -n "m14_merge_entries" -n /app/environment/m14/lane_store.cpp
+> sed -n '130,220p' /app/environment/m14/lane_store.cpp
+>

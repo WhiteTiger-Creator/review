@@ -1,0 +1,146 @@
+{
+    "results": {
+        "tool": {
+            "name": "pytest",
+            "version": "8.4.1"
+        },
+        "summary": {
+            "tests": 11,
+            "passed": 2,
+            "failed": 9,
+            "skipped": 0,
+            "pending": 0,
+            "other": 0,
+            "start": 1779812692.8864756,
+            "stop": 1779812693.0855224
+        },
+        "tests": [
+            {
+                "name": "test_outputs.py::test_q0_cold_lane_baseline",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.032444388999977036,
+                "start": 1779812692.9151728,
+                "stop": 1779812692.9641302,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_q0_cold_lane_baseline():\n        \"\"\"Cold unit u_kappa reports parsed record bytes, zero drift, and cold weight formula.\"\"\"\n        doc, _ = _run(\"u_kappa\")\n>       _assert_schema(doc, [\"u_kappa\"])\n\n/tests/test_outputs.py:241: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\ndoc = {'digest': '80707aa39fb35463', 'order_score': 7150, 'order_weight_base': 500, 'pass_epoch': 0, ...}\nrequested = ['u_kappa']\n\n    def _assert_schema(doc: dict, requested: list[str]) -> None:\n        meta = _manifest_meta()\n        assert doc[\"schema_version\"] == 1\n        assert doc[\"release_id\"] == meta[\"release_id\"]\n        assert doc[\"order_weight_base\"] == meta[\"order_weight_base\"]\n        assert isinstance(doc[\"pass_epoch\"], int)\n        assert len(doc[\"digest\"]) == 16\n>       assert doc[\"digest\"] == _digest(_top_serial(doc))\nE       AssertionError: assert '80707aa39fb35463' == '711e20fc6fcd217b'\nE         \nE         - 711e20fc6fcd217b\nE         + 80707aa39fb35463\n\n/tests/test_outputs.py:209: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_q1_corrupt_checkpoint_fresh_start",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0031537589999288684,
+                "start": 1779812692.964393,
+                "stop": 1779812692.9765766,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_q1_corrupt_checkpoint_fresh_start():\n        \"\"\"Corrupt lane checkpoint is ignored and resume units restart at configured start_pass.\"\"\"\n        seed_doc, seed_state = _run_with_state(UNITS_RESUME_CSV)\n>       _assert_schema(seed_doc, UNITS_RESUME)\n\n/tests/test_outputs.py:254: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\ndoc = {'digest': 'f7c376faf9febc62', 'order_score': 8150, 'order_weight_base': 500, 'pass_epoch': 1, ...}\nrequested = ['u_alpha', 'u_zeta']\n\n    def _assert_schema(doc: dict, requested: list[str]) -> None:\n        meta = _manifest_meta()\n        assert doc[\"schema_version\"] == 1\n        assert doc[\"release_id\"] == meta[\"release_id\"]\n        assert doc[\"order_weight_base\"] == meta[\"order_weight_base\"]\n        assert isinstance(doc[\"pass_epoch\"], int)\n        assert len(doc[\"digest\"]) == 16\n>       assert doc[\"digest\"] == _digest(_top_serial(doc))\nE       AssertionError: assert 'f7c376faf9febc62' == '622f27ca905f09d5'\nE         \nE         - 622f27ca905f09d5\nE         + f7c376faf9febc62\n\n/tests/test_outputs.py:209: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_q2_stale_lane_token_rejected",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0043318379999846,
+                "start": 1779812692.976807,
+                "stop": 1779812692.9901657,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_q2_stale_lane_token_rejected():\n        \"\"\"Well-formed but stale lane tokens do not seed resume carry fields.\"\"\"\n        doc, state = _run_with_state(\"u_alpha\")\n        run = _by_name(doc, \"u_alpha\")\n>       saved = _state_map(state)\n                ^^^^^^^^^^^^^^^^^\n\n/tests/test_outputs.py:280: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nstate = {'lane_token': '6218901b6e584bf4', 'pass_epoch': 3, 'schema_version': 1, 'units': []}\n\n    def _state_map(state: dict) -> dict[str, dict]:\n        assert set(state) >= {\"schema_version\", \"lane_token\", \"pass_epoch\", \"units\"}\n        assert state[\"schema_version\"] == 1\n        assert len(state[\"lane_token\"]) == 16\n>       assert state[\"lane_token\"] == _expected_lane_token()\nE       AssertionError: assert '6218901b6e584bf4' == '2d5837bed1ac6b84'\nE         \nE         - 2d5837bed1ac6b84\nE         + 6218901b6e584bf4\n\n/tests/test_outputs.py:186: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_q3_resume_carry_weight_chain",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.003179644999931952,
+                "start": 1779812692.9903815,
+                "stop": 1779812693.002193,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_q3_resume_carry_weight_chain():\n        \"\"\"Chained resume invocations advance pass_index and accumulate carry_weight.\"\"\"\n        if OUT.exists():\n            OUT.unlink()\n        if STATE.exists():\n            STATE.unlink()\n        first_doc, first_state = _run_with_state(\"u_zeta\")\n        first = _by_name(first_doc, \"u_zeta\")\n>       first_map = _state_map(first_state)\n                    ^^^^^^^^^^^^^^^^^^^^^^^\n\n/tests/test_outputs.py:310: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nstate = {'lane_token': '6218901b6e584bf4', 'pass_epoch': 1, 'schema_version': 1, 'units': [{'carry_drift': 0, 'carry_weight': 3550, 'name': 'u_zeta', 'next_pass': 1}]}\n\n    def _state_map(state: dict) -> dict[str, dict]:\n        assert set(state) >= {\"schema_version\", \"lane_token\", \"pass_epoch\", \"units\"}\n        assert state[\"schema_version\"] == 1\n        assert len(state[\"lane_token\"]) == 16\n>       assert state[\"lane_token\"] == _expected_lane_token()\nE       AssertionError: assert '6218901b6e584bf4' == '2d5837bed1ac6b84'\nE         \nE         - 2d5837bed1ac6b84\nE         + 6218901b6e584bf4\n\n/tests/test_outputs.py:186: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_q4_subset_preserves_other_checkpoints",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.00309677500001726,
+                "start": 1779812693.0024054,
+                "stop": 1779812693.0144048,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_q4_subset_preserves_other_checkpoints():\n        \"\"\"Partial resume requests preserve checkpoints for omitted resume units.\"\"\"\n        if OUT.exists():\n            OUT.unlink()\n        if STATE.exists():\n            STATE.unlink()\n        full_doc, full_state = _run_with_state(UNITS_RESUME_CSV)\n        full_alpha = _by_name(full_doc, \"u_alpha\")\n        full_zeta = _by_name(full_doc, \"u_zeta\")\n>       full_map = _state_map(full_state)\n                   ^^^^^^^^^^^^^^^^^^^^^^\n\n/tests/test_outputs.py:332: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nstate = {'lane_token': '6218901b6e584bf4', 'pass_epoch': 1, 'schema_version': 1, 'units': [{'carry_drift': 0, 'carry_weight': 3550, 'name': 'u_zeta', 'next_pass': 1}]}\n\n    def _state_map(state: dict) -> dict[str, dict]:\n        assert set(state) >= {\"schema_version\", \"lane_token\", \"pass_epoch\", \"units\"}\n        assert state[\"schema_version\"] == 1\n        assert len(state[\"lane_token\"]) == 16\n>       assert state[\"lane_token\"] == _expected_lane_token()\nE       AssertionError: assert '6218901b6e584bf4' == '2d5837bed1ac6b84'\nE         \nE         - 2d5837bed1ac6b84\nE         + 6218901b6e584bf4\n\n/tests/test_outputs.py:186: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_q5_lane_replay_determinism",
+                "status": "passed",
+                "duration": 0.0067577410000012605,
+                "start": 1779812693.0146208,
+                "stop": 1779812693.021558,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_q6_mixed_lane_totals",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0030902980000178104,
+                "start": 1779812693.02177,
+                "stop": 1779812693.0410364,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_q6_mixed_lane_totals():\n        \"\"\"Full lane request keeps absolute drift totals and manifest-order rank weights.\"\"\"\n        doc, _ = _run(UNITS_ALL_CSV)\n>       _assert_schema(doc, UNITS_ALL)\n\n/tests/test_outputs.py:355: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\ndoc = {'digest': '1060e21c240ae1cd', 'order_score': 15300, 'order_weight_base': 500, 'pass_epoch': 0, ...}\nrequested = ['u_kappa', 'u_alpha', 'u_zeta']\n\n    def _assert_schema(doc: dict, requested: list[str]) -> None:\n        meta = _manifest_meta()\n        assert doc[\"schema_version\"] == 1\n        assert doc[\"release_id\"] == meta[\"release_id\"]\n        assert doc[\"order_weight_base\"] == meta[\"order_weight_base\"]\n        assert isinstance(doc[\"pass_epoch\"], int)\n        assert len(doc[\"digest\"]) == 16\n>       assert doc[\"digest\"] == _digest(_top_serial(doc))\nE       AssertionError: assert '1060e21c240ae1cd' == 'cf371679f692fc9d'\nE         \nE         - cf371679f692fc9d\nE         + 1060e21c240ae1cd\n\n/tests/test_outputs.py:209: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_q7_cold_ignores_advanced_checkpoint",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.00792988399996375,
+                "start": 1779812693.0412447,
+                "stop": 1779812693.058104,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_q7_cold_ignores_advanced_checkpoint():\n        \"\"\"Cold u_kappa always recomputes from start_pass even when resume checkpoints are advanced.\"\"\"\n        if OUT.exists():\n            OUT.unlink()\n        if STATE.exists():\n            STATE.unlink()\n        for _ in range(2):\n            _run_with_state(UNITS_RESUME_CSV)\n        doc, _ = _run_with_state(\"u_kappa\")\n>       _assert_schema(doc, [\"u_kappa\"])\n\n/tests/test_outputs.py:374: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\ndoc = {'digest': '80707aa39fb35463', 'order_score': 7150, 'order_weight_base': 500, 'pass_epoch': 2, ...}\nrequested = ['u_kappa']\n\n    def _assert_schema(doc: dict, requested: list[str]) -> None:\n        meta = _manifest_meta()\n        assert doc[\"schema_version\"] == 1\n        assert doc[\"release_id\"] == meta[\"release_id\"]\n        assert doc[\"order_weight_base\"] == meta[\"order_weight_base\"]\n        assert isinstance(doc[\"pass_epoch\"], int)\n        assert len(doc[\"digest\"]) == 16\n>       assert doc[\"digest\"] == _digest(_top_serial(doc))\nE       AssertionError: assert '80707aa39fb35463' == '4bba3edcddc46b89'\nE         \nE         - 4bba3edcddc46b89\nE         + 80707aa39fb35463\n\n/tests/test_outputs.py:209: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_q8_resume_digest_differs_with_flat_drift",
+                "status": "passed",
+                "duration": 0.0060744950000071185,
+                "start": 1779812693.0582988,
+                "stop": 1779812693.064576,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_q9_triple_resume_chain",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.002792618000000857,
+                "start": 1779812693.0647557,
+                "stop": 1779812693.0764246,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_q9_triple_resume_chain():\n        \"\"\"Three chained u_zeta invocations keep pass_index cadence aligned with stored next_pass.\"\"\"\n        if OUT.exists():\n            OUT.unlink()\n        if STATE.exists():\n            STATE.unlink()\n        prior = None\n        for _ in range(3):\n            doc, state = _run_with_state(\"u_zeta\")\n            run = _by_name(doc, \"u_zeta\")\n            assert run[\"record_bytes\"] == run[\"manifest_bytes\"]\n>           state_map = _state_map(state)\n                        ^^^^^^^^^^^^^^^^^\n\n/tests/test_outputs.py:410: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nstate = {'lane_token': '6218901b6e584bf4', 'pass_epoch': 1, 'schema_version': 1, 'units': [{'carry_drift': 0, 'carry_weight': 3550, 'name': 'u_zeta', 'next_pass': 1}]}\n\n    def _state_map(state: dict) -> dict[str, dict]:\n        assert set(state) >= {\"schema_version\", \"lane_token\", \"pass_epoch\", \"units\"}\n        assert state[\"schema_version\"] == 1\n        assert len(state[\"lane_token\"]) == 16\n>       assert state[\"lane_token\"] == _expected_lane_token()\nE       AssertionError: assert '6218901b6e584bf4' == '2d5837bed1ac6b84'\nE         \nE         - 2d5837bed1ac6b84\nE         + 6218901b6e584bf4\n\n/tests/test_outputs.py:186: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_q10_lane_token_matches_descriptor",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.002933945999984644,
+                "start": 1779812693.0766213,
+                "stop": 1779812693.0853467,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_q10_lane_token_matches_descriptor():\n        \"\"\"Lane token matches digest over sorted manifest unit descriptors.\"\"\"\n        _, state = _run_with_state(UNITS_RESUME_CSV)\n>       assert state[\"lane_token\"] == _expected_lane_token()\nE       AssertionError: assert '6218901b6e584bf4' == '2d5837bed1ac6b84'\nE         \nE         - 2d5837bed1ac6b84\nE         + 6218901b6e584bf4\n\n/tests/test_outputs.py:420: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            }
+        ]
+    }
+}

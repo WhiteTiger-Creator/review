@@ -1,0 +1,116 @@
+New Terminal Output:
+
+root@071d4af3a22a:/app# cat /app/environment/c9/pass_gate.cpp
+#include "c9_api.h"
+#include <string.h>
+
+extern "C" const char *c9_resolve_mode(const char *manifest_mode, const char *unit_name,
+                                         int pass_epoch) {
+    static thread_local char mode_buf[16];
+    (void)pass_epoch;
+    if (manifest_mode == NULL) {
+        mode_buf[0] = '\0';
+        return mode_buf;
+    }
+    if (strcmp(manifest_mode, "resume") == 0 && strncmp(unit_name, "u_a", 3) == 0) {
+        strncpy(mode_buf, "cold", sizeof(mode_buf) - 1);
+        mode_buf[sizeof(mode_buf) - 1] = '\0';
+        return mode_buf;
+    }
+    strncpy(mode_buf, manifest_mode, sizeof(mode_buf) - 1);
+    mode_buf[sizeof(mode_buf) - 1] = '\0';
+    return mode_buf;
+}
+root@071d4af3a22a:/app# cat /app/environment/c9/mode_bridge.cpp
+#include "c9_api.h"
+#include "types.h"
+
+const char *forge_lane_mode(const char *manifest_mode, const char *unit_name, int pass_epoch) {
+    return c9_resolve_mode(manifest_mode, unit_name, pass_epoch);
+}
+root@071d4af3a22a:/app# cat /app/environment/include/c9_api.h
+#pragma once
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+const char *c9_resolve_mode(const char *manifest_mode, const char *unit_name, int pass_epoch);
+
+#ifdef __cplusplus
+}
+#endif
+root@071d4af3a22a:/app# cat /app/environment/b07/v3_read_scale.c
+#include "types.h"
+#include <ctype.h>
+#include <stdlib.h>
+#include <string.h>
+
+static const char *find_token(const char *line, size_t len, const char *key) {
+    size_t key_len = strlen(key);
+    for (size_t i = 0; i + key_len <= len; ++i) {
+        if (strncmp(line + i, key, key_len) == 0) {
+            return line + i;
+        }
+    }
+    return NULL;
+}
+
+static int line_has_lane_primary(const char *line, size_t len) {
+    return find_token(line, len, "lane=primary") != NULL;
+}
+
+static int64_t read_int_after_eq(const char *line, size_t len, const char *token) {
+    const char *pos = find_token(line, len, token);
+    if (pos == NULL) {
+        return 0;
+    }
+    size_t offset = (size_t)(pos - line) + strlen(token);
+    while (offset < len && isspace((unsigned char)line[offset])) {
+        ++offset;
+    }
+    char *end = NULL;
+    long long value = strtoll(line + offset, &end, 10);
+    if (end == line + offset) {
+        return 0;
+    }
+    return (int64_t)value;
+}
+
+int64_t v3_read_scale(const char *line, size_t len) {
+    if (line == NULL || len == 0) {
+        return 0;
+    }
+    int64_t raw = read_int_after_eq(line, len, "size_bytes=");
+    if (line_has_lane_primary(line, len)) {
+        return raw / 1024;
+    }
+    return raw;
+}
+
+int64_t b07_read_scale(const char *line, size_t len) {
+    return v3_read_scale(line, len);
+}
+root@071d4af3a22a:/app# cat /app/environment/b07/scan_bridge.c
+#include "b07_api.h"
+#include "scan_bridge.h"
+
+int forge_scan_has_key(const char *line, size_t len, const char *token) {
+    return b07_line_has_key(line, len, token);
+}
+
+int64_t forge_scan_record_bytes(const char *line, size_t len) {
+    return b07_read_scale(line, len);
+}
+root@071d4af3a22a:/app# cat /app/environment/include/b07_api.h
+#pragma once
+#ifdef __cplusplus
+extern "C" {
+#endif
+#include <stddef.h>
+#include <stdint.h>
+int b07_line_has_key(const char *line, size_t len, const char *key);
+int64_t b07_read_scale(const char *line, size_t len);
+#ifdef __cplusplus
+}
+#endif
+root@071d4af3a22a:/app#

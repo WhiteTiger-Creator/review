@@ -1,0 +1,134 @@
+New Terminal Output:
+
+root@88f399caa06f:/app# ls -ლა /app/environment/include || true
+ls: invalid option -- ''
+Try 'ls --help' for more information.
+root@88f399caa06f:/app# find /app/environment -maxdepth 3 -type f \( -name '*.cpp' -o -name '*.c' -o -name '*.hpp' -o -name '*.h' \) | sort | sed -n '1,200p'
+/app/environment/b07/extra_b1.c
+/app/environment/b07/extra_b2.c
+/app/environment/b07/j2_shadow.c
+/app/environment/b07/scan_bridge.c
+/app/environment/b07/v3_read_scale.c
+/app/environment/c9/extra_c1.c
+/app/environment/c9/mode_bridge.cpp
+/app/environment/c9/pass_gate.cpp
+/app/environment/f12/extra_f1.cpp
+/app/environment/f12/extra_f2.cpp
+/app/environment/f12/k8_rank_slot.cpp
+/app/environment/f12/lane_bridge.cpp
+/app/environment/f12/m4_shadow.cpp
+/app/environment/f12/total_bridge.cpp
+/app/environment/include/b07_api.h
+/app/environment/include/c9_api.h
+/app/environment/include/constants.h
+/app/environment/include/emit_pipeline.h
+/app/environment/include/f12_api.h
+/app/environment/include/lane_bridge.h
+/app/environment/include/m14_api.h
+/app/environment/include/n21_api.h
+/app/environment/include/scan_bridge.h
+/app/environment/include/store_bridge.h
+/app/environment/include/types.h
+/app/environment/m14/extra_m1.cpp
+/app/environment/m14/lane_store.cpp
+/app/environment/m14/read_bridge.cpp
+/app/environment/m14/shadow_m2.c
+/app/environment/m14/store_bridge.cpp
+/app/environment/m14/token_bridge.cpp
+/app/environment/n21/extra_n1.cpp
+/app/environment/n21/extra_n2.cpp
+/app/environment/n21/p1_shadow.cpp
+/app/environment/n21/pack_bridge.cpp
+/app/environment/n21/q5_pack_stamp.cpp
+/app/environment/runner/emit_pipeline.cpp
+/app/environment/runner/main.cpp
+root@88f399caa06f:/app# grep -RIn --line-number "forge_emit" /app/environment | head -n 50
+/app/environment/CMakeLists.txt:2:project(forge_emit LANGUAGES C CXX)
+/app/environment/docs/compile_notes.md:10:The runtime binary is `/app/build/forge_emit`. Typical invocation:
+/app/environment/docs/compile_notes.md:13:/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json
+/app/environment/docs/overview.md:3:The CMake tree under `/app/environment` builds `forge_emit`, an offline lane audit tool that reads a release manifest and co
+mpanion unit record files, then emits JSON at `/app/output/forge_emit.json` while persisting resume checkpoints at `/app/output/forge_checkpoint.json`.
+/app/environment/runner/CMakeLists.txt:41:add_executable(forge_emit main.cpp emit_pipeline.cpp)
+/app/environment/runner/CMakeLists.txt:42:target_include_directories(forge_emit PRIVATE ../include)
+/app/environment/runner/CMakeLists.txt:43:target_link_libraries(forge_emit PRIVATE core_n core_f core_b core_m core_c)
+/app/environment/runner/CMakeLists.txt:44:set_target_properties(forge_emit PROPERTIES RUNTIME_OUTPUT_DIRECTORY /app/build)
+/app/environment/runner/emit_pipeline.cpp:267:        std::cerr << "usage: forge_emit <manifest-json> <output-json> <units-csv>\n";
+/app/environment/runner/main.cpp:8:        std::cerr << "forge_emit: " << e.what() << '\n';
+root@88f399caa06f:/app# grep -RIn --line-number "lane_token\|checkpoint\|pass_epoch\|FNV\|1099511628211\|1469598103934665603\|row_digest\|order_weight" /app/env
+ironment | head -n 200
+/app/environment/b07/j2_shadow.c:8:        h *= 1099511628211UL;
+/app/environment/c9/extra_c1.c:3:int c9_shadow_epoch(int pass_epoch) {
+/app/environment/c9/extra_c1.c:4:    return pass_epoch < 0 ? 0 : pass_epoch;
+/app/environment/c9/mode_bridge.cpp:4:const char *forge_lane_mode(const char *manifest_mode, const char *unit_name, int pass_epoch) {
+/app/environment/c9/mode_bridge.cpp:5:    return c9_resolve_mode(manifest_mode, unit_name, pass_epoch);
+/app/environment/c9/pass_gate.cpp:5:                                         int pass_epoch) {
+/app/environment/c9/pass_gate.cpp:7:    (void)pass_epoch;
+/app/environment/docs/overview.md:3:The CMake tree under `/app/environment` builds `forge_emit`, an offline lane audit tool that reads a release manifest and co
+mpanion unit record files, then emits JSON at `/app/output/forge_emit.json` while persisting resume checkpoints at `/app/output/forge_checkpoint.json`.
+/app/environment/docs/overview.md:7:See `/app/environment/docs/emit_contract.md` for operator notes and `/app/environment/docs/persistence_notes.md` for checkpo
+int behavior.
+/app/environment/docs/persistence_notes.md:1:# Lane checkpoint persistence
+/app/environment/docs/persistence_notes.md:3:The runner maintains `/app/output/forge_checkpoint.json` between invocations. Resume-mode units read carry fields b
+efore weight computation and write updated entries after each emission. Cold units never appear in the checkpoint units array.
+/app/environment/docs/persistence_notes.md:5:Partial lane requests must merge new resume entries with preserved checkpoints for resume units that were not reque
+sted in the current argv list.
+/app/environment/f12/extra_f1.cpp:14:        total += unit.order_weight;
+/app/environment/fixtures/lane.json:3:  "order_weight
+[... output limited to 10000 bytes; 70 interior bytes omitted ...]
+"pass_epoch\"");
+/app/environment/runner/emit_pipeline.cpp:190:    return pick_int(doc, "pass_epoch");
+/app/environment/runner/emit_pipeline.cpp:197:    manifest.order_weight_base = pick_int(doc, "order_weight_base");
+/app/environment/runner/emit_pipeline.cpp:220:UnitRun analyze_unit(const UnitSpec &spec, int order_rank, int order_weight_base, int pass_epoch,
+/app/environment/runner/emit_pipeline.cpp:222:                     const LaneCheckpoint *checkpoint, int64_t carry_weight) {
+/app/environment/runner/emit_pipeline.cpp:226:    run.mode = forge_lane_mode(spec.mode.c_str(), spec.name.c_str(), pass_epoch);
+/app/environment/runner/emit_pipeline.cpp:234:    if (run.mode == "resume" && checkpoint != nullptr && checkpoint->valid) {
+/app/environment/runner/emit_pipeline.cpp:235:        auto it = checkpoint->units.find(spec.name);
+/app/environment/runner/emit_pipeline.cpp:236:        if (it != checkpoint->units.end()) {
+/app/environment/runner/emit_pipeline.cpp:243:        run.order_weight = seeded_weight + static_cast<int64_t>(order_weight_base) + run.record_bytes;
+/app/environment/runner/emit_pipeline.cpp:245:        run.order_weight =
+/app/environment/runner/emit_pipeline.cpp:246:            forge_lane_weight(spec.name.c_str(), names, name_count, order_weight_base, run.record_bytes);
+/app/environment/runner/emit_pipeline.cpp:251:    run.row_digest = digest_hex(run.row_serial);
+/app/environment/runner/emit_pipeline.cpp:257:       << ",\"order_rank\":" << run.order_rank << ",\"order_weight\":" << run.order_weight
+/app/environment/runner/emit_pipeline.cpp:258:       << ",\"row_digest\":\"" << run.row_digest << "\"}";
+/app/environment/runner/emit_pipeline.cpp:276:    const char *lane_token = forge_lane_fingerprint(manifest.units.data(), manifest.units.size());
+/app/environment/runner/emit_pipeline.cpp:277:    fs::path checkpoint_path = forge::kCheckpointPath;
+/app/environment/runner/emit_pipeline.cpp:278:    int pass_epoch = forge::read_pass_epoch(checkpoint_path);
+/app/environment/runner/emit_pipeline.cpp:279:    forge::LaneCheckpoint checkpoint = forge_lane_load_checkpoint(checkpoint_path, lane_token);
+/app/environment/runner/emit_pipeline.cpp:304:        if (checkpoint.valid) {
+/app/environment/runner/emit_pipeline.cpp:305:            auto cp = checkpoint.units.find(name);
+/app/environment/runner/emit_pipeline.cpp:306:            if (cp != checkpoint.units.end()) {
+/app/environment/runner/emit_pipeline.cpp:310:        forge::UnitRun run = forge::analyze_unit(it->second, order_rank, manifest.order_weight_base,
+/app/environment/runner/emit_pipeline.cpp:311:                                                 pass_epoch, manifest_dir, name_ptrs.data(),
+/app/environment/runner/emit_pipeline.cpp:312:                                                 name_ptrs.size(), &checkpoint, carry_weight);
+/app/environment/runner/emit_pipeline.cpp:319:            entry.carry_weight = run.order_weight;
+/app/environment/runner/emit_pipeline.cpp:330:                                     manifest.order_weight_base, pass_epoch, drift_total,
+/app/environment/runner/emit_pipeline.cpp:340:        << manifest.release_id << "\",\"order_weight_base\":" << manifest.order_weight_base
+/app/environment/runner/emit_pipeline.cpp:341:        << ",\"pass_epoch\":" << pass_epoch << ",\"units\":[";
+/app/environment/runner/emit_pipeline.cpp:354:        forge_lane_merge_checkpoint(checkpoint, updated_entries, requested_resume);
+/app/environment/runner/emit_pipeline.cpp:355:    forge_lane_save_checkpoint(checkpoint_path, lane_token, merged);
+/app/environment/runner/emit_pipeline.cpp:358:    cp_patch << "{\"schema_version\":" << forge::kSchemaVersion << ",\"lane_token\":\"" << lane_token
+/app/environment/runner/emit_pipeline.cpp:359:             << "\",\"pass_epoch\":" << (pass_epoch + 1) << ",\"units\":[";
+/app/environment/runner/emit_pipeline.cpp:369:    std::ofstream cp_file(checkpoint_path, std::ios::binary);
+root@88f399caa06f:/app# cat /app/environment/CMakeLists.txt
+cmake_minimum_required(VERSION 3.20)
+project(forge_emit LANGUAGES C CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+add_subdirectory(runner)
+root@88f399caa06f:/app# ls -la /app/build && ls -la /app/build | grep forge || true
+total 332
+drwxr-xr-x 4 root root    161 May 26 16:28 .
+drwxr-xr-x 5 root root     52 May 26 16:28 ..
+-rw-r--r-- 1 root root  33480 May 26 16:28 .ninja_deps
+-rw-r--r-- 1 root root   3032 May 26 16:28 .ninja_log
+-rw-r--r-- 1 root root  13731 May 26 16:28 CMakeCache.txt
+drwxr-xr-x 4 root root    136 May 26 16:28 CMakeFiles
+-rw-r--r-- 1 root root  24187 May 26 16:28 build.ninja
+-rw-r--r-- 1 root root   1742 May 26 16:28 cmake_install.cmake
+-rwxr-xr-x 1 root root 252664 May 26 16:28 forge_emit
+drwxr-xr-x 3 root root    146 May 26 16:28 runner
+-rwxr-xr-x 1 root root 252664 May 26 16:28 forge_emit
+root@88f399caa06f:/app# ninja -C /app/build -t targets | grep -i forge || true
+root@88f399caa06f:/app#

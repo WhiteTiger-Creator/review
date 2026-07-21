@@ -1,0 +1,104 @@
+New Terminal Output:
+
+root@dbf8340e129b:/app# cat /app/environment/f12/extra_f1.cpp
+#include "types.h"
+#include <cstdint>
+#include <vector>
+
+namespace forge {
+
+int64_t f12_abs_drift(int64_t drift) {
+    return drift < 0 ? -drift : drift;
+}
+
+int64_t f12_slot_sum(const std::vector<UnitRun> &units) {
+    int64_t total = 0;
+    for (const auto &unit : units) {
+        total += unit.order_weight;
+    }
+    return total;
+}
+
+}
+root@dbf8340e129b:/app# cat /app/environment/f12/extra_f2.cpp
+#include "types.h"
+#include <vector>
+
+namespace forge {
+
+int64_t f12_abs_drift(int64_t drift);
+
+int64_t f12_drift_total(const std::vector<UnitRun> &units) {
+    int64_t total = 0;
+    for (const auto &unit : units) {
+        total += unit.drift_bytes;
+    }
+    return total;
+}
+
+}
+root@dbf8340e129b:/app# cat /app/environment/n21/p1_shadow.cpp
+#include "types.h"
+
+namespace forge {
+
+double p1_probe_bias(double base, int slot) {
+    return base - static_cast<double>(slot) * 0.0001;
+}
+
+}
+root@dbf8340e129b:/app# cat /app/environment/n21/extra_n1.cpp
+#include "types.h"
+
+namespace forge {
+
+int64_t n21_row_weight_hint(const UnitRun &unit) {
+    return unit.order_weight;
+}
+
+}
+root@dbf8340e129b:/app# cat /app/environment/n21/extra_n2.cpp
+#include "types.h"
+#include <sstream>
+
+namespace forge {
+
+std::string n21_header_serial(int schema_version, const std::string &release_id, int base,
+                              int pass_epoch, int64_t drift_total, int64_t weight_total) {
+    std::ostringstream os;
+    os << schema_version << '|' << release_id << '|' << base << '|' << drift_total << '|'
+       << weight_total;
+    (void)pass_epoch;
+    return os.str();
+}
+
+}
+root@dbf8340e129b:/app# cat /app/environment/b07/j2_shadow.c
+#include "types.h"
+#include <stddef.h>
+
+unsigned long j2_fold_line(unsigned long seed, const char *line, size_t len) {
+    unsigned long h = seed;
+    for (size_t i = 0; i < len; ++i) {
+        h ^= (unsigned char)line[i];
+        h *= 1099511628211UL;
+    }
+    return h;
+}
+root@dbf8340e129b:/app# cat /app/environment/b07/extra_b1.c
+#include "types.h"
+#include <string.h>
+
+int b07_line_has_key(const char *line, size_t len, const char *key) {
+    size_t key_len = strlen(key);
+    if (len < key_len) {
+        return 0;
+    }
+    for (size_t i = 0; i + key_len <= len; ++i) {
+        if (strncmp(line + i, key, key_len) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+root@dbf8340e129b:/app#

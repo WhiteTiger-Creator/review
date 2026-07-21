@@ -1,0 +1,35 @@
+{
+  "analysis": "We have two concrete bugs in view: (1) checkpoint merge is intentionally stubbed: m14_merge_entries ignores existing and requested_resume and returns only updated, which drops unrelated resume checkpoints on partial invocations. (2) checkpoint writer m14_write_checkpoint omits required top-level pass_epoch entirely; runner separately seems to write pass_epoch with an ad-hoc patch later, but contract says forge_checkpoint.json must contain schema_version, lane_token, pass_epoch, units. Also mode bug remains in c9 resolver (not yet displayed), likely making u_alpha cold. Next: inspect c9 resolver and token_bridge/fingerprint implementation, plus remaining runner code for lane_token and checkpoint patch logic. Then implement proper merge and proper checkpoint JSON writing including pass_epoch, and fix mode to honor manifest_mode without name-prefix branching.",
+  "plan": "1) View c9/mode_bridge.cpp fully plus any c9 resolver implementation to remove heuristic branching and just return manifest_mode (validated). 2) View m14/token_bridge.cpp and any fingerprint implementation to ensure descriptor line set includes all manifest units sorted, and correct fnv accumulator. 3) View the remainder of runner/emit_pipeline.cpp (the portion omitted) around read_pass_epoch, checkpoint save, and any extra cp_patch writing; remove duplicate/incorrect writing and consolidate through one correct path. 4) Patch m14_merge_entries to: start from existing.units, update entries for units in updated, preserve other existing resume entries not requested, and output alphabetically sorted vector. 5) Patch checkpoint write function to include pass_epoch and ensure only resume-mode units are present (runner already filters, but keep consistent). Rebuild and rerun scenarios.",
+  "commands": [
+    {
+      "keystrokes": "sed -n '1,200p' /app/environment/c9/pass_gate.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,220p' /app/environment/c9/mode_bridge.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "grep -RIn --line-number \"c9_resolve_mode\" /app/environment/c9 /app/environment/include | head -n 50\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "sed -n '1,260p' /app/environment/m14/token_bridge.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "grep -RIn --line-number \"forge_lane_fingerprint\\|fingerprint\\|descriptor\" /app/environment | head -n 100\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "sed -n '1,260p' /app/environment/n21/q5_pack_stamp.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '160,420p' /app/environment/runner/emit_pipeline.cpp\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

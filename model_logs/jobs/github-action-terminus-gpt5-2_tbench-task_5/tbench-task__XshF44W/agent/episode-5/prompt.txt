@@ -1,0 +1,209 @@
+New Terminal Output:
+
+root@35c99cb7d4e6:/app/environment# command -v apply_patch || true
+root@35c99cb7d4e6:/app/environment# sed -n '1,240p' /app/environment/m14/lane_store.cpp
+#include "constants.h"
+#include "m14_api.h"
+#include "types.h"
+#include <algorithm>
+#include <cctype>
+#include <fstream>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+namespace {
+
+std::uint64_t digest_update(std::uint64_t h, const std::string &text) {
+    for (unsigned char ch : text) {
+        h ^= static_cast<std::uint64_t>(ch);
+        h = (h * forge::kDigestStep) & forge::kDigestMask;
+    }
+    return h;
+}
+
+std::string digest_hex(const std::string &text) {
+    std::uint64_t h = digest_update(forge::kDigestSeed, text);
+    std::ostringstream os;
+    os << std::hex << std::nouppercase;
+    os.width(16);
+    os.fill('0');
+    os << h;
+    return os.str();
+}
+
+std::string descriptor_line(const forge::UnitSpec &unit) {
+    std::ostringstream os;
+    os << unit.name << '|' << unit.mode << '|' << unit.record << '|' << unit.manifest_bytes << '|'
+       << unit.start_pass;
+    return os.str();
+}
+
+std::string pick_string(const std::string &block, const std::string &key) {
+    std::string needle = "\"" + key + "\"";
+    size_t k = block.find(needle);
+    if (k == std::string::npos) {
+        return "";
+    }
+    size_t q = block.find('"', block.find(':', k) + 1);
+    size_t e = block.find('"', q + 1);
+    return block.substr(q + 1, e - q - 1);
+}
+
+int pick_int(const std::string &block, const std::string &key) {
+    std::string needle = "\"" + key + "\"";
+    size_t k = block.find(needle);
+    if (k == std::string::npos) {
+        return 0;
+    }
+    size_t p = block.find(':', k) + 1;
+    while (p < block.size() && !std::isdigit(static_cast<unsigned char>(block[p])) && block[p] != '-') {
+        ++p;
+    }
+    size_t e = p;
+    while (e < block.size() && (std::isdigit(static_cast<unsigned char>(block[e])) || block[e] == '-')) {
+        ++e;
+    }
+    return std::stoi(block.substr(p, e - p));
+}
+
+int64_t pick_int64(const std::string &block, const std::string &key) {
+    return static_cast<int64_t>(pick_int(block, key));
+}
+
+std::vector<std::string> split_object_blocks(const std::string &array_text) {
+    std::vector<std::string> out;
+    int depth = 0;
+    size_t start = std::string::npos;
+    for (size_t i = 0; i < array_text.size(); ++i) {
+        if (array_text[i] == '{') {
+            if (depth == 0) {
+                start = i;
+            }
+            ++depth;
+        } else if (array_text[i] == '}') {
+            --depth;
+            if (depth == 0 && start != std::string::npos) {
+                out.push_back(array_text.substr(start, i - start + 1));
+                start = std::string::npos;
+            }
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+extern "C" const char *m14_lane_token(const forge::UnitSpec *units, size_t count) {
+    static std::string cached;
+    std::ostringstream joined;
+    for (size_t i = 0; i < count; ++i) {
+        if (i) {
+            joined << '\n';
+        }
+        joined << descriptor_line(units[i]);
+    }
+    cached = digest_hex(joined.str());
+    return cached.c_str();
+}
+
+extern "C" int m14_checkpoint_valid(const char *on_disk_token, const char *expected_token) {
+    if (on_disk_token == nullptr || expected_token == nullptr) {
+        return 0;
+    }
+    return std::string(on_disk_token) == std::string(expected_token) ? 1 : 0;
+}
+
+forge::LaneCheckpoint m14_read_checkpoint(const std::filesystem::path &path,
+                                                   const std::string &expected_token) {
+    forge::LaneCheckpoint state;
+    std::ifstream in(path);
+    if (!in) {
+        return state;
+    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    const std::string doc = buffer.str();
+    if (doc.find("\"schema_version\"") == std::string::npos) {
+        return state;
+    }
+    state.lane_token = pick_string(doc, "lane_token");
+    if (!m14_checkpoint_valid(state.lane_token.c_str(), expected_token.c_str())) {
+        return state;
+    }
+    size_t units_pos = doc.find("\"units\"");
+    if (units_pos == std::string::npos) {
+        return state;
+    }
+    size_t arr_start = doc.find('[', units_pos);
+    size_t arr_end = doc.find(']', arr_start);
+    if (arr_start == std::string::npos || arr_end == std::string::npos) {
+        return state;
+    }
+    const std::string arr = doc.substr(arr_start, arr_end - arr_start + 1);
+    for (const auto &block : split_object_blocks(arr)) {
+        forge::UnitCheckpoint entry;
+        entry.name = pick_string(block, "name");
+        entry.next_pass = pick_int(block, "next_pass");
+        entry.carry_weight = pick_int64(block, "carry_weight");
+        entry.carry_drift = pick_int64(block, "carry_drift");
+        if (!entry.name.empty()) {
+            state.units[entry.name] = entry;
+        }
+    }
+    state.valid = true;
+    return state;
+}
+
+std::vector<forge::UnitCheckpoint> m14_merge_entries(
+    const forge::LaneCheckpoint 
+[... output limited to 10000 bytes; 70 interior bytes omitted ...]
+ve_checkpoint\(const std::filesystem::path &path, const char \*lane_token,\n
+                      const std::vector<forge::UnitCheckpoint> &entries\)/void forge_lane_save_checkpoint(const std::filesystem::path &path, const char *lane_to
+ken,\n                               int pass_epoch, const std::vector<forge::UnitCheckpoint> &entries)/s' /app/environment/include/store_bridge.h
+root@35c99cb7d4e6:/app/environment# perl -0777 -i -pe 's/void forge_lane_save_checkpoint\(const std::filesystem::path &path, const char \*lane_token,\n
+                      const std::vector<forge::UnitCheckpoint> &entries\) \{\n    m14_write_checkpoint\(path, lane_token, entries\);\n\}/void forge_lane_save_ch
+eckpoint(const std::filesystem::path &path, const char *lane_token,\n                               int pass_epoch, const std::vector<forge::UnitCheckpoint> &en
+tries) {\n    m14_write_checkpoint(path, lane_token, pass_epoch, entries);\n}/s' /app/environment/m14/store_bridge.cpp
+root@35c99cb7d4e6:/app/environment# perl -0777 -i -pe 's/if \(run\.mode == "resume" && seeded_weight != 0\) \{\n        run\.order_weight = seeded_weight \+ sta
+tic_cast<int64_t>\(order_weight_base\) \+ run\.record_bytes;\n    \} else \{\n        run\.order_weight =\n            forge_lane_weight\(spec\.name\.c_str\(\),
+ names, name_count, order_weight_base, run\.record_bytes\);\n    \}\n    \(void\)carry_weight;/bool has_resume_seed = false;\n    if (run.mode == "resume" && ch
+eckpoint != nullptr && checkpoint->valid) {\n        auto it = checkpoint->units.find(spec.name);\n        if (it != checkpoint->units.end()) {\n            pas
+s_index = it->second.next_pass;\n            seeded_weight = it->second.carry_weight;\n            has_resume_seed = true;\n        }\n    }\n\n    if (run.mode
+ == "resume" && has_resume_seed) {\n        run.order_weight = seeded_weight + static_cast<int64_t>(order_weight_base) + run.record_bytes;\n    } else {\n
+  run.order_weight = static_cast<int64_t>(order_weight_base) * (order_rank + 1) + run.record_bytes;\n    }\n    (void)names;\n    (void)name_count;\n    (void)c
+arry_weight;/s' /app/environment/runner/emit_pipeline.cpp
+root@35c99cb7d4e6:/app/environment# perl -0777 -i -pe 's/forge_lane_save_checkpoint\(checkpoint_path, lane_token, merged\);/forge_lane_save_checkpoint(checkpoin
+t_path, lane_token, pass_epoch + 1, merged);/g' /app/environment/runner/emit_pipeline.cpp
+root@35c99cb7d4e6:/app/environment# cmake -S /app/environment -B /app/build -G Ninja
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /app/build
+root@35c99cb7d4e6:/app/environment# ninja -C /app/build
+ninja: Entering directory `/app/build'
+[6/7] Building CXX object runner/CMakeFiles/forge_emit.dir/emit_pipeline.cpp.o
+FAILED: runner/CMakeFiles/forge_emit.dir/emit_pipeline.cpp.o
+/usr/bin/c++  -I/app/environment/runner/../include -std=gnu++17 -MD -MT runner/CMakeFiles/forge_emit.dir/emit_pipeline.cpp.o -MF runner/CMakeFiles/forge_emit.di
+r/emit_pipeline.cpp.o.d -o runner/CMakeFiles/forge_emit.dir/emit_pipeline.cpp.o -c /app/environment/runner/emit_pipeline.cpp
+/app/environment/runner/emit_pipeline.cpp: In function ‘int forge_run_emit(int, char**)’:
+/app/environment/runner/emit_pipeline.cpp:366:72: error: invalid initialization of reference of type ‘const std::vector<forge::UnitCheckpoint>&’ from expression
+ of type ‘int’
+  366 |     forge_lane_save_checkpoint(checkpoint_path, lane_token, pass_epoch + 1, merged);
+      |                                                             ~~~~~~~~~~~^~~
+In file included from /app/environment/runner/emit_pipeline.cpp:4:
+/app/environment/runner/../include/store_bridge.h:14:75: note: in passing argument 3 of ‘void forge_lane_save_checkpoint(const std::filesystem::__cxx11::path&,
+const char*, const std::vector<forge::UnitCheckpoint>&)’
+   14 |                                 const std::vector<forge::UnitCheckpoint> &entries);
+      |                                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~
+ninja: build stopped: subcommand failed.
+root@35c99cb7d4e6:/app/environment# rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json
+root@35c99cb7d4e6:/app/environment# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta
+root@35c99cb7d4e6:/app/environment# cat /app/output/forge_checkpoint.json
+{"schema_version":1,"lane_token":"6218901b6e584bf4","pass_epoch":1,"units":[{"name":"u_zeta","next_pass":1,"carry_weight":3550,"carry_drift":0}]}
+root@35c99cb7d4e6:/app/environment# rm -f /app/output/forge_emit.json
+root@35c99cb7d4e6:/app/environment# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_alpha
+root@35c99cb7d4e6:/app/environment# echo '--- checkpoint after partial ---' && cat /app/output/forge_checkpoint.json
+--- checkpoint after partial ---
+{"schema_version":1,"lane_token":"6218901b6e584bf4","pass_epoch":2,"units":[]}
+root@35c99cb7d4e6:/app/environment#

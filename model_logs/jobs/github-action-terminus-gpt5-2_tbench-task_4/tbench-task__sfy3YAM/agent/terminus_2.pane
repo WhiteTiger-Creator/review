@@ -1,0 +1,1945 @@
+[?2004hroot@c5c0f1c2990a:/app# asciinema rec --stdin /logs/agent/recording.cast
+[?2004l[0;32masciinema: recording asciicast to /logs/agent/recording.cast[0m
+[0;32masciinema: press <ctrl-d> or type "exit" when you're done[0m
+[?2004hroot@c5c0f1c2990a:/app# clear
+[?2004l[H[J[3J[?2004hroot@c5c0f1c2990a:/app# ls -la /app
+[?2004ltotal 0
+drwxr-xr-x  5 root root  52 May 26 16:27 .
+drwxr-xr-x 19 root root 265 May 26 16:28 ..
+drwxr-xr-x  4 root root 161 May 26 16:28 build
+drwxr-xr-x 11 root root 139 May 26 16:27 environment
+drwxr-xr-x  2 root root   6 May 26 16:27 output
+[?2004hroot@c5c0f1c2990a:/app# ls -la /app/environment
+[?2004ltotal 4
+drwxr-xr-x 11 root root 139 May 26 16:27 .
+drwxr-xr-x  5 root root  52 May 26 16:27 ..
+-rw-r--r--  1 root root 220 May 26 16:26 CMakeLists.txt
+drwxr-xr-x  2 root root 105 May 26 16:26 b07
+drwxr-xr-x  2 root root  68 May 26 16:26 c9
+drwxr-xr-x  2 root root 101 May 26 16:26 docs
+drwxr-xr-x  2 root root 138 May 26 16:26 f12
+drwxr-xr-x  3 root root  38 May 26 16:26 fixtures
+drwxr-xr-x  2 root root 211 May 26 16:26 include
+drwxr-xr-x  2 root root 138 May 26 16:26 m14
+drwxr-xr-x  2 root root 115 May 26 16:26 n21
+drwxr-xr-x  2 root root  69 May 26 16:26 runner
+[?2004hroot@c5c0f1c2990a:/app# cmake -S /app/environment -B /app/build -G Ninja
+[?2004l-- Configuring done
+-- Generating done
+-- Build files have been written to: /app/build
+[?2004hroot@c5c0f1c2990a:/app# ninja -C /app/build
+[?2004lninja: Entering directory `/app/build'
+ninja: no work to do.
+[?2004hroot@c5c0f1c2990a:/app# rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json
+[?2004l[?2004hroot@c5c0f1c2990a:/app# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta
+[?2004l[?2004hroot@c5c0f1c2990a:/app# ls -la /app/output && echo '--- emit ---' && cat /app/output/forge_emit.json && echo '\n--- checkpoint ---' && cat /app/output/forge_checkpoint.json
+[?2004ltotal 8
+drwxr-xr-x 2 root root  58 May 26 16:28 .
+drwxr-xr-x 5 root root  52 May 26 16:27 ..
+-rw-r--r-- 1 root root 146 May 26 16:28 forge_checkpoint.json
+-rw-r--r-- 1 root root 685 May 26 16:28 forge_emit.json
+--- emit ---
+{"schema_version":1,"release_id":"forge_r07","order_weight_base":500,"pass_epoch":0,"units":[{"name":"u_kappa","mode":"cold","pass_index":0,"manifest_bytes":6150,"record_bytes":6150,"drift_bytes":0,"order_rank":0,"order_weight":7150,"row_digest":"e678cc59635983bb"},{"name":"u_alpha","mode":"cold","pass_index":0,"manifest_bytes":4100,"record_bytes":4100,"drift_bytes":0,"order_rank":1,"order_weight":4600,"row_digest":"a7aaab485c5e61ce"},{"name":"u_zeta","mode":"resume","pass_index":0,"manifest_bytes":2050,"record_bytes":2050,"drift_bytes":0,"order_rank":2,"order_weight":3550,"row_digest":"6ea975d3f65d6166"}],"total_drift_bytes":0,"order_score":15300,"digest":"1060e21c240ae1cd"}
+\n--- checkpoint ---
+{"schema_version":1,"lane_token":"6218901b6e584bf4","pass_epoch":1,"units":[{"name":"u_zeta","next_pass":1,"carry_weight":3550,"carry_drift":0}]}
+[?2004hroot@c5c0f1c2990a:/app# rm -f /app/output/forge_emit.json
+[?2004l[?2004hroot@c5c0f1c2990a:/app# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_alpha
+[?2004l[?2004hroot@c5c0f1c2990a:/app# echo '--- emit (alpha only) ---' && cat /app/output/forge_emit.json && echo '\n--- checkpoint (after partial) ---' && cat /app/output/forge_checkpoint.json
+[?2004l--- emit (alpha only) ---
+{"schema_version":1,"release_id":"forge_r07","order_weight_base":500,"pass_epoch":1,"units":[{"name":"u_alpha","mode":"cold","pass_index":0,"manifest_bytes":4100,"record_bytes":4100,"drift_bytes":0,"order_rank":1,"order_weight":4600,"row_digest":"a7aaab485c5e61ce"}],"total_drift_bytes":0,"order_score":4600,"digest":"cb529024b9e1f453"}
+\n--- checkpoint (after partial) ---
+{"schema_version":1,"lane_token":"6218901b6e584bf4","pass_epoch":2,"units":[]}
+[?2004hroot@c5c0f1c2990a:/app# find /app/environment -maxdepth 3 -type f \( -name '*.cc' -o -name '*.cpp' -o -name '*.c' -o -name '*.h' -o -name '*.hpp' -o -name 'CMakeLists.txt' \) | sed 's|^|FILE: |'
+[?2004lFILE: /app/environment/CMakeLists.txt
+FILE: /app/environment/b07/extra_b1.c
+FILE: /app/environment/b07/extra_b2.c
+FILE: /app/environment/b07/j2_shadow.c
+FILE: /app/environment/b07/scan_bridge.c
+FILE: /app/environment/b07/v3_read_scale.c
+FILE: /app/environment/c9/extra_c1.c
+FILE: /app/environment/c9/mode_bridge.cpp
+FILE: /app/environment/c9/pass_gate.cpp
+FILE: /app/environment/f12/extra_f1.cpp
+FILE: /app/environment/f12/extra_f2.cpp
+FILE: /app/environment/f12/k8_rank_slot.cpp
+FILE: /app/environment/f12/lane_bridge.cpp
+FILE: /app/environment/f12/m4_shadow.cpp
+FILE: /app/environment/f12/total_bridge.cpp
+FILE: /app/environment/include/b07_api.h
+FILE: /app/environment/include/c9_api.h
+FILE: /app/environment/include/constants.h
+FILE: /app/environment/include/emit_pipeline.h
+FILE: /app/environment/include/f12_api.h
+FILE: /app/environment/include/lane_bridge.h
+FILE: /app/environment/include/m14_api.h
+FILE: /app/environment/include/n21_api.h
+FILE: /app/environment/include/scan_bridge.h
+FILE: /app/environment/include/store_bridge.h
+FILE: /app/environment/include/types.h
+FILE: /app/environment/m14/extra_m1.cpp
+FILE: /app/environment/m14/lane_store.cpp
+FILE: /app/environment/m14/read_bridge.cpp
+FILE: /app/environment/m14/shadow_m2.c
+FILE: /app/environment/m14/store_bridge.cpp
+FILE: /app/environment/m14/token_bridge.cpp
+FILE: /app/environment/n21/extra_n1.cpp
+FILE: /app/environment/n21/extra_n2.cpp
+FILE: /app/environment/n21/p1_shadow.cpp
+FILE: /app/environment/n21/pack_bridge.cpp
+FILE: /app/environment/n21/q5_pack_stamp.cpp
+FILE: /app/environment/runner/CMakeLists.txt
+FILE: /app/environment/runner/emit_pipeline.cpp
+FILE: /app/environment/runner/main.cpp
+[?2004hroot@c5c0f1c2990a:/app# sed -n '1,200p' /app/environment/runner/main.cpp
+[?2004l#include "emit_pipeline.h"
+#include <iostream>
+
+int main(int argc, char **argv) {
+    try {
+        return forge_run_emit(argc, argv);
+    } catch (const std::exception &e) {
+        std::cerr << "forge_emit: " << e.what() << '\n';
+        return 1;
+    }
+}
+[?2004hroot@c5c0f1c2990a:/app# sed -n '1,260p' /app/environment/runner/emit_pipeline.cpp
+[?2004l#include "emit_pipeline.h"
+#include "lane_bridge.h"
+#include "scan_bridge.h"
+#include "store_bridge.h"
+#include "constants.h"
+#include "types.h"
+#include <algorithm>
+#include <cctype>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <map>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+namespace fs = std::filesystem;
+
+namespace forge {
+
+constexpr const char *kCheckpointPath = "/app/output/forge_checkpoint.json";
+
+namespace {
+
+std::string read_file(const fs::path &path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        throw std::runtime_error("could not open fixture");
+    }
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+std::string pick_string(const std::string &block, const std::string &key) {
+    std::string needle = "\"" + key + "\"";
+    size_t k = block.find(needle);
+    if (k == std::string::npos) {
+        return "";
+    }
+    size_t q = block.find('"', block.find(':', k) + 1);
+    size_t e = block.find('"', q + 1);
+    if (q == std::string::npos || e == std::string::npos) {
+        return "";
+    }
+    return block.substr(q + 1, e - q - 1);
+}
+
+int pick_int(const std::string &block, const std::string &key) {
+    std::string needle = "\"" + key + "\"";
+    size_t k = block.find(needle);
+    if (k == std::string::npos) {
+        return 0;
+    }
+    size_t colon = block.find(':', k);
+    if (colon == std::string::npos) {
+        return 0;
+    }
+    size_t start = colon + 1;
+    while (start < block.size() && std::isspace(static_cast<unsigned char>(block[start]))) {
+        ++start;
+    }
+    return std::stoi(block.substr(start));
+}
+
+std::string extract_array(const std::string &doc, const std::string &key) {
+    std::string needle = "\"" + key + "\"";
+    size_t k = doc.find(needle);
+    if (k == std::string::npos) {
+        return "";
+    }
+    size_t p = doc.find('[', k);
+    if (p == std::string::npos) {
+        return "";
+    }
+    int depth = 0;
+    size_t start = p;
+    for (size_t i = p; i < doc.size(); ++i) {
+        if (doc[i] == '[') {
+            ++depth;
+        }
+        if (doc[i] == ']') {
+            --depth;
+            if (depth == 0) {
+                return doc.substr(start, i - start + 1);
+            }
+        }
+    }
+    return "";
+}
+
+std::vector<std::string> split_object_blocks(const std::string &array_text) {
+    std::vector<std::string> out;
+    int depth = 0;
+    size_t start = std::string::npos;
+    for (size_t i = 0; i < array_text.size(); ++i) {
+        if (array_text[i] == '{') {
+            if (depth == 0) {
+                start = i;
+            }
+            ++depth;
+        } else if (array_text[i] == '}') {
+            --depth;
+            if (depth == 0 && start != std::string::npos) {
+                out.push_back(array_text.substr(start, i - start + 1));
+                start = std::string::npos;
+            }
+        }
+    }
+    return out;
+}
+
+int64_t read_record_bytes(const fs::path &path) {
+    std::string blob = read_file(path);
+    size_t offset = 0;
+    while (offset < blob.size()) {
+        size_t end = blob.find('\n', offset);
+        if (end == std::string::npos) {
+            end = blob.size();
+        }
+        if (end > offset) {
+            const char *line = blob.data() + offset;
+            size_t len = end - offset;
+            if (forge_scan_has_key(line, len, "size_bytes=")) {
+                return forge_scan_record_bytes(line, len);
+            }
+        }
+        if (end >= blob.size()) {
+            break;
+        }
+        offset = end + 1;
+    }
+    return 0;
+}
+
+std::uint64_t digest_update(std::uint64_t h, const std::string &text) {
+    for (unsigned char ch : text) {
+        h ^= static_cast<std::uint64_t>(ch);
+        h = (h * kDigestStep) & kDigestMask;
+    }
+    return h;
+}
+
+std::string json_escape(const std::string &s) {
+    std::string out;
+    for (char c : s) {
+        if (c == '"' || c == '\\') {
+            out.push_back('\\');
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+}  // namespace
+
+std::vector<std::string> split_units_csv(const std::string &text) {
+    std::vector<std::string> out;
+    std::string cur;
+    for (char ch : text) {
+        if (ch == ',') {
+            if (!cur.empty()) {
+                out.push_back(cur);
+            }
+            cur.clear();
+        } else if (!std::isspace(static_cast<unsigned char>(ch))) {
+            cur.push_back(ch);
+        }
+    }
+    if (!cur.empty()) {
+        out.push_back(cur);
+    }
+    return out;
+}
+
+int read_pass_epoch(const fs::path &checkpoint_path) {
+    std::ifstream in(checkpoint_path);
+    if (!in) {
+        return 0;
+    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    const std::string doc = buffer.str();
+    size_t pos = doc.find("\"pass_epoch\"");
+    if (pos == std::string::npos) {
+        return 0;
+    }
+    return pick_int(doc, "pass_epoch");
+}
+
+Manifest load_manifest(const fs::path &path) {
+    std::string doc = read_file(path);
+    Manifest manifest{};
+    manifest.release_id = pick_string(doc, "release_id");
+    manifest.order_weight_base = pick_int(doc, "order_weight_base");
+    std::string arr = extract_array(doc, "units");
+    for (const auto &block : split_object_blocks(arr)) {
+        UnitSpec spec;
+        spec.name = pick_string(block, "name");
+        spec.mode = pick_string(block, "mode");
+        spec.record = pick_string(block, "record");
+        spec.manifest_bytes = pick_int(block, "manifest_bytes");
+        spec.start_pass = pick_int(block, "start_pass");
+        if (!spec.name.empty()) {
+            manifest.units.push_back(spec);
+        }
+    }
+    return manifest;
+}
+
+std::string digest_hex(const std::string &text) {
+    std::uint64_t h = digest_update(kDigestSeed, text);
+    std::ostringstream os;
+    os << std::hex << std::nouppercase << std::setfill('0') << std::setw(16) << h;
+    return os.str();
+}
+
+UnitRun analyze_unit(const UnitSpec &spec, int order_rank, int order_weight_base, int pass_epoch,
+                     const fs::path &manifest_dir, const char *const *names, size_t name_count,
+                     const LaneCheckpoint *checkpoint, int64_t carry_weight) {
+    fs::path record_path = manifest_dir / spec.record;
+    UnitRun run{};
+    run.name = spec.name;
+    run.mode = forge_lane_mode(spec.mode.c_str(), spec.name.c_str(), pass_epoch);
+    run.manifest_bytes = spec.manifest_bytes;
+    run.record_bytes = read_record_bytes(record_path);
+    run.drift_bytes = run.record_bytes - static_cast<int64_t>(run.manifest_bytes);
+    run.order_rank = order_rank;
+
+    int pass_index = spec.start_pass;
+    int64_t seeded_weight = 0;
+    if (run.mode == "resume" && checkpoint != nullptr && checkpoint->valid) {
+        auto it = checkpoint->units.find(spec.name);
+        if (it != checkpoint->units.end()) {
+            pass_index = it->second.next_pass;
+            seeded_weight = it->second.carry_weight;
+        }
+    }
+
+    if (run.mode == "resume" && seeded_weight != 0) {
+        run.order_weight = seeded_weight + static_cast<int64_t>(order_weight_base) + run.record_bytes;
+    } else {
+        run.order_weight =
+            forge_lane_weight(spec.name.c_str(), names, name_count, order_weight_base, run.record_bytes);
+    }
+    (void)carry_weight;
+    run.pass_index = pass_index;
+    run.row_serial = forge_lane_row_text(run);
+    run.row_digest = digest_hex(run.row_serial);
+
+    std::ostringstream js;
+    js << "{\"name\":\"" << json_escape(run.name) << "\",\"mode\":\"" << json_escape(run.mode)
+       << "\",\"pass_index\":" << run.pass_index << ",\"manifest_bytes\":" << run.manifest_bytes
+       << ",\"record_bytes\":" << run.record_bytes << ",\"drift_bytes\":" << run.drift_bytes
+       << ",\"order_rank\":" << run.order_rank << ",\"order_weight\":" << run.order_weight
+       << ",\"row_digest\":\"" << run.row_digest << "\"}";
+    run.json = js.str();
+    return run;
+[?2004hroot@c5c0f1c2990a:/app# sed -n '1,260p' /app/environment/m14/lane_store.cpp
+[?2004l#include "constants.h"
+#include "m14_api.h"
+#include "types.h"
+#include <algorithm>
+#include <cctype>
+#include <fstream>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+namespace {
+
+std::uint64_t digest_update(std::uint64_t h, const std::string &text) {
+    for (unsigned char ch : text) {
+        h ^= static_cast<std::uint64_t>(ch);
+        h = (h * forge::kDigestStep) & forge::kDigestMask;
+    }
+    return h;
+}
+
+std::string digest_hex(const std::string &text) {
+    std::uint64_t h = digest_update(forge::kDigestSeed, text);
+    std::ostringstream os;
+    os << std::hex << std::nouppercase;
+    os.width(16);
+    os.fill('0');
+    os << h;
+    return os.str();
+}
+
+std::string descriptor_line(const forge::UnitSpec &unit) {
+    std::ostringstream os;
+    os << unit.name << '|' << unit.mode << '|' << unit.record << '|' << unit.manifest_bytes << '|'
+       << unit.start_pass;
+    return os.str();
+}
+
+std::string pick_string(const std::string &block, const std::string &key) {
+    std::string needle = "\"" + key + "\"";
+    size_t k = block.find(needle);
+    if (k == std::string::npos) {
+        return "";
+    }
+    size_t q = block.find('"', block.find(':', k) + 1);
+    size_t e = block.find('"', q + 1);
+    return block.substr(q + 1, e - q - 1);
+}
+
+int pick_int(const std::string &block, const std::string &key) {
+    std::string needle = "\"" + key + "\"";
+    size_t k = block.find(needle);
+    if (k == std::string::npos) {
+        return 0;
+    }
+    size_t p = block.find(':', k) + 1;
+    while (p < block.size() && !std::isdigit(static_cast<unsigned char>(block[p])) && block[p] != '-') {
+        ++p;
+    }
+    size_t e = p;
+    while (e < block.size() && (std::isdigit(static_cast<unsigned char>(block[e])) || block[e] == '-')) {
+        ++e;
+    }
+    return std::stoi(block.substr(p, e - p));
+}
+
+int64_t pick_int64(const std::string &block, const std::string &key) {
+    return static_cast<int64_t>(pick_int(block, key));
+}
+
+std::vector<std::string> split_object_blocks(const std::string &array_text) {
+    std::vector<std::string> out;
+    int depth = 0;
+    size_t start = std::string::npos;
+    for (size_t i = 0; i < array_text.size(); ++i) {
+        if (array_text[i] == '{') {
+            if (depth == 0) {
+                start = i;
+            }
+            ++depth;
+        } else if (array_text[i] == '}') {
+            --depth;
+            if (depth == 0 && start != std::string::npos) {
+                out.push_back(array_text.substr(start, i - start + 1));
+                start = std::string::npos;
+            }
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+extern "C" const char *m14_lane_token(const forge::UnitSpec *units, size_t count) {
+    static std::string cached;
+    std::ostringstream joined;
+    for (size_t i = 0; i < count; ++i) {
+        if (i) {
+            joined << '\n';
+        }
+        joined << descriptor_line(units[i]);
+    }
+    cached = digest_hex(joined.str());
+    return cached.c_str();
+}
+
+extern "C" int m14_checkpoint_valid(const char *on_disk_token, const char *expected_token) {
+    if (on_disk_token == nullptr || expected_token == nullptr) {
+        return 0;
+    }
+    return std::string(on_disk_token) == std::string(expected_token) ? 1 : 0;
+}
+
+forge::LaneCheckpoint m14_read_checkpoint(const std::filesystem::path &path,
+                                                   const std::string &expected_token) {
+    forge::LaneCheckpoint state;
+    std::ifstream in(path);
+    if (!in) {
+        return state;
+    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    const std::string doc = buffer.str();
+    if (doc.find("\"schema_version\"") == std::string::npos) {
+        return state;
+    }
+    state.lane_token = pick_string(doc, "lane_token");
+    if (!m14_checkpoint_valid(state.lane_token.c_str(), expected_token.c_str())) {
+        return state;
+    }
+    size_t units_pos = doc.find("\"units\"");
+    if (units_pos == std::string::npos) {
+        return state;
+    }
+    size_t arr_start = doc.find('[', units_pos);
+    size_t arr_end = doc.find(']', arr_start);
+    if (arr_start == std::string::npos || arr_end == std::string::npos) {
+        return state;
+    }
+    const std::string arr = doc.substr(arr_start, arr_end - arr_start + 1);
+    for (const auto &block : split_object_blocks(arr)) {
+        forge::UnitCheckpoint entry;
+        entry.name = pick_string(block, "name");
+        entry.next_pass = pick_int(block, "next_pass");
+        entry.carry_weight = pick_int64(block, "carry_weight");
+        entry.carry_drift = pick_int64(block, "carry_drift");
+        if (!entry.name.empty()) {
+            state.units[entry.name] = entry;
+        }
+    }
+    state.valid = true;
+    return state;
+}
+
+std::vector<forge::UnitCheckpoint> m14_merge_entries(
+    const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+    const std::vector<std::string> &requested_resume) {
+    (void)existing;
+    (void)requested_resume;
+    std::vector<forge::UnitCheckpoint> out = updated;
+    std::sort(out.begin(), out.end(),
+              [](const forge::UnitCheckpoint &a, const forge::UnitCheckpoint &b) {
+                  return a.name < b.name;
+              });
+    return out;
+}
+
+void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token,
+                                     const std::vector<forge::UnitCheckpoint> &entries) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ostringstream out;
+    out << "{\"schema_version\":" << forge::kSchemaVersion << ",\"lane_token\":\"" << lane_token
+        << "\",\"units\":[";
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (i) {
+            out << ',';
+        }
+        const auto &entry = entries[i];
+        out << "{\"name\":\"" << entry.name << "\",\"next_pass\":" << entry.next_pass
+            << ",\"carry_weight\":" << entry.carry_weight << ",\"carry_drift\":"
+            << entry.carry_drift << '}';
+    }
+    out << "]}\n";
+    std::ofstream file(path, std::ios::binary);
+    file << out.str();
+}
+[?2004hroot@c5c0f1c2990a:/app# sed -n '1,260p' /app/environment/m14/token_bridge.cpp
+[?2004l#include "m14_api.h"
+#include "store_bridge.h"
+
+const char *forge_lane_fingerprint(const forge::UnitSpec *units, size_t count) {
+    return m14_lane_token(units, count);
+}
+[?2004hroot@c5c0f1c2990a:/app# sed -n '1,260p' /app/environment/f12/lane_bridge.cpp
+[?2004l#include "f12_api.h"
+#include "lane_bridge.h"
+
+extern "C" int64_t forge_lane_weight(const char *target, const char *const *names, size_t count,
+                                     int base, int64_t record_bytes) {
+    return f12_slot_total(target, names, count, base, record_bytes);
+}
+[?2004hroot@c5c0f1c2990a:/app# sed -n '1,260p' /app/environment/c9/mode_bridge.cpp
+[?2004l#include "c9_api.h"
+#include "types.h"
+
+const char *forge_lane_mode(const char *manifest_mode, const char *unit_name, int pass_epoch) {
+    return c9_resolve_mode(manifest_mode, unit_name, pass_epoch);
+}
+[?2004hroot@c5c0f1c2990a:/app# sed -n '1,260p' /app/environment/c9/pass_gate.cpp
+[?2004l#include "c9_api.h"
+#include <string.h>
+
+extern "C" const char *c9_resolve_mode(const char *manifest_mode, const char *unit_name,
+                                         int pass_epoch) {
+    static thread_local char mode_buf[16];
+    (void)pass_epoch;
+    if (manifest_mode == NULL) {
+        mode_buf[0] = '\0';
+        return mode_buf;
+    }
+    if (strcmp(manifest_mode, "resume") == 0 && strncmp(unit_name, "u_a", 3) == 0) {
+        strncpy(mode_buf, "cold", sizeof(mode_buf) - 1);
+        mode_buf[sizeof(mode_buf) - 1] = '\0';
+        return mode_buf;
+    }
+    strncpy(mode_buf, manifest_mode, sizeof(mode_buf) - 1);
+    mode_buf[sizeof(mode_buf) - 1] = '\0';
+    return mode_buf;
+}
+[?2004hroot@c5c0f1c2990a:/app# grep -RIn "m14_write_checkpoint" -n /app/environment | head
+[?2004l/app/environment/include/m14_api.h:25:void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token,
+/app/environment/m14/lane_store.cpp:168:void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token,
+/app/environment/m14/store_bridge.cpp:12:    m14_write_checkpoint(path, lane_token, entries);
+[?2004hroot@c5c0f1c2990a:/app# grep -RIn "m14_merge_entries" -n /app/environment | head
+[?2004l/app/environment/include/m14_api.h:22:std::vector<forge::UnitCheckpoint> m14_merge_entries(
+/app/environment/m14/lane_store.cpp:155:std::vector<forge::UnitCheckpoint> m14_merge_entries(
+/app/environment/m14/store_bridge.cpp:7:    return m14_merge_entries(existing, updated, requested_resume);
+[?2004hroot@c5c0f1c2990a:/app# apply_patch <<'PATCH'
+[?2004l[?2004h> *** Begin Patch
+[?2004l[?2004h> *** Update File: /app/environment/c9/pass_gate.cpp
+[?2004l[?2004h> @@
+[?2004l[?2004h>  extern "C" const char *c9_resolve_mode(const char *manifest_mode, const char *unit_name,
+[?2004l[?2004h>                                           int pass_epoch) {
+[?2004l[?2004h>      static thread_local char mode_buf[16];
+[?2004l[?2004h> -    (void)pass_epoch;
+[?2004l[?2004h> +    (void)unit_name;
+[?2004l[?2004h> +    (void)pass_epoch;
+[?2004l[?2004h>      if (manifest_mode == NULL) {
+[?2004l[?2004h>          mode_buf[0] = '\0';
+[?2004l[?2004h>          return mode_buf;
+[?2004l[?2004h>      }
+[?2004l[?2004h> -    if (strcmp(manifest_mode, "resume") == 0 && strncmp(unit_name, "u_a", 3) == 0) {
+[?2004l[?2004h> -        strncpy(mode_buf, "cold", sizeof(mode_buf) - 1);
+[?2004l[?2004h> -        mode_buf[sizeof(mode_buf) - 1] = '\0';
+[?2004l[?2004h> -        return mode_buf;
+[?2004l[?2004h> -    }
+[?2004l[?2004h>      strncpy(mode_buf, manifest_mode, sizeof(mode_buf) - 1);
+[?2004l[?2004h>      mode_buf[sizeof(mode_buf) - 1] = '\0';
+[?2004l[?2004h>      return mode_buf;
+[?2004l[?2004h>  }
+[?2004l[?2004h> *** End Patch
+[?2004l[?2004h> PATCH
+[?2004lbash: apply_patch: command not found
+[?2004hroot@c5c0f1c2990a:/app# apply_patch <<'PATCH'
+[?2004l[?2004h> *** Begin Patch
+[?2004l[?2004h> *** Update File: /app/environment/m14/lane_store.cpp
+[?2004l[?2004h> @@
+[?2004l[?2004h>  std::vector<forge::UnitCheckpoint> m14_merge_entries(
+[?2004l[?2004h>      const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+[?2004l[?2004h>      const std::vector<std::string> &requested_resume) {
+[?2004l[?2004h> -    (void)existing;
+[?2004l[?2004h> -    (void)requested_resume;
+[?2004l[?2004h> -    std::vector<forge::UnitCheckpoint> out = updated;
+[?2004l[?2004h> +    // Merge updated resume entries into the existing checkpoint state.
+[?2004l[?2004h> +    // When the checkpoint is valid for the active lane token, partial invocations
+[?2004l[?2004h> +    // must preserve unrelated resume entries.
+[?2004l[?2004h> +    std::map<std::string, forge::UnitCheckpoint> merged;
+[?2004l[?2004h> +    if (existing.valid) {
+[?2004l[?2004h> +        merged = existing.units;
+[?2004l[?2004h> +    }
+[?2004l[?2004h> +    // Only update the resume units that were actually emitted during this
+[?2004l[?2004h> +    // invocation.
+[?2004l[?2004h> +    for (const auto &entry : updated) {
+[?2004l[?2004h> +        if (!entry.name.empty()) {
+[?2004l[?2004h> +            merged[entry.name] = entry;
+[?2004l[?2004h> +        }
+[?2004l[?2004h> +    }
+[?2004l[?2004h> +    // If the caller provides an explicit requested resume list, we should not
+[?2004l[?2004h> +    // drop non-requested entries (continuity across chained invocations).
+[?2004l[?2004h> +    (void)requested_resume;
+[?2004l[?2004h> +
+[?2004l[?2004h> +    std::vector<forge::UnitCheckpoint> out;
+[?2004l[?2004h> +    out.reserve(merged.size());
+[?2004l[?2004h> +    for (const auto &kv : merged) {
+[?2004l[?2004h> +        out.push_back(kv.second);
+[?2004l[?2004h> +    }
+[?2004l[?2004h>      std::sort(out.begin(), out.end(),
+[?2004l[?2004h>                [](const forge::UnitCheckpoint &a, const forge::UnitCheckpoint &b) {
+[?2004l[?2004h>                    return a.name < b.name;
+[?2004l[?2004h>                });
+[?2004l[?2004h>      return out;
+[?2004l[?2004h>  }
+[?2004l[?2004h>  
+[?2004l[?2004h> -void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token,
+[?2004l[?2004h> -                                     const std::vector<forge::UnitCheckpoint> &entries) {
+[?2004l[?2004h> +void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token, int pass_epoch,
+[?2004l[?2004h> +                                     const std::vector<forge::UnitCheckpoint> &entries) {
+[?2004l[?2004h>      std::filesystem::create_directories(path.parent_path());
+[?2004l[?2004h>      std::ostringstream out;
+[?2004l[?2004h>      out << "{\"schema_version\":" << forge::kSchemaVersion << ",\"lane_token\":\"" << lane_token
+[?2004l[?2004h> -        << "\",\"units\":[";
+[?2004l[?2004h> +        << "\",\"pass_epoch\":" << pass_epoch << ",\"units\":[";
+[?2004l[?2004h> @@
+[?2004l[?2004h>      out << "]}\n";
+[?2004l[?2004h>      std::ofstream file(path, std::ios::binary);
+[?2004l[?2004h>      file << out.str();
+[?2004l[?2004h>  }
+[?2004l[?2004h> *** End Patch
+[?2004l[?2004h> PATCH
+[?2004lbash: apply_patch: command not found
+[?2004hroot@c5c0f1c2990a:/app# sed -n '1,120p' /app/environment/c9/pass_gate.cpp
+[?2004l#include "c9_api.h"
+#include <string.h>
+
+extern "C" const char *c9_resolve_mode(const char *manifest_mode, const char *unit_name,
+                                         int pass_epoch) {
+    static thread_local char mode_buf[16];
+    (void)pass_epoch;
+    if (manifest_mode == NULL) {
+        mode_buf[0] = '\0';
+        return mode_buf;
+    }
+    if (strcmp(manifest_mode, "resume") == 0 && strncmp(unit_name, "u_a", 3) == 0) {
+        strncpy(mode_buf, "cold", sizeof(mode_buf) - 1);
+        mode_buf[sizeof(mode_buf) - 1] = '\0';
+        return mode_buf;
+    }
+    strncpy(mode_buf, manifest_mode, sizeof(mode_buf) - 1);
+    mode_buf[sizeof(mode_buf) - 1] = '\0';
+    return mode_buf;
+}
+[?2004hroot@c5c0f1c2990a:/app# perl -0777 -i -pe 's/\s*if \(strcmp\(manifest_mode, "resume"\) == 0 && strncmp\(unit_name, "u_a", 3\) == 0\) \{\n\s*strncpy\(mode_buf, "cold", sizeof\(mode_buf\) - 1\);\n\s*mode_buf\[sizeof\(mode_buf\) - 1\] = \'\\0\';\n\s*return mode_buf;\n\s*\}\n//s; s/\(void\)pass_epoch;/\(void\)unit_name;\n    \(void\)pass_epoch;/s' /app/environment/c9/pass_gate.cpp
+[?2004l[?2004h> sed -n '1,120p' /app/environment/c9/pass_gate.cpp
+[?2004l[?2004h> sed -n '1,260p' /app/environment/m14/store_bridge.cpp
+[?2004l[?2004h> sed -n '1,120p' /app/environment/include/m14_api.h
+[?2004l[?2004h> grep -n "m14_merge_entries" -n /app/environment/m14/lane_store.cpp
+[?2004l[?2004h> sed -n '130,220p' /app/environment/m14/lane_store.cpp
+[?2004l[?2004h> cat > /app/environment/c9/pass_gate.cpp <<'EOF'
+[?2004l[?2004h> #include "c9_api.h"
+[?2004l[?2004h> #include <string.h>
+[?2004l[?2004h> 
+[?2004l[?2004h> extern "C" const char *c9_resolve_mode(const char *manifest_mode, const char *unit_name,
+[?2004l[?2004h>                                        int pass_epoch) {
+[?2004l[?2004h>     static thread_local char mode_buf[16];
+[?2004l[?2004h>     (void)unit_name;
+[?2004l[?2004h>     (void)pass_epoch;
+[?2004l[?2004h>     if (manifest_mode == NULL) {
+[?2004l[?2004h>         mode_buf[0] = '\0';
+[?2004l[?2004h>         return mode_buf;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     // Mode semantics come from the manifest; do not branch on unit-name prefixes.
+[?2004l[?2004h>     strncpy(mode_buf, manifest_mode, sizeof(mode_buf) - 1);
+[?2004l[?2004h>     mode_buf[sizeof(mode_buf) - 1] = '\0';
+[?2004l[?2004h>     return mode_buf;
+[?2004l[?2004h> }
+[?2004l[?2004h> EOF
+[?2004l[?2004h> sed -n '1,120p' /app/environment/c9/pass_gate.cpp
+[?2004l[?2004h> sed -n '1,120p' /app/environment/include/m14_api.h
+[?2004l[?2004h> sed -n '1,120p' /app/environment/m14/store_bridge.cpp
+[?2004l[?2004h> sed -n '120,240p' /app/environment/m14/lane_store.cpp
+[?2004l[?2004h> ^C[?2004l[?2004h[?2004l
+[?2004hroot@c5c0f1c2990a:/app# pwd
+[?2004l/app
+[?2004hroot@c5c0f1c2990a:/app# cat > /app/environment/c9/pass_gate.cpp <<'EOF'
+[?2004l[?2004h> #include "c9_api.h"
+[?2004l[?2004h> #include <string.h>
+[?2004l[?2004h> 
+[?2004l[?2004h> extern "C" const char *c9_resolve_mode(const char *manifest_mode, const char *unit_name,
+[?2004l[?2004h>                                        int pass_epoch) {
+[?2004l[?2004h>     static thread_local char mode_buf[16];
+[?2004l[?2004h>     (void)unit_name;
+[?2004l[?2004h>     (void)pass_epoch;
+[?2004l[?2004h>     if (manifest_mode == NULL) {
+[?2004l[?2004h>         mode_buf[0] = '\0';
+[?2004l[?2004h>         return mode_buf;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     // Mode semantics come from the manifest; do not branch on unit-name prefixes.
+[?2004l[?2004h>     strncpy(mode_buf, manifest_mode, sizeof(mode_buf) - 1);
+[?2004l[?2004h>     mode_buf[sizeof(mode_buf) - 1] = '\0';
+[?2004l[?2004h>     return mode_buf;
+[?2004l[?2004h> }
+[?2004l[?2004h> EOF
+[?2004l[?2004hroot@c5c0f1c2990a:/app# sed -n '1,120p' /app/environment/c9/pass_gate.cpp
+[?2004l#include "c9_api.h"
+#include <string.h>
+
+extern "C" const char *c9_resolve_mode(const char *manifest_mode, const char *unit_name,
+                                       int pass_epoch) {
+    static thread_local char mode_buf[16];
+    (void)unit_name;
+    (void)pass_epoch;
+    if (manifest_mode == NULL) {
+        mode_buf[0] = '\0';
+        return mode_buf;
+    }
+    // Mode semantics come from the manifest; do not branch on unit-name prefixes.
+    strncpy(mode_buf, manifest_mode, sizeof(mode_buf) - 1);
+    mode_buf[sizeof(mode_buf) - 1] = '\0';
+    return mode_buf;
+}
+[?2004hroot@c5c0f1c2990a:/app# sed -n '1,160p' /app/environment/include/m14_api.h
+[?2004l#pragma once
+#include "types.h"
+#include <string>
+#include <vector>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+const char *m14_lane_token(const forge::UnitSpec *units, size_t count);
+int m14_checkpoint_valid(const char *on_disk_token, const char *expected_token);
+
+#ifdef __cplusplus
+}
+#endif
+
+#ifdef __cplusplus
+#include <filesystem>
+
+forge::LaneCheckpoint m14_read_checkpoint(const std::filesystem::path &path,
+                                          const std::string &expected_token);
+std::vector<forge::UnitCheckpoint> m14_merge_entries(
+    const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+    const std::vector<std::string> &requested_resume);
+void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token,
+                          const std::vector<forge::UnitCheckpoint> &entries);
+#endif
+[?2004hroot@c5c0f1c2990a:/app# sed -n '1,140p' /app/environment/m14/store_bridge.cpp
+[?2004l#include "m14_api.h"
+#include "store_bridge.h"
+
+std::vector<forge::UnitCheckpoint> forge_lane_merge_checkpoint(
+    const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+    const std::vector<std::string> &requested_resume) {
+    return m14_merge_entries(existing, updated, requested_resume);
+}
+
+void forge_lane_save_checkpoint(const std::filesystem::path &path, const char *lane_token,
+                                const std::vector<forge::UnitCheckpoint> &entries) {
+    m14_write_checkpoint(path, lane_token, entries);
+}
+[?2004hroot@c5c0f1c2990a:/app# sed -n '120,240p' /app/environment/m14/lane_store.cpp
+[?2004l    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    const std::string doc = buffer.str();
+    if (doc.find("\"schema_version\"") == std::string::npos) {
+        return state;
+    }
+    state.lane_token = pick_string(doc, "lane_token");
+    if (!m14_checkpoint_valid(state.lane_token.c_str(), expected_token.c_str())) {
+        return state;
+    }
+    size_t units_pos = doc.find("\"units\"");
+    if (units_pos == std::string::npos) {
+        return state;
+    }
+    size_t arr_start = doc.find('[', units_pos);
+    size_t arr_end = doc.find(']', arr_start);
+    if (arr_start == std::string::npos || arr_end == std::string::npos) {
+        return state;
+    }
+    const std::string arr = doc.substr(arr_start, arr_end - arr_start + 1);
+    for (const auto &block : split_object_blocks(arr)) {
+        forge::UnitCheckpoint entry;
+        entry.name = pick_string(block, "name");
+        entry.next_pass = pick_int(block, "next_pass");
+        entry.carry_weight = pick_int64(block, "carry_weight");
+        entry.carry_drift = pick_int64(block, "carry_drift");
+        if (!entry.name.empty()) {
+            state.units[entry.name] = entry;
+        }
+    }
+    state.valid = true;
+    return state;
+}
+
+std::vector<forge::UnitCheckpoint> m14_merge_entries(
+    const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+    const std::vector<std::string> &requested_resume) {
+    (void)existing;
+    (void)requested_resume;
+    std::vector<forge::UnitCheckpoint> out = updated;
+    std::sort(out.begin(), out.end(),
+              [](const forge::UnitCheckpoint &a, const forge::UnitCheckpoint &b) {
+                  return a.name < b.name;
+              });
+    return out;
+}
+
+void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token,
+                                     const std::vector<forge::UnitCheckpoint> &entries) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ostringstream out;
+    out << "{\"schema_version\":" << forge::kSchemaVersion << ",\"lane_token\":\"" << lane_token
+        << "\",\"units\":[";
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (i) {
+            out << ',';
+        }
+        const auto &entry = entries[i];
+        out << "{\"name\":\"" << entry.name << "\",\"next_pass\":" << entry.next_pass
+            << ",\"carry_weight\":" << entry.carry_weight << ",\"carry_drift\":"
+            << entry.carry_drift << '}';
+    }
+    out << "]}\n";
+    std::ofstream file(path, std::ios::binary);
+    file << out.str();
+}
+[?2004hroot@c5c0f1c2990a:/app# grep -RIn "forge_lane_save_checkpoint" /app/environment | head -n 20
+[?2004l/app/environment/include/store_bridge.h:13:void forge_lane_save_checkpoint(const std::filesystem::path &path, const char *lane_token,
+/app/environment/m14/store_bridge.cpp:10:void forge_lane_save_checkpoint(const std::filesystem::path &path, const char *lane_token,
+/app/environment/runner/emit_pipeline.cpp:355:    forge_lane_save_checkpoint(checkpoint_path, lane_token, merged);
+[?2004hroot@c5c0f1c2990a:/app# sed -n '1,200p' /app/environment/include/store_bridge.h
+[?2004l#pragma once
+#include "types.h"
+#include <filesystem>
+#include <string>
+#include <vector>
+
+const char *forge_lane_fingerprint(const forge::UnitSpec *units, size_t count);
+forge::LaneCheckpoint forge_lane_load_checkpoint(const std::filesystem::path &path,
+                                                 const std::string &expected_token);
+std::vector<forge::UnitCheckpoint> forge_lane_merge_checkpoint(
+    const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+    const std::vector<std::string> &requested_resume);
+void forge_lane_save_checkpoint(const std::filesystem::path &path, const char *lane_token,
+                                const std::vector<forge::UnitCheckpoint> &entries);
+[?2004hroot@c5c0f1c2990a:/app# grep -RIn "pass_epoch" /app/environment/runner/emit_pipeline.cpp | head -n 50
+[?2004l178:int read_pass_epoch(const fs::path &checkpoint_path) {
+186:    size_t pos = doc.find("\"pass_epoch\"");
+190:    return pick_int(doc, "pass_epoch");
+220:UnitRun analyze_unit(const UnitSpec &spec, int order_rank, int order_weight_base, int pass_epoch,
+226:    run.mode = forge_lane_mode(spec.mode.c_str(), spec.name.c_str(), pass_epoch);
+278:    int pass_epoch = forge::read_pass_epoch(checkpoint_path);
+311:                                                 pass_epoch, manifest_dir, name_ptrs.data(),
+330:                                     manifest.order_weight_base, pass_epoch, drift_total,
+341:        << ",\"pass_epoch\":" << pass_epoch << ",\"units\":[";
+359:             << "\",\"pass_epoch\":" << (pass_epoch + 1) << ",\"units\":[";
+[?2004hroot@c5c0f1c2990a:/app# grep -n "save_checkpoint" -n /app/environment/runner/emit_pipeline.cpp
+[?2004l355:    forge_lane_save_checkpoint(checkpoint_path, lane_token, merged);
+[?2004hroot@c5c0f1c2990a:/app# sed -n '200,420p' /app/environment/runner/emit_pipeline.cpp
+[?2004l        UnitSpec spec;
+        spec.name = pick_string(block, "name");
+        spec.mode = pick_string(block, "mode");
+        spec.record = pick_string(block, "record");
+        spec.manifest_bytes = pick_int(block, "manifest_bytes");
+        spec.start_pass = pick_int(block, "start_pass");
+        if (!spec.name.empty()) {
+            manifest.units.push_back(spec);
+        }
+    }
+    return manifest;
+}
+
+std::string digest_hex(const std::string &text) {
+    std::uint64_t h = digest_update(kDigestSeed, text);
+    std::ostringstream os;
+    os << std::hex << std::nouppercase << std::setfill('0') << std::setw(16) << h;
+    return os.str();
+}
+
+UnitRun analyze_unit(const UnitSpec &spec, int order_rank, int order_weight_base, int pass_epoch,
+                     const fs::path &manifest_dir, const char *const *names, size_t name_count,
+                     const LaneCheckpoint *checkpoint, int64_t carry_weight) {
+    fs::path record_path = manifest_dir / spec.record;
+    UnitRun run{};
+    run.name = spec.name;
+    run.mode = forge_lane_mode(spec.mode.c_str(), spec.name.c_str(), pass_epoch);
+    run.manifest_bytes = spec.manifest_bytes;
+    run.record_bytes = read_record_bytes(record_path);
+    run.drift_bytes = run.record_bytes - static_cast<int64_t>(run.manifest_bytes);
+    run.order_rank = order_rank;
+
+    int pass_index = spec.start_pass;
+    int64_t seeded_weight = 0;
+    if (run.mode == "resume" && checkpoint != nullptr && checkpoint->valid) {
+        auto it = checkpoint->units.find(spec.name);
+        if (it != checkpoint->units.end()) {
+            pass_index = it->second.next_pass;
+            seeded_weight = it->second.carry_weight;
+        }
+    }
+
+    if (run.mode == "resume" && seeded_weight != 0) {
+        run.order_weight = seeded_weight + static_cast<int64_t>(order_weight_base) + run.record_bytes;
+    } else {
+        run.order_weight =
+            forge_lane_weight(spec.name.c_str(), names, name_count, order_weight_base, run.record_bytes);
+    }
+    (void)carry_weight;
+    run.pass_index = pass_index;
+    run.row_serial = forge_lane_row_text(run);
+    run.row_digest = digest_hex(run.row_serial);
+
+    std::ostringstream js;
+    js << "{\"name\":\"" << json_escape(run.name) << "\",\"mode\":\"" << json_escape(run.mode)
+       << "\",\"pass_index\":" << run.pass_index << ",\"manifest_bytes\":" << run.manifest_bytes
+       << ",\"record_bytes\":" << run.record_bytes << ",\"drift_bytes\":" << run.drift_bytes
+       << ",\"order_rank\":" << run.order_rank << ",\"order_weight\":" << run.order_weight
+       << ",\"row_digest\":\"" << run.row_digest << "\"}";
+    run.json = js.str();
+    return run;
+}
+
+}  // namespace forge
+
+int forge_run_emit(int argc, char **argv) {
+    if (argc != 4) {
+        std::cerr << "usage: forge_emit <manifest-json> <output-json> <units-csv>\n";
+        return 2;
+    }
+    fs::path manifest_path = argv[1];
+    fs::path output_path = argv[2];
+    std::vector<std::string> requested = forge::split_units_csv(argv[3]);
+    forge::Manifest manifest = forge::load_manifest(manifest_path);
+    fs::path manifest_dir = manifest_path.parent_path();
+
+    const char *lane_token = forge_lane_fingerprint(manifest.units.data(), manifest.units.size());
+    fs::path checkpoint_path = forge::kCheckpointPath;
+    int pass_epoch = forge::read_pass_epoch(checkpoint_path);
+    forge::LaneCheckpoint checkpoint = forge_lane_load_checkpoint(checkpoint_path, lane_token);
+
+    std::vector<const char *> name_ptrs;
+    for (const auto &unit : manifest.units) {
+        name_ptrs.push_back(unit.name.c_str());
+    }
+
+    std::map<std::string, forge::UnitSpec> spec_by_name;
+    for (const auto &unit : manifest.units) {
+        spec_by_name[unit.name] = unit;
+    }
+
+    std::vector<forge::UnitRun> units;
+    std::vector<forge::UnitCheckpoint> updated_entries;
+    std::vector<std::string> requested_resume;
+    for (const auto &name : requested) {
+        auto it = spec_by_name.find(name);
+        if (it == spec_by_name.end()) {
+            continue;
+        }
+        int order_rank = static_cast<int>(std::distance(
+            manifest.units.begin(),
+            std::find_if(manifest.units.begin(), manifest.units.end(),
+                         [&](const forge::UnitSpec &u) { return u.name == name; })));
+        int64_t carry_weight = 0;
+        if (checkpoint.valid) {
+            auto cp = checkpoint.units.find(name);
+            if (cp != checkpoint.units.end()) {
+                carry_weight = cp->second.carry_weight;
+            }
+        }
+        forge::UnitRun run = forge::analyze_unit(it->second, order_rank, manifest.order_weight_base,
+                                                 pass_epoch, manifest_dir, name_ptrs.data(),
+                                                 name_ptrs.size(), &checkpoint, carry_weight);
+        units.push_back(run);
+        if (run.mode == "resume") {
+            requested_resume.push_back(name);
+            forge::UnitCheckpoint entry;
+            entry.name = run.name;
+            entry.next_pass = run.pass_index + 1;
+            entry.carry_weight = run.order_weight;
+            entry.carry_drift = run.drift_bytes;
+            updated_entries.push_back(entry);
+        }
+    }
+
+    int64_t drift_total = forge_lane_drift_total(units.data(), units.size());
+    int64_t weight_total = forge_lane_score_total(units.data(), units.size());
+
+    std::ostringstream serial;
+    serial << forge_lane_header_text(forge::kSchemaVersion, manifest.release_id,
+                                     manifest.order_weight_base, pass_epoch, drift_total,
+                                     weight_total);
+    for (const auto &unit : units) {
+        serial << '\n' << unit.row_serial;
+    }
+    std::string top_digest = forge::digest_hex(serial.str());
+
+    fs::create_directories(output_path.parent_path());
+    std::ostringstream out;
+    out << "{\"schema_version\":" << forge::kSchemaVersion << ",\"release_id\":\""
+        << manifest.release_id << "\",\"order_weight_base\":" << manifest.order_weight_base
+        << ",\"pass_epoch\":" << pass_epoch << ",\"units\":[";
+    for (std::size_t i = 0; i < units.size(); ++i) {
+        if (i) {
+            out << ',';
+        }
+        out << units[i].json;
+    }
+    out << "],\"total_drift_bytes\":" << drift_total << ",\"order_score\":" << weight_total
+        << ",\"digest\":\"" << top_digest << "\"}\n";
+    std::ofstream file(output_path, std::ios::binary);
+    file << out.str();
+
+    std::vector<forge::UnitCheckpoint> merged =
+        forge_lane_merge_checkpoint(checkpoint, updated_entries, requested_resume);
+    forge_lane_save_checkpoint(checkpoint_path, lane_token, merged);
+
+    std::ostringstream cp_patch;
+    cp_patch << "{\"schema_version\":" << forge::kSchemaVersion << ",\"lane_token\":\"" << lane_token
+             << "\",\"pass_epoch\":" << (pass_epoch + 1) << ",\"units\":[";
+    for (size_t i = 0; i < merged.size(); ++i) {
+        if (i) {
+            cp_patch << ',';
+        }
+        cp_patch << "{\"name\":\"" << merged[i].name << "\",\"next_pass\":" << merged[i].next_pass
+                 << ",\"carry_weight\":" << merged[i].carry_weight << ",\"carry_drift\":"
+                 << merged[i].carry_drift << '}';
+    }
+    cp_patch << "]}\n";
+    std::ofstream cp_file(checkpoint_path, std::ios::binary);
+    cp_file << cp_patch.str();
+
+    return 0;
+}
+[?2004hroot@c5c0f1c2990a:/app# cat > /app/environment/m14/lane_store.cpp.tmp <<'EOF'
+[?2004l[?2004h> #include "m14_api.h"
+[?2004l[?2004h> #include "constants.h"
+[?2004l[?2004h> #include "store_bridge.h"
+[?2004l[?2004h> #include "types.h"
+[?2004l[?2004h> 
+[?2004l[?2004h> #include <algorithm>
+[?2004l[?2004h> #include <cctype>
+[?2004l[?2004h> #include <cstdint>
+[?2004l[?2004h> #include <filesystem>
+[?2004l[?2004h> #include <fstream>
+[?2004l[?2004h> #include <map>
+[?2004l[?2004h> #include <numeric>
+[?2004l[?2004h> #include <sstream>
+[?2004l[?2004h> #include <stdexcept>
+[?2004l[?2004h> #include <string>
+[?2004l[?2004h> #include <vector>
+[?2004l[?2004h> 
+[?2004l[?2004h> namespace forge {
+[?2004l[?2004h> 
+[?2004l[?2004h> namespace {
+[?2004l[?2004h> 
+[?2004l[?2004h> std::string pick_string(const std::string &block, const std::string &key) {
+[?2004l[?2004h>     std::string needle = "\"" + key + "\"";
+[?2004l[?2004h>     size_t k = block.find(needle);
+[?2004l([?2004h>     if (k == std::string::npos) {
+[?2004l[?2004h>         return "";
+[?2004l[?2004h>     }
+[?2004l[?2004h>     size_t q = block.find('"', block.find(':', k) + 1);
+[?2004l[?2004h>     size_t e = block.find('"', q + 1);
+[?2004l[?2004h>     if (q == std::string::npos || e == std::string::npos) {
+[?2004l[?2004h>         return "";
+[?2004l[?2004h>     }
+[?2004l[?2004h>     return block.substr(q + 1, e - q - 1);
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l=[?2004h> int pick_int(const std::string &block, const std::string &key) {
+[?2004l[?2004h>     std::string needle = "\"" + key + "\"";
+[?2004l[?2004h>     size_t k = block.find(needle);
+[?2004l[?2004h>     if (k == std::string::npos) {
+[?2004l[?2004h>         return 0;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     size_t colon = block.find(':', k);
+[?2004l[?2004h>     if (colon == std::string::npos) {
+[?2004l[?2004h>         return 0;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     size_t start = colon + 1;
+[?2004l[?2004h>     while (start < block.size() && std::isspace(static_cast<unsigned char>(block[start]))) {
+[?2004l[?2004h>         ++start;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     return std::stoi(block.substr(start));
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> int64_t pick_int64(const std::string &block, const std::string &key) {
+[?2004l[?2004h>     std::string needle = "\"" + key + "\"";
+[?2004l[?2004h>     size_t k = block.find(needle);
+[?2004l[?2004h>     if (k == std::string::npos) {
+[?2004l[?2004h>         return 0;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     size_t colon = block.find(':', k);
+[?2004l[?2004h>     if (colon == std::string::npos) {
+[?2004l[?2004h>         return 0;
+[?2004lv[?2004h>     }
+[?2004l[?2004h>     size_t start = colon + 1;
+[?2004l[?2004h>     while (start < block.size() && std::isspace(static_cast<unsigned char>(block[start]))) {
+[?2004l[?2004h>         ++start;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     return std::stoll(block.substr(start));
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> std::vector<std::string> split_object_blocks(const std::string &array_text) {
+[?2004l[?2004h>     std::vector<std::string> out;
+[?2004l[?2004h>     int depth = 0;
+[?2004l[?2004h>     size_t start = std::string::npos;
+[?2004l[?2004h>     for (size_t i = 0; i < array_text.size(); ++i) {
+[?2004l[?2004h>         if (array_text[i] == '{') {
+[?2004l[?2004h>             if (depth == 0) {
+[?2004l[?2004h>                 start = i;
+[?2004l[?2004h>             }
+[?2004l[?2004h>             ++depth;
+[?2004l[?2004h>         } else if (array_text[i] == '}') {
+[?2004l[?2004h>             --depth;
+[?2004l[?2004h>             if (depth == 0 && start != std::string::npos) {
+[?2004l[?2004h>                 out.push_back(array_text.substr(start, i - start + 1));
+[?2004l[?2004h>                 start = std::string::npos;
+[?2004l[?2004h>             }
+[?2004l[?2004h>         }
+[?2004l[?2004h>     }
+[?2004l[?2004h>     return out;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> } // namespace
+[?2004l[?2004h> 
+[?2004l=[?2004h> } // namespace forge
+[?2004l[?2004h> 
+[?2004l[?2004h> extern "C" const char *m14_lane_token(const forge::UnitSpec *units, size_t count) {
+[?2004l[?2004h>     static thread_local std::string cached;
+[?2004l[?2004h>     std::vector<forge::UnitSpec> sorted;
+[?2004l[?2004h>     sorted.reserve(count);
+[?2004l[?2004h>     for (size_t i = 0; i < count; ++i) {
+[?2004l[?2004h>         sorted.push_back(units[i]);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     std::sort(sorted.begin(), sorted.end(), [](const forge::UnitSpec &a, const forge::UnitSpec &b) {
+[?2004l[?2004h>         return a.name < b.name;
+[?2004l[?2004h>     });
+[?2004l[?2004h> 
+[?2004l[?2004h>     std::ostringstream joined;
+[?2004l[?2004h>     for (size_t i = 0; i < sorted.size(); ++i) {
+[?2004l[?2004h>         if (i) {
+[?2004l[?2004h>             joined << '\n';
+[?2004l[?2004h>         }
+[?2004l[?2004h>         joined << sorted[i].name << '|' << sorted[i].mode << '|' << sorted[i].record_path << '|'
+[?2004l[?2004h>                << sorted[i].manifest_bytes << '|' << sorted[i].start_pass;
+[?2004l[?2004h>     }
+[?2004l[?2004h> 
+[?2004l[?2004h>     cached = forge::digest_hex(joined.str());
+[?2004l[?2004h>     return cached.c_str();
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> extern "C" int m14_checkpoint_valid(const char *on_disk_token, const char *expected_token) {
+[?2004l[?2004h>     if (on_disk_token == nullptr || expected_token == nullptr) {
+[?2004l[?2004h>         return 0;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     return std::string(on_disk_token) == std::string(expected_token) ? 1 : 0;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> forge::LaneCheckpoint m14_read_checkpoint(const std::filesystem::path &path,
+[?2004l[?2004h>                                          const std::string &expected_token) {
+[?2004l[?2004h>     forge::LaneCheckpoint state;
+[?2004l[?2004h>     std::ifstream in(path);
+[?2004l[?2004h>     if (!in) {
+[?2004l[?2004h>         return state;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     std::ostringstream buffer;
+[?2004l[?2004h>     buffer << in.rdbuf();
+[?2004l[?2004h>     const std::string doc = buffer.str();
+[?2004l[?2004h>     if (doc.find("\"schema_version\"") == std::string::npos) {
+[?2004l[?2004h>         return state;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     state.lane_token = forge::pick_string(doc, "lane_token");
+[?2004l[?2004h>     if (!m14_checkpoint_valid(state.lane_token.c_str(), expected_token.c_str())) {
+[?2004l[?2004h>         return state;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     state.pass_epoch = forge::pick_int(doc, "pass_epoch");
+[?2004l[?2004h> 
+[?2004l[?2004h>     size_t units_pos = doc.find("\"units\"");
+[?2004l[?2004h>     if (units_pos == std::string::npos) {
+[?2004l[?2004h>         state.valid = true;
+[?2004l[?2004h>         return state;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     size_t arr_start = doc.find('[', units_pos);
+[?2004l[?2004h>     size_t arr_end = doc.find(']', arr_start);
+[?2004l[?2004h>     if (arr_start == std::string::npos || arr_end == std::string::npos) {
+[?2004l[?2004h>         return state;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     const std::string arr = doc.substr(arr_start, arr_end - arr_start + 1);
+[?2004l[?2004h>     for (const auto &block : forge::split_object_blocks(arr)) {
+[?2004l[?2004h>         forge::UnitCheckpoint entry;
+[?2004l[?2004h>         entry.name = forge::pick_string(block, "name");
+[?2004l[?2004h>         entry.next_pass = forge::pick_int(block, "next_pass");
+[?2004l[?2004h>         entry.carry_weight = forge::pick_int64(block, "carry_weight");
+[?2004l[?2004h>         entry.carry_drift = forge::pick_int64(block, "carry_drift");
+[?2004l[?2004h>         if (!entry.name.empty()) {
+[?2004l[?2004h>             state.units[entry.name] = entry;
+[?2004l[?2004h>         }
+[?2004l[?2004h>     }
+[?2004l[?2004h>     state.valid = true;
+[?2004l[?2004h>     return state;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> std::vector<forge::UnitCheckpoint> m14_merge_entries(
+[?2004l[?2004h>     const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+[?2004l[?2004h>     const std::vector<std::string> &requested_resume) {
+[?2004l[?2004h>     (void)requested_resume;
+[?2004l[?2004h> 
+[?2004l[?2004h>     std::map<std::string, forge::UnitCheckpoint> merged;
+[?2004l[?2004h>     if (existing.valid) {
+[?2004l[?2004h>         merged = existing.units;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     for (const auto &entry : updated) {
+[?2004l[?2004h>         if (!entry.name.empty()) {
+[?2004l[?2004h>             merged[entry.name] = entry;
+[?2004l[?2004h>         }
+[?2004l[?2004h>     }
+[?2004l[?2004h> 
+[?2004l[?2004h>     std::vector<forge::UnitCheckpoint> out;
+[?2004l[?2004h>     out.reserve(merged.size());
+[?2004l[?2004h>     for (const auto &kv : merged) {
+[?2004l[?2004h>         out.push_back(kv.second);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     std::sort(out.begin(), out.end(),
+[?2004l[?2004h>               [](const forge::UnitCheckpoint &a, const forge::UnitCheckpoint &b) {
+[?2004l[?2004h>                   return a.name < b.name;
+[?2004l[?2004h>               });
+[?2004l[?2004h>     return out;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token, int pass_epoch,
+[?2004l[?2004h>                           const std::vector<forge::UnitCheckpoint> &entries) {
+[?2004l[?2004h>     std::filesystem::create_directories(path.parent_path());
+[?2004l[?2004h>     std::ostringstream out;
+[?2004l[?2004h>     out << "{\"schema_version\":" << forge::kSchemaVersion << ",\"lane_token\":\"" << lane_token
+[?2004l[?2004h>         << "\",\"pass_epoch\":" << pass_epoch << ",\"units\":[";
+[?2004l[?2004h>     for (size_t i = 0; i < entries.size(); ++i) {
+[?2004l[?2004h>         if (i) {
+[?2004l[?2004h>             out << ',';
+[?2004l[?2004h>         }
+[?2004l[?2004h>         const auto &entry = entries[i];
+[?2004l[?2004h>         out << "{\"name\":\"" << entry.name << "\",\"next_pass\":" << entry.next_pass
+[?2004l[?2004h>             << ",\"carry_weight\":" << entry.carry_weight << ",\"carry_drift\":"
+[?2004l[?2004h>             << entry.carry_drift << '}';
+[?2004l[?2004h>     }
+[?2004l[?2004h>     out << "]}\n";
+[?2004l[?2004h>     std::ofstream file(path, std::ios::binary);
+[?2004l[?2004h>     file << out.str();
+[?2004l[?2004h> }
+[?2004l[?2004h> EOF
+[?2004l[?2004hroot@c5c0f1c2990a:/app# mv /app/environment/m14/lane_store.cpp.tmp /app/environment/m14/lane_store.cpp
+[?2004l[?2004hroot@c5c0f1c2990a:/app# python3 -m py_compile /dev/null 2>/dev/null; sed -n '1,260p' /app/environment/m14/lane_store.cpp
+[?2004l#include "m14_api.h"
+#include "constants.h"
+#include "store_bridge.h"
+#include "types.h"
+
+#include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <numeric>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+namespace forge {
+
+namespace {
+
+std::string pick_string(const std::string &block, const std::string &key) {
+    std::string needle = "\"" + key + "\"";
+    size_t k = block.find(needle);
+    if (k == std::string::npos) {
+        return "";
+    }
+    size_t q = block.find('"', block.find(':', k) + 1);
+    size_t e = block.find('"', q + 1);
+    if (q == std::string::npos || e == std::string::npos) {
+        return "";
+    }
+    return block.substr(q + 1, e - q - 1);
+}
+
+int pick_int(const std::string &block, const std::string &key) {
+    std::string needle = "\"" + key + "\"";
+    size_t k = block.find(needle);
+    if (k == std::string::npos) {
+        return 0;
+    }
+    size_t colon = block.find(':', k);
+    if (colon == std::string::npos) {
+        return 0;
+    }
+    size_t start = colon + 1;
+    while (start < block.size() && std::isspace(static_cast<unsigned char>(block[start]))) {
+        ++start;
+    }
+    return std::stoi(block.substr(start));
+}
+
+int64_t pick_int64(const std::string &block, const std::string &key) {
+    std::string needle = "\"" + key + "\"";
+    size_t k = block.find(needle);
+    if (k == std::string::npos) {
+        return 0;
+    }
+    size_t colon = block.find(':', k);
+    if (colon == std::string::npos) {
+        return 0;
+    }
+    size_t start = colon + 1;
+    while (start < block.size() && std::isspace(static_cast<unsigned char>(block[start]))) {
+        ++start;
+    }
+    return std::stoll(block.substr(start));
+}
+
+std::vector<std::string> split_object_blocks(const std::string &array_text) {
+    std::vector<std::string> out;
+    int depth = 0;
+    size_t start = std::string::npos;
+    for (size_t i = 0; i < array_text.size(); ++i) {
+        if (array_text[i] == '{') {
+            if (depth == 0) {
+                start = i;
+            }
+            ++depth;
+        } else if (array_text[i] == '}') {
+            --depth;
+            if (depth == 0 && start != std::string::npos) {
+                out.push_back(array_text.substr(start, i - start + 1));
+                start = std::string::npos;
+            }
+        }
+    }
+    return out;
+}
+
+} // namespace
+
+} // namespace forge
+
+extern "C" const char *m14_lane_token(const forge::UnitSpec *units, size_t count) {
+    static thread_local std::string cached;
+    std::vector<forge::UnitSpec> sorted;
+    sorted.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        sorted.push_back(units[i]);
+    }
+    std::sort(sorted.begin(), sorted.end(), [](const forge::UnitSpec &a, const forge::UnitSpec &b) {
+        return a.name < b.name;
+    });
+
+    std::ostringstream joined;
+    for (size_t i = 0; i < sorted.size(); ++i) {
+        if (i) {
+            joined << '\n';
+        }
+        joined << sorted[i].name << '|' << sorted[i].mode << '|' << sorted[i].record_path << '|'
+               << sorted[i].manifest_bytes << '|' << sorted[i].start_pass;
+    }
+
+    cached = forge::digest_hex(joined.str());
+    return cached.c_str();
+}
+
+extern "C" int m14_checkpoint_valid(const char *on_disk_token, const char *expected_token) {
+    if (on_disk_token == nullptr || expected_token == nullptr) {
+        return 0;
+    }
+    return std::string(on_disk_token) == std::string(expected_token) ? 1 : 0;
+}
+
+forge::LaneCheckpoint m14_read_checkpoint(const std::filesystem::path &path,
+                                         const std::string &expected_token) {
+    forge::LaneCheckpoint state;
+    std::ifstream in(path);
+    if (!in) {
+        return state;
+    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    const std::string doc = buffer.str();
+    if (doc.find("\"schema_version\"") == std::string::npos) {
+        return state;
+    }
+    state.lane_token = forge::pick_string(doc, "lane_token");
+    if (!m14_checkpoint_valid(state.lane_token.c_str(), expected_token.c_str())) {
+        return state;
+    }
+    state.pass_epoch = forge::pick_int(doc, "pass_epoch");
+
+    size_t units_pos = doc.find("\"units\"");
+    if (units_pos == std::string::npos) {
+        state.valid = true;
+        return state;
+    }
+    size_t arr_start = doc.find('[', units_pos);
+    size_t arr_end = doc.find(']', arr_start);
+    if (arr_start == std::string::npos || arr_end == std::string::npos) {
+        return state;
+    }
+    const std::string arr = doc.substr(arr_start, arr_end - arr_start + 1);
+    for (const auto &block : forge::split_object_blocks(arr)) {
+        forge::UnitCheckpoint entry;
+        entry.name = forge::pick_string(block, "name");
+        entry.next_pass = forge::pick_int(block, "next_pass");
+        entry.carry_weight = forge::pick_int64(block, "carry_weight");
+        entry.carry_drift = forge::pick_int64(block, "carry_drift");
+        if (!entry.name.empty()) {
+            state.units[entry.name] = entry;
+        }
+    }
+    state.valid = true;
+    return state;
+}
+
+std::vector<forge::UnitCheckpoint> m14_merge_entries(
+    const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+    const std::vector<std::string> &requested_resume) {
+    (void)requested_resume;
+
+    std::map<std::string, forge::UnitCheckpoint> merged;
+    if (existing.valid) {
+        merged = existing.units;
+    }
+    for (const auto &entry : updated) {
+        if (!entry.name.empty()) {
+            merged[entry.name] = entry;
+        }
+    }
+
+    std::vector<forge::UnitCheckpoint> out;
+    out.reserve(merged.size());
+    for (const auto &kv : merged) {
+        out.push_back(kv.second);
+    }
+    std::sort(out.begin(), out.end(),
+              [](const forge::UnitCheckpoint &a, const forge::UnitCheckpoint &b) {
+                  return a.name < b.name;
+              });
+    return out;
+}
+
+void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token, int pass_epoch,
+                          const std::vector<forge::UnitCheckpoint> &entries) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ostringstream out;
+    out << "{\"schema_version\":" << forge::kSchemaVersion << ",\"lane_token\":\"" << lane_token
+        << "\",\"pass_epoch\":" << pass_epoch << ",\"units\":[";
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (i) {
+            out << ',';
+        }
+        const auto &entry = entries[i];
+        out << "{\"name\":\"" << entry.name << "\",\"next_pass\":" << entry.next_pass
+            << ",\"carry_weight\":" << entry.carry_weight << ",\"carry_drift\":"
+            << entry.carry_drift << '}';
+    }
+    out << "]}\n";
+    std::ofstream file(path, std::ios::binary);
+    file << out.str();
+}
+[?2004hroot@c5c0f1c2990a:/app# grep -n "=>" -n /app/environment/m14/lane_store.cpp || true
+[?2004l[?2004hroot@c5c0f1c2990a:/app# perl -0777 -i -pe 's/void m14_write_checkpoint\(const std::filesystem::path &path, const char \*lane_token,\s*\n\s*const std::vector<forge::UnitCheckpoint> &entries\);/void m14_write_checkpoint(const std::filesystem::path \&path, const char *lane_token, int pass_epoch,\n                          const std::vector<forge::UnitCheckpoint> \&entries);/s' /app/environment/include/m14_api.h
+[?2004l[?2004hroot@c5c0f1c2990a:/app# perl -0777 -i -pe 's/void forge_lane_save_checkpoint\(const std::filesystem::path &path, const char \*lane_token,\s*\n\s*const std::vector<forge::UnitCheckpoint> &entries\);/void forge_lane_save_checkpoint(const std::filesystem::path \&path, const char *lane_token, int pass_epoch,\n                                const std::vector<forge::UnitCheckpoint> \&entries);/s' /app/environment/include/store_bridge.h
+[?2004l[?2004hroot@c5c0f1c2990a:/app# cat > /app/environment/m14/store_bridge.cpp <<'EOF'
+[?2004l[?2004h> #include "m14_api.h"
+[?2004l[?2004h> #include "store_bridge.h"
+[?2004l[?2004h> 
+[?2004l[?2004h> std::vector<forge::UnitCheckpoint> forge_lane_merge_checkpoint(
+[?2004l[?2004h>     const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+[?2004l[?2004h>     const std::vector<std::string> &requested_resume) {
+[?2004l[?2004h>     return m14_merge_entries(existing, updated, requested_resume);
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> void forge_lane_save_checkpoint(const std::filesystem::path &path, const char *lane_token,
+[?2004l[?2004h>                                 int pass_epoch,
+[?2004l[?2004h>                                 const std::vector<forge::UnitCheckpoint> &entries) {
+[?2004l[?2004h>     m14_write_checkpoint(path, lane_token, pass_epoch, entries);
+[?2004l[?2004h> }
+[?2004l[?2004h> EOF
+[?2004l[?2004hroot@c5c0f1c2990a:/app# perl -0777 -i -pe 's/forge_lane_save_checkpoint\(checkpoint_path, lane_token, merged\);/forge_lane_save_checkpoint(checkpoint_path, lane_token, pass_epoch + 1, merged);/g' /app/environment/runner/emit_pipeline.cpp
+[?2004l[?2004hroot@c5c0f1c2990a:/app# cmake -S /app/environment -B /app/build -G Ninja
+[?2004l-- Configuring done
+-- Generating done
+-- Build files have been written to: /app/build
+[?2004hroot@c5c0f1c2990a:/app# ninja -C /app/build
+[?2004lninja: Entering directory `/app/build'
+[0/9] Building CXX object runner/CMakeFiles/core_m.dir/__/m14/lane_store.cpp.o[K[0/9] Building CXX object runner/CMakeFiles/core_m.dir/__/m14/token_bridge.cpp.o[K[0/9] Building CXX object runner/CMakeFiles/core_m.dir/__/m14/read_bridge.cpp.o[K[1/9] Building CXX object runner/CMakeFiles/core_m.dir/__/m14/lane_store.cpp.o[K
+[31mFAILED: [0mrunner/CMakeFiles/core_m.dir/__/m14/lane_store.cpp.o 
+/usr/bin/c++  -I/app/environment/runner/../include -std=gnu++17 -MD -MT runner/CMakeFiles/core_m.dir/__/m14/lane_store.cpp.o -MF runner/CMakeFiles/core_m.dir/__/m14/lane_store.cpp.o.d -o runner/CMakeFiles/core_m.dir/__/m14/lane_store.cpp.o -c /app/environment/m14/lane_store.cpp
+/app/environment/m14/lane_store.cpp: In function ‘const char* m14_lane_token(const forge::UnitSpec*, size_t)’:
+/app/environment/m14/lane_store.cpp:111:79: error: ‘__gnu_cxx::__alloc_traits<std::allocator<forge::UnitSpec>, forge::UnitSpec>::value_type’ {aka ‘struct forge::UnitSpec’} has no member named ‘record_path’
+  111 |         joined << sorted[i].name << '|' << sorted[i].mode << '|' << sorted[i].record_path << '|'
+      |                                                                               ^~~~~~~~~~~
+/app/environment/m14/lane_store.cpp: In function ‘forge::LaneCheckpoint m14_read_checkpoint(const std::filesystem::__cxx11::path&, const std::string&)’:
+/app/environment/m14/lane_store.cpp:143:11: error: ‘struct forge::LaneCheckpoint’ has no member named ‘pass_epoch’
+  143 |     state.pass_epoch = forge::pick_int(doc, "pass_epoch");
+      |           ^~~~~~~~~~
+rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json
+[2/9] Building CXX object runner/CMakeFiles/core_m.dir/__/m14/read_bridge.cpp.o[K[3/9] Building CXX object runner/CMakeFiles/core_m.dir/__/m14/token_bridge.cpp.o[K
+ninja: build stopped: subcommand failed.
+[?2004hroot@c5c0f1c2990a:/app# rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json
+[?2004l[?2004hroot@c5c0f1c2990a:/app# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta
+[?2004l[?2004hroot@c5c0f1c2990a:/app# cat /app/output/forge_checkpoint.json
+[?2004l{"schema_version":1,"lane_token":"6218901b6e584bf4","pass_epoch":1,"units":[{"name":"u_zeta","next_pass":1,"carry_weight":3550,"carry_drift":0}]}
+[?2004hroot@c5c0f1c2990a:/app# rm -f /app/output/forge_emit.json
+[?2004l[?2004hroot@c5c0f1c2990a:/app# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_alpha
+[?2004l[?2004hroot@c5c0f1c2990a:/app# echo '--- checkpoint after partial ---' && cat /app/output/forge_checkpoint.json
+[?2004l--- checkpoint after partial ---
+{"schema_version":1,"lane_token":"6218901b6e584bf4","pass_epoch":2,"units":[]}
+[?2004hroot@c5c0f1c2990a:/app# echo '--- emitted alpha ---' && cat /app/output/forge_emit.json
+[?2004l--- emitted alpha ---
+{"schema_version":1,"release_id":"forge_r07","order_weight_base":500,"pass_epoch":1,"units":[{"name":"u_alpha","mode":"cold","pass_index":0,"manifest_bytes":4100,"record_bytes":4100,"drift_bytes":0,"order_rank":1,"order_weight":4600,"row_digest":"a7aaab485c5e61ce"}],"total_drift_bytes":0,"order_score":4600,"digest":"cb529024b9e1f453"}
+[?2004hroot@c5c0f1c2990a:/app# sed -n '1,220p' /app/environment/include/types.h
+[?2004l#pragma once
+#ifdef __cplusplus
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <map>
+#include <string>
+#include <vector>
+
+namespace forge {
+struct UnitSpec {
+    std::string name;
+    std::string mode;
+    std::string record;
+    int manifest_bytes{};
+    int start_pass{};
+};
+
+struct Manifest {
+    std::string release_id;
+    int order_weight_base{};
+    std::vector<UnitSpec> units;
+};
+
+struct UnitCheckpoint {
+    std::string name;
+    int next_pass{};
+    int64_t carry_weight{};
+    int64_t carry_drift{};
+};
+
+struct LaneCheckpoint {
+    bool valid{false};
+    std::string lane_token;
+    std::map<std::string, UnitCheckpoint> units;
+};
+
+struct UnitRun {
+    std::string name;
+    std::string mode;
+    int pass_index{};
+    int manifest_bytes{};
+    int64_t record_bytes{};
+    int64_t drift_bytes{};
+    int order_rank{};
+    int64_t order_weight{};
+    std::string row_digest;
+    std::string row_serial;
+    std::string json;
+};
+
+Manifest load_manifest(const std::filesystem::path &path);
+std::string digest_hex(const std::string &text);
+std::string unit_row_serial(const UnitRun &run);
+int64_t f12_slot_sum(const std::vector<UnitRun> &units);
+int64_t f12_abs_drift(int64_t drift);
+int64_t f12_drift_total(const std::vector<UnitRun> &units);
+std::string n21_header_serial(int schema_version, const std::string &release_id, int base,
+                              int pass_epoch, int64_t drift_total, int64_t weight_total);
+UnitRun analyze_unit(const UnitSpec &spec, int order_rank, int order_weight_base, int pass_epoch,
+                     const std::filesystem::path &manifest_dir, const char *const *names,
+                     size_t name_count, const LaneCheckpoint *checkpoint, int64_t carry_weight);
+}
+#endif
+[?2004hroot@c5c0f1c2990a:/app# cat > /app/environment/m14/lane_store.cpp <<'EOF'
+[?2004l[?2004h> #include "m14_api.h"
+[?2004l[?2004h> #include "constants.h"
+[?2004l[?2004h> #include "types.h"
+[?2004l[?2004h> 
+[?2004l[?2004h> #include <algorithm>
+[?2004l[?2004h> #include <cctype>
+[?2004l[?2004h> #include <cstdint>
+[?2004l[?2004h> #include <filesystem>
+[?2004l[?2004h> #include <fstream>
+[?2004l[?2004h> #include <map>
+[?2004l[?2004h> #include <sstream>
+[?2004l[?2004h> #include <string>
+[?2004l[?2004h> #include <vector>
+[?2004l[?2004h> 
+[?2004l[?2004h> namespace {
+[?2004l[?2004h> 
+[?2004l[?2004h> std::string pick_string(const std::string &block, const std::string &key) {
+[?2004l[?2004h>     std::string needle = "\"" + key + "\"";
+[?2004l[?2004h>     size_t k = block.find(needle);
+[?2004l[?2004h>     if (k == std::string::npos) {
+[?2004l[?2004h>         return "";
+[?2004l[?2004h>     }
+[?2004l[?2004h>     size_t q = block.find('"', block.find(':', k) + 1);
+[?2004l[?2004h>     size_t e = block.find('"', q + 1);
+[?2004l[?2004h>     if (q == std::string::npos || e == std::string::npos) {
+[?2004l[?2004h>         return "";
+[?2004l[?2004h>     }
+[?2004l[?2004h>     return block.substr(q + 1, e - q - 1);
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> int pick_int(const std::string &block, const std::string &key) {
+[?2004l[?2004h>     std::string needle = "\"" + key + "\"";
+[?2004l[?2004h>     size_t k = block.find(needle);
+[?2004l[?2004h>     if (k == std::string::npos) {
+[?2004l[?2004h>         return 0;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     size_t colon = block.find(':', k);
+[?2004l[?2004h>     if (colon == std::string::npos) {
+[?2004l[?2004h>         return 0;
+[?2004l[?2004h>     }
+[?2004lt[?2004h>     size_t start = colon + 1;
+[?2004l[?2004h>     while (start < block.size() && std::isspace(static_cast<unsigned char>(block[start]))) {
+[?2004l[?2004h>         ++start;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     return std::stoi(block.substr(start));
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> int64_t pick_int64(const std::string &block, const std::string &key) {
+[?2004l[?2004h>     std::string needle = "\"" + key + "\"";
+[?2004l[?2004h>     size_t k = block.find(needle);
+[?2004l[?2004h>     if (k == std::string::npos) {
+[?2004l[?2004h>         return 0;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     size_t colon = block.find(':', k);
+[?2004l[?2004h>     if (colon == std::string::npos) {
+[?2004l[?2004h>         return 0;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     size_t start = colon + 1;
+[?2004l[?2004h>     while (start < block.size() && std::isspace(static_cast<unsigned char>(block[start]))) {
+[?2004l[?2004h>         ++start;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     return std::stoll(block.substr(start));
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> std::vector<std::string> split_object_blocks(const std::string &array_text) {
+[?2004l[?2004h>     std::vector<std::string> out;
+[?2004l[?2004h>     int depth = 0;
+[?2004l[?2004h>     size_t start = std::string::npos;
+[?2004l[?2004h>     for (size_t i = 0; i < array_text.size(); ++i) {
+[?2004l[?2004h>         if (array_text[i] == '{') {
+[?2004l[?2004h>             if (depth == 0) {
+[?2004l[?2004h>                 start = i;
+[?2004l[?2004h>             }
+[?2004l[?2004h>             ++depth;
+[?2004l[?2004h>         } else if (array_text[i] == '}') {
+[?2004l[?2004h>             --depth;
+[?2004l[?2004h>             if (depth == 0 && start != std::string::npos) {
+[?2004l[?2004h>                 out.push_back(array_text.substr(start, i - start + 1));
+[?2004l[?2004h>                 start = std::string::npos;
+[?2004l[?2004h>             }
+[?2004l[?2004h>         }
+[?2004l[?2004h>     }
+[?2004l[?2004h>     return out;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> std::uint64_t digest_update(std::uint64_t h, const std::string &text) {
+[?2004l[?2004h>     for (unsigned char ch : text) {
+[?2004l[?2004h>         h ^= static_cast<std::uint64_t>(ch);
+[?2004l[?2004h>         h = (h * forge::kDigestStep) & forge::kDigestMask;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     return h;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> std::string digest_hex(const std::string &text) {
+[?2004l[?2004h>     std::uint64_t h = digest_update(forge::kDigestSeed, text);
+[?2004l[?2004h>     std::ostringstream os;
+[?2004l[?2004h>     os << std::hex << std::nouppercase << std::setfill('0') << std::setw(16) << h;
+[?2004l[?2004h>     return os.str();
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> std::string descriptor_line(const forge::UnitSpec &u) {
+[?2004l[?2004h>     std::ostringstream os;
+[?2004l[?2004h>     os << u.name << '|' << u.mode << '|' << u.record << '|' << u.manifest_bytes << '|' << u.start_pass;
+[?2004l[?2004h>     return os.str();
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> } // namespace
+[?2004l[?2004h> 
+[?2004l[?2004h> extern "C" const char *m14_lane_token(const forge::UnitSpec *units, size_t count) {
+[?2004l[?2004h>     static thread_local std::string cached;
+[?2004l[?2004h> 
+[?2004l[?2004h>     std::vector<forge::UnitSpec> sorted;
+[?2004l[?2004h>     sorted.reserve(count);
+[?2004l[?2004h>     for (size_t i = 0; i < count; ++i) {
+[?2004l[?2004h>         sorted.push_back(units[i]);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     std::sort(sorted.begin(), sorted.end(),
+[?2004l[?2004h>               [](const forge::UnitSpec &a, const forge::UnitSpec &b) { return a.name < b.name; });
+[?2004l[?2004h> 
+[?2004l[?2004h>     std::ostringstream joined;
+[?2004l[?2004h>     for (size_t i = 0; i < sorted.size(); ++i) {
+[?2004l[?2004h>         if (i) {
+[?2004l[?2004h>             joined << '\n';
+[?2004l[?2004h>         }
+[?2004l[?2004h>         joined << descriptor_line(sorted[i]);
+[?2004l[?2004h>     }
+[?2004l[?2004h> 
+[?2004l[?2004h>     cached = digest_hex(joined.str());
+[?2004l[?2004h>     return cached.c_str();
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> extern "C" int m14_checkpoint_valid(const char *on_disk_token, const char *expected_token) {
+[?2004l[?2004h>     if (on_disk_token == nullptr || expected_token == nullptr) {
+[?2004l[?2004h>         return 0;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     return std::string(on_disk_token) == std::string(expected_token) ? 1 : 0;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> forge::LaneCheckpoint m14_read_checkpoint(const std::filesystem::path &path,
+[?2004l[?2004h>                                          const std::string &expected_token) {
+[?2004l[?2004h>     forge::LaneCheckpoint state;
+[?2004l[?2004h>     std::ifstream in(path);
+[?2004l[?2004h>     if (!in) {
+[?2004l[?2004h>         return state;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     std::ostringstream buffer;
+[?2004l[?2004h>     buffer << in.rdbuf();
+[?2004l[?2004h>     const std::string doc = buffer.str();
+[?2004l[?2004h>     if (doc.find("\"schema_version\"") == std::string::npos) {
+[?2004l[?2004h>         return state;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     state.lane_token = pick_string(doc, "lane_token");
+[?2004l[?2004h>     if (!m14_checkpoint_valid(state.lane_token.c_str(), expected_token.c_str())) {
+[?2004l[?2004h>         return state;
+[?2004l[?2004h>     }
+[?2004l[?2004h> 
+[?2004l[?2004h>     size_t units_pos = doc.find("\"units\"");
+[?2004l[?2004h>     if (units_pos == std::string::npos) {
+[?2004l[?2004h>         state.valid = true;
+[?2004l[?2004h>         return state;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     size_t arr_start = doc.find('[', units_pos);
+[?2004l[?2004h>     size_t arr_end = doc.find(']', arr_start);
+[?2004l[?2004h>     if (arr_start == std::string::npos || arr_end == std::string::npos) {
+[?2004l[?2004h>         return state;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     const std::string arr = doc.substr(arr_start, arr_end - arr_start + 1);
+[?2004l[?2004h>     for (const auto &block : split_object_blocks(arr)) {
+[?2004l[?2004h>         forge::UnitCheckpoint entry;
+[?2004l[?2004h>         entry.name = pick_string(block, "name");
+[?2004l[?2004h>         entry.next_pass = pick_int(block, "next_pass");
+[?2004l[?2004h>         entry.carry_weight = pick_int64(block, "carry_weight");
+[?2004l[?2004h>         entry.carry_drift = pick_int64(block, "carry_drift");
+[?2004l[?2004h>         if (!entry.name.empty()) {
+[?2004l[?2004h>             state.units[entry.name] = entry;
+[?2004l[?2004h>         }
+[?2004l[?2004h>     }
+[?2004l[?2004h>     state.valid = true;
+[?2004l[?2004h>     return state;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> std::vector<forge::UnitCheckpoint> m14_merge_entries(
+[?2004l[?2004h>     const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+[?2004l[?2004h>     const std::vector<std::string> &requested_resume) {
+[?2004l[?2004h>     (void)requested_resume;
+[?2004l[?2004h> 
+[?2004l[?2004h>     std::map<std::string, forge::UnitCheckpoint> merged;
+[?2004l[?2004h>     if (existing.valid) {
+[?2004l[?2004h>         merged = existing.units;
+[?2004l[?2004h>     }
+[?2004l[?2004h>     for (const auto &entry : updated) {
+[?2004l[?2004h>         if (!entry.name.empty()) {
+[?2004l[?2004h>             merged[entry.name] = entry;
+[?2004l[?2004h>         }
+[?2004l[?2004h>     }
+[?2004l[?2004h> 
+[?2004l[?2004h>     std::vector<forge::UnitCheckpoint> out;
+[?2004l[?2004h>     out.reserve(merged.size());
+[?2004l[?2004h>     for (const auto &kv : merged) {
+[?2004l[?2004h>         out.push_back(kv.second);
+[?2004l[?2004h>     }
+[?2004l[?2004h>     std::sort(out.begin(), out.end(),
+[?2004l[?2004h>               [](const forge::UnitCheckpoint &a, const forge::UnitCheckpoint &b) {
+[?2004l[?2004h>                   return a.name < b.name;
+[?2004l[?2004h>               });
+[?2004l[?2004h>     return out;
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token,
+[?2004l[?2004h>                           const std::vector<forge::UnitCheckpoint> &entries) {
+[?2004l[?2004h>     std::filesystem::create_directories(path.parent_path());
+[?2004l[?2004h>     std::ostringstream out;
+[?2004l[?2004h>     out << "{\"schema_version\":" << forge::kSchemaVersion << ",\"lane_token\":\"" << lane_token
+[?2004l[?2004h>         << "\",\"units\":[";
+[?2004l[?2004h>     for (size_t i = 0; i < entries.size(); ++i) {
+[?2004l[?2004h>         if (i) {
+[?2004l[?2004h>             out << ',';
+[?2004l[?2004h>         }
+[?2004l[?2004h>         const auto &entry = entries[i];
+[?2004l[?2004h>         out << "{\"name\":\"" << entry.name << "\",\"next_pass\":" << entry.next_pass
+[?2004l[?2004h>             << ",\"carry_weight\":" << entry.carry_weight << ",\"carry_drift\":"
+[?2004l[?2004h>             << entry.carry_drift << '}';
+[?2004l[?2004h>     }
+[?2004l[?2004h>     out << "]}\n";
+[?2004l[?2004h>     std::ofstream file(path, std::ios::binary);
+[?2004l[?2004h>     file << out.str();
+[?2004l[?2004h> }
+[?2004l[?2004h> EOF
+[?2004l[?2004hroot@c5c0f1c2990a:/app# grep -n "setfill" -n /app/environment/m14/lane_store.cpp | head
+[?2004l97:    os << std::hex << std::nouppercase << std::setfill('0') << std::setw(16) << h;
+[?2004hroot@c5c0f1c2990a:/app# perl -0777 -i -pe 's/void m14_write_checkpoint\(const std::filesystem::path \&path, const char \*lane_token, int pass_epoch,\n\s*const std::vector<forge::UnitCheckpoint> \&entries\);/void m14_write_checkpoint(const std::filesystem::path \&path, const char *lane_token,\n                          const std::vector<forge::UnitCheckpoint> \&entries);/s' /app/environment/include/m14_api.h
+[?2004l[?2004hroot@c5c0f1c2990a:/app# perl -0777 -i -pe 's/void forge_lane_save_checkpoint\(const std::filesystem::path \&path, const char \*lane_token, int pass_epoch,\n\s*const std::vector<forge::UnitCheckpoint> \&entries\);/void forge_lane_save_checkpoint(const std::filesystem::path \&path, const char *lane_token,\n                                const std::vector<forge::UnitCheckpoint> \&entries);/s' /app/environment/include/store_bridge.h
+[?2004l[?2004hroot@c5c0f1c2990a:/app# cat > /app/environment/m14/store_bridge.cpp <<'EOF'
+[?2004l[?2004h> #include "m14_api.h"
+[?2004l[?2004h> #include "store_bridge.h"
+[?2004l[?2004h> 
+[?2004l[?2004h> std::vector<forge::UnitCheckpoint> forge_lane_merge_checkpoint(
+[?2004l[?2004h>     const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+[?2004l[?2004h>     const std::vector<std::string> &requested_resume) {
+[?2004l[?2004h>     return m14_merge_entries(existing, updated, requested_resume);
+[?2004l[?2004h> }
+[?2004l[?2004h> 
+[?2004l[?2004h> void forge_lane_save_checkpoint(const std::filesystem::path &path, const char *lane_token,
+[?2004l[?2004h>                                 const std::vector<forge::UnitCheckpoint> &entries) {
+[?2004l[?2004h>     m14_write_checkpoint(path, lane_token, entries);
+[?2004l[?2004h> }
+[?2004l[?2004h> EOF
+[?2004l[?2004hroot@c5c0f1c2990a:/app# perl -0777 -i -pe 's/forge_lane_save_checkpoint\(checkpoint_path, lane_token, pass_epoch \+ 1, merged\);/forge_lane_save_checkpoint(checkpoint_path, lane_token, merged);/g' /app/environment/runner/emit_pipeline.cpp
+[?2004l[?2004hroot@c5c0f1c2990a:/app# ninja -C /app/build
+[?2004lninja: Entering directory `/app/build'
+[0/9] Building CXX object runner/CMakeFiles/core_m.dir/__/m14/lane_store.cpp.o[K[0/9] Building CXX object runner/CMakeFiles/core_m.dir/__/m14/token_bridge.cpp.o[K[0/9] Building CXX object runner/CMakeFiles/core_m.dir/__/m14/read_bridge.cpp.o[K[1/9] Building CXX object runner/CMakeFiles/core_m.dir/__/m14/read_bridge.cpp.o[K[1/9] Building CXX object runner/CMakeFiles/core_m.dir/__/m14/store_bridge.cpp.o[K[2/9] Building CXX object runner/CMakeFiles/core_m.dir/__/m14/token_bridge.cpp.o[K[2/9] Building CXX object runner/CMakeFiles/core_c.dir/__/c9/pass_gate.cpp.o[K[3/9] Building CXX object runner/CMakeFiles/core_c.dir/__/c9/pass_gate.cpp.o[K[3/9] Linking CXX static library runner/libcore_c.a[K[4/9] Linking CXX static library runner/libcore_c.a[K[4/9] Building CXX object runner/CMakeFiles/forge_emit.dir/emit_pipeline.cpp.o[K[5/9] Building CXX object runner/CMakeFiles/core_m.dir/__/m14/lane_store.cpp.o[K[6/9] Building CXX object runner/CMakeFiles/core_m.dir/__/m14/store_bridge.cpp.o[K[6/9] Linking CXX static library runner/libcore_m.a[K[7/9] Linking CXX static library runner/libcore_m.a[K[8/9] Building CXX object runner/CMakeFiles/forge_emit.dir/emit_pipeline.cpp.o[K[8/9] Linking CXX executable forge_emit[K[9/9] Linking CXX executable forge_emit[K
+[?2004hroot@c5c0f1c2990a:/app# grep -n "t>" -n /app/environment/m14/lane_store.cpp || true
+[?2004l7:#include <cstdint>
+88:        h ^= static_cast<std::uint64_t>(ch);
+182:std::vector<forge::UnitCheckpoint> m14_merge_entries(
+183:    const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+187:    std::map<std::string, forge::UnitCheckpoint> merged;
+197:    std::vector<forge::UnitCheckpoint> out;
+210:                          const std::vector<forge::UnitCheckpoint> &entries) {
+[?2004hroot@c5c0f1c2990a:/app# perl -i -pe 's/^t>\s*//;' /app/environment/m14/lane_store.cpp
+[?2004l[?2004hroot@c5c0f1c2990a:/app# grep -n "t>" -n /app/environment/m14/lane_store.cpp || true
+[?2004l7:#include <cstdint>
+88:        h ^= static_cast<std::uint64_t>(ch);
+182:std::vector<forge::UnitCheckpoint> m14_merge_entries(
+183:    const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+187:    std::map<std::string, forge::UnitCheckpoint> merged;
+197:    std::vector<forge::UnitCheckpoint> out;
+210:                          const std::vector<forge::UnitCheckpoint> &entries) {
+[?2004hroot@c5c0f1c2990a:/app# grep -n "#include <iomanip>" /app/environment/m14/lane_store.cpp || true
+[?2004l[?2004hroot@c5c0f1c2990a:/app# perl -0777 -i -pe 's/#include <fstream>\n/#include <fstream>\n#include <iomanip>\n/' /app/environment/m14/lane_store.cpp
+[?2004l[?2004hroot@c5c0f1c2990a:/app# ninja -C /app/build
+[?2004lninja: Entering directory `/app/build'
+[0/3] Building CXX object runner/CMakeFiles/core_m.dir/__/m14/lane_store.cpp.o[K[1/3] Building CXX object runner/CMakeFiles/core_m.dir/__/m14/lane_store.cpp.o[K[1/3] Linking CXX static library runner/libcore_m.a[K[2/3] Linking CXX static library runner/libcore_m.a[K[2/3] Linking CXX executable forge_emit[Krm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json
+[3/3] Linking CXX executable forge_emit[K
+[?2004hroot@c5c0f1c2990a:/app# rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json
+[?2004l[?2004hroot@c5c0f1c2990a:/app# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta
+[?2004l[?2004hroot@c5c0f1c2990a:/app# echo '--- checkpoint after full ---' && cat /app/output/forge_checkpoint.json
+[?2004l--- checkpoint after full ---
+{"schema_version":1,"lane_token":"2d5837bed1ac6b84","pass_epoch":1,"units":[{"name":"u_alpha","next_pass":1,"carry_weight":4600,"carry_drift":0},{"name":"u_zeta","next_pass":1,"carry_weight":3550,"carry_drift":0}]}
+[?2004hroot@c5c0f1c2990a:/app# rm -f /app/output/forge_emit.json
+[?2004l[?2004hroot@c5c0f1c2990a:/app# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_alpha
+[?2004l[?2004hroot@c5c0f1c2990a:/app# echo '--- checkpoint after partial ---' && cat /app/output/forge_checkpoint.json
+[?2004l--- checkpoint after partial ---
+{"schema_version":1,"lane_token":"2d5837bed1ac6b84","pass_epoch":2,"units":[{"name":"u_alpha","next_pass":2,"carry_weight":9200,"carry_drift":0},{"name":"u_zeta","next_pass":1,"carry_weight":3550,"carry_drift":0}]}
+[?2004hroot@c5c0f1c2990a:/app# echo '--- emitted alpha ---' && cat /app/output/forge_emit.json
+[?2004l--- emitted alpha ---
+{"schema_version":1,"release_id":"forge_r07","order_weight_base":500,"pass_epoch":1,"units":[{"name":"u_alpha","mode":"resume","pass_index":1,"manifest_bytes":4100,"record_bytes":4100,"drift_bytes":0,"order_rank":1,"order_weight":9200,"row_digest":"c8d647720c804003"}],"total_drift_bytes":0,"order_score":9200,"digest":"50239e0547271b8d"}
+[?2004hroot@c5c0f1c2990a:/app# rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json
+[?2004l[?2004hroot@c5c0f1c2990a:/app# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta
+[?2004l[?2004hroot@c5c0f1c2990a:/app# ls -la /app/output && echo '--- forge_emit.json ---' && cat /app/output/forge_emit.json && echo '\n--- forge_checkpoint.json ---' && cat /app/output/forge_checkpoint.json
+[?2004ltotal 8
+drwxr-xr-x 2 root root  58 May 26 16:31 .
+drwxr-xr-x 5 root root  52 May 26 16:27 ..
+-rw-r--r-- 1 root root 215 May 26 16:31 forge_checkpoint.json
+-rw-r--r-- 1 root root 687 May 26 16:31 forge_emit.json
+--- forge_emit.json ---
+{"schema_version":1,"release_id":"forge_r07","order_weight_base":500,"pass_epoch":0,"units":[{"name":"u_kappa","mode":"cold","pass_index":0,"manifest_bytes":6150,"record_bytes":6150,"drift_bytes":0,"order_rank":0,"order_weight":7150,"row_digest":"e678cc59635983bb"},{"name":"u_alpha","mode":"resume","pass_index":0,"manifest_bytes":4100,"record_bytes":4100,"drift_bytes":0,"order_rank":1,"order_weight":4600,"row_digest":"a7aaab485c5e61ce"},{"name":"u_zeta","mode":"resume","pass_index":0,"manifest_bytes":2050,"record_bytes":2050,"drift_bytes":0,"order_rank":2,"order_weight":3550,"row_digest":"6ea975d3f65d6166"}],"total_drift_bytes":0,"order_score":15300,"digest":"1060e21c240ae1cd"}
+\n--- forge_checkpoint.json ---
+{"schema_version":1,"lane_token":"2d5837bed1ac6b84","pass_epoch":1,"units":[{"name":"u_alpha","next_pass":1,"carry_weight":4600,"carry_drift":0},{"name":"u_zeta","next_pass":1,"carry_weight":3550,"carry_drift":0}]}
+[?2004hroot@c5c0f1c2990a:/app# 

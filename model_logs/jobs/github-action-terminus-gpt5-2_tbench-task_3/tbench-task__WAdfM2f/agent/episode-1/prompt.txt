@@ -1,0 +1,164 @@
+New Terminal Output:
+root@1c64306e7dec:/app# ls -ლა /app
+ls: invalid option -- ''
+Try 'ls --help' for more information.
+root@1c64306e7dec:/app# find /app/environment -maxdepth 3 -type f | sed 's|^|FILE: |' | head -n 200
+FILE: /app/environment/CMakeLists.txt
+FILE: /app/environment/b07/extra_b1.c
+FILE: /app/environment/b07/extra_b2.c
+FILE: /app/environment/b07/j2_shadow.c
+FILE: /app/environment/b07/scan_bridge.c
+FILE: /app/environment/b07/v3_read_scale.c
+FILE: /app/environment/c9/extra_c1.c
+FILE: /app/environment/c9/mode_bridge.cpp
+FILE: /app/environment/c9/pass_gate.cpp
+FILE: /app/environment/docs/compile_notes.md
+FILE: /app/environment/docs/emit_contract.md
+FILE: /app/environment/docs/overview.md
+FILE: /app/environment/docs/persistence_notes.md
+FILE: /app/environment/f12/extra_f1.cpp
+FILE: /app/environment/f12/extra_f2.cpp
+FILE: /app/environment/f12/k8_rank_slot.cpp
+FILE: /app/environment/f12/lane_bridge.cpp
+FILE: /app/environment/f12/m4_shadow.cpp
+FILE: /app/environment/f12/total_bridge.cpp
+FILE: /app/environment/fixtures/lane.json
+FILE: /app/environment/fixtures/records/r0.unit
+FILE: /app/environment/fixtures/records/r1.unit
+FILE: /app/environment/fixtures/records/r2.unit
+FILE: /app/environment/include/b07_api.h
+FILE: /app/environment/include/c9_api.h
+FILE: /app/environment/include/constants.h
+FILE: /app/environment/include/emit_pipeline.h
+FILE: /app/environment/include/f12_api.h
+FILE: /app/environment/include/lane_bridge.h
+FILE: /app/environment/include/m14_api.h
+FILE: /app/environment/include/n21_api.h
+FILE: /app/environment/include/scan_bridge.h
+FILE: /app/environment/include/store_bridge.h
+FILE: /app/environment/include/types.h
+FILE: /app/environment/m14/extra_m1.cpp
+FILE: /app/environment/m14/lane_store.cpp
+FILE: /app/environment/m14/read_bridge.cpp
+FILE: /app/environment/m14/shadow_m2.c
+FILE: /app/environment/m14/store_bridge.cpp
+FILE: /app/environment/m14/token_bridge.cpp
+FILE: /app/environment/n21/extra_n1.cpp
+FILE: /app/environment/n21/extra_n2.cpp
+FILE: /app/environment/n21/p1_shadow.cpp
+FILE: /app/environment/n21/pack_bridge.cpp
+FILE: /app/environment/n21/q5_pack_stamp.cpp
+FILE: /app/environment/runner/CMakeLists.txt
+FILE: /app/environment/runner/emit_pipeline.cpp
+FILE: /app/environment/runner/main.cpp
+root@1c64306e7dec:/app# cmake -S /app/environment -B /app/build -G Ninja
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /app/build
+root@1c64306e7dec:/app# ninja -C /app/build
+ninja: Entering directory `/app/build'
+ninja: no work to do.
+root@1c64306e7dec:/app# rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json
+root@1c64306e7dec:/app# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta
+root@1c64306e7dec:/app# echo '--- forge_emit.json'; cat /app/output/forge_emit.json; echo; echo '--- forge_checkpoint.json'; cat /app/output/forge_checkpoint.js
+on; echo
+--- forge_emit.json
+{"schema_version":1,"release_id":"forge_r07","order_weight_base":500,"pass_epoch":0,"units":[{"name":"u_kappa","mode":"cold","pass_index":0,"manifest_bytes":615
+0,"record_bytes":6150,"drift_bytes":0,"order_rank":0,"order_weight":7150,"row_digest":"e678cc59635983bb"},{"name":"u_alpha","mode":"cold","pass_index":0,"manife
+st_bytes":4100,"record_bytes":4100,"drift_bytes":0,"order_rank":1,"order_weight":4600,"row_digest":"a7aaab485c5e61ce"},{"name":"u_zeta","mode":"resume","pass_in
+dex":0,"manifest_bytes":2050,"record_bytes":2050,"drift_bytes":0,"order_rank":2,"order_weight":3550,"row_digest":"6ea975d3f65d6166"}],"total_drift_bytes":0,"ord
+er_score":15300,"digest":"1060e21c240ae1cd"}
+
+--- forge_checkpoint.json
+{"schema_version":1,"lane_token":"6218901b6e584bf4","pass_epoch":1,"units":[{"name":"u_zeta","next_pass":1,"carry_weight":3550,"carry_drift":0}]}
+
+root@1c64306e7dec:/app# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_alpha
+root@1c64306e7dec:/app# echo '--- forge_emit.json'; cat /app/output/forge_emit.json; echo; echo '--- forge_checkpoint.json'; cat /app/output/forge_checkpoint.js
+on; echo
+--- forge_emit.json
+{"schema_version":1,"release_id":"forge_r07","order_weight_base":500,"pass_epoch":1,"units":[{"name":"u_alpha","mode":"cold","pass_index":0,"manifest_bytes":410
+0,"record_bytes":4100,"drift_bytes":0,"order_rank":1,"order_weight":4600,"row_digest":"a7aaab485c5e61ce"}],"total_drift_bytes":0,"order_score":4600,"digest":"cb
+529024b9e1f453"}
+
+--- forge_checkpoint.json
+{"schema_version":1,"lane_token":"6218901b6e584bf4","pass_epoch":2,"units":[]}
+
+root@1c64306e7dec:/app# grep -RIn "lane_token\|checkpoint\|carry_weight\|carry_drift\|pass_epoch\|fnv\|1099511628211\|1469598103934665603\|digest" /app/environm
+ent | head -n 200
+/app/environment/b07/j2_shadow.c:8:        h *= 1099511628211UL;
+/app/environment/c9/extra_c1.c:3:int c9_shadow_epoch(int pass_epoch) {
+/app/environment/c9/extra_c1.c:4:    return pass_epoch < 0 ? 0 : pass_epoch;
+/app/environment/c9/mode_bridge.cpp:4:const char *fo
+[... output limited to 10000 bytes; 70 interior bytes omitted ...]
+spec.mode.c_str(), spec.name.c_str(), pass_epoch);
+/app/environment/runner/emit_pipeline.cpp:234:    if (run.mode == "resume" && checkpoint != nullptr && checkpoint->valid) {
+/app/environment/runner/emit_pipeline.cpp:235:        auto it = checkpoint->units.find(spec.name);
+/app/environment/runner/emit_pipeline.cpp:236:        if (it != checkpoint->units.end()) {
+/app/environment/runner/emit_pipeline.cpp:238:            seeded_weight = it->second.carry_weight;
+/app/environment/runner/emit_pipeline.cpp:248:    (void)carry_weight;
+/app/environment/runner/emit_pipeline.cpp:251:    run.row_digest = digest_hex(run.row_serial);
+/app/environment/runner/emit_pipeline.cpp:258:       << ",\"row_digest\":\"" << run.row_digest << "\"}";
+/app/environment/runner/emit_pipeline.cpp:276:    const char *lane_token = forge_lane_fingerprint(manifest.units.data(), manifest.units.size());
+/app/environment/runner/emit_pipeline.cpp:277:    fs::path checkpoint_path = forge::kCheckpointPath;
+/app/environment/runner/emit_pipeline.cpp:278:    int pass_epoch = forge::read_pass_epoch(checkpoint_path);
+/app/environment/runner/emit_pipeline.cpp:279:    forge::LaneCheckpoint checkpoint = forge_lane_load_checkpoint(checkpoint_path, lane_token);
+/app/environment/runner/emit_pipeline.cpp:303:        int64_t carry_weight = 0;
+/app/environment/runner/emit_pipeline.cpp:304:        if (checkpoint.valid) {
+/app/environment/runner/emit_pipeline.cpp:305:            auto cp = checkpoint.units.find(name);
+/app/environment/runner/emit_pipeline.cpp:306:            if (cp != checkpoint.units.end()) {
+/app/environment/runner/emit_pipeline.cpp:307:                carry_weight = cp->second.carry_weight;
+/app/environment/runner/emit_pipeline.cpp:311:                                                 pass_epoch, manifest_dir, name_ptrs.data(),
+/app/environment/runner/emit_pipeline.cpp:312:                                                 name_ptrs.size(), &checkpoint, carry_weight);
+/app/environment/runner/emit_pipeline.cpp:319:            entry.carry_weight = run.order_weight;
+/app/environment/runner/emit_pipeline.cpp:320:            entry.carry_drift = run.drift_bytes;
+/app/environment/runner/emit_pipeline.cpp:330:                                     manifest.order_weight_base, pass_epoch, drift_total,
+/app/environment/runner/emit_pipeline.cpp:335:    std::string top_digest = forge::digest_hex(serial.str());
+/app/environment/runner/emit_pipeline.cpp:341:        << ",\"pass_epoch\":" << pass_epoch << ",\"units\":[";
+/app/environment/runner/emit_pipeline.cpp:349:        << ",\"digest\":\"" << top_digest << "\"}\n";
+/app/environment/runner/emit_pipeline.cpp:354:        forge_lane_merge_checkpoint(checkpoint, updated_entries, requested_resume);
+/app/environment/runner/emit_pipeline.cpp:355:    forge_lane_save_checkpoint(checkpoint_path, lane_token, merged);
+/app/environment/runner/emit_pipeline.cpp:358:    cp_patch << "{\"schema_version\":" << forge::kSchemaVersion << ",\"lane_token\":\"" << lane_token
+/app/environment/runner/emit_pipeline.cpp:359:             << "\",\"pass_epoch\":" << (pass_epoch + 1) << ",\"units\":[";
+/app/environment/runner/emit_pipeline.cpp:365:                 << ",\"carry_weight\":" << merged[i].carry_weight << ",\"carry_drift\":"
+/app/environment/runner/emit_pipeline.cpp:366:                 << merged[i].carry_drift << '}';
+/app/environment/runner/emit_pipeline.cpp:369:    std::ofstream cp_file(checkpoint_path, std::ios::binary);
+root@1c64306e7dec:/app# find /app/environment -maxdepth 2 -type f \( -name '*.cpp' -o -name '*.cc' -o -name '*.c' -o -name '*.h' -o -name '*.hpp' \) -print
+/app/environment/b07/extra_b1.c
+/app/environment/b07/extra_b2.c
+/app/environment/b07/j2_shadow.c
+/app/environment/b07/scan_bridge.c
+/app/environment/b07/v3_read_scale.c
+/app/environment/c9/extra_c1.c
+/app/environment/c9/mode_bridge.cpp
+/app/environment/c9/pass_gate.cpp
+/app/environment/f12/extra_f1.cpp
+/app/environment/f12/extra_f2.cpp
+/app/environment/f12/k8_rank_slot.cpp
+/app/environment/f12/lane_bridge.cpp
+/app/environment/f12/m4_shadow.cpp
+/app/environment/f12/total_bridge.cpp
+/app/environment/include/b07_api.h
+/app/environment/include/c9_api.h
+/app/environment/include/constants.h
+/app/environment/include/emit_pipeline.h
+/app/environment/include/f12_api.h
+/app/environment/include/lane_bridge.h
+/app/environment/include/m14_api.h
+/app/environment/include/n21_api.h
+/app/environment/include/scan_bridge.h
+/app/environment/include/store_bridge.h
+/app/environment/include/types.h
+/app/environment/m14/extra_m1.cpp
+/app/environment/m14/lane_store.cpp
+/app/environment/m14/read_bridge.cpp
+/app/environment/m14/shadow_m2.c
+/app/environment/m14/store_bridge.cpp
+/app/environment/m14/token_bridge.cpp
+/app/environment/n21/extra_n1.cpp
+/app/environment/n21/extra_n2.cpp
+/app/environment/n21/p1_shadow.cpp
+/app/environment/n21/pack_bridge.cpp
+/app/environment/n21/q5_pack_stamp.cpp
+/app/environment/runner/emit_pipeline.cpp
+/app/environment/runner/main.cpp
+root@1c64306e7dec:/app#

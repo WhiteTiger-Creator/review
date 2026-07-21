@@ -1,0 +1,35 @@
+{
+  "analysis": "Current forge_emit output is wrong: u_alpha is emitted with mode \"cold\" even though manifest says \"resume\". Checkpoint only contains u_zeta, dropping u_alpha resume state entirely. That matches the reported bug: mode resolution is not manifest-driven, and partial/chained invocations lose unrelated checkpoints. Also pass_epoch in checkpoint is 1 after a single run; emit pass_epoch was 0 (ok per spec: read before processing). Need to inspect implementation to fix: mode semantics, resume checkpoint read/validate by lane_token, preserve all resume units in checkpoint across partial invocations, correct lane_token computation includes ALL manifest units descriptor lines sorted, and ensure per-unit/pass/order_weight formulas and digest serialization are correct and stable.",
+  "plan": "1) Locate forge_emit main and supporting code (manifest parsing, checkpoint read/write, digest). 2) Identify why u_alpha becomes cold and why checkpoint write filters out other resume units. 3) Patch: use manifest mode, only allow resume-path for manifest mode==\"resume\" and checkpoint valid+matching lane token; checkpoint units array must include all resume-mode units with previous values preserved unless updated this invocation; ignore checkpoint for cold units. 4) Ensure lane_token computation uses descriptor lines for every manifest unit, sorted by unit name, with correct fields and FNV-1a 64-bit. 5) Rebuild and rerun: first full run, then partial run (e.g., only u_zeta) and verify checkpoint still retains u_alpha entry; rerun to confirm pass_index/order_weight advance only for resume units with valid checkpoint.",
+  "commands": [
+    {
+      "keystrokes": "ls -ლა /app/environment/include || true\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "find /app/environment -maxdepth 3 -type f \\( -name '*.cpp' -o -name '*.c' -o -name '*.hpp' -o -name '*.h' \\) | sort | sed -n '1,200p'\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "grep -RIn --line-number \"forge_emit\" /app/environment | head -n 50\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "grep -RIn --line-number \"lane_token\\|checkpoint\\|pass_epoch\\|FNV\\|1099511628211\\|1469598103934665603\\|row_digest\\|order_weight\" /app/environment | head -n 200\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "cat /app/environment/CMakeLists.txt\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "ls -la /app/build && ls -la /app/build | grep forge || true\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "ninja -C /app/build -t targets | grep -i forge || true\n",
+      "duration": 1.0
+    }
+  ],
+  "task_complete": false
+}

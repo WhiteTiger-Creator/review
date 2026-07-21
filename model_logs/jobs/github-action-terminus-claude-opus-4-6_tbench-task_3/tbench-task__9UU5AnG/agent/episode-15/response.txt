@@ -1,0 +1,14 @@
+{
+  "analysis": "Line 372 has `\"]}\\  n\"` instead of the proper newline. I need to fix this. Let me use sed to replace that line.",
+  "plan": "Fix the corrupted line 372 in emit_pipeline.cpp, then try to build.",
+  "commands": [
+    {
+      "keystrokes": "sed -i '372s/.*/    cp_out << \"]\\}\\\\n\";/' /app/environment/runner/emit_pipeline.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '370,375p' /app/environment/runner/emit_pipeline.cpp\n",
+      "duration": 0.1
+    }
+  ]
+}

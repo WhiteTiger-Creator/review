@@ -1,0 +1,26 @@
+{
+  "analysis": "I now have a complete picture of all the bugs in the codebase. Here's what I've found:\n\n1. **c9/pass_gate.cpp**: Incorrectly branches on unit-name prefix 'u_a' to override resume→cold mode\n2. **n21/q5_pack_stamp.cpp**: Row serial missing `drift_bytes` field\n3. **n21/extra_n2.cpp**: Header serial missing `pass_epoch` field and wrong field order\n4. **f12/extra_f2.cpp**: `f12_drift_total` sums raw drift instead of absolute values\n5. **b07/v3_read_scale.c**: Divides by 1024 when line has 'lane=primary'\n6. **f12/k8_rank_slot.cpp**: Uses lexicographic rank instead of manifest array index\n7. **m14/lane_store.cpp (m14_lane_token)**: Doesn't sort descriptor lines alphabetically by unit name\n8. **m14/lane_store.cpp (m14_merge_entries)**: Discards existing checkpoint entries not in current request\n9. **m14/lane_store.cpp (m14_write_checkpoint)**: Missing pass_epoch field\n10. **emit_pipeline.cpp**: Double-writes checkpoint file; pass_epoch reading doesn't validate lane token; analyze_unit uses broken forge_lane_weight for fresh path",
+  "plan": "I'll fix all the bugs by rewriting the affected source files. I'll do this in batches, starting with the simpler fixes and then the more complex ones.",
+  "commands": [
+    {
+      "keystrokes": "cat > /app/environment/c9/pass_gate.cpp << 'EOF'\n#include \"c9_api.h\"\n#include <string.h>\n\nextern \"C\" const char *c9_resolve_mode(const char *manifest_mode, const char *unit_name,\n                                         int pass_epoch) {\n    static thread_local char mode_buf[16];\n    (void)pass_epoch;\n    (void)unit_name;\n    if (manifest_mode == NULL) {\n        mode_buf[0] = '\\0';\n        return mode_buf;\n    }\n    strncpy(mode_buf, manifest_mode, sizeof(mode_buf) - 1);\n    mode_buf[sizeof(mode_buf) - 1] = '\\0';\n    return mode_buf;\n}\nEOF\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat > /app/environment/n21/q5_pack_stamp.cpp << 'EOF'\n#include \"types.h\"\n#include <sstream>\n#include <string>\n\nnamespace forge {\n\nstd::string q5_row_serial(const UnitRun &run) {\n    std::ostringstream os;\n    os << run.name << '|' << run.manifest_bytes << '|' << run.record_bytes << '|'\n       << run.drift_bytes << '|' << run.order_rank << '|' << run.order_weight;\n    return os.str();\n}\n\nstd::string unit_row_serial(const UnitRun &run) {\n    return q5_row_serial(run);\n}\n\n}\nEOF\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat > /app/environment/n21/extra_n2.cpp << 'EOF'\n#include \"types.h\"\n#include <sstream>\n\nnamespace forge {\n\nstd::string n21_header_serial(int schema_version, const std::string &release_id, int base,\n                              int pass_epoch, int64_t drift_total, int64_t weight_total) {\n    std::ostringstream os;\n    os << schema_version << '|' << release_id << '|' << base << '|' << pass_epoch << '|'\n       << drift_total << '|' << weight_total;\n    return os.str();\n}\n\n}\nEOF\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat > /app/environment/f12/extra_f2.cpp << 'EOF'\n#include \"types.h\"\n#include <vector>\n\nnamespace forge {\n\nint64_t f12_abs_drift(int64_t drift);\n\nint64_t f12_drift_total(const std::vector<UnitRun> &units) {\n    int64_t total = 0;\n    for (const auto &unit : units) {\n        total += f12_abs_drift(unit.drift_bytes);\n    }\n    return total;\n}\n\n}\nEOF\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat > /app/environment/b07/v3_read_scale.c << 'EOF'\n#include \"types.h\"\n#include <ctype.h>\n#include <stdlib.h>\n#include <string.h>\n\nstatic const char *find_token(const char *line, size_t len, const char *key) {\n    size_t key_len = strlen(key);\n    for (size_t i = 0; i + key_len <= len; ++i) {\n        if (strncmp(line + i, key, key_len) == 0) {\n            return line + i;\n        }\n    }\n    return NULL;\n}\n\nstatic int64_t read_int_after_eq(const char *line, size_t len, const char *token) {\n    const char *pos = find_token(line, len, token);\n    if (pos == NULL) {\n        return 0;\n    }\n    size_t offset = (size_t)(pos - line) + strlen(token);\n    while (offset < len && isspace((unsigned char)line[offset])) {\n        ++offset;\n    }\n    char *end = NULL;\n    long long value = strtoll(line + offset, &end, 10);\n    if (end == line + offset) {\n        return 0;\n    }\n    return (int64_t)value;\n}\n\nint64_t v3_read_scale(const char *line, size_t len) {\n    if (line == NULL || len == 0) {\n        return 0;\n    }\n    return read_int_after_eq(line, len, \"size_bytes=\");\n}\n\nint64_t b07_read_scale(const char *line, size_t len) {\n    return v3_read_scale(line, len);\n}\nEOF\n",
+      "duration": 0.1
+    }
+  ]
+}

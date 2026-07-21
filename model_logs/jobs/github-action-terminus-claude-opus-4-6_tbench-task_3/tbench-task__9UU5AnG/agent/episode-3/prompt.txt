@@ -1,0 +1,337 @@
+New Terminal Output:
+
+root@ba860eb2c572:/app# cat /app/environment/runner/emit_pipeline.cpp
+#include "emit_pipeline.h"
+#include "lane_bridge.h"
+#include "scan_bridge.h"
+#include "store_bridge.h"
+#include "constants.h"
+#include "types.h"
+#include <algorithm>
+#include <cctype>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <map>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+namespace fs = std::filesystem;
+
+namespace forge {
+
+constexpr const char *kCheckpointPath = "/app/output/forge_checkpoint.json";
+
+namespace {
+
+std::string read_file(const fs::path &path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        throw std::runtime_error("could not open fixture");
+    }
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+std::string pick_string(const std::string &block, const std::string &key) {
+    std::string needle = "\"" + key + "\"";
+    size_t k = block.find(needle);
+    if (k == std::string::npos) {
+        return "";
+    }
+    size_t q = block.find('"', block.find(':', k) + 1);
+    size_t e = block.find('"', q + 1);
+    if (q == std::string::npos || e == std::string::npos) {
+        return "";
+    }
+    return block.substr(q + 1, e - q - 1);
+}
+
+int pick_int(const std::string &block, const std::string &key) {
+    std::string needle = "\"" + key + "\"";
+    size_t k = block.find(needle);
+    if (k == std::string::npos) {
+        return 0;
+    }
+    size_t colon = block.find(':', k);
+    if (colon == std::string::npos) {
+        return 0;
+    }
+    size_t start = colon + 1;
+    while (start < block.size() && std::isspace(static_cast<unsigned char>(block[start]))) {
+        ++start;
+    }
+    return std::stoi(block.substr(start));
+}
+
+std::string extract_array(const std::string &doc, const std::string &key) {
+    std::string needle = "\"" + key + "\"";
+    size_t k = doc.find(needle);
+    if (k == std::string::npos) {
+        return "";
+    }
+    size_t p = doc.find('[', k);
+    if (p == std::string::npos) {
+        return "";
+    }
+    int depth = 0;
+    size_t start = p;
+    for (size_t i = p; i < doc.size(); ++i) {
+        if (doc[i] == '[') {
+            ++depth;
+        }
+        if (doc[i] == ']') {
+            --depth;
+            if (depth == 0) {
+                return doc.substr(start, i - start + 1);
+            }
+        }
+    }
+    return "";
+}
+
+std::vector<std::string> split_object_blocks(const std::string &array_text) {
+    std::vector<std::string> out;
+    int depth = 0;
+    size_t start = std::string::npos;
+    for (size_t i = 0; i < array_text.size(); ++i) {
+        if (array_text[i] == '{') {
+            if (depth == 0) {
+                start = i;
+            }
+            ++depth;
+        } else if (array_text[i] == '}') {
+            --depth;
+            if (depth == 0 && start != std::string::npos) {
+                out.push_back(array_text.substr(start, i - start + 1));
+                start = std::string::npos;
+            }
+        }
+    }
+    return out;
+}
+
+int64_t read_record_bytes(const fs::path &path) {
+    std::string blob = read_file(path);
+    size_t offset = 0;
+    while (offset < blob.size()) {
+        size_t end = blob.find('\n', offset);
+        if (end == std::string::npos) {
+            end = blob.size();
+        }
+        if (end > offset) {
+            const char *line = blob.data() + offset;
+            size_t len = end - offset;
+            if (forge_scan_has_key(line, len, "size_bytes=")) {
+                return forge_scan_record_bytes(line, len);
+            }
+        }
+        if (end >= blob.size()) {
+            break;
+        }
+        offset = end + 1;
+    }
+    return 0;
+}
+
+std::uint64_t digest_update(std::uint64_t h, const std::string &text) {
+    for (unsigned char ch : text) {
+        h ^= static_cast<std::uint64_t>(ch);
+        h = (h * kDigestStep) & kDigestMask;
+    }
+    return h;
+}
+
+std::string json_escape(const std::string &s) {
+    std::string out;
+    for (char c : s) {
+        if (c == '"' || c == '\\') {
+            out.push_back('\\');
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+}  // namespace
+
+std::vector<std::string> split_units_csv(const std::string &text) {
+    std::vector<std::string> out;
+    std::string cur;
+    for (char ch : text) {
+        if (ch == ',') {
+            if (!cur.empty()) {
+                out.push_back(cur);
+            }
+            cur.clear();
+        } else if (!std::isspace(static_cast<unsigned char>(ch))) {
+            cur.push_back(ch);
+        }
+    }
+    if (!cur.empty()) {
+        out.push_back(cur);
+    }
+    return out;
+}
+
+int read_pass_epoch(const fs::path &checkpoint_path) {
+    std::ifstream in(checkpoint_path);
+    if (!in) {
+        return 0;
+    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    const std::string doc = buffer.str();
+    size_t pos = doc.find("\"pass_epoch\"");
+    if (pos == std::string::npos) {
+        return 0;
+    }
+    return pick_int(doc, "pa
+[... output limited to 10000 bytes; 70 interior bytes omitted ...]
+                         pass_epoch, manifest_dir, name_ptrs.data(),
+                                                 name_ptrs.size(), &checkpoint, carry_weight);
+        units.push_back(run);
+        if (run.mode == "resume") {
+            requested_resume.push_back(name);
+            forge::UnitCheckpoint entry;
+            entry.name = run.name;
+            entry.next_pass = run.pass_index + 1;
+            entry.carry_weight = run.order_weight;
+            entry.carry_drift = run.drift_bytes;
+            updated_entries.push_back(entry);
+        }
+    }
+
+    int64_t drift_total = forge_lane_drift_total(units.data(), units.size());
+    int64_t weight_total = forge_lane_score_total(units.data(), units.size());
+
+    std::ostringstream serial;
+    serial << forge_lane_header_text(forge::kSchemaVersion, manifest.release_id,
+                                     manifest.order_weight_base, pass_epoch, drift_total,
+                                     weight_total);
+    for (const auto &unit : units) {
+        serial << '\n' << unit.row_serial;
+    }
+    std::string top_digest = forge::digest_hex(serial.str());
+
+    fs::create_directories(output_path.parent_path());
+    std::ostringstream out;
+    out << "{\"schema_version\":" << forge::kSchemaVersion << ",\"release_id\":\""
+        << manifest.release_id << "\",\"order_weight_base\":" << manifest.order_weight_base
+        << ",\"pass_epoch\":" << pass_epoch << ",\"units\":[";
+    for (std::size_t i = 0; i < units.size(); ++i) {
+        if (i) {
+            out << ',';
+        }
+        out << units[i].json;
+    }
+    out << "],\"total_drift_bytes\":" << drift_total << ",\"order_score\":" << weight_total
+        << ",\"digest\":\"" << top_digest << "\"}\n";
+    std::ofstream file(output_path, std::ios::binary);
+    file << out.str();
+
+    std::vector<forge::UnitCheckpoint> merged =
+        forge_lane_merge_checkpoint(checkpoint, updated_entries, requested_resume);
+    forge_lane_save_checkpoint(checkpoint_path, lane_token, merged);
+
+    std::ostringstream cp_patch;
+    cp_patch << "{\"schema_version\":" << forge::kSchemaVersion << ",\"lane_token\":\"" << lane_token
+             << "\",\"pass_epoch\":" << (pass_epoch + 1) << ",\"units\":[";
+    for (size_t i = 0; i < merged.size(); ++i) {
+        if (i) {
+            cp_patch << ',';
+        }
+        cp_patch << "{\"name\":\"" << merged[i].name << "\",\"next_pass\":" << merged[i].next_pass
+                 << ",\"carry_weight\":" << merged[i].carry_weight << ",\"carry_drift\":"
+                 << merged[i].carry_drift << '}';
+    }
+    cp_patch << "]}\n";
+    std::ofstream cp_file(checkpoint_path, std::ios::binary);
+    cp_file << cp_patch.str();
+
+    return 0;
+}
+root@ba860eb2c572:/app# cat /app/environment/include/emit_pipeline.h
+#pragma once
+
+int forge_run_emit(int argc, char **argv);
+root@ba860eb2c572:/app# cat /app/environment/include/types.h
+#pragma once
+#ifdef __cplusplus
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <map>
+#include <string>
+#include <vector>
+
+namespace forge {
+struct UnitSpec {
+    std::string name;
+    std::string mode;
+    std::string record;
+    int manifest_bytes{};
+    int start_pass{};
+};
+
+struct Manifest {
+    std::string release_id;
+    int order_weight_base{};
+    std::vector<UnitSpec> units;
+};
+
+struct UnitCheckpoint {
+    std::string name;
+    int next_pass{};
+    int64_t carry_weight{};
+    int64_t carry_drift{};
+};
+
+struct LaneCheckpoint {
+    bool valid{false};
+    std::string lane_token;
+    std::map<std::string, UnitCheckpoint> units;
+};
+
+struct UnitRun {
+    std::string name;
+    std::string mode;
+    int pass_index{};
+    int manifest_bytes{};
+    int64_t record_bytes{};
+    int64_t drift_bytes{};
+    int order_rank{};
+    int64_t order_weight{};
+    std::string row_digest;
+    std::string row_serial;
+    std::string json;
+};
+
+Manifest load_manifest(const std::filesystem::path &path);
+std::string digest_hex(const std::string &text);
+std::string unit_row_serial(const UnitRun &run);
+int64_t f12_slot_sum(const std::vector<UnitRun> &units);
+int64_t f12_abs_drift(int64_t drift);
+int64_t f12_drift_total(const std::vector<UnitRun> &units);
+std::string n21_header_serial(int schema_version, const std::string &release_id, int base,
+                              int pass_epoch, int64_t drift_total, int64_t weight_total);
+UnitRun analyze_unit(const UnitSpec &spec, int order_rank, int order_weight_base, int pass_epoch,
+                     const std::filesystem::path &manifest_dir, const char *const *names,
+                     size_t name_count, const LaneCheckpoint *checkpoint, int64_t carry_weight);
+}
+#endif
+root@ba860eb2c572:/app# cat /app/environment/include/constants.h
+#pragma once
+#include <cstdint>
+
+namespace forge {
+constexpr std::uint64_t kDigestSeed = 1469598103934665603ull;
+constexpr std::uint64_t kDigestStep = 1099511628211ull;
+constexpr std::uint64_t kDigestMask = 0xffffffffffffffffull;
+constexpr int kSchemaVersion = 1;
+}
+root@ba860eb2c572:/app#

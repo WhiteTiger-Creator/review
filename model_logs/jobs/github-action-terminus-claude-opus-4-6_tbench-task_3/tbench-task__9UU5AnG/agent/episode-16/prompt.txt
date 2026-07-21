@@ -1,0 +1,11 @@
+New Terminal Output:
+
+root@ba860eb2c572:/app# sed -i '372s/.*/    cp_out << "]\}\\n";/' /app/environment/runner/emit_pipeline.cpp
+root@ba860eb2c572:/app# sed -n '370,375p' /app/environment/runner/emit_pipeline.cpp
+               << merged[i].carry_drift << '}';
+    }
+    cp_out << "]}\n";
+    std::ofstream cp_file(checkpoint_path, std::ios::binary);
+    cp_file << cp_out.str();
+
+root@ba860eb2c572:/app#

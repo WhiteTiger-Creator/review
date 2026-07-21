@@ -1,0 +1,35 @@
+{
+  "analysis": "Build succeeds and forge_emit runs, but a partial invocation (requesting only u_alpha) wipes the checkpoint units array, dropping the existing resume unit u_zeta entry. That violates the requirement to preserve previously stored resume checkpoints when lane token matches and only a subset of resume units are updated. Also observed mode strings like \"cold\" in output, suggesting mode semantics may be bridged incorrectly from manifest (should be driven by manifest mode, not name prefixes). Next step is to inspect implementation files for checkpoint write/merge behavior, lane token computation, and mode handling, then patch and rebuild.",
+  "plan": "1) Inspect runner code (main + pipeline) to see how units are selected and emitted. 2) Inspect lane store/token logic (m14) and lane bridge (f12) to find where checkpoint is loaded and then rewritten; fix to merge existing resume entries and only update touched resume units, keeping alphabetical order. 3) Inspect mode bridge (c9) to ensure resume-capable detection follows manifest mode semantics. 4) After patching, rebuild and rerun the same sequence to confirm checkpoint retains u_zeta after an alpha-only run and that pass_epoch handling remains correct.",
+  "commands": [
+    {
+      "keystrokes": "sed -n '1,200p' /app/environment/runner/main.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,260p' /app/environment/runner/emit_pipeline.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,260p' /app/environment/m14/lane_store.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,260p' /app/environment/m14/token_bridge.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,260p' /app/environment/f12/lane_bridge.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,260p' /app/environment/c9/mode_bridge.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "sed -n '1,260p' /app/environment/c9/pass_gate.cpp\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": false
+}

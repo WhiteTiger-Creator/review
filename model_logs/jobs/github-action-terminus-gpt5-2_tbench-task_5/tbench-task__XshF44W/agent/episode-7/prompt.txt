@@ -1,0 +1,78 @@
+New Terminal Output:
+
+root@35c99cb7d4e6:/app/environment# sed -n '1,120p' /app/environment/include/m14_api.h
+#pragma once
+#include "types.h"
+#include <string>
+#include <vector>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+const char *m14_lane_token(const forge::UnitSpec *units, size_t count);
+int m14_checkpoint_valid(const char *on_disk_token, const char *expected_token);
+
+#ifdef __cplusplus
+}
+#endif
+
+#ifdef __cplusplus
+#include <filesystem>
+
+forge::LaneCheckpoint m14_read_checkpoint(const std::filesystem::path &path,
+                                          const std::string &expected_token);
+std::vector<forge::UnitCheckpoint> m14_merge_entries(
+    const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+    const std::vector<std::string> &requested_resume);
+void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token,
+                          const std::vector<forge::UnitCheckpoint> &entries);
+#endif
+root@35c99cb7d4e6:/app/environment# cat >/app/environment/include/store_bridge.h<<'EOF'
+> #pragma once
+> #include "types.h"
+> #include <filesystem>
+> #include <string>
+> #include <vector>
+>
+> const char *forge_lane_fingerprint(const forge::UnitSpec *units, size_t count);
+> forge::LaneCheckpoint forge_lane_load_checkpoint(const std::filesystem::path &path,
+>                                                  const std::string &expected_token);
+> std::vector<forge::UnitCheckpoint> forge_lane_merge_checkpoint(
+>     const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+>     const std::vector<std::string> &requested_resume);
+> void forge_lane_save_checkpoint(const std::filesystem::path &path, const char *lane_token,
+>                                 int pass_epoch,
+>                                 const std::vector<forge::UnitCheckpoint> &entries);
+> EOF
+root@35c99cb7d4e6:/app/environment# perl -0777 -i -pe 's/void m14_write_checkpoint\(const std::filesystem::path &path, const char \*lane_token,\s*const std::vec
+tor<forge::UnitCheckpoint> &entries\);/void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token, int pass_epoch,\n
+       const std::vector<forge::UnitCheckpoint> &entries);/s' /app/environment/include/m14_api.h
+root@35c99cb7d4e6:/app/environment# grep -n "m14_write_checkpoint" -n /app/environment/include/m14_api.h
+25:void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token, int pass_epoch,
+root@35c99cb7d4e6:/app/environment# grep -RIn "forge_lane_save_checkpoint\(" /app/environment | head -n 20
+grep: Unmatched ( or \(
+root@35c99cb7d4e6:/app/environment# ninja -C /app/build
+ninja: Entering directory `/app/build'
+[7/7] Linking CXX executable forge_emit
+FAILED: forge_emit
+: && /usr/bin/c++   runner/CMakeFiles/forge_emit.dir/main.cpp.o runner/CMakeFiles/forge_emit.dir/emit_pipeline.cpp.o -o forge_emit  runner/libcore_n.a  runner/l
+ibcore_f.a  runner/libcore_b.a  runner/libcore_m.a  runner/libcore_c.a && :
+/usr/bin/ld: runner/CMakeFiles/forge_emit.dir/emit_pipeline.cpp.o: in function `forge_run_emit(int, char**)':
+emit_pipeline.cpp:(.text+0x2938): undefined reference to `forge_lane_merge_checkpoint(forge::LaneCheckpoint const&, std::vector<forge::UnitCheckpoint, std::allo
+cator<forge::UnitCheckpoint> > const&, std::vector<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::allocator<std::__cxx11:
+:basic_string<char, std::char_traits<char>, std::allocator<char> > > > const&)'
+collect2: error: ld returned 1 exit status
+ninja: build stopped: subcommand failed.
+root@35c99cb7d4e6:/app/environment# rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json
+root@35c99cb7d4e6:/app/environment# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta
+bash: /app/build/forge_emit: No such file or directory
+root@35c99cb7d4e6:/app/environment# cat /app/output/forge_checkpoint.json
+cat: /app/output/forge_checkpoint.json: No such file or directory
+root@35c99cb7d4e6:/app/environment# rm -f /app/output/forge_emit.json
+root@35c99cb7d4e6:/app/environment# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_alpha
+bash: /app/build/forge_emit: No such file or directory
+root@35c99cb7d4e6:/app/environment# echo '--- checkpoint after partial ---' && cat /app/output/forge_checkpoint.json
+--- checkpoint after partial ---
+cat: /app/output/forge_checkpoint.json: No such file or directory
+root@35c99cb7d4e6:/app/environment#

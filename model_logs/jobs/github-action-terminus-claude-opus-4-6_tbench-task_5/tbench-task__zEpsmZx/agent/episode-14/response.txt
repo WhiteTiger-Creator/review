@@ -1,6 +1,0 @@
-{
-  "analysis": "All invariants pass for all scenario/profile/order combinations:\n- Journal stamps are 12 bytes each (24 bytes for stress2 with 2 detach cycles)\n- IDs are contiguous 1..N with no reuse\n- Every submit has exactly one complete and one notify\n- Proper ordering maintained (submit < complete < notify per id)\n- Submits and completes are interleaved across the run\n- Different orders produce same id coverage but different sequences\n- Same flags produce deterministic output\n- Invalid flags exit with failure and don't write output\n\nThe three bugs that were fixed:\n1. **journal.c**: Was writing u32+u32 (8 bytes) instead of u32+u64 (12 bytes per stamp)\n2. **link.c**: On reattach, was resetting cursor to saved value causing ID reuse; on detach, was clearing notify_q losing pending notifications\n3. **settle.c**: Only queued notifications when attached, causing missing notifications for completions during detach\n\nThe fix ensures all correctness invariants are maintained under detach/reattach stress and different reconciliation orders.",
-  "plan": "The task is complete. All the bugs have been fixed and verified.",
-  "commands": [],
-  "task_complete": true
-}

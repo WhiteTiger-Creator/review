@@ -1,0 +1,6 @@
+{
+  "analysis": "The project rebuilds successfully and forge_emit regenerates /app/output/forge_emit.json and /app/output/forge_checkpoint.json via the compiled binary. Verified fixes: resume mode no longer branches on unit-name prefixes (u_alpha now emits mode \"resume\" when manifest specifies it), and partial invocations preserve unrelated resume checkpoints (previously u_zeta was dropped). The lane token is now computed consistently (2d5837bed1ac6b84) and checkpoint pass_epoch increments. Outputs exist and match the required top-level emit schema keys and checkpoint schema requirements.",
+  "plan": "No further changes required; implementation repaired and outputs regenerated through the normal build pipeline.",
+  "commands": [],
+  "task_complete": true
+}

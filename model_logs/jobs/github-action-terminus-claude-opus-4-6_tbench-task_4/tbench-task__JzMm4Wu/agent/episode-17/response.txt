@@ -1,6 +1,0 @@
-{
-  "analysis": "The task is complete. All fixes have been applied and verified:\n\n1. **journal.c** - Fixed to write proper 12-byte stamps (u32 gen + u64 cursor) instead of truncated 8-byte stamps\n2. **link.c detach** - Removed the `tb_q64_clear(&rt->notify_q)` that was dropping pending notifications\n3. **link.c attach** - Changed to only bump `rt->gen++` instead of resetting cursor from journal (which caused id reuse since ingest continued during detach)\n4. **settle.c** - Changed to always push to notify_q regardless of attached state (ensuring every completion gets exactly one notification)\n\nAll 12 scenario/profile/order combinations pass all correctness invariants:\n- Contiguous IDs starting at 1\n- Exactly one complete and notify per submit\n- submit < complete < notify ordering per id\n- At most one (kind, id) row\n- Completions interleaved with submits\n- Order flag changes completion sequence for burst runs\n- Deterministic output for same flags\n- Invalid flags rejected with exit 2 and no output file\n- Journal properly sized (24 bytes for stress2's two detach cycles)",
-  "plan": "Task is complete - all fixes verified.",
-  "commands": [],
-  "task_complete": true
-}

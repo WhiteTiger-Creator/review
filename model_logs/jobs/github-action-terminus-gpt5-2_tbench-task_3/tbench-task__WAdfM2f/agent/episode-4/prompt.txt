@@ -1,0 +1,204 @@
+New Terminal Output:
+
+root@1c64306e7dec:/app# nl -ba /app/environment/m14/lane_store.cpp | sed -n '1,220p'
+     1  #include "constants.h"
+     2  #include "m14_api.h"
+     3  #include "types.h"
+     4  #include <algorithm>
+     5  #include <cctype>
+     6  #include <fstream>
+     7  #include <sstream>
+     8  #include <stdexcept>
+     9  #include <string>
+    10  #include <vector>
+    11
+    12  namespace {
+    13
+    14  std::uint64_t digest_update(std::uint64_t h, const std::string &text) {
+    15      for (unsigned char ch : text) {
+    16          h ^= static_cast<std::uint64_t>(ch);
+    17          h = (h * forge::kDigestStep) & forge::kDigestMask;
+    18      }
+    19      return h;
+    20  }
+    21
+    22  std::string digest_hex(const std::string &text) {
+    23      std::uint64_t h = digest_update(forge::kDigestSeed, text);
+    24      std::ostringstream os;
+    25      os << std::hex << std::nouppercase;
+    26      os.width(16);
+    27      os.fill('0');
+    28      os << h;
+    29      return os.str();
+    30  }
+    31
+    32  std::string descriptor_line(const forge::UnitSpec &unit) {
+    33      std::ostringstream os;
+    34      os << unit.name << '|' << unit.mode << '|' << unit.record << '|' << unit.manifest_bytes << '|'
+    35         << unit.start_pass;
+    36      return os.str();
+    37  }
+    38
+    39  std::string pick_string(const std::string &block, const std::string &key) {
+    40      std::string needle = "\"" + key + "\"";
+    41      size_t k = block.find(needle);
+    42      if (k == std::string::npos) {
+    43          return "";
+    44      }
+    45      size_t q = block.find('"', block.find(':', k) + 1);
+    46      size_t e = block.find('"', q + 1);
+    47      return block.substr(q + 1, e - q - 1);
+    48  }
+    49
+    50  int pick_int(const std::string &block, const std::string &key) {
+    51      std::string needle = "\"" + key + "\"";
+    52      size_t k = block.find(needle);
+    53      if (k == std::string::npos) {
+    54          return 0;
+    55      }
+    56      size_t p = block.find(':', k) + 1;
+    57      while (p < block.size() && !std::isdigit(static_cast<unsigned char>(block[p])) && block[p] != '-') {
+    58          ++p;
+    59      }
+    60      size_t e = p;
+    61      while (e < block.size() && (std::isdigit(static_cast<unsigned char>(block[e])) || block[e] == '-')) {
+    62          ++e;
+    63      }
+    64      return std::stoi(block.substr(p, e - p));
+    65  }
+    66
+    67  int64_t pick_int64(const std::string &block, const std::string &key) {
+    68      return static_cast<int64_t>(pick_int(block, key));
+    69  }
+    70
+    71  std::vector<std::string> split_object_blocks(const std::string &array_text) {
+    72      std::vector<std::string> out;
+    73      int depth = 0;
+    74      size_t start = std::string::npos;
+    75      for (size_t i = 0; i < array_text.size(); ++i) {
+    76          if (array_text[i] == '{') {
+    77              if (depth == 0) {
+    78                  start = i;
+    79              }
+    80              ++depth;
+    81          } else if (array_text[i] == '}') {
+    82              --depth;
+    83              if (depth == 0 && start != std::string::npos) {
+    84                  out.push_back(array_text.substr(start, i - start + 1));
+    85                  start = std::string::npos;
+    86              }
+    87          }
+    88      }
+    89      return out;
+    90  }
+    91
+    92  }  // namespace
+    93
+    94  extern "C" const char *m14_lane_token(const forge::UnitSpec *units, size_t count) {
+    95      static std::string cached;
+    96      std::ostringstream joined;
+    97      for (size_t i = 0; i < count; ++i) {
+    98          if (i) {
+    99              joined << '\n';
+   100          }
+   101          joined << descriptor_line(units[i]);
+   102      }
+   103      cached = digest_hex(joined.str());
+   104      return cached.c_str();
+   105  }
+   106
+   107  extern "C" int m14_checkpoint_valid(const char *on_disk_token, const char *expected_token) {
+   108      if (on_disk_token == nullptr || expected_token == nullptr) {
+   109          return 0;
+   110      }
+   111      return std::string(on_disk_token) == std::string(expected_token) ? 1 : 0;
+   112  }
+   113
+   114  forge::LaneCheckpoint m14_read_checkpoint(const std::filesystem::path &path,
+   115                                                     const std::string &expected_token) {
+   116      forge::LaneCheckpoint state;
+   117      std::ifstream in(path);
+   118      if (!in) {
+   119          return state;
+   120      }
+   121      std::ostringstream buffer;
+   122      buffer << in.rdbuf();
+   123      const std::string doc = buffer.str();
+   124      if (doc.find("\"schema_version\"") == std::string::npos) {
+   125          return state;
+   126      }
+   127      state.lane_token = pick_string(doc, "lane_token");
+   128      if (!m14_checkpoint_valid(state.lane_token.c_str(), expected_token.c_str())) {
+   129          return state;
+   130      }
+   131      size_t units_pos = doc.find("\"units\"");
+   132      if (units_pos == std::string::npos) {
+   133          return state;
+   134      }
+   135      size_t arr_start = doc.find('[', units_pos);
+   136      size_t arr_end = doc.find(']', arr_start);
+   137      if (arr_start == std::string::npos || arr_end == std::string::npos) {
+   138          return state;
+   139      }
+   140      const std::string arr = doc.substr(arr_start, arr_end - arr_start + 1);
+   141      for (const auto &block : split_object_blocks(arr)) {
+   142          forge::UnitCheckpoint entry;
+   143          entry.name = pick_string(block, "name");
+   144          entry.next_pass = pick_int(block, "next_pass");
+   145          entry.carry_weight = pick_int64(block, "carry_weight");
+   146          entry.carry_drift = pick_int64(block, "carry_drift");
+   147          if (!entry.name.empty()) {
+   148              state.units[entry.name] = entry;
+   149          }
+   150      }
+   151      state.valid = true;
+   152      return state;
+   153  }
+   154
+   155  std::vector<forge::UnitCheckpoint> m14_merge_entries(
+   156      const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+   157      const std::vector<std::string> &requested_resume) {
+   158      (void)existing;
+   159      (void)requested_resume;
+   160      std::vector<forge::UnitCheckpoint> out = updated;
+   161      std::sort(out.begin(), out.end(),
+   162                [](const forge::UnitCheckpoint &a, const forge::UnitCheckpoint &b) {
+   163                    return a.name < b.name;
+   164                });
+   165      return out;
+   166  }
+   167
+   168  void m14_write_checkpoint(const std::filesystem::path &path, const char *lane_token,
+   169                                       const std::vector<forge::UnitCheckpoint> &entries) {
+   170      std::filesystem::create_directories(path.parent_path());
+   171      std::ostringstream out;
+   172      out << "{\"schema_version\":" << forge::kSchemaVersion << ",\"lane_token\":\"" << lane_token
+   173          << "\",\"units\":[";
+   174      for (size_t i = 0; i < entries.size(); ++i) {
+   175          if (i) {
+   176              out << ',';
+   177          }
+   178          const auto &entry = entries[i];
+   179          out << "{\"name\":\"" << entry.name << "\",\"next_pass\":" << entry.next_pass
+   180              << ",\"carry_weight\":" << entry.carry_weight << ",\"carry_drift\":"
+   181              << entry.carry_drift << '}';
+   182      }
+   183      out << "]}\n";
+   184      std::ofstream file(path, std::ios::binary);
+   185      file << out.str();
+   186  }
+root@1c64306e7dec:/app# sed -i 's/#include <vector>/#include <vector>\n#include <map>\n#include <set>/' /app/environment/m14/lane_store.cpp
+root@1c64306e7dec:/app# perl -i -pe 'if($.==155){$in=1} if($in){next} print' /app/environment/m14/lane_store.cpp
+root@1c64306e7dec:/app# grep -n "std::vector<forge::UnitCheckpoint> m14_merge_entries" -n /app/environment/m14/lane_store.cpp
+311:std::vector<forge::UnitCheckpoint> m14_merge_entries(
+root@1c64306e7dec:/app# python3 - <<'PY'
+> import io
+> import re
+> path='/app/environment/m14/lane_store.cpp'
+> with open(path,'r',encoding='utf-8') as f:
+>     s=f.read()
+> # Restore file by re-reading from git is unavailable; instead re-load from build tree? Bail if function missing.
+> if 'm14_merge_entries' not in s:
+>     raise SystemExit('m14_merge_entries missing after attempted deletion; need manual recovery')
+> PY
+root@1c64306e7dec:/app#

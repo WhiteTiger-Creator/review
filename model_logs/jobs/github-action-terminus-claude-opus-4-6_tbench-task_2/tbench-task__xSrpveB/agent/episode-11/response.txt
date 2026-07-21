@@ -1,0 +1,18 @@
+{
+  "analysis": "Let me verify the written emit_pipeline.cpp file is correct - the heredoc output looked a bit garbled in the terminal echo. I also notice the checkpoint write is missing `]` before `}` to close the units array.",
+  "plan": "Check the emit_pipeline.cpp file for correctness and fix if needed, then try to build.",
+  "commands": [
+    {
+      "keystrokes": "head -5 /app/environment/runner/emit_pipeline.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "tail -20 /app/environment/runner/emit_pipeline.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "grep -n 'cp_out' /app/environment/runner/emit_pipeline.cpp\n",
+      "duration": 0.1
+    }
+  ]
+}

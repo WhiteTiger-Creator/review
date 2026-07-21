@@ -1,0 +1,6 @@
+{
+  "analysis": "I've verified the implementation is correct. All bugs have been fixed:\n1. c9/pass_gate.cpp - No longer branches on unit-name prefix\n2. n21/q5_pack_stamp.cpp - Includes drift_bytes in row serialization\n3. n21/extra_n2.cpp - Includes pass_epoch in header serial\n4. f12/k8_rank_slot.cpp - Uses manifest array position for rank\n5. b07/v3_read_scale.c - Returns raw value without division\n6. f12/extra_f2.cpp - Uses abs(drift_bytes) for total\n7. m14/lane_store.cpp - Sorts descriptor lines for token; preserves existing checkpoint entries on merge\n8. runner/emit_pipeline.cpp - Validates lane token for pass_epoch; single checkpoint write; proper checkpoint entry existence check\n\nThe build succeeds and produces correct output for fresh starts, chained invocations, and partial unit requests.",
+  "plan": "Task is complete.",
+  "commands": [],
+  "task_complete": true
+}

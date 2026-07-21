@@ -1,0 +1,6 @@
+{
+  "analysis": "Implementation under /app/environment was repaired to match the emit/checkpoint contract: manifest-driven mode resolution (no unit-name prefix heuristics), checkpoint merge preserving unrelated resume units across partial invocations, digest row serialization includes drift_bytes, top-level digest header serialization includes pass_epoch in the correct field order, and total_drift_bytes sums absolute drift. Rebuilt via cmake+ninja and regenerated /app/output/forge_emit.json and /app/output/forge_checkpoint.json by running the compiled /app/build/forge_emit on the fixture lane.json. Current outputs show u_alpha correctly in resume mode and checkpoint contains both resume units (u_alpha, u_zeta) with pass_epoch advanced.",
+  "plan": "No further changes required; code is rebuilt and outputs regenerated through the normal build pipeline as required.",
+  "commands": [],
+  "task_complete": true
+}

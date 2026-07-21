@@ -1,0 +1,18 @@
+{
+  "analysis": "The first invocation looks correct. Let me verify:\n- u_kappa: cold mode, rank 0, weight = 500*(0+1) + 6150 = 6650 ✓\n- u_alpha: resume mode, rank 1, weight = 500*(1+1) + 4100 = 5100 ✓\n- u_zeta: resume mode, rank 2, weight = 500*(2+1) + 2050 = 3550 ✓\n- total_drift_bytes = 0 ✓\n- order_score = 15300 ✓\n- Checkpoint has only resume units (u_alpha, u_zeta), sorted ✓\n\nNow let me test a second invocation (chained) to verify resume continuity works correctly.",
+  "plan": "Run a second invocation to test that resume units correctly use checkpoint data, and that cold units always restart.",
+  "commands": [
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta 2>&1\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "cat /app/output/forge_emit.json | python3 -m json.tool\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "cat /app/output/forge_checkpoint.json | python3 -m json.tool\n",
+      "duration": 0.5
+    }
+  ]
+}

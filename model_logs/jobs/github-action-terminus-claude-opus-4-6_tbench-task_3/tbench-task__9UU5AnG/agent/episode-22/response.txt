@@ -1,0 +1,23 @@
+{
+  "analysis": "All digests match perfectly between the Python verification and the compiled binary output:\n- lane_token: 2d5837bed1ac6b84 ✓\n- row digests all match ✓\n- top_digest: d11c25403fc57705 ✓\n\nThe implementation is now correct. Let me do a clean final run to leave the proper output files in place.",
+  "plan": "Do a final clean run to regenerate the outputs through the normal build pipeline.",
+  "commands": [
+    {
+      "keystrokes": "rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta 2>&1\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "cat /app/output/forge_emit.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cat /app/output/forge_checkpoint.json\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": true
+}

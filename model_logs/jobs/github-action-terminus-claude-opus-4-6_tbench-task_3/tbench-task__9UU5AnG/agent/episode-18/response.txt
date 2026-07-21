@@ -1,0 +1,22 @@
+{
+  "analysis": "Build succeeded. Now let me test it with the fixture.",
+  "plan": "Run the binary with the three units and check the output.",
+  "commands": [
+    {
+      "keystrokes": "rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "/app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta 2>&1\n",
+      "duration": 1.0
+    },
+    {
+      "keystrokes": "cat /app/output/forge_emit.json | python3 -m json.tool\n",
+      "duration": 0.5
+    },
+    {
+      "keystrokes": "cat /app/output/forge_checkpoint.json | python3 -m json.tool\n",
+      "duration": 0.5
+    }
+  ]
+}

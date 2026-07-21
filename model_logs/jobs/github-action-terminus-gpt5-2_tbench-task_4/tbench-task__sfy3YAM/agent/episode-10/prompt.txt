@@ -1,0 +1,44 @@
+Previous response had warnings:
+WARNINGS: - Command 1 should end with newline when followed by another command. Otherwise the two commands will be concatenated together on the same line.
+
+Current Terminal Screen:
+7:#include <cstdint>
+88:        h ^= static_cast<std::uint64_t>(ch);
+182:std::vector<forge::UnitCheckpoint> m14_merge_entries(
+183:    const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+187:    std::map<std::string, forge::UnitCheckpoint> merged;
+197:    std::vector<forge::UnitCheckpoint> out;
+210:                          const std::vector<forge::UnitCheckpoint> &entries) {
+root@c5c0f1c2990a:/app# perl -i -pe 's/^t>\s*//;' /app/environment/m14/lane_store.cpp
+root@c5c0f1c2990a:/app# grep -n "t>" -n /app/environment/m14/lane_store.cpp || true
+7:#include <cstdint>
+88:        h ^= static_cast<std::uint64_t>(ch);
+182:std::vector<forge::UnitCheckpoint> m14_merge_entries(
+183:    const forge::LaneCheckpoint &existing, const std::vector<forge::UnitCheckpoint> &updated,
+187:    std::map<std::string, forge::UnitCheckpoint> merged;
+197:    std::vector<forge::UnitCheckpoint> out;
+210:                          const std::vector<forge::UnitCheckpoint> &entries) {
+root@c5c0f1c2990a:/app# grep -n "#include <iomanip>" /app/environment/m14/lane_store.cpp || true
+root@c5c0f1c2990a:/app# perl -0777 -i -pe 's/#include <fstream>\n/#include <fstream>\n#include <iomanip>\n/' /app/environment/m14/lane_store.cpp
+root@c5c0f1c2990a:/app# ninja -C /app/build
+ninja: Entering directory `/app/build'
+[2/3] Linking CXX executable forge_emitrm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json
+[3/3] Linking CXX executable forge_emit
+root@c5c0f1c2990a:/app# rm -f /app/output/forge_emit.json /app/output/forge_checkpoint.json
+root@c5c0f1c2990a:/app# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_kappa,u_alpha,u_zeta
+root@c5c0f1c2990a:/app# echo '--- checkpoint after full ---' && cat /app/output/forge_checkpoint.json
+--- checkpoint after full ---
+{"schema_version":1,"lane_token":"2d5837bed1ac6b84","pass_epoch":1,"units":[{"name":"u_alpha","next_pass":1,"carry_weight":4600,"carry_drift":0},{"name":"u_zeta
+","next_pass":1,"carry_weight":3550,"carry_drift":0}]}
+root@c5c0f1c2990a:/app# rm -f /app/output/forge_emit.json
+root@c5c0f1c2990a:/app# /app/build/forge_emit /app/environment/fixtures/lane.json /app/output/forge_emit.json u_alpha
+root@c5c0f1c2990a:/app# echo '--- checkpoint after partial ---' && cat /app/output/forge_checkpoint.json
+--- checkpoint after partial ---
+{"schema_version":1,"lane_token":"2d5837bed1ac6b84","pass_epoch":2,"units":[{"name":"u_alpha","next_pass":2,"carry_weight":9200,"carry_drift":0},{"name":"u_zeta
+","next_pass":1,"carry_weight":3550,"carry_drift":0}]}
+root@c5c0f1c2990a:/app# echo '--- emitted alpha ---' && cat /app/output/forge_emit.json
+--- emitted alpha ---
+{"schema_version":1,"release_id":"forge_r07","order_weight_base":500,"pass_epoch":1,"units":[{"name":"u_alpha","mode":"resume","pass_index":1,"manifest_bytes":4
+100,"record_bytes":4100,"drift_bytes":0,"order_rank":1,"order_weight":9200,"row_digest":"c8d647720c804003"}],"total_drift_bytes":0,"order_score":9200,"digest":"
+50239e0547271b8d"}
+root@c5c0f1c2990a:/app#

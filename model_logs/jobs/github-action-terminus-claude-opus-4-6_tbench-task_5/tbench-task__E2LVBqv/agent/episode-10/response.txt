@@ -1,0 +1,18 @@
+{
+  "analysis": "The m14/lane_store.cpp file write seems garbled in the terminal display. Let me verify the file content is correct, then fix emit_pipeline.cpp.",
+  "plan": "Check the m14/lane_store.cpp file content, then rewrite emit_pipeline.cpp with all fixes.",
+  "commands": [
+    {
+      "keystrokes": "head -20 /app/environment/m14/lane_store.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "grep -c 'sorted_units' /app/environment/m14/lane_store.cpp\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "grep -c 'existing.valid' /app/environment/m14/lane_store.cpp\n",
+      "duration": 0.1
+    }
+  ]
+}

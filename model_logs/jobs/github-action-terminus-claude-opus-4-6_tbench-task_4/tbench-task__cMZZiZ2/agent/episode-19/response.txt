@@ -1,0 +1,6 @@
+{
+  "analysis": "The implementation is fully working and correct. All bugs have been fixed:\n\n1. **c9/pass_gate.cpp**: No longer branches on unit name prefix - returns manifest mode directly\n2. **b07/v3_read_scale.c**: No longer divides by 1024 for primary lane - returns raw size_bytes\n3. **f12/k8_rank_slot.cpp**: Uses manifest array position instead of lexicographic rank\n4. **n21/q5_pack_stamp.cpp**: Includes drift_bytes in row serialization\n5. **n21/extra_n2.cpp**: Includes pass_epoch in header serialization\n6. **f12/extra_f2.cpp**: Uses absolute drift values for total\n7. **m14/lane_store.cpp**: Sorts descriptors alphabetically for token; merges preserving existing entries\n8. **runner/emit_pipeline.cpp**: Single checkpoint write with pass_epoch; proper resume detection using found flag\n\nVerified behavior:\n- Fresh invocation (pass_epoch=0): correct order_weights using rank formula\n- Resumed invocation (pass_epoch=1): correct carry_weight + base + record_bytes\n- Partial invocation: preserves unrelated checkpoint entries\n- Cold units always recompute from start_pass regardless of checkpoint",
+  "plan": "The task is complete. All bugs fixed, code compiles, and outputs are correct.",
+  "commands": [],
+  "task_complete": true
+}

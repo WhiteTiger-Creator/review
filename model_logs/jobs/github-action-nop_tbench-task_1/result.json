@@ -1,7 +1,7 @@
 {
-    "id": "07ecaf74-9805-4691-b763-dca2450f01ca",
-    "started_at": "2026-05-26T12:41:25.906455",
-    "finished_at": "2026-05-26T12:42:52.989171",
+    "id": "8e47c86d-337f-4dda-ab3d-ac309efa9005",
+    "started_at": "2026-05-26T16:23:27.977723",
+    "finished_at": "2026-05-26T16:25:04.684034",
     "n_total_trials": 1,
     "stats": {
         "n_trials": 1,
@@ -19,7 +19,7 @@
                 "reward_stats": {
                     "reward": {
                         "0.0": [
-                            "tbench-task__Wfm7x64"
+                            "tbench-task__BGf2oj4"
                         ]
                     }
                 },
