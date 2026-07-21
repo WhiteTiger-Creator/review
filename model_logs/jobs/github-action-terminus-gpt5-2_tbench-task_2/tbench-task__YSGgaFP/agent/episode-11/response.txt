@@ -1,6 +1,0 @@
-{
-  "analysis": "Outputs have been regenerated via the normal build pipeline and entrypoint. After deleting outputs and running forge_emit with the full unit list, /app/output/forge_emit.json shows pass_epoch=0 and /app/output/forge_checkpoint.json shows pass_epoch=1, matching the spec (checkpoint pass_epoch increments after invocation). Code fixes implemented: manifest mode semantics (no unit-name branching), correct digest serialization (header includes pass_epoch; rows include drift_bytes and correct ordering), correct fresh/resume weight logic, correct drift total and order score aggregation, lane_token sorting, and checkpoint merge/persistence with pass_epoch and retention across partial invocations. JSON validity was verified via json.loads and partial invocation behavior confirmed.",
-  "plan": "No further changes required; proceed to grading.",
-  "commands": [],
-  "task_complete": true
-}

@@ -1,46 +1,50 @@
-FROM debian:bookworm-slim@sha256:1d6cd964917a13b547d1ea392dff9a000c3f36070686ebc5c8755d53fb374435
-
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TERM=xterm
-ENV LANG=C.UTF-8
-ENV LC_ALL=C.UTF-8
-ENV TMUX_TMPDIR=/var/tmp/tmux
+FROM python:3.11-slim-bookworm
 
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    asciinema=2.2.0-1 \
-    ca-certificates=20230311+deb12u1 \
-    cmake=3.25.1-1 \
-    g++=4:12.2.0-3 \
-    make=4.3-4.1 \
-    ncurses-term=6.4-4 \
-    ninja-build=1.11.1-2~deb12u1 \
-    python3=3.11.2-1+b1 \
-    python3-venv=3.11.2-1+b1 \
-    tmux=3.3a-3 \
-    && mkdir -p /var/tmp/tmux \
-    && chmod 1777 /var/tmp/tmux \
+    asciinema \
+    tmux \
+    curl \
+    ca-certificates \
+    bash \
+    util-linux \
+    sudo \
     && rm -rf /var/lib/apt/lists/*
 
-COPY runtime/tmux.conf /etc/tmux.conf
+RUN pip install --no-cache-dir \
+    flask==3.1.0 \
+    pytest==8.4.1 \
+    pytest-json-ctrf==0.3.5 \
+    requests==2.32.3
 
-RUN python3 -m venv /opt/verifier-venv \
-    && /opt/verifier-venv/bin/pip install --no-cache-dir \
-        pytest==8.4.1 \
-        pytest-json-ctrf==0.3.5
+RUN curl -LsSf https://astral.sh/uv/0.9.5/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
 
-COPY include /app/environment/include
-COPY b07 /app/environment/b07
-COPY f12 /app/environment/f12
-COPY n21 /app/environment/n21
-COPY m14 /app/environment/m14
-COPY c9 /app/environment/c9
-COPY runner /app/environment/runner
-COPY fixtures /app/environment/fixtures
-COPY docs /app/environment/docs
-COPY CMakeLists.txt /app/environment/CMakeLists.txt
+RUN useradd -r -M -s /usr/sbin/nologin cropd \
+    && useradd -m -u 1000 -s /bin/bash agent
 
-RUN mkdir -p /app/output /app/build \
-    && cmake -S /app/environment -B /app/build -G Ninja \
-    && ninja -C /app/build forge_emit
+COPY server.py /opt/crop-planner/server.py
+COPY ensure-crop-server.sh /usr/local/bin/ensure-crop-server.sh
+COPY entrypoint.sh /usr/local/bin/task-entrypoint.sh
+
+RUN chmod 750 /opt/crop-planner/server.py \
+    && chown root:cropd /opt/crop-planner/server.py \
+    && chmod +x /usr/local/bin/ensure-crop-server.sh /usr/local/bin/task-entrypoint.sh \
+    && mkdir -p /app/output /var/lib/crop-planner /var/log/crop-planner /etc/crop-planner \
+    && chown cropd:cropd /var/lib/crop-planner /var/log/crop-planner \
+    && chmod 700 /var/lib/crop-planner /var/log/crop-planner \
+    && printf '%s\n' \
+        'MODEL_SECRET=crop_plan_m0d3l_2026' \
+        'LOG_SECRET=crop_plan_l0g_2026' \
+        > /etc/crop-planner/env \
+    && chmod 400 /etc/crop-planner/env \
+    && chown root:root /etc/crop-planner/env \
+    && chown agent:agent /app/output \
+    && echo 'agent ALL=(root) NOPASSWD: /usr/local/bin/ensure-crop-server.sh, /usr/local/bin/ensure-crop-server.sh --reset' \
+        > /etc/sudoers.d/agent-crop-planner \
+    && chmod 440 /etc/sudoers.d/agent-crop-planner
+
+ENTRYPOINT ["/usr/local/bin/task-entrypoint.sh"]
+CMD ["sleep", "infinity"]
+USER agent

@@ -2,36 +2,37 @@ version = "2.0"
 
 [metadata]
 difficulty = "hard"
-category = "software-engineering"
-subcategories = []
-number_of_milestones = 0
-codebase_size = "small"
+category = "games"
+subcategories = [
+    "api_integration",
+]
+codebase_size = "minimal"
 languages = [
-    "cpp",
-    "c",
-    "python",
     "bash",
+    "python",
 ]
 tags = [
-    "cpp",
-    "cmake",
-    "checkpoint",
-    "replay",
-    "manifest",
+    "optimization",
+    "crop-planning",
+    "api",
+    "scoring",
+    "hidden-parameters",
+    "search",
 ]
-expert_time_estimate_min = 120
-junior_time_estimate_min = 240
+number_of_milestones = 0
+expert_time_estimate_min = 20.0
+junior_time_estimate_min = 50.0
 
 [verifier]
-timeout_sec = 1800
+timeout_sec = 300.0
 
 [agent]
-timeout_sec = 1800
+timeout_sec = 1800.0
 
 [environment]
 allow_internet = false
-build_timeout_sec = 600
-cpus = 2
-memory_mb = 4096
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
 storage_mb = 10240
 workdir = "/app"

@@ -1,6 +1,0 @@
-{
-  "analysis": "All the fixes have been implemented and verified through multiple test scenarios:\n\n1. Fresh start (no checkpoint) - correct computation for all units\n2. Warm pass (with checkpoint) - resume units carry forward, cold units always fresh\n3. Partial requests - unrelated checkpoint entries preserved\n4. Chained invocations - pass_epoch increments correctly, carry_weight accumulates\n\nAll bugs fixed:\n- c9/pass_gate.cpp: Removed unit-name prefix branching\n- n21/q5_pack_stamp.cpp: Added drift_bytes to row serialization\n- n21/extra_n2.cpp: Added pass_epoch to header serialization\n- f12/extra_f2.cpp: Used absolute drift values in total\n- b07/v3_read_scale.c: Removed /1024 division for lane=primary\n- f12/k8_rank_slot.cpp: Used manifest array index instead of lexicographic rank\n- m14/lane_store.cpp: Sort descriptors alphabetically for token, preserve existing checkpoint entries on merge\n- emit_pipeline.cpp: Validate lane token before reading pass_epoch, fixed resume weight formula, single checkpoint write with pass_epoch",
-  "plan": "Task is complete.",
-  "commands": [],
-  "task_complete": true
-}

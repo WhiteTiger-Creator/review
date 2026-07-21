@@ -1,6 +1,0 @@
-{
-  "analysis": "All verifications pass:\n\n1. Second full invocation (pass_epoch=1):\n   - u_kappa (cold): weight = 500*1 + 6150 = 6650 ✓ (always fresh)\n   - u_alpha (resume, carry=5100): weight = 5100 + 500 + 4100 = 9700 ✓\n   - u_zeta (resume, carry=3550): weight = 3550 + 500 + 2050 = 6100 ✓\n\n2. Partial request u_zeta only (pass_epoch=2):\n   - u_zeta (resume, carry=6100): weight = 6100 + 500 + 2050 = 8650 ✓\n   - u_alpha's checkpoint preserved (next_pass=2, carry_weight=9700) ✓\n   - u_zeta's checkpoint updated (next_pass=3, carry_weight=8650) ✓\n\nAll requirements from the spec are satisfied:\n- Resume units carry forward correctly\n- Cold units always recompute fresh\n- Partial requests preserve unrelated checkpoints\n- Lane token is computed from sorted descriptors\n- Pass epoch advances and validates against lane token\n- Row serial and header serial have correct field orders\n- Drift total uses absolute values\n- Digests are correct",
-  "plan": "Task is complete. All bugs have been fixed and verified.",
-  "commands": [],
-  "task_complete": true
-}

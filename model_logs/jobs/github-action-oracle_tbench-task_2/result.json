@@ -1,29 +1,27 @@
 {
-    "id": "d7fce910-e5db-400b-b7d3-fa77f6b531ee",
-    "started_at": "2026-05-26T16:23:34.418979",
-    "finished_at": "2026-05-26T16:25:20.845190",
+    "id": "76b1334e-4371-4abd-b535-0b660fe63aed",
+    "started_at": "2026-05-26T13:20:33.836337",
+    "finished_at": "2026-05-26T13:21:17.147055",
     "n_total_trials": 1,
     "stats": {
         "n_trials": 1,
-        "n_errors": 0,
+        "n_errors": 1,
         "evals": {
             "oracle__adhoc": {
-                "n_trials": 1,
-                "n_errors": 0,
+                "n_trials": 0,
+                "n_errors": 1,
                 "metrics": [
                     {
-                        "mean": 1.0
+                        "mean": 0.0
                     }
                 ],
                 "pass_at_k": {},
-                "reward_stats": {
-                    "reward": {
-                        "1.0": [
-                            "tbench-task__FadH98G"
-                        ]
-                    }
-                },
-                "exception_stats": {}
+                "reward_stats": {},
+                "exception_stats": {
+                    "RewardFileNotFoundError": [
+                        "tbench-task__eVsaPyD"
+                    ]
+                }
             }
         }
     }

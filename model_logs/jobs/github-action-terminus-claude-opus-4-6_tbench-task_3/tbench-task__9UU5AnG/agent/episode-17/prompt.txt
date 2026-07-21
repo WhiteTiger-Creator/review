@@ -1,7 +1,0 @@
-New Terminal Output:
-
-root@ba860eb2c572:/app# cmake -S /app/environment -B /app/build -G Ninja 2>&1
--- Configuring done
--- Generating done
--- Build files have been written to: /app/build
-root@ba860eb2c572:/app#

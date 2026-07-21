@@ -1,6 +1,0 @@
-{
-  "analysis": "The implementation is complete and all bugs have been fixed:\n\n1. **c9/pass_gate.cpp**: No longer branches on unit-name prefix 'u_a'\n2. **n21/q5_pack_stamp.cpp**: Includes drift_bytes in row serialization (name|manifest_bytes|record_bytes|drift_bytes|order_rank|order_weight)\n3. **n21/extra_n2.cpp**: Includes pass_epoch in header serial\n4. **f12/k8_rank_slot.cpp**: Uses manifest array position instead of lexicographic sort\n5. **b07/v3_read_scale.c**: No longer divides by 1024 for 'lane=primary' records\n6. **f12/extra_f2.cpp**: Uses abs(drift_bytes) for total_drift_bytes\n7. **m14/lane_store.cpp**: Sorts descriptor lines alphabetically for token computation; merge preserves existing checkpoint entries\n8. **runner/emit_pipeline.cpp**: pass_epoch read validates lane token; removed double checkpoint write; uses checkpoint entry existence check\n\nBuild succeeds, outputs are generated correctly with proper chaining, partial invocation support, and checkpoint continuity.",
-  "plan": "Task is complete. The build pipeline works correctly: cmake configures, ninja builds, and the binary produces correct outputs.",
-  "commands": [],
-  "task_complete": true
-}
