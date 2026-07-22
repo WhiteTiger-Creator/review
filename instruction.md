@@ -1,18 +1,37 @@
-Predict anuran taxonomy from `/app/data/Frogs_MFCCs.csv`. Each row is one syllable with 22 MFCC features plus `Family`, `Genus`, `Species`, `row_id`, and `RecordID`. If `row_id` is absent, treat the file order as zero-based `row_id`. Use `row_id %% 5 == 0` as the evaluation split and all other rows as training rows. Do not use evaluation rows for model fitting, feature scaling, probability calibration, or abstention threshold selection. The solution must rely on MFCC measurements and must not exploit `RecordID` values or their ordering as predictive features.
+The offline lockfile tool under `/app/environment` is drifting in CI.
 
-Write a rerunnable R script at `/app/analysis.R`. It must read input data from `DATA_PATH` when set, defaulting to `/app/data`, and write outputs under `OUTPUT_PATH` when set, defaulting to `/app/output`.
+Repair those Go sources.
 
-Create three files under the output directory.
+Rebuild `/app/bin/depctrl` from `/app/environment` after edits.
 
-`predictions.csv` must contain one row per evaluation row, sorted by `row_id`, with exactly these columns in this order:
+Use the build recipe in `/app/environment/docs/phase_contract.md`.
 
-`row_id`, `RecordID`, `pred_family`, `pred_genus`, `pred_species`, `pred_abstain`,
-`prob_family_Bufonidae`, `prob_family_Dendrobatidae`, `prob_family_Hylidae`, `prob_family_Leptodactylidae`,
-`prob_genus_Adenomera`, `prob_genus_Ameerega`, `prob_genus_Dendropsophus`, `prob_genus_Hypsiboas`, `prob_genus_Leptodactylus`, `prob_genus_Osteocephalus`, `prob_genus_Rhinella`, `prob_genus_Scinax`,
-`prob_species_AdenomeraAndre`, `prob_species_AdenomeraHylaedactylus`, `prob_species_Ameeregatrivittata`, `prob_species_HylaMinuta`, `prob_species_HypsiboasCinerascens`, `prob_species_HypsiboasCordobae`, `prob_species_LeptodactylusFuscus`, `prob_species_OsteocephalusOophagus`, `prob_species_Rhinellagranulosa`, `prob_species_ScinaxRuber`.
+Run `/app/bin/depctrl reconcile --all-mirrors`.
 
-Each row's species probabilities must be finite values in `[0, 1]` and sum to 1. Family probabilities must equal the sums of mapped species probabilities by family. Genus probabilities must equal the sums of mapped species probabilities by genus. `pred_species`, `pred_genus`, and `pred_family` must be the maximum-probability labels at their respective levels. Set `pred_abstain` to `1` when the highest species probability is below `0.55`, otherwise `0`.
+Checks rebuild the binary and rerun that path.
 
-`record_report.csv` must contain one row per evaluation `RecordID`, sorted by `RecordID`, with exactly these columns in this order: `RecordID`, `n_rows`, `obs_family`, `obs_genus`, `obs_species`, `pred_family`, `pred_genus`, `pred_species`, `record_abstain`, `mean_pred_family_prob`, `mean_pred_genus_prob`, and `mean_pred_species_prob`. For each record, average the row-level probability columns within that record separately at the family, genus, and species levels. The record predictions are the maximum-probability labels after this averaging. The three `mean_pred_*_prob` values are the corresponding maximum averaged probabilities. Set `record_abstain` to `1` when the maximum averaged species probability is below `0.55`, otherwise `0`.
+Traces land in `/app/output/traces/`.
 
-`taxonomy_audit.json` must be a single JSON object with these top-level numeric keys: `n_train_rows`, `n_eval_rows`, `n_train_records`, `n_eval_records`, `species_log_loss`, `genus_log_loss`, `family_log_loss`, `species_brier`, `genus_brier`, `family_brier`, `species_ece_10bin`, `genus_ece_10bin`, `family_ece_10bin`, `family_residual_max`, `genus_residual_max`, `row_abstain_rate`, and `record_abstain_rate`. Compute log-loss and Brier scores on the evaluation rows from the probabilities written in `predictions.csv`. Compute residuals as the maximum absolute difference between written family or genus probabilities and the corresponding sums of written species probabilities. Compute abstention rates from the two output files.
+`last_run.json` carries `row_n`, `frame_n`, and `cache_hit`.
+
+Journal files live under `/app/output/journal/`.
+
+Seeds live under `/app/environment/data/`.
+
+Seal `/app/output/constraint_report.json`.
+
+It must be a JSON object with a `rows` array.
+
+Each row needs pkg, dep, lo, hi, pre_tok, lift, and row_digest.
+
+Digest construction follows the sha256 rules in the phase contract.
+
+Journal must seal without torn or CRC-mismatched frames in the fold.
+
+Warm cache blobs must stay coherent with the live peer fingerprint and activation map.
+
+Staging output is not the sealed report.
+
+`depctrl status` printing steady is not enough.
+
+Hand-written reports will not pass.
