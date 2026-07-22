@@ -1,0 +1,14 @@
+# Held-out mirror permutation scenarios (generalization file)
+
+[[scenario]]
+perm = "swap_ab"
+expect_edge = "core-a"
+expect_lo = "1.0.0"
+expect_hi = "1.9.0"
+expect_pre_tok = "allow"
+expect_lift = true
+
+[[scenario]]
+perm = "drop_side"
+expect_edge = "side-b"
+expect_present = false

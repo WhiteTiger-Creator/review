@@ -1,0 +1,44 @@
+{
+  "type": "object",
+  "required": [
+    "arm",
+    "pkg",
+    "dep",
+    "lo",
+    "hi",
+    "seq"
+  ],
+  "properties": {
+    "arm": {
+      "type": "string"
+    },
+    "pkg": {
+      "type": "string"
+    },
+    "dep": {
+      "type": "string"
+    },
+    "lo": {
+      "type": "string"
+    },
+    "hi": {
+      "type": "string"
+    },
+    "seq": {
+      "type": "integer"
+    },
+    "pre_tok": {
+      "type": "string"
+    },
+    "lift": {
+      "type": "boolean"
+    },
+    "act_tok": {
+      "type": "string"
+    },
+    "peer_hi": {
+      "type": "string",
+      "description": "When lift is true on the hoisting arm, peer_hi is a hard ceiling on the final minimized hi after cross-arm intersection."
+    }
+  }
+}

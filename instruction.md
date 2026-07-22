@@ -1,5 +1,37 @@
-The telemetry packaging team is preparing the RouteKit sample project for offline release, and the shipped CMake package at /app must build its protobuf and gRPC targets without depending on generated files or libraries left in the source tree. Bring the project to a releasable state so clean out-of-tree configure, build, install, and copied-prefix reuse flows work for normal single-configuration developer-diagnostics and release-packaging builds.
+The offline lockfile tool under `/app/environment` is drifting in CI.
 
-The command-line program installed from /app must remain available as `<prefix>/bin/route_cli`, accept route fields as `--id <id> --payload <payload> --hop <hop>` with `--hop` repeatable in command order and `--priority <integer>`, construct the protocol message defined by /app/proto/route.proto, pass it through the route library and audit plugin, and print one deterministic summary line as `<id>|<build-mode>|<hop1->hop2...>|<checksum>`, where `<build-mode>` is the exact CMAKE_BUILD_TYPE value configured for that build. The checksum is the decimal lower 16 bits of a 32-bit FNV-1a pass with offset 2166136261 and prime 16777619 over the UTF-8 bytes of the id, payload, and hops in command order, followed by xor with the integer priority.
+Repair those Go sources.
 
-The public C++ headers are part of the delivered interface, so consumers of the installed CMake package must be able to use `find_package(RouteKit)`, link `RouteKit::router`, and inherit the include paths, compile definitions, generated protocol headers, and link requirements needed in the same build configuration. Use /app/build or another disposable build directory, but leave durable source changes under /app; the install tree must remain self-contained after being copied to a different prefix, including the audit plugin at `<prefix>/lib/route/libroute_audit.so`, its policy helper library, and runtime lookup for project shared libraries.
+Rebuild `/app/bin/depctrl` from `/app/environment` after edits.
+
+Use the build recipe in `/app/environment/docs/phase_contract.md`.
+
+Run `/app/bin/depctrl reconcile --all-mirrors`.
+
+Checks rebuild the binary and rerun that path.
+
+Traces land in `/app/output/traces/`.
+
+`last_run.json` carries `row_n`, `frame_n`, and `cache_hit`.
+
+Journal files live under `/app/output/journal/`.
+
+Seeds live under `/app/environment/data/`.
+
+Seal `/app/output/constraint_report.json`.
+
+It must be a JSON object with a `rows` array.
+
+Each row needs pkg, dep, lo, hi, pre_tok, lift, and row_digest.
+
+Digest construction follows the sha256 rules in the phase contract.
+
+Journal must seal without torn or CRC-mismatched frames in the fold.
+
+Warm cache blobs must stay coherent with the live peer fingerprint and activation map.
+
+Staging output is not the sealed report.
+
+`depctrl status` printing steady is not enough.
+
+Hand-written reports will not pass.
