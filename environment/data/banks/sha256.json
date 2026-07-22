@@ -1,0 +1,22 @@
+{
+  "id": "sha256",
+  "note": "stable viable table",
+  "entries": [
+    {
+      "name": "alpha",
+      "sum": "0f973879327ac70805b29ddbd8658b48be34b5247b3d1cd79922926c1ec74daf"
+    },
+    {
+      "name": "bravo",
+      "sum": "16676cfcaea61c95d913621d6211e96997fea680b3d052ba2829279baaec30a6"
+    },
+    {
+      "name": "charlie",
+      "sum": "726be72aa9402c188d87c55ef6ac00bd18b2ec74db851cb0ed71ebeba9fab4dd"
+    },
+    {
+      "name": "held_x2",
+      "sum": "724a26b9e553b3f3f2d95c3891889816a7915b7f74d7f492306c5b6f17b6063e"
+    }
+  ]
+}

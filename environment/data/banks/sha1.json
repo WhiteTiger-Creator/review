@@ -1,0 +1,34 @@
+{
+  "id": "sha1",
+  "note": "newer-looking denser table",
+  "entries": [
+    {
+      "name": "alpha",
+      "sum": "5821ef44cbf331219b6a45deb888ade7eac0770938b96bb0b06dab50f7c8d936"
+    },
+    {
+      "name": "bravo",
+      "sum": "e0e096ad2e95e7e3fffab0d72da2852ce74ccd03484f9623aa2aa8e42e29bbbd"
+    },
+    {
+      "name": "charlie",
+      "sum": "28485e17e3ad28131df3b103c9337fa2ad71c302e4f903059d9f4f45e6ce1e4a"
+    },
+    {
+      "name": "extra1",
+      "sum": "1aeba3a7ba2f7318bd54164afdbda229180c3bedd7efc5dd25a0dc4298e707e8"
+    },
+    {
+      "name": "extra2",
+      "sum": "cbf8643aa771e48b4e5b794ae361d1ef27e08cea2a07b24d8d0401b3f737a747"
+    },
+    {
+      "name": "extra3",
+      "sum": "8568bdc2a931aac2e2e81fc95ef2d815c5e92c53410c8bd4071a0c5d1388a635"
+    },
+    {
+      "name": "held_x2",
+      "sum": "aef409817c824603d77cfb958312fec8fd8c04aceb84d24268ba3c9af58ef793"
+    }
+  ]
+}

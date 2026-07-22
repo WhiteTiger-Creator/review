@@ -4,36 +4,28 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "machine-learning"
-tags = ["machine-learning", "inference", "label-shift", "java", "evaluation", "dataset-split"]
-languages = ["java"]
+category = "security"
+tags = ["tpm2", "pcr", "policy", "measured-boot", "nv", "c"]
+languages = ["c"]
+title = "TPM2 PCR authorize synth"
 codebase_size = "small"
 number_of_milestones = 0
-subcategories = ["api_integration"]
-expert_time_estimate_min = 75
-junior_time_estimate_min = 300
+subcategories = []
+expert_time_estimate_min = 180
+junior_time_estimate_min = 480
 
-[category_profile]
-challenge_family = "temporal leakage label-shift deployment gate"
-profile_name = "ml_adversarial_robustness"
-allowed_instruction_disclosures = "observable symptoms, public Maven/jar command, verifier-relevant ledger schema and shift obligations for model inference ranking under temporal cohorts"
-forbidden_instruction_leaks = "root cause, fix location, patch recipe, oracle transcript, future-window inclusion, shuffled-baseline comparator, seal authority source"
-category_specific_hardness_bar = "data (temporal feature windows), model inference ranking, evaluation (label-shift surfaces), and pipeline gate seal must be diagnosed together; at least three coupled subsystems"
-category_specific_verifier_risks = "false greens from shuffled accuracy digests, golden rank fixtures, train-bigger-model shortcuts, or single-surface assertions"
-coverage_role = "adds distinct Java Maven clinical site-ranking temporal-leakage coverage in machine-learning repair_existing_system under ml_adversarial_robustness"
-
-[reference_pattern]
-justification_if_none = "no promoted reference in docs/reference_tasks/index.json matches machine-learning repair_existing_system Java Maven temporal leakage label-shift deployment gate with .tlf packs"
+[verifier]
+timeout_sec = 900
 
 [agent]
 timeout_sec = 1800
 
-[verifier]
-timeout_sec = 1200
-
 [environment]
-allow_internet = false
-build_timeout_sec = 600
+build_timeout_sec = 1800
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
+allow_internet = false
+
+[reference_pattern]
+justification_if_none = "docs/reference_tasks/index.json lists zero promoted references; no promoted TPM2 PCR authorize synthesizer reference exists to cite without inventing an id"
