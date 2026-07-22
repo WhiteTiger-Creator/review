@@ -4,24 +4,31 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "security"
-subcategories = ["api_integration"]
+category = "machine-learning"
+codebase_size = "minimal"
+subcategories = []
 number_of_milestones = 0
-codebase_size = "small"
-languages = ["ruby", "shell", "yaml"]
-tags = ["supply-chain-security", "gpg-attestation", "archive-security", "secret-scanning", "json-signatures"]
-expert_time_estimate_min = 180
-junior_time_estimate_min = 420
-
-[agent]
-timeout_sec = 1800
+languages = ["r"]
+tags = [
+  "r",
+  "multiclass-classification",
+  "hierarchical-labels",
+  "calibration",
+  "abstention",
+  "grouped-validation",
+]
+expert_time_estimate_min = 240
+junior_time_estimate_min = 480
 
 [verifier]
-timeout_sec = 900
+timeout_sec = 1200
+
+[agent]
+timeout_sec = 1200
 
 [environment]
-build_timeout_sec = 1200
+build_timeout_sec = 1800
 cpus = 2
-memory_mb = 4096
+memory_mb = 8192
 storage_mb = 10240
 allow_internet = false

@@ -1,8 +1,0 @@
-{
-  "attestor-public.pem": "c9af6e3fa649ecdefed5d459bcd2fb727920977029508cacca85c576f6301af8",
-  "missing-lfs-corpus.tar.zst": "0177e144552135792c83d9b67916d784a3eb5181e5ca738cce2cada09cde77b8",
-  "trusted-corpus-a.tar.zst": "c4a0d60a0f777af157bfff952e9c110e3e8efcae3470bc84fb55a92aaf8f84dc",
-  "unsigned-corpus.tar.zst": "48e71129b19649110e3a240d9def433f4a45f632edca73360f8609d1fe8518fb",
-  "trusted-corpus-b.tar.zst": "8dd9589471fd2386569481778ccf7d6766eb83fb0c2b18da7560d9e02fd8dbca",
-  "untrusted-signer-corpus.tar.zst": "8fb367a3a7834ec90bccd80d065d803da4cad7c90633f3b12a443bec8218c392"
-}
