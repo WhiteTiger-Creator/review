@@ -1,0 +1,6 @@
+[build]
+rustc-wrapper = ""
+
+[env]
+# Consumed by shim build scripts when static mode is requested.
+NEXUS_LINK_MODE = { value = "dynamic", force = false }

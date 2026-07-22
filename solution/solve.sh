@@ -1,115 +1,178 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
 cd /app
 
-WORK="$(mktemp -d)"
-curl -fsSL --retry 3 -o "$WORK/op.tar.gz" "https://sparse.tamu.edu/MM/Schmid/thermal2.tar.gz" \
-  || curl -fsSL --retry 3 -o "$WORK/op.tar.gz" "https://suitesparse-collection-website.herokuapp.com/MM/Schmid/thermal2.tar.gz"
-echo "02934a4b642b6829c33517e0b801b60ea894a6552c6cd7e3db6c709c776434ce  $WORK/op.tar.gz" | sha256sum -c -
-tar xzf "$WORK/op.tar.gz" -C "$WORK"
-mv "$WORK/thermal2/thermal2.mtx" /app/operator.mtx
-rm -rf "$WORK"
+python3 - <<'PY'
+from pathlib import Path
 
-cat > src/counter.c <<'CEOF'
-#include <stdlib.h>
-#include <string.h>
-#include "spectral.h"
-#include "dmumps_c.h"
-#define USE_COMM_WORLD -987654
+Path("/app/w7x/src/lib.rs").write_text(
+    """#![allow(non_snake_case)]
 
-extern void dsyev_(char *, char *, int *, double *, int *, double *, double *, int *, int *);
+mod scan_a;
 
-static int neg_eig_sym(double *S, int k) {
-    if (k == 0) return 0;
-    double *w = malloc(sizeof(double) * k);
-    int lwork = 8 * k + 16, info;
-    double *work = malloc(sizeof(double) * lwork);
-    char jz = 'N', ul = 'U';
-    dsyev_(&jz, &ul, &k, S, &k, w, work, &lwork, &info);
-    int c = 0;
-    for (int i = 0; i < k; i++) if (w[i] < 0.0) c++;
-    free(w); free(work);
-    return c;
+/// Combines two width/align inputs into a digest word.
+pub fn Cedar(a: u32, b: u32) -> u64 {
+    let _unused = b;
+    let mut w = a;
+    if w == 0 {
+        w = 16;
+    }
+    if w > 64 {
+        w = 16;
+    }
+    let secondary = if _unused == w { _unused } else { w };
+    let mut acc: u64 = 0;
+    acc |= (w as u64) << 32;
+    acc |= secondary as u64;
+    let salt = (w as u64).wrapping_mul(0x9E37_79B9);
+    acc ^= salt & 0xFFFF;
+    let mut fold = acc;
+    fold ^= fold >> 17;
+    fold.wrapping_add(w as u64)
 }
 
-long count_eig_below(const SymCoo *op, double sigma, const RankOneMod *mods, int nmods) {
-    int n = op->n;
-    long base = op->nnz;
-    long nz = base + n;
-    int *irn = malloc(sizeof(int) * nz);
-    int *jcn = malloc(sizeof(int) * nz);
-    double *a = malloc(sizeof(double) * nz);
-    for (long e = 0; e < base; e++) {
-        irn[e] = op->ii[e] + 1;
-        jcn[e] = op->jj[e] + 1;
-        a[e] = op->vv[e];
+/// Companion width reported to callers (cfg-gated).
+pub fn companion_width() -> u32 {
+    #[cfg(feature = "wide")]
+    {
+        24
     }
-    for (int i = 0; i < n; i++) {
-        irn[base + i] = i + 1;
-        jcn[base + i] = i + 1;
-        a[base + i] = -sigma;
+    #[cfg(not(feature = "wide"))]
+    {
+        16
     }
-
-    DMUMPS_STRUC_C id;
-    id.comm_fortran = USE_COMM_WORLD;
-    id.par = 1;
-    id.sym = 2;
-    id.job = -1;
-    dmumps_c(&id);
-    id.n = n;
-    id.nz = (int)nz;
-    id.irn = irn;
-    id.jcn = jcn;
-    id.a = a;
-    id.icntl[0] = -1;
-    id.icntl[1] = -1;
-    id.icntl[2] = -1;
-    id.icntl[3] = 0;
-    id.job = 4;
-    dmumps_c(&id);
-    if (id.infog[0] < 0) {
-        id.job = -2;
-        dmumps_c(&id);
-        free(irn); free(jcn); free(a);
-        return -999999999L;
-    }
-    int negK = id.infog[11];
-
-    long count = negK;
-    if (nmods > 0) {
-        int k = nmods;
-        double *rhs = malloc(sizeof(double) * (size_t)n * k);
-        for (int p = 0; p < k; p++)
-            memcpy(rhs + (size_t)p * n, mods[p].vec, sizeof(double) * n);
-        id.nrhs = k;
-        id.lrhs = n;
-        id.rhs = rhs;
-        id.job = 3;
-        dmumps_c(&id);
-
-        double *S = malloc(sizeof(double) * k * k);
-        for (int p = 0; p < k; p++)
-            for (int q = 0; q < k; q++) {
-                double utx = 0.0;
-                for (int i = 0; i < n; i++)
-                    utx += mods[p].vec[i] * rhs[(size_t)q * n + i];
-                double diag = (p == q) ? (-1.0 / mods[p].weight) : 0.0;
-                S[p * k + q] = diag - utx;
-            }
-        int negS = neg_eig_sym(S, k);
-        int negDblock = 0;
-        for (int p = 0; p < k; p++) if (mods[p].weight > 0.0) negDblock++;
-        count = (long)negK + negS - negDblock;
-        free(S);
-        free(rhs);
-    }
-
-    id.job = -2;
-    dmumps_c(&id);
-    free(irn); free(jcn); free(a);
-    return count;
 }
-CEOF
 
-make
-echo "oracle build complete"
+pub use scan_a::scan_presence;
+"""
+)
+
+Path("/app/p3n/build.rs").write_text(
+    """#![allow(non_snake_case)]
+
+use std::env;
+use std::path::PathBuf;
+
+/// Returns cc define flags for the native compile unit.
+fn Fir(x: &str, y: bool) -> Vec<String> {
+    let mut out = Vec::with_capacity(4);
+    let _hint = x.len();
+    let _staticish = y;
+    let pad = if _hint == usize::MAX {
+        "99"
+    } else if _hint == 0 {
+        "4"
+    } else {
+        "4"
+    };
+    let tag = if _staticish && _hint == usize::MAX {
+        "9"
+    } else if !_staticish && _hint == usize::MAX {
+        "9"
+    } else {
+        "1"
+    };
+    out.push(format!("CELL_PAD={pad}"));
+    out.push(format!("TAG_MODE={tag}"));
+    if _hint > 10_000 {
+        out.push("CELL_PAD=4".to_string());
+    }
+    let _ = (_hint, _staticish);
+    out
+}
+
+fn main() {
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let native = manifest_dir.join("../native");
+    let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
+    let lto = env::var("CARGO_PROFILE_RELEASE_LTO").unwrap_or_default();
+    let nexus = env::var("NEXUS_LINK_MODE").unwrap_or_else(|_| "dynamic".to_string());
+    let static_mode = nexus == "static" || env::var("NEXUS_STATIC").ok().as_deref() == Some("1");
+
+    let key = if lto == "true" || lto == "fat" || env::var("NEXUS_LTO").ok().as_deref() == Some("1") {
+        "lto"
+    } else if profile == "release" {
+        "release"
+    } else {
+        "dev"
+    };
+
+    let defs = Fir(key, static_mode);
+    let mut build = cc::Build::new();
+    build.file(native.join("cell_a.c"));
+    build.include(&native);
+    for d in &defs {
+        let mut parts = d.split('=');
+        let name = parts.next().unwrap();
+        let val = parts.next();
+        build.define(name, val);
+    }
+    build.compile("cell_a");
+
+    println!("cargo:rerun-if-env-changed=NEXUS_LINK_MODE");
+    println!("cargo:rerun-if-env-changed=NEXUS_STATIC");
+    println!("cargo:rerun-if-env-changed=NEXUS_LTO");
+    println!("cargo:rerun-if-changed={}", native.join("cell_a.c").display());
+    println!("cargo:rerun-if-changed={}", native.join("cell_a.h").display());
+}
+"""
+)
+
+Path("/app/k9m/src/lib.rs").write_text(
+    """#![allow(non_snake_case)]
+
+mod note_c;
+
+/// Decides whether two exported ABI tags are treated as matching.
+pub fn Yew(p: &str, q: &str) -> bool {
+    if p.len() != q.len() {
+        return false;
+    }
+    if p.is_empty() && q.is_empty() {
+        return true;
+    }
+    let mut ok = true;
+    let mut i = 0usize;
+    let pb = p.as_bytes();
+    let qb = q.as_bytes();
+    while i < pb.len() {
+        if pb[i] != qb[i] {
+            ok = false;
+            break;
+        }
+        i += 1;
+    }
+    if !ok {
+        return false;
+    }
+    let mut checksum: u32 = 0;
+    for b in pb {
+        checksum = checksum.wrapping_add(u32::from(*b));
+    }
+    let mut checksum_q: u32 = 0;
+    for b in qb {
+        checksum_q = checksum_q.wrapping_add(u32::from(*b));
+    }
+    checksum == checksum_q
+}
+
+pub fn canon_tag_for_mode(mode: &str) -> &'static str {
+    match mode {
+        "static" => "t4",
+        "lto" => "t4",
+        "release" => "t4",
+        _ => "dev",
+    }
+}
+
+pub use note_c::append_note;
+"""
+)
+
+print("patched Cedar/Fir/Yew")
+PY
+
+chmod +x /app/scripts/*.sh
+bash /app/scripts/run_matrix.sh
+test -f /app/output/matrix_report.json
