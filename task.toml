@@ -5,27 +5,23 @@ author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
 category = "security"
-tags = ["tpm2", "pcr", "policy", "measured-boot", "nv", "c"]
-languages = ["c"]
-title = "TPM2 PCR authorize synth"
-codebase_size = "small"
+subcategories = ["api_integration"]
 number_of_milestones = 0
-subcategories = []
+codebase_size = "small"
+languages = ["ruby", "shell", "yaml"]
+tags = ["supply-chain-security", "gpg-attestation", "archive-security", "secret-scanning", "json-signatures"]
 expert_time_estimate_min = 180
-junior_time_estimate_min = 480
-
-[verifier]
-timeout_sec = 900
+junior_time_estimate_min = 420
 
 [agent]
 timeout_sec = 1800
 
+[verifier]
+timeout_sec = 900
+
 [environment]
-build_timeout_sec = 1800
+build_timeout_sec = 1200
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
 allow_internet = false
-
-[reference_pattern]
-justification_if_none = "docs/reference_tasks/index.json lists zero promoted references; no promoted TPM2 PCR authorize synthesizer reference exists to cite without inventing an id"
