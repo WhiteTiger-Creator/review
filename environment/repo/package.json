@@ -1,0 +1,7 @@
+{
+  "name": "siftfit",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Empirical mode decomposition (EMD) sifting service extracting intrinsic mode functions."
+}

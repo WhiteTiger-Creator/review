@@ -1,0 +1,3 @@
+#!/bin/sh
+# siftfit: run the built EMD sifting service.
+exec node /app/dist/main.mjs "$@"

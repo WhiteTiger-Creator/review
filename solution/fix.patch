@@ -1,0 +1,735 @@
+--- a/src/emd.ts	2026-07-16 03:14:12.519074500 +0700
++++ b/src/emd.ts	2026-07-16 03:14:12.521083100 +0700
+@@ -1,18 +1,6 @@
+ /*
+- * Empirical Mode Decomposition (Huang 1998): sift a signal into Intrinsic
+- * Mode Functions (IMFs) plus a residual.
+- *
+- * Complete `decompose` so that, given one input signal and a maximum IMF
+- * count, it returns the list of IMFs and the residual, matching the reference
+- * decomposition to a floating-point tolerance.
+- *
+- * `EmdInput` carries:
+- *   - `signal`: the samples of the series, in order
+- *   - `maxImf`: the largest number of IMFs to extract; a negative value means
+- *     "as many as the decomposition yields".
+- *
+- * Return an `EmdResult(imfs, residual)` where `imfs` is a list of IMF series
+- * (each the same length as `signal`) and `residual` is the trend left over.
++ * EMD oracle: reference Huang-1998 sifting decomposition.
++ * Mirrors PyEMD EMD().emd(signal, max_imf) default configuration.
+  */
+ 
+ export interface EmdInput {
+@@ -25,12 +13,705 @@
+     residual: number[];
+ }
+ 
+-// The stub returns a single "IMF" equal to the raw signal and a zero
+-// residual, which is not a correct decomposition.
++const ENERGY_RATIO_THR = 0.2;
++const STD_THR = 0.2;
++const SVAR_THR = 0.001;
++const TOTAL_POWER_THR = 0.005;
++const RANGE_THR = 0.001;
++const NBSYM = 2;
++const MAX_ITERATION = 1000;
++
++interface Extrema {
++    maxPos: number[];
++    maxVal: number[];
++    minPos: number[];
++    minVal: number[];
++    indZer: number[];
++    indMax: number[];
++    indMin: number[];
++}
++
++interface Envelopes {
++    maxEnv: number[];
++    minEnv: number[];
++    eMax: number[][];
++    eMin: number[][];
++}
++
++// NumPy round: round half to even ("banker's rounding"). PyEMD uses np.round
++// for the plateau and zero-run midpoints, so a half-integer must go to the
++// nearest even integer (2.5 -> 2, 3.5 -> 4, -2.5 -> -2), not half-up the way a
++// naive Math.round would. This decides which index a flat run's extremum lands
++// on and therefore the whole envelope.
++function npRound(x: number): number {
++    const f = Math.floor(x);
++    const diff = x - f;
++    if (diff < 0.5) return f;
++    if (diff > 0.5) return f + 1;
++    return f % 2 === 0 ? f : f + 1;
++}
++
+ export function decompose(inp: EmdInput): EmdResult {
+     const n = inp.signal.length;
+-    const signal = new Array<number>(n);
+-    for (let i = 0; i < n; i++) signal[i] = inp.signal[i];
+-    const residual = new Array<number>(n).fill(0.0);
+-    return { imfs: [signal], residual };
++    const S = new Array<number>(n);
++    for (let i = 0; i < n; i++) S[i] = inp.signal[i];
++    const T = new Array<number>(n);
++    for (let i = 0; i < n; i++) T[i] = i; // simple detection: 0..n-1
++    const maxImf = inp.maxImf;
++
++    const imfList: number[][] = [];
++    let extNo = -1;
++    let finished = false;
++
++    while (!finished) {
++        const residue = new Array<number>(n);
++        for (let i = 0; i < n; i++) {
++            let acc = S[i];
++            for (const r of imfList) acc -= r[i];
++            residue[i] = acc;
++        }
++        const imf = residue.slice();
++        const mean = new Array<number>(n).fill(0);
++        let imfOld = new Array<number>(n).fill(0);
++
++        let iter = 0;
++        while (true) {
++            iter++;
++            if (iter >= MAX_ITERATION) break;
++
++            const ext = findExtremaSimple(T, imf);
++            const maxPos = ext.maxPos;
++            const minPos = ext.minPos;
++            extNo = minPos.length + maxPos.length;
++
++            if (extNo > 2) {
++                const env = extractMaxMinSpline(T, imf);
++                if (env === null) {
++                    // < 3 extrema after prepare -> treat as trend
++                    extNo = 2;
++                    finished = true;
++                    break;
++                }
++
++                for (let i = 0; i < n; i++) mean[i] = 0.5 * (env.maxEnv[i] + env.minEnv[i]);
++
++                imfOld = imf.slice();
++                for (let i = 0; i < n; i++) imf[i] = imf[i] - mean[i];
++
++                // Default stopping criteria
++                const ext2 = findExtremaSimple(T, imf);
++                const extNo2 = ext2.maxPos.length + ext2.minPos.length;
++                const nzm = ext2.indZer.length;
++
++                const f1 = checkImf(imf, imfOld, env.eMax, env.eMin);
++                const f2 = Math.abs(extNo2 - nzm) < 2;
++                if (f1 && f2) break;
++            } else {
++                finished = true;
++                break;
++            }
++        }
++
++        imfList.push(imf.slice());
++
++        if (endCondition(S, imfList) || imfList.length === maxImf) {
++            finished = true;
++            break;
++        }
++    }
++
++    // If the last sifting had <= 2 extrema then that's a trend (residue): drop it.
++    if (extNo <= 2 && imfList.length > 0) {
++        imfList.splice(imfList.length - 1, 1);
++    }
++
++    const residual = new Array<number>(n);
++    for (let i = 0; i < n; i++) {
++        let acc = S[i];
++        for (const r of imfList) acc -= r[i];
++        residual[i] = acc;
++    }
++    return { imfs: imfList, residual };
++}
++
++// ------------------------------------------------------------------
++// end_condition
++function endCondition(S: number[], imfs: number[][]): boolean {
++    const n = S.length;
++    const tmp = new Array<number>(n);
++    for (let i = 0; i < n; i++) {
++        let acc = S[i];
++        for (const r of imfs) acc -= r[i];
++        tmp[i] = acc;
++    }
++    let mx = Number.NEGATIVE_INFINITY;
++    let mn = Number.POSITIVE_INFINITY;
++    let sumAbs = 0.0;
++    for (const v of tmp) {
++        if (v > mx) mx = v;
++        if (v < mn) mn = v;
++        sumAbs += Math.abs(v);
++    }
++    if (mx - mn < RANGE_THR) return true;
++    if (sumAbs < TOTAL_POWER_THR) return true;
++    return false;
++}
++
++// ------------------------------------------------------------------
++// check_imf (Huang / Cauchy convergence)
++function checkImf(imfNew: number[], imfOld: number[], eMax: number[][], eMin: number[][]): boolean {
++    // local max vals must be >= 0 and local min vals <= 0
++    for (const v of eMax[1]) if (v < 0) return false;
++    for (const v of eMin[1]) if (v > 0) return false;
++
++    let newSq = 0.0;
++    for (const v of imfNew) newSq += v * v;
++    if (newSq < 1e-10) return false;
++
++    let diffSq = 0.0;
++    for (let i = 0; i < imfNew.length; i++) {
++        const d = imfNew[i] - imfOld[i];
++        diffSq += d * d;
++    }
++
++    let oldMax = Number.NEGATIVE_INFINITY;
++    let oldMin = Number.POSITIVE_INFINITY;
++    for (const v of imfOld) {
++        if (v > oldMax) oldMax = v;
++        if (v < oldMin) oldMin = v;
++    }
++
++    const svar = diffSq / (oldMax - oldMin);
++    if (svar < SVAR_THR) return true;
++
++    let std = 0.0;
++    for (let i = 0; i < imfNew.length; i++) {
++        const d = (imfNew[i] - imfOld[i]) / imfNew[i];
++        std += d * d;
++    }
++    if (std < STD_THR) return true;
++
++    let oldSq = 0.0;
++    for (const v of imfOld) oldSq += v * v;
++    const energyRatio = diffSq / oldSq;
++    if (energyRatio < ENERGY_RATIO_THR) return true;
++
++    return false;
++}
++
++// ------------------------------------------------------------------
++// find_extrema (simple) -> positions/values plus zero-crossing indices
++function findExtremaSimple(T: number[], S: number[]): Extrema {
++    const n = S.length;
++
++    // zero-crossings
++    const indzerList: number[] = [];
++    for (let i = 0; i < n - 1; i++) {
++        if (S[i] * S[i + 1] < 0) indzerList.push(i);
++    }
++    let anyZero = false;
++    for (const v of S) if (v === 0.0) { anyZero = true; break; }
++    if (anyZero) {
++        // indices where S==0
++        const indz: number[] = [];
++        for (let i = 0; i < n; i++) if (S[i] === 0.0) indz.push(i);
++        let consecutive = false;
++        for (let k = 0; k < indz.length - 1; k++) if (indz[k + 1] - indz[k] === 1) { consecutive = true; break; }
++        let zeroIdx: number[];
++        if (consecutive) {
++            // zer = (S==0) as 0/1; dz = diff(concat([0], zer, [0]))
++            const zer = new Array<number>(n);
++            for (let i = 0; i < n; i++) zer[i] = S[i] === 0.0 ? 1 : 0;
++            const padded = new Array<number>(n + 2).fill(0);
++            for (let i = 0; i < n; i++) padded[i + 1] = zer[i];
++            const dz = new Array<number>(n + 1);
++            for (let i = 0; i < n + 1; i++) dz[i] = padded[i + 1] - padded[i];
++            const debz: number[] = [];
++            const finz: number[] = [];
++            for (let i = 0; i < dz.length; i++) {
++                if (dz[i] === 1) debz.push(i);
++                if (dz[i] === -1) finz.push(i - 1);
++            }
++            const mids: number[] = [];
++            for (let k = 0; k < debz.length; k++) mids.push(npRound((debz[k] + finz[k]) / 2.0));
++            zeroIdx = mids;
++        } else {
++            zeroIdx = indz;
++        }
++        for (const z of zeroIdx) indzerList.push(z);
++    }
++    indzerList.sort((a, b) => a - b);
++    const indZer = indzerList.slice();
++
++    // local extrema via first difference sign change
++    const d = new Array<number>(n - 1);
++    for (let i = 0; i < n - 1; i++) d[i] = S[i + 1] - S[i];
++    const indminList: number[] = [];
++    const indmaxList: number[] = [];
++    for (let i = 0; i < d.length - 1; i++) {
++        const d1 = d[i];
++        const d2 = d[i + 1];
++        if (d1 * d2 < 0) {
++            if (d1 < 0) indminList.push(i + 1);
++            if (d1 > 0) indmaxList.push(i + 1);
++        }
++    }
++
++    // plateau handling
++    let anyFlat = false;
++    for (const v of d) if (v === 0.0) { anyFlat = true; break; }
++    if (anyFlat) {
++        const bad = new Array<number>(n - 1);
++        for (let i = 0; i < n - 1; i++) bad[i] = d[i] === 0.0 ? 1 : 0;
++        const padded = new Array<number>(n + 1).fill(0);
++        for (let i = 0; i < bad.length; i++) padded[i + 1] = bad[i];
++        const dd = new Array<number>(n);
++        for (let i = 0; i < n; i++) dd[i] = padded[i + 1] - padded[i];
++        let debs: number[] = [];
++        let fins: number[] = [];
++        for (let i = 0; i < dd.length; i++) {
++            if (dd[i] === 1) debs.push(i);
++            if (dd[i] === -1) fins.push(i);
++        }
++
++        if (debs.length > 0 && debs[0] === 1) {
++            if (debs.length > 1) {
++                debs = debs.slice(1);
++                fins = fins.slice(1);
++            } else {
++                debs = [];
++                fins = [];
++            }
++        }
++        if (debs.length > 0 && fins[fins.length - 1] === n - 1) {
++            if (debs.length > 1) {
++                debs = debs.slice(0, debs.length - 1);
++                fins = fins.slice(0, fins.length - 1);
++            } else {
++                debs = [];
++                fins = [];
++            }
++        }
++
++        if (debs.length > 0) {
++            for (let k = 0; k < debs.length; k++) {
++                const dBefore = d[debs[k] - 1];
++                const dAfter = d[fins[k]];
++                const mid = npRound((fins[k] + debs[k]) / 2.0);
++                if (dBefore > 0 && dAfter < 0) indmaxList.push(mid);
++                if (dBefore < 0 && dAfter > 0) indminList.push(mid);
++            }
++            indmaxList.sort((a, b) => a - b);
++            indminList.sort((a, b) => a - b);
++        }
++    }
++
++    const indMax = indmaxList.slice();
++    const indMin = indminList.slice();
++    const maxPos = indMax.map((ix) => T[ix]);
++    const maxVal = indMax.map((ix) => S[ix]);
++    const minPos = indMin.map((ix) => T[ix]);
++    const minVal = indMin.map((ix) => S[ix]);
++    return { maxPos, maxVal, minPos, minVal, indZer, indMax, indMin };
++}
++
++// extract_max_min_spline
++function extractMaxMinSpline(T: number[], S: number[]): Envelopes | null {
++    const ext = findExtremaSimple(T, S);
++    if (ext.maxPos.length + ext.minPos.length < 3) return null;
++
++    const prepared = preparePointsSimple(T, S, ext.indMax, ext.indMin);
++    if (prepared === null) return null;
++    const maxExtrema = prepared[0];
++    const minExtrema = prepared[1];
++
++    const maxSpline = splinePoints(T, maxExtrema);
++    if (maxSpline === null) return null;
++    const minSpline = splinePoints(T, minExtrema);
++    if (minSpline === null) return null;
++
++    return { maxEnv: maxSpline, minEnv: minSpline, eMax: maxExtrema, eMin: minExtrema };
++}
++
++// prepare_points_simple: mirror nbsym extrema at both bounds.
++function preparePointsSimple(
++    T: number[], S: number[], indMaxArr: number[], indMinArr: number[],
++): [number[][], number[][]] | null {
++    const n = S.length;
++    const indMax = indMaxArr.slice();
++    const indMin = indMinArr.slice();
++    const nbsym = NBSYM;
++    const endMin = indMin.length;
++    const endMax = indMax.length;
++    if (endMin === 0 || endMax === 0) return null;
++
++    // Left bound
++    let lmax: number[];
++    let lmin: number[];
++    let lsym: number;
++    if (indMax[0] < indMin[0]) {
++        if (S[0] > S[indMin[0]]) {
++            lmax = revSub(indMax, 1, Math.min(endMax, nbsym + 1));
++            lmin = revSub(indMin, 0, Math.min(endMin, nbsym + 0));
++            lsym = indMax[0];
++        } else {
++            lmax = revSub(indMax, 0, Math.min(endMax, nbsym));
++            lmin = appendVal(revSub(indMin, 0, Math.min(endMin, nbsym - 1)), 0);
++            lsym = 0;
++        }
++    } else {
++        if (S[0] < S[indMax[0]]) {
++            lmax = revSub(indMax, 0, Math.min(endMax, nbsym + 0));
++            lmin = revSub(indMin, 1, Math.min(endMin, nbsym + 1));
++            lsym = indMin[0];
++        } else {
++            lmax = appendVal(revSub(indMax, 0, Math.min(endMax, nbsym - 1)), 0);
++            lmin = revSub(indMin, 0, Math.min(endMin, nbsym));
++            lsym = 0;
++        }
++    }
++
++    // Right bound
++    let rmax: number[];
++    let rmin: number[];
++    let rsym: number;
++    if (indMax[endMax - 1] < indMin[endMin - 1]) {
++        if (S[n - 1] < S[indMax[endMax - 1]]) {
++            rmax = revFrom(indMax, Math.max(endMax - nbsym, 0));
++            rmin = revRange(indMin, Math.max(endMin - nbsym - 1, 0), endMin - 1);
++            rsym = indMin[endMin - 1];
++        } else {
++            rmax = revArr(appendVal(subFrom(indMax, Math.max(endMax - nbsym + 1, 0)), n - 1));
++            rmin = revFrom(indMin, Math.max(endMin - nbsym, 0));
++            rsym = n - 1;
++        }
++    } else {
++        if (S[n - 1] > S[indMin[endMin - 1]]) {
++            rmax = revRange(indMax, Math.max(endMax - nbsym - 1, 0), endMax - 1);
++            rmin = revFrom(indMin, Math.max(endMin - nbsym, 0));
++            rsym = indMax[endMax - 1];
++        } else {
++            rmax = revFrom(indMax, Math.max(endMax - nbsym, 0));
++            rmin = revArr(appendVal(subFrom(indMin, Math.max(endMin - nbsym + 1, 0)), n - 1));
++            rsym = n - 1;
++        }
++    }
++
++    if (lmin.length === 0) lmin = indMin;
++    if (rmin.length === 0) rmin = indMin;
++    if (lmax.length === 0) lmax = indMax;
++    if (rmax.length === 0) rmax = indMax;
++
++    let tlmin = lmin.map((ix) => 2 * T[lsym] - T[ix]);
++    let tlmax = lmax.map((ix) => 2 * T[lsym] - T[ix]);
++    let trmin = rmin.map((ix) => 2 * T[rsym] - T[ix]);
++    let trmax = rmax.map((ix) => 2 * T[rsym] - T[ix]);
++
++    // If mirrored points are not outside passed time range -> correct
++    if (tlmin[0] > T[0] || tlmax[0] > T[0]) {
++        if (lsym === indMax[0]) {
++            lmax = revSub(indMax, 0, Math.min(endMax, nbsym));
++        } else {
++            lmin = revSub(indMin, 0, Math.min(endMin, nbsym));
++        }
++        if (lsym === 0) throw new Error("Left edge BUG");
++        lsym = 0;
++        tlmin = lmin.map((ix) => 2 * T[lsym] - T[ix]);
++        tlmax = lmax.map((ix) => 2 * T[lsym] - T[ix]);
++    }
++    if (trmin[trmin.length - 1] < T[n - 1] || trmax[trmax.length - 1] < T[n - 1]) {
++        if (rsym === indMax[endMax - 1]) {
++            rmax = revFrom(indMax, Math.max(endMax - nbsym, 0));
++        } else {
++            rmin = revFrom(indMin, Math.max(endMin - nbsym, 0));
++        }
++        if (rsym === n - 1) throw new Error("Right edge BUG");
++        rsym = n - 1;
++        trmin = rmin.map((ix) => 2 * T[rsym] - T[ix]);
++        trmax = rmax.map((ix) => 2 * T[rsym] - T[ix]);
++    }
++
++    const zlmax = lmax.map((ix) => S[ix]);
++    const zlmin = lmin.map((ix) => S[ix]);
++    const zrmax = rmax.map((ix) => S[ix]);
++    const zrmin = rmin.map((ix) => S[ix]);
++
++    const tmin = concat(tlmin, indMin.map((ix) => T[ix]), trmin);
++    const tmax = concat(tlmax, indMax.map((ix) => T[ix]), trmax);
++    const zmin = concat(zlmin, indMin.map((ix) => S[ix]), zrmin);
++    const zmax = concat(zlmax, indMax.map((ix) => S[ix]), zrmax);
++
++    let maxExtrema: number[][] = [tmax, zmax];
++    let minExtrema: number[][] = [tmin, zmin];
++
++    maxExtrema = dedupByPos(maxExtrema);
++    minExtrema = dedupByPos(minExtrema);
++
++    return [maxExtrema, minExtrema];
++}
++
++// Remove columns where position equals the previous position.
++function dedupByPos(ext: number[][]): number[][] {
++    const pos = ext[0];
++    const vals = ext[1];
++    const keep: number[] = [];
++    for (let i = 0; i < pos.length; i++) {
++        if (i === 0 || pos[i] !== pos[i - 1]) keep.push(i);
++    }
++    const np = keep.map((ix) => pos[ix]);
++    const nv = keep.map((ix) => vals[ix]);
++    return [np, nv];
++}
++
++// spline_points: choose cubic (not-a-knot) or 3pt spline; crop to T within support.
++function splinePoints(T: number[], extrema: number[][]): number[] | null {
++    const n = T.length;
++    const ex = extrema[0];
++    const ey = extrema[1];
++    const out = new Array<number>(n);
++    if (ex.length > 3) {
++        const spline = new CubicSplineNotAKnot(ex, ey);
++        for (let i = 0; i < n; i++) out[i] = spline.eval(T[i]);
++    } else {
++        // cubic_spline_3pts requires exactly 3 points
++        if (ex.length !== 3) return null;
++        const q = cubicSpline3pts(ex, ey, T);
++        for (let i = 0; i < n; i++) out[i] = q[i];
++    }
++    return out;
++}
++
++// cubic_spline_3pts port
++function cubicSpline3pts(x: number[], y: number[], T: number[]): number[] {
++    const x0 = x[0];
++    const x1 = x[1];
++    const x2 = x[2];
++    const y0 = y[0];
++    const y1 = y[1];
++    const y2 = y[2];
++    const x1x0 = x1 - x0;
++    const x2x1 = x2 - x1;
++    const y1y0 = y1 - y0;
++    const y2y1 = y2 - y1;
++    const _x1x0 = 1.0 / x1x0;
++    const _x2x1 = 1.0 / x2x1;
++    const m11 = 2 * _x1x0;
++    const m12 = _x1x0;
++    const m13 = 0.0;
++    const m21 = _x1x0;
++    const m22 = 2.0 * (_x1x0 + _x2x1);
++    const m23 = _x2x1;
++    const m31 = 0.0;
++    const m32 = _x2x1;
++    const m33 = 2.0 * _x2x1;
++    const v1 = 3 * y1y0 * _x1x0 * _x1x0;
++    const v3 = 3 * y2y1 * _x2x1 * _x2x1;
++    const v2 = v1 + v3;
++    // solve 3x3
++    const k = solve3(
++        [m11, m12, m13],
++        [m21, m22, m23],
++        [m31, m32, m33],
++        [v1, v2, v3],
++    );
++    const a1 = k[0] * x1x0 - y1y0;
++    const b1 = -k[1] * x1x0 + y1y0;
++    const a2 = k[1] * x2x1 - y2y1;
++    const b2 = -k[2] * x2x1 + y2y1;
++    const out = new Array<number>(T.length);
++    for (let i = 0; i < T.length; i++) {
++        const tt = T[i];
++        if (tt < x0 || tt > x2) {
++            out[i] = 0.0;
++            continue;
++        }
++        if (tt < x1) {
++            const t1 = (tt - x0) / x1x0;
++            const t11 = 1.0 - t1;
++            out[i] = t11 * y0 + t1 * y1 + t1 * t11 * (a1 * t11 + b1 * t1);
++        } else {
++            const t2 = (tt - x1) / x2x1;
++            const t22 = 1.0 - t2;
++            out[i] = t22 * y1 + t2 * y2 + t2 * t22 * (a2 * t22 + b2 * t2);
++        }
++    }
++    return out;
++}
++
++function solve3(r0: number[], r1: number[], r2: number[], b: number[]): number[] {
++    const a = [r0.slice(), r1.slice(), r2.slice()];
++    const v = b.slice();
++    // Gaussian elimination with partial pivoting
++    for (let col = 0; col < 3; col++) {
++        let piv = col;
++        for (let r = col + 1; r < 3; r++) if (Math.abs(a[r][col]) > Math.abs(a[piv][col])) piv = r;
++        if (piv !== col) {
++            const t = a[piv];
++            a[piv] = a[col];
++            a[col] = t;
++            const tv = v[piv];
++            v[piv] = v[col];
++            v[col] = tv;
++        }
++        for (let r = col + 1; r < 3; r++) {
++            const f = a[r][col] / a[col][col];
++            for (let c = col; c < 3; c++) a[r][c] -= f * a[col][c];
++            v[r] -= f * v[col];
++        }
++    }
++    const x = new Array<number>(3);
++    for (let i = 2; i >= 0; i--) {
++        let s = v[i];
++        for (let c = i + 1; c < 3; c++) s -= a[i][c] * x[c];
++        x[i] = s / a[i][i];
++    }
++    return x;
++}
++
++// ---- helpers for slicing/mirroring ----
++function revSub(arr: number[], from: number, toExcl: number): number[] {
++    // arr[from:toExcl][::-1]
++    const f = Math.max(0, from);
++    const t = Math.min(arr.length, toExcl);
++    if (t <= f) return [];
++    const out = new Array<number>(t - f);
++    let j = 0;
++    for (let i = t - 1; i >= f; i--) out[j++] = arr[i];
++    return out;
++}
++function subFrom(arr: number[], from: number): number[] {
++    const f = Math.max(0, from);
++    return arr.slice(f, arr.length);
++}
++function revFrom(arr: number[], from: number): number[] {
++    // arr[from:][::-1]
++    return revArr(subFrom(arr, from));
++}
++function revRange(arr: number[], from: number, toExcl: number): number[] {
++    // arr[from:toExcl][::-1]  (toExcl may be arr.length-1 for a[:-1])
++    return revSub(arr, from, toExcl);
++}
++function revArr(arr: number[]): number[] {
++    const out = new Array<number>(arr.length);
++    for (let i = 0; i < arr.length; i++) out[i] = arr[arr.length - 1 - i];
++    return out;
++}
++function appendVal(arr: number[], v: number): number[] {
++    // np.append(arr, v)  -> arr followed by v
++    const out = arr.slice();
++    out.push(v);
++    return out;
++}
++function concat(a: number[], b: number[], c: number[]): number[] {
++    const out = new Array<number>(a.length + b.length + c.length);
++    for (let i = 0; i < a.length; i++) out[i] = a[i];
++    for (let i = 0; i < b.length; i++) out[a.length + i] = b[i];
++    for (let i = 0; i < c.length; i++) out[a.length + b.length + i] = c[i];
++    return out;
++}
++
++/*
++ * Not-a-knot cubic spline, matching scipy.interpolate.CubicSpline default
++ * boundary conditions. Solves for first derivatives (Hermite form).
++ */
++class CubicSplineNotAKnot {
++    private x: number[];
++    private y: number[];
++    private nseg: number;
++    private c1: number[];
++
++    constructor(xIn: number[], yIn: number[]) {
++        this.x = xIn;
++        this.y = yIn;
++        this.nseg = xIn.length - 1;
++        const x = this.x;
++        const y = this.y;
++        const nseg = this.nseg;
++        const n = x.length;
++        const h = new Array<number>(nseg);
++        for (let i = 0; i < nseg; i++) h[i] = x[i + 1] - x[i];
++        const slope = new Array<number>(nseg);
++        for (let i = 0; i < nseg; i++) slope[i] = (y[i + 1] - y[i]) / h[i];
++
++        const a = new Array<number>(n).fill(0);
++        const b = new Array<number>(n).fill(0);
++        const c = new Array<number>(n).fill(0);
++        const rhs = new Array<number>(n).fill(0);
++
++        if (n === 2) {
++            b[0] = 1.0;
++            c[0] = 0.0;
++            rhs[0] = slope[0];
++            a[1] = 0.0;
++            b[1] = 1.0;
++            rhs[1] = slope[0];
++        } else {
++            for (let i = 1; i < n - 1; i++) {
++                a[i] = h[i];
++                b[i] = 2.0 * (h[i - 1] + h[i]);
++                c[i] = h[i - 1];
++                rhs[i] = 3.0 * (h[i] * slope[i - 1] + h[i - 1] * slope[i]);
++            }
++            const h0 = h[0];
++            const h1 = h[1];
++            b[0] = h1;
++            c[0] = h0 + h1;
++            rhs[0] = ((h0 + 2.0 * (h0 + h1)) * h1 * slope[0] + h0 * h0 * slope[1]) / (h0 + h1);
++            const hn2 = h[nseg - 2];
++            const hn1 = h[nseg - 1];
++            a[n - 1] = hn2 + hn1;
++            b[n - 1] = hn2;
++            rhs[n - 1] = (hn1 * hn1 * slope[nseg - 2] + (2.0 * (hn2 + hn1) + hn1) * hn2 * slope[nseg - 1]) / (hn2 + hn1);
++        }
++
++        this.c1 = this.solveTridiag(a, b, c, rhs);
++    }
++
++    private solveTridiag(aIn: number[], bIn: number[], cIn: number[], dIn: number[]): number[] {
++        const n = bIn.length;
++        const a = aIn.slice();
++        const b = bIn.slice();
++        const c = cIn.slice();
++        const d = dIn.slice();
++        for (let i = 1; i < n; i++) {
++            const m = a[i] / b[i - 1];
++            b[i] -= m * c[i - 1];
++            d[i] -= m * d[i - 1];
++        }
++        const xr = new Array<number>(n);
++        xr[n - 1] = d[n - 1] / b[n - 1];
++        for (let i = n - 2; i >= 0; i--) xr[i] = (d[i] - c[i] * xr[i + 1]) / b[i];
++        return xr;
++    }
++
++    eval(t: number): number {
++        const x = this.x;
++        const y = this.y;
++        const nseg = this.nseg;
++        let seg: number;
++        if (t <= x[0]) seg = 0;
++        else if (t >= x[x.length - 1]) seg = nseg - 1;
++        else {
++            let lo = 0;
++            let hi = nseg - 1;
++            seg = 0;
++            while (lo <= hi) {
++                const mid = (lo + hi) >>> 1;
++                if (t < x[mid]) hi = mid - 1;
++                else if (t >= x[mid + 1]) lo = mid + 1;
++                else {
++                    seg = mid;
++                    break;
++                }
++            }
++        }
++        const h = x[seg + 1] - x[seg];
++        const slope = (y[seg + 1] - y[seg]) / h;
++        const d0 = this.c1[seg];
++        const d1 = this.c1[seg + 1];
++        const ttt = t - x[seg];
++        const cc = (3.0 * slope - 2.0 * d0 - d1) / h;
++        const dd = (d0 + d1 - 2.0 * slope) / (h * h);
++        return y[seg] + d0 * ttt + cc * ttt * ttt + dd * ttt * ttt * ttt;
++    }
+ }
