@@ -1,2 +1,0 @@
-{"arm":"b","pkg":"app","dep":"core-a","lo":"1.0.0","hi":"2.0.0","seq":1,"pre_tok":"","lift":false,"act_tok":""}
-{"arm":"b","pkg":"app","dep":"core-a","lo":"1.0.0","hi":"2.0.0-pre.3","seq":2,"pre_tok":"","lift":false,"act_tok":""}

@@ -1,37 +1,5 @@
-The offline lockfile tool under `/app/environment` is drifting in CI.
+The release-security attestation gate at `POST /api/v1/attestations` in `/app` accepts a deployment archive (multipart `archive` field, uncompressed tar) and an optional `release_ref`. Harden the supply-chain control so every request establishes a verified trust boundary before credential-policy evaluation: load the scanner baseline only from the configured Git remote after GPG-validating an allowed annotated tag named in `/app/config/corpus.yml`, hydrate all Git LFS objects required by that signed release, and never reuse a cache entry that was only partially verified or verified under different remote or signer inputs. Branches, commits, lightweight tags, unsigned tags, untrusted signers, missing LFS objects, and malformed release references must be refused fail-closed.
 
-Repair those Go sources.
+Hostile archives must be rejected before scanning. Absolute paths, parent traversal, duplicate normalized paths, symlinks, hardlinks, and non-regular tar entries are unsafe and must not reach the policy scanner.
 
-Rebuild `/app/bin/depctrl` from `/app/environment` after edits.
-
-Use the build recipe in `/app/environment/docs/phase_contract.md`.
-
-Run `/app/bin/depctrl reconcile --all-mirrors`.
-
-Checks rebuild the binary and rerun that path.
-
-Traces land in `/app/output/traces/`.
-
-`last_run.json` carries `row_n`, `frame_n`, and `cache_hit`.
-
-Journal files live under `/app/output/journal/`.
-
-Seeds live under `/app/environment/data/`.
-
-Seal `/app/output/constraint_report.json`.
-
-It must be a JSON object with a `rows` array.
-
-Each row needs pkg, dep, lo, hi, pre_tok, lift, and row_digest.
-
-Digest construction follows the sha256 rules in the phase contract.
-
-Journal must seal without torn or CRC-mismatched frames in the fold.
-
-Warm cache blobs must stay coherent with the live peer fingerprint and activation map.
-
-Staging output is not the sealed report.
-
-`depctrl status` printing steady is not enough.
-
-Hand-written reports will not pass.
+For a verified baseline and safe archive, return HTTP 200 with the RS256-signed attestation report described in `/app/docs/corpus-bundle-format.md`. Findings must be deterministically ordered and must not echo matched secret or private-key bytes. `verdict` is `pass` only when findings are empty; any policy hit uses `verdict` `reject`. Apply the hydrated corpus rules to Compose YAML, env files, PEM keys, and JWT samples. The response body must be byte-identical for the same archive, release, and configuration. Use HTTP 422 with `{"error":{"code":...,"message":...}}` for invalid refs or unsafe archives, and HTTP 424 with the same error shape for release verification, hydration, or policy availability failures. Preserve `/up` and the default release behavior. Runtime may honor `CORPUS_ALLOWED_SIGNER` to override the allowed signer fingerprint from `/app/config/corpus.yml`. Verifier harness details are in `/app/docs/verifier-contract.md`. Harden the attestation pipeline under `/app` (including the tree mirrored at `/app/environment/source`).
