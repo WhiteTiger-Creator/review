@@ -1,176 +1,96 @@
 #!/bin/bash
 set -euo pipefail
-cd /app
-cat >/tmp/solve.go <<'GO'
-package main
 
-import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
-	"os"
-	"time"
-)
+cat > /app/CMakeLists.txt <<'CMAKE'
+cmake_minimum_required(VERSION 3.25)
+project(RouteKit LANGUAGES CXX)
 
-type Profile struct {
-	ID        string `json:"id"`
-	Authority string `json:"authority_model"`
-	Status    string `json:"status"`
-	Retired   bool   `json:"retired"`
-	Family    string `json:"family"`
-	Context   int    `json:"context_limit"`
-	Batch     int    `json:"batch_limit"`
-	Quant     string `json:"quantization"`
-}
+include(CMakePackageConfigHelpers)
 
-type Request struct {
-	ID      string `json:"request_id"`
-	PID     string `json:"profile_id"`
-	Stage   string `json:"target_stage"`
-	Family  string `json:"family"`
-	Reserve int    `json:"context_reserve"`
-	Batch   int    `json:"batch"`
-}
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-type Stage struct {
-	MinContext         int      `json:"min_context"`
-	MaxBatch           int      `json:"max_batch"`
-	AllowedQuantization []string `json:"allowed_quantization"`
-}
+find_package(Protobuf REQUIRED)
+find_package(gRPC REQUIRED)
 
-type Decision struct {
-	RequestID       string `json:"request_id"`
-	ProfileID       string `json:"profile_id"`
-	Stage           string `json:"stage"`
-	EffectiveContext int    `json:"effective_context"`
-	EffectiveBatch   int    `json:"effective_batch"`
-	Quantization    string `json:"quantization"`
-	Decision        string `json:"decision"`
-	Reason          string `json:"reason"`
-}
+set(GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(PROTO_FILE "${CMAKE_CURRENT_SOURCE_DIR}/proto/route.proto")
+file(MAKE_DIRECTORY "${GENERATED_DIR}")
 
-type Core struct {
-	Schema    string     `json:"schema"`
-	Decisions []Decision `json:"decisions"`
-	Source    string     `json:"source"`
-}
+set(GENERATED_SOURCES
+  "${GENERATED_DIR}/route.pb.cc"
+  "${GENERATED_DIR}/route.grpc.pb.cc")
+set(GENERATED_HEADERS
+  "${GENERATED_DIR}/route.pb.h"
+  "${GENERATED_DIR}/route.grpc.pb.h")
 
-type Plan struct {
-	Schema    string     `json:"schema"`
-	Decisions []Decision `json:"decisions"`
-	Source    string     `json:"source"`
-	Digest    string     `json:"digest"`
-}
+add_custom_command(
+  OUTPUT ${GENERATED_SOURCES} ${GENERATED_HEADERS}
+  COMMAND protobuf::protoc
+  ARGS --proto_path "${CMAKE_CURRENT_SOURCE_DIR}/proto"
+       --cpp_out "${GENERATED_DIR}"
+       --grpc_out "${GENERATED_DIR}"
+       --plugin=protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>
+       "${PROTO_FILE}"
+  DEPENDS "${PROTO_FILE}"
+  VERBATIM)
 
-func main() {
-	var registry struct { Profiles []Profile `json:"profiles"` }
-	var requestSet struct { Requests []Request `json:"requests"` }
-	var policySet struct { Stages map[string]Stage `json:"stages"` }
+add_library(route_proto STATIC ${GENERATED_SOURCES} ${GENERATED_HEADERS})
+target_include_directories(route_proto PUBLIC
+  $<BUILD_INTERFACE:${GENERATED_DIR}>
+  $<INSTALL_INTERFACE:include>)
+target_link_libraries(route_proto PUBLIC protobuf::libprotobuf gRPC::grpc++)
 
-	read := func(path string, target any) {
-		data, err := os.ReadFile(path)
-		if err != nil { panic(err) }
-		if err := json.Unmarshal(data, target); err != nil { panic(err) }
-	}
-	read("app/registry/profiles.json", &registry)
-	read("app/requests/requests.json", &requestSet)
-	read("app/policies/stages.json", &policySet)
+add_library(router STATIC src/router.cpp)
+target_include_directories(router PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+target_compile_definitions(router PUBLIC ROUTER_BUILD_MODE="$<CONFIG>")
+target_link_libraries(router PUBLIC route_proto)
 
-	var authority struct { ID string `json:"id"` }
-	var lastErr error
-	authorityURL := os.Getenv("REGISTRY_URL")
-	if authorityURL == "" { authorityURL = "https://huggingface.co/api/models/google-bert/bert-base-uncased" }
-	for attempt := 0; attempt < 3; attempt++ {
-		response, err := http.Get(authorityURL)
-		if err == nil {
-			body, readErr := io.ReadAll(response.Body)
-			response.Body.Close()
-			if response.StatusCode == http.StatusOK && readErr == nil && json.Unmarshal(body, &authority) == nil && authority.ID != "" {
-				lastErr = nil
-				break
-			}
-			lastErr = fmt.Errorf("registry authority returned an invalid response")
-		} else {
-			lastErr = err
-		}
-		if attempt < 2 { time.Sleep(time.Duration(attempt+1) * time.Second) }
-	}
-	if lastErr != nil || authority.ID == "" { panic(lastErr) }
+add_library(route_policy SHARED src/policy.cpp)
+target_include_directories(route_policy PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+set_target_properties(route_policy PROPERTIES INSTALL_RPATH "$ORIGIN")
 
-	profiles := make(map[string]Profile, len(registry.Profiles))
-	for _, profile := range registry.Profiles { profiles[profile.ID] = profile }
-	decisions := make([]Decision, 0, len(requestSet.Requests))
-	for _, request := range requestSet.Requests {
-		// The authority is intentionally consulted per request. This keeps the
-		// evidence path live even when the request is later rejected.
-		response, err := http.Get(authorityURL)
-		if err != nil { panic(err) }
-		body, readErr := io.ReadAll(response.Body); response.Body.Close()
-		var perRequest struct { ID string `json:"id"` }
-		if response.StatusCode != http.StatusOK || readErr != nil || json.Unmarshal(body, &perRequest) != nil || perRequest.ID == "" || perRequest.ID != authority.ID { panic("registry identity mismatch") }
-		decision := Decision{RequestID: request.ID, Stage: "none", Decision: "rejected"}
-		profile, found := profiles[request.PID]
-		switch {
-		case !found:
-			decision.Reason = "profile-missing"
-		case profile.Authority != authority.ID:
-			decision.Reason = "registry-missing"
-		case profile.Status != "active" || profile.Retired:
-			decision.Reason = "inactive-profile"
-		case profile.Family != request.Family:
-			decision.Reason = "family-mismatch"
-		default:
-			policy, found := policySet.Stages[request.Stage]
-			if !found {
-				decision.Reason = "stage-unknown"
-				break
-			}
-			decision.EffectiveContext = profile.Context - request.Reserve
-			decision.EffectiveBatch = profile.Batch
-			if request.Batch < decision.EffectiveBatch { decision.EffectiveBatch = request.Batch }
-			switch {
-			case decision.EffectiveContext < policy.MinContext:
-				decision.Reason = "context-incompatible"
-			case decision.EffectiveBatch > policy.MaxBatch:
-				decision.Reason = "batch-incompatible"
-			default:
-				allowed := false
-				for _, quantization := range policy.AllowedQuantization {
-					if quantization == profile.Quant { allowed = true; break }
-				}
-				if !allowed {
-					decision.Reason = "quantization-incompatible"
-				} else {
-					decision.ProfileID = profile.ID
-					decision.Stage = request.Stage
-					decision.Quantization = profile.Quant
-					decision.Decision = "promoted"
-					decision.Reason = "promoted"
-				}
-			}
-		}
-		decisions = append(decisions, decision)
-	}
+add_library(route_audit SHARED plugins/audit.cpp)
+target_link_libraries(route_audit PRIVATE router route_policy)
+set_target_properties(route_audit PROPERTIES INSTALL_RPATH "$ORIGIN/..")
 
-	core := Core{Schema: "model-promotion/v3", Decisions: decisions, Source: authority.ID}
-	canonical, err := json.Marshal(core)
-	if err != nil { panic(err) }
-	digest := sha256.Sum256(canonical)
-	plan := Plan{Schema: core.Schema, Decisions: core.Decisions, Source: core.Source, Digest: hex.EncodeToString(digest[:])}
-	file, err := os.Create("promotion-plan.json")
-	if err != nil { panic(err) }
-	defer file.Close()
-	if err := json.NewEncoder(file).Encode(plan); err != nil { panic(err) }
-}
-GO
-cat >/app/solve.sh <<'RUN'
-#!/bin/sh
-set -eu
-cd /app
-exec go run /tmp/solve.go
-RUN
-chmod 755 /app/solve.sh
-go run /tmp/solve.go
+add_executable(route_cli src/main.cpp)
+target_link_libraries(route_cli PRIVATE router dl)
+set_target_properties(route_cli PROPERTIES INSTALL_RPATH "$ORIGIN/../lib")
+
+install(TARGETS route_cli router route_proto route_policy
+  EXPORT RouteKitTargets
+  RUNTIME DESTINATION bin
+  LIBRARY DESTINATION lib
+  ARCHIVE DESTINATION lib)
+install(TARGETS route_audit
+  EXPORT RouteKitTargets
+  LIBRARY DESTINATION lib/route)
+install(DIRECTORY include/ DESTINATION include)
+install(FILES ${GENERATED_HEADERS} DESTINATION include)
+install(EXPORT RouteKitTargets
+  NAMESPACE RouteKit::
+  DESTINATION lib/cmake/RouteKit)
+configure_package_config_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/RouteKitConfig.cmake.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/RouteKitConfig.cmake"
+  INSTALL_DESTINATION lib/cmake/RouteKit)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/RouteKitConfig.cmake"
+  DESTINATION lib/cmake/RouteKit)
+CMAKE
+
+mkdir -p /app/cmake
+cat > /app/cmake/RouteKitConfig.cmake.in <<'CMAKE'
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(Protobuf REQUIRED)
+find_dependency(gRPC REQUIRED)
+
+include("${CMAKE_CURRENT_LIST_DIR}/RouteKitTargets.cmake")
+CMAKE

@@ -1,7 +1,0 @@
-{
-  "kind": "policies",
-  "revision": 2,
-  "enabled": true,
-  "owner": "lane-2",
-  "policy_ref": "policy-2"
-}
