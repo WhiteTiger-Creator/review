@@ -1,4 +1,0 @@
-archive for protobuf@28.2.0
-compat=1
-license=BSD-3-Clause
-min_bazel=7.0.0

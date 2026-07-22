@@ -1,27 +1,32 @@
-version = "2.0"
+version = "3.4"
 
 [metadata]
+name = "model-promotion-estate"
+description = "Determine the authoritative Hugging Face model profile for each inference request and emit the resolved promotion state."
 author_name = "anonymous"
-author_email = "anonymous@example.com"
-difficulty = "hard"
-category = "build-and-dependency-management"
-subcategories = []
-tags = ["bash", "bazel", "bzlmod", "offline-build", "dependency-resolution"]
-languages = ["bash"]
-expert_time_estimate_min = 180.0
-junior_time_estimate_min = 1320.0
-codebase_size = "Small"
+author_email = "anonymous"
+difficulty = "medium"
+category = "security"
+subcategories = ["api_integration", "tool_specific"]
 number_of_milestones = 0
+codebase_size = "large"
+languages = ["go"]
+tags = ["signed-registry", "attestation-evidence", "model-integrity", "authority-binding"]
+expert_time_estimate_min = 120.0
+junior_time_estimate_min = 240.0
 
 [verifier]
-timeout_sec = 900.0
+timeout_sec = 450.0
 
 [agent]
-timeout_sec = 1200.0
+timeout_sec = 900.0
 
 [environment]
-allow_internet = false
 build_timeout_sec = 600.0
-cpus = 1
-memory_mb = 2048
-storage_mb = 10240
+cpus = 2
+memory_mb = 4096
+storage_mb = 8192
+gpus = 0
+gpu_types = []
+allow_internet = true
+docker_flags = []

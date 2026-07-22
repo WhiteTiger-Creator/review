@@ -1,0 +1,7 @@
+{
+  "kind": "modules",
+  "revision": 13,
+  "enabled": true,
+  "owner": "lane-6",
+  "policy_ref": "policy-1"
+}

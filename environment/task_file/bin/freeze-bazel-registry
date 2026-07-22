@@ -1,9 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-input_dir="${1:-/app/input}"
-out_dir="${2:-/app/out}"
-
-mkdir -p "$out_dir"
-printf 'missing starter implementation has not resolved %s\n' "$input_dir" > "$out_dir/error.txt"
-exit 1

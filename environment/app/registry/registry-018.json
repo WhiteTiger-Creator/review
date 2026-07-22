@@ -1,0 +1,7 @@
+{
+  "kind": "registry",
+  "revision": 18,
+  "enabled": true,
+  "owner": "lane-4",
+  "policy_ref": "policy-2"
+}
