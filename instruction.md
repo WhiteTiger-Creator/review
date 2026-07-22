@@ -1,37 +1,3 @@
-The offline lockfile tool under `/app/environment` is drifting in CI.
+Our site-selection ranking model is failing its label-shift evaluation under temporal cohort drift. Shuffled holdout inference still reports stable accuracy digests. Chronologically ordered enrollment windows flip site priority ranks. The deployment gate's label-shift surfaces stay quiet. A temporal dataset-split refresh leaves the next evaluation pass on the random-split checkpoint as the scoring authority. The evaluation ledger at `/app/output/gate_ledger.json` must satisfy the ranking and shift predicates in `/app/environment/docs/public_obs.md`.
 
-Repair those Go sources.
-
-Rebuild `/app/bin/depctrl` from `/app/environment` after edits.
-
-Use the build recipe in `/app/environment/docs/phase_contract.md`.
-
-Run `/app/bin/depctrl reconcile --all-mirrors`.
-
-Checks rebuild the binary and rerun that path.
-
-Traces land in `/app/output/traces/`.
-
-`last_run.json` carries `row_n`, `frame_n`, and `cache_hit`.
-
-Journal files live under `/app/output/journal/`.
-
-Seeds live under `/app/environment/data/`.
-
-Seal `/app/output/constraint_report.json`.
-
-It must be a JSON object with a `rows` array.
-
-Each row needs pkg, dep, lo, hi, pre_tok, lift, and row_digest.
-
-Digest construction follows the sha256 rules in the phase contract.
-
-Journal must seal without torn or CRC-mismatched frames in the fold.
-
-Warm cache blobs must stay coherent with the live peer fingerprint and activation map.
-
-Staging output is not the sealed report.
-
-`depctrl status` printing steady is not enough.
-
-Hand-written reports will not pass.
+Sources under `/app/environment` must be updated so the Java inference evaluation stack regenerates that ledger. Run `mvn -q -f /app/environment/pom.xml package` then `java -jar /app/environment/target/marlin-engine.jar --lane chrono`. Static ledger files are not enough; evaluation deletes `/app/output/gate_ledger.json` and requires the chrono lane to regenerate it. Chrono evaluation consumes packs a2_blob_01, b7_byte_02, and c8_ln_03 under `/app/environment/packs/`. Each pack reports per-site feats as enrollment-time feature values used for half-open window selection, plus hist bytes that pack into coord_hex; binary layout is in `/app/environment/docs/pack_layout.md`. Regenerated JSON must include top-level runs, waves, rank_rows, and shift_surfaces. Rank rows must report pair_id, side, win_lo, win_hi, site_nib, slot_ok, coord_hex, and pack. Shift surfaces must report pack, wave, hist_lo, hist_hi, delta, seal_seq, and freshness. Half-open feature windows are the windows list in `/app/environment/data/window_meta.json` with lo/hi per band. Mirrored pairs must agree on chrono. Histogram nibbles must round-trip. Disagreed ascending and descending scans must suppress slot grants. Chrono replay must stay idempotent. On pack c8_ln_03, contiguous chrono shift_surfaces must advance freshness by one each step. Agreed chrono-wave slot_ok must follow the high-nibble bit of the first coord byte.
