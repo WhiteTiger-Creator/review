@@ -1,0 +1,7 @@
+version: '1'
+id: archive-history
+room: archive
+title: History Gate
+trivia:
+  row: 8
+  question_sha256: e7123f299b9ab78b3dbf1037674e77677788d2d25c3944d06417b40866da8316

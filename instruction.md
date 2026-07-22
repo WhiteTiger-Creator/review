@@ -1,5 +1,28 @@
-The Cargo workspace under `/app` ships optional native backends behind Cargo features. A plain default build succeeds. The documented matrix in `/app/contracts/matrix_arms.json` currently produces arms that fail their ABI/layout probe, or record disagreeing layout fingerprints across arms that share a backend.
+# Repair the Trivia Dungeon Publication Gate
 
-Every documented arm must build with its documented command. The integration probe for each arm must exit 0. Arms that share a backend feature must record the same layout fingerprint in `/app/output/matrix_report.json`. Linking with silent fingerprint skew is a failure. Do not delete arms, strip features to shrink the matrix, or ship only the default-feature build.
+The Java trivia dungeon in `/app` has a broken offline publication workflow. Audit and playthrough disagree on playable room and encounter content, and identical reruns are not always byte-identical.
 
-Rebuild from the workspace sources and produce the report via `/app/scripts/run_matrix.sh`. Hand-written JSON without rebuilt artifacts is insufficient. Report shape is in `/app/contracts/report_schema.md` (`schema_version` is 1, plus `arms` and `shared_backend_digests`).
+Repair the implementation under `/app`. From `/app`, `make verify` must build without network access, audit the configured dungeon, and complete the configured deterministic playthrough with correct room traversal, encounter scoring, and trivia resolution.
+
+Keep `/data` and bundled Parquet immutable. The workflow writes `/output/audit-report.json` and `/output/playthrough.json`. Do not write those files by hand; `make verify` must regenerate them.
+
+Preserve the existing command entry point, Makefile verify target, and documented command contract.
+
+## Authoritative contracts
+
+Behavior is specified in `/app/docs/`:
+
+- **domain-contracts.md** — exit codes, issue tuples, fingerprints, registry digests, report fields, determinism
+- **configuration.md** — configuration precedence, environment variables, relative path resolution
+- **manifest-format.md** — YAML 1.2 scalar semantics, locator formats, alias and scoring rules
+- **state-notes.md** — content-addressed audit state, cache invalidation, registry snapshot semantics
+
+Audit and playthrough must share the same audited registry identity. Shared helpers document fingerprint and `dataset_digest` formulas for reproducibility across primary and secondary roots.
+
+## Critical requirements
+
+Content errors—including schema, graph, missing or duplicate stable IDs, and legacy fingerprint mismatches—produce exit 2 and a completed unsuccessful audit report. Operational failures produce exit 1 without a completed validation report. Successful runs produce exit 0.
+
+Stable question IDs must match exactly one dataset row. Legacy rows use logical `question_id` order and require the documented question fingerprint. Cache identity is based on input bytes rather than file metadata.
+
+Reusable audit state is content-addressed: manifest, contract, or dataset byte changes invalidate cached state even when paths and mtimes are unchanged. Failed, truncated, or corrupt state is never a successful cache hit. Playthrough consumes the audited registry snapshot. Warm reruns produce byte-identical reports regardless of CWD.

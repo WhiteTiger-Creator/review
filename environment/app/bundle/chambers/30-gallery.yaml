@@ -1,0 +1,7 @@
+version: '1'
+id: gallery
+title: Gallery
+encounters:
+- gallery-literature
+exits:
+  default: workshop
