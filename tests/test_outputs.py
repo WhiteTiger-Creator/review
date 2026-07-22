@@ -1,410 +1,1097 @@
-"""Deterministic verifier for anuran-record-taxonomy-coherence."""
+"""Verifier for Emberline Hex Tactics simultaneous-turn resolution."""
 
 from __future__ import annotations
 
-import json
-import math
 import os
+import re
+import shutil
+import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
 import pytest
-from sklearn.metrics import log_loss
 
-OUTPUT_DIR = Path(os.environ.get("AGENT_OUTPUT_DIR", "/home/output"))
-DATA_DIR = Path(os.environ.get("RAW_DATA_DIR", "/home/data"))
-ANURAN_VARIANT = os.environ.get("ANURAN_VARIANT", "public")
-
-FAMILY_LEVELS = ["Bufonidae", "Dendrobatidae", "Hylidae", "Leptodactylidae"]
-GENUS_LEVELS = [
-    "Adenomera",
-    "Ameerega",
-    "Dendropsophus",
-    "Hypsiboas",
-    "Leptodactylus",
-    "Osteocephalus",
-    "Rhinella",
-    "Scinax",
-]
-SPECIES_LEVELS = [
-    "AdenomeraAndre",
-    "AdenomeraHylaedactylus",
-    "Ameeregatrivittata",
-    "HylaMinuta",
-    "HypsiboasCinerascens",
-    "HypsiboasCordobae",
-    "LeptodactylusFuscus",
-    "OsteocephalusOophagus",
-    "Rhinellagranulosa",
-    "ScinaxRuber",
-]
-SAMPLED_ROW_IDS = list(range(0, 1500, 25))
-TOL = 1e-5
-AUDIT_KEYS = [
-    "n_train_rows",
-    "n_eval_rows",
-    "n_train_records",
-    "n_eval_records",
-    "species_log_loss",
-    "genus_log_loss",
-    "family_log_loss",
-    "species_brier",
-    "genus_brier",
-    "family_brier",
-    "species_ece_10bin",
-    "genus_ece_10bin",
-    "family_ece_10bin",
-    "family_residual_max",
-    "genus_residual_max",
-    "row_abstain_rate",
-    "record_abstain_rate",
-]
+APP = Path("/app/emberline")
+SRC = APP / "src" / "main" / "java"
+HARNESS_SRC = Path("/tests/harness/ResolverHarness.java")
+WORK = Path("/tmp/emberline-verifier")
+LIB_CLASSES = WORK / "lib-classes"
+HARNESS_CLASSES = WORK / "harness-classes"
+HARNESS_MAIN = "ResolverHarness"
 
 
-def ece(y: np.ndarray, p: np.ndarray, bins: int = 10) -> float:
-    p = np.clip(np.asarray(p, dtype=float), 0, 1)
-    y = np.asarray(y, dtype=float)
-    idx = np.minimum((p * bins).astype(int), bins - 1)
-    total = len(p)
-    score = 0.0
-    for b in range(bins):
-        sel = idx == b
-        if not np.any(sel):
-            continue
-        score += abs(float(p[sel].mean()) - float(y[sel].mean())) * sel.sum() / total
-    return float(score)
+@dataclass(frozen=True)
+class Event:
+    type: str
+    unit_id: str
+    related: str | None
+    at: tuple[int, int] | None
+    amount: int
 
 
-def multiclass_brier(y: np.ndarray, probs: np.ndarray, levels: list[str]) -> float:
-    y_idx = pd.Categorical(y, categories=levels, ordered=False).codes
-    truth = np.zeros_like(probs)
-    truth[np.arange(len(y_idx)), y_idx] = 1
-    return float(np.mean(np.sum((probs - truth) ** 2, axis=1)))
+@dataclass(frozen=True)
+class UnitState:
+    id: str
+    team: str
+    q: int
+    r: int
+    health: int
+    initiative: int
+    range: int
+    power: int
 
 
-def read_source() -> pd.DataFrame:
-    df = pd.read_csv(DATA_DIR / "Frogs_MFCCs.csv")
-    df.columns = [c.replace(" ", "") for c in df.columns]
-    df = df.rename(columns={f"MFCCs_{i}": f"MFCC_{i}" for i in range(1, 23)})
-    if "row_id" in df.columns:
-        df["row_id"] = df["row_id"].astype(int)
-    else:
-        df["row_id"] = np.arange(len(df), dtype=int)
-    return df
+@dataclass
+class ResolveResult:
+    status: str
+    amber: int
+    cobalt: int
+    score_to_win: int
+    units: list[UnitState]
+    terrain: list[tuple[int, int, str]]
+    events: list[Event]
+    inputs_untouched: bool
+    immutable: tuple[bool, bool, bool]
+    raw: str
 
 
-@pytest.fixture(scope="module")
-def source():
-    return read_source()
+def _run(cmd: list[str], cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        text=True,
+        capture_output=True,
+    )
+    if check and result.returncode != 0:
+        raise AssertionError(
+            f"command failed ({result.returncode}): {' '.join(cmd)}\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+    return result
 
 
-@pytest.fixture(scope="module")
-def eval_truth(source):
-    df = source[source["row_id"] % 5 == 0].copy()
-    return df.sort_values("row_id").reset_index(drop=True)
+@pytest.fixture(scope="session")
+def compiled_harness() -> Path:
+    if WORK.exists():
+        shutil.rmtree(WORK)
+    LIB_CLASSES.mkdir(parents=True)
+    HARNESS_CLASSES.mkdir(parents=True)
 
-
-@pytest.fixture(scope="module")
-def predictions():
-    return pd.read_csv(OUTPUT_DIR / "predictions.csv")
-
-
-@pytest.fixture(scope="module")
-def record_report():
-    return pd.read_csv(OUTPUT_DIR / "record_report.csv")
-
-
-@pytest.fixture(scope="module")
-def audit():
-    return json.loads((OUTPUT_DIR / "taxonomy_audit.json").read_text())
-
-
-@pytest.fixture(scope="module")
-def merged(predictions, eval_truth):
-    return eval_truth.merge(predictions, on=["row_id", "RecordID"], how="inner", validate="one_to_one").sort_values("row_id").reset_index(drop=True)
-
-
-def species_cols():
-    return [f"prob_species_{nm}" for nm in SPECIES_LEVELS]
-
-
-def genus_cols():
-    return [f"prob_genus_{nm}" for nm in GENUS_LEVELS]
-
-
-def family_cols():
-    return [f"prob_family_{nm}" for nm in FAMILY_LEVELS]
-
-
-def species_to_group_maps() -> tuple[dict[str, str], dict[str, str]]:
-    genus_map = {
-        "AdenomeraAndre": "Adenomera",
-        "AdenomeraHylaedactylus": "Adenomera",
-        "Ameeregatrivittata": "Ameerega",
-        "HylaMinuta": "Dendropsophus",
-        "HypsiboasCinerascens": "Hypsiboas",
-        "HypsiboasCordobae": "Hypsiboas",
-        "LeptodactylusFuscus": "Leptodactylus",
-        "OsteocephalusOophagus": "Osteocephalus",
-        "Rhinellagranulosa": "Rhinella",
-        "ScinaxRuber": "Scinax",
-    }
-    family_map = {
-        "AdenomeraAndre": "Leptodactylidae",
-        "AdenomeraHylaedactylus": "Leptodactylidae",
-        "Ameeregatrivittata": "Dendrobatidae",
-        "HylaMinuta": "Hylidae",
-        "HypsiboasCinerascens": "Hylidae",
-        "HypsiboasCordobae": "Hylidae",
-        "LeptodactylusFuscus": "Leptodactylidae",
-        "OsteocephalusOophagus": "Hylidae",
-        "Rhinellagranulosa": "Bufonidae",
-        "ScinaxRuber": "Hylidae",
-    }
-    return genus_map, family_map
-
-
-def row_metrics(df: pd.DataFrame, row_id: int):
-    genus_map, family_map = species_to_group_maps()
-    row = df[df["row_id"] == row_id].iloc[0]
-    s = row[species_cols()].to_numpy(dtype=float)
-    g = row[genus_cols()].to_numpy(dtype=float)
-    f = row[family_cols()].to_numpy(dtype=float)
-    return row, s, g, f, genus_map, family_map
-
-
-def normalise_frame(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
-    out = df[cols].copy()
-    out = out.div(out.sum(axis=1), axis=0)
-    return out
-
-
-class TestPresence:
-    def test_files_exist(self):
-        """Required output files exist."""
-        for name in ("predictions.csv", "record_report.csv", "taxonomy_audit.json"):
-            assert (OUTPUT_DIR / name).exists(), f"missing {name}"
-
-    def test_prediction_schema(self, predictions):
-        """Prediction columns match the contract."""
-        assert list(predictions.columns) == [
-            "row_id",
-            "RecordID",
-            "pred_family",
-            "pred_genus",
-            "pred_species",
-            "pred_abstain",
-            *family_cols(),
-            *genus_cols(),
-            *species_cols(),
+    sources = sorted(SRC.rglob("*.java"))
+    assert sources, f"no Java sources under {SRC}"
+    _run(["javac", "--release", "21", "-d", str(LIB_CLASSES), *map(str, sources)])
+    _run(
+        [
+            "javac",
+            "--release",
+            "21",
+            "-cp",
+            str(LIB_CLASSES),
+            "-d",
+            str(HARNESS_CLASSES),
+            str(HARNESS_SRC),
         ]
-
-    def test_record_report_schema(self, record_report):
-        """Record report columns match the contract."""
-        assert list(record_report.columns) == [
-            "RecordID",
-            "n_rows",
-            "obs_family",
-            "obs_genus",
-            "obs_species",
-            "pred_family",
-            "pred_genus",
-            "pred_species",
-            "record_abstain",
-            "mean_pred_family_prob",
-            "mean_pred_genus_prob",
-            "mean_pred_species_prob",
-        ]
-
-    def test_audit_schema(self, audit):
-        """Audit JSON exposes the complete flat metric schema."""
-        assert set(audit) == set(AUDIT_KEYS)
-        for key in AUDIT_KEYS:
-            assert isinstance(audit[key], (int, float)) and not isinstance(audit[key], bool)
-            assert math.isfinite(float(audit[key]))
+    )
+    return HARNESS_CLASSES
 
 
-class TestCoverage:
-    def test_eval_rows(self, predictions, eval_truth, audit, source):
-        """Predictions and metrics cover all evaluation rows."""
-        assert len(predictions) == len(eval_truth) == int(audit["n_eval_rows"])
-        assert int(audit["n_train_rows"]) == len(source) - len(eval_truth)
-
-    def test_predictions_sorted_unique(self, predictions):
-        """Prediction row identifiers are sorted and unique."""
-        ids = predictions["row_id"].astype(int).tolist()
-        assert ids == sorted(ids)
-        assert len(ids) == len(set(ids))
-
-    def test_eval_join_complete(self, predictions, eval_truth):
-        """Predictions join one-to-one with the evaluation fold."""
-        merged = eval_truth.merge(predictions, on=["row_id", "RecordID"], how="inner")
-        assert len(merged) == len(eval_truth)
-
-    def test_record_report_sorted_unique(self, record_report):
-        """Record report is sorted and one row per evaluation record."""
-        ids = record_report["RecordID"].astype(int).tolist()
-        assert ids == sorted(ids)
-        assert len(ids) == len(set(ids))
-
-
-class TestPerRow:
-    @pytest.mark.parametrize("row_id", SAMPLED_ROW_IDS)
-    def test_row_contract(self, row_id, predictions, eval_truth):
-        """Sampled rows satisfy the hierarchical probability contract."""
-        pred = predictions[predictions["row_id"] == row_id].iloc[0]
-        truth = eval_truth[eval_truth["row_id"] == row_id].iloc[0]
-        _, s, g, f, genus_map, family_map = row_metrics(predictions, row_id)
-        assert pred["RecordID"] == truth["RecordID"]
-        assert pred["pred_species"] == SPECIES_LEVELS[int(np.argmax(s))]
-        assert pred["pred_genus"] == GENUS_LEVELS[int(np.argmax(g))]
-        assert pred["pred_family"] == FAMILY_LEVELS[int(np.argmax(f))]
-        assert math.isfinite(float(s.sum())) and abs(float(s.sum()) - 1.0) <= TOL
-        assert math.isfinite(float(g.sum())) and abs(float(g.sum()) - 1.0) <= TOL
-        assert math.isfinite(float(f.sum())) and abs(float(f.sum()) - 1.0) <= TOL
-        assert all(0.0 <= float(x) <= 1.0 for x in s)
-        assert all(0.0 <= float(x) <= 1.0 for x in g)
-        assert all(0.0 <= float(x) <= 1.0 for x in f)
-        assert abs(float(pred[family_cols()].sum()) - 1.0) <= TOL
-        assert abs(float(pred[genus_cols()].sum()) - 1.0) <= TOL
-        species_family_sums = {}
-        species_genus_sums = {}
-        for sp, genus in genus_map.items():
-            species_genus_sums.setdefault(genus, 0.0)
-            species_genus_sums[genus] += float(pred[f"prob_species_{sp}"])
-        for sp, family in family_map.items():
-            species_family_sums.setdefault(family, 0.0)
-            species_family_sums[family] += float(pred[f"prob_species_{sp}"])
-        for family in FAMILY_LEVELS:
-            assert abs(float(pred[f"prob_family_{family}"]) - float(species_family_sums[family])) <= TOL
-        for genus in GENUS_LEVELS:
-            assert abs(float(pred[f"prob_genus_{genus}"]) - float(species_genus_sums[genus])) <= TOL
-        assert pred["pred_abstain"] in (0, 1)
-        assert int(pred["pred_abstain"]) == int(max(s) < 0.55)
+def _protocol(
+    terrain: list[tuple[int, int, str]],
+    units: list[tuple],
+    scores: tuple[int, int, int],
+    orders: list[tuple],
+) -> str:
+    lines = ["BOARD"]
+    for q, r, kind in terrain:
+        lines.append(f"T {q} {r} {kind}")
+    for unit in units:
+        uid, team, q, r, health, initiative, rng, power = unit
+        lines.append(f"U {uid} {team} {q} {r} {health} {initiative} {rng} {power}")
+    lines.append(f"S {scores[0]} {scores[1]} {scores[2]}")
+    lines.append("END")
+    lines.append("ORDERS")
+    for order in orders:
+        if order[1] == "HOLD" and len(order) == 2:
+            lines.append(f"O {order[0]} HOLD")
+        elif order[1] == "HOLD" and len(order) == 4:
+            lines.append(f"O {order[0]} HOLD {order[2]} {order[3]}")
+        else:
+            lines.append(f"O {order[0]} {order[1]} {order[2]} {order[3]}")
+    lines.append("END")
+    lines.append("RESOLVE")
+    return "\n".join(lines) + "\n"
 
 
-class TestMetricConsistency:
-    def test_metrics_match(self, audit, merged):
-        """Audit metrics match recomputation from predictions."""
-        y_species = merged["Species"].astype(str).to_numpy()
-        y_genus = merged["Genus"].astype(str).to_numpy()
-        y_family = merged["Family"].astype(str).to_numpy()
-        sprob = merged[species_cols()].to_numpy(dtype=float)
-        gprob = merged[genus_cols()].to_numpy(dtype=float)
-        fprob = merged[family_cols()].to_numpy(dtype=float)
-        genus_map, family_map = species_to_group_maps()
-        species_to_genus = np.zeros((len(SPECIES_LEVELS), len(GENUS_LEVELS)))
-        species_to_family = np.zeros((len(SPECIES_LEVELS), len(FAMILY_LEVELS)))
-        for i, sp_name in enumerate(SPECIES_LEVELS):
-            species_to_genus[i, GENUS_LEVELS.index(genus_map[sp_name])] = 1
-            species_to_family[i, FAMILY_LEVELS.index(family_map[sp_name])] = 1
-        sprob_norm = normalise_frame(merged, species_cols()).to_numpy(dtype=float)
-        gprob_norm = normalise_frame(merged, genus_cols()).to_numpy(dtype=float)
-        fprob_norm = normalise_frame(merged, family_cols()).to_numpy(dtype=float)
-        assert abs(float(audit["species_log_loss"]) - float(log_loss(y_species, sprob_norm, labels=SPECIES_LEVELS))) <= TOL
-        assert abs(float(audit["genus_log_loss"]) - float(log_loss(y_genus, gprob_norm, labels=GENUS_LEVELS))) <= TOL
-        assert abs(float(audit["family_log_loss"]) - float(log_loss(y_family, fprob_norm, labels=FAMILY_LEVELS))) <= TOL
-        assert abs(float(audit["species_brier"]) - multiclass_brier(y_species, sprob, SPECIES_LEVELS)) <= TOL
-        assert abs(float(audit["genus_brier"]) - multiclass_brier(y_genus, gprob, GENUS_LEVELS)) <= TOL
-        assert abs(float(audit["family_brier"]) - multiclass_brier(y_family, fprob, FAMILY_LEVELS)) <= TOL
-        assert abs(float(audit["species_ece_10bin"]) - ece(y_species == np.array(SPECIES_LEVELS)[np.argmax(sprob, axis=1)], np.max(sprob_norm, axis=1), 10)) <= TOL
-        assert abs(float(audit["genus_ece_10bin"]) - ece(y_genus == np.array(GENUS_LEVELS)[np.argmax(gprob, axis=1)], np.max(gprob_norm, axis=1), 10)) <= TOL
-        assert abs(float(audit["family_ece_10bin"]) - ece(y_family == np.array(FAMILY_LEVELS)[np.argmax(fprob, axis=1)], np.max(fprob_norm, axis=1), 10)) <= TOL
-        assert abs(float(audit["family_residual_max"]) - float(np.max(np.abs(fprob - sprob @ species_to_family)))) <= TOL
-        assert abs(float(audit["genus_residual_max"]) - float(np.max(np.abs(gprob - sprob @ species_to_genus)))) <= TOL
-        assert abs(float(audit["row_abstain_rate"]) - float(merged["pred_abstain"].mean())) <= TOL
+def resolve(
+    compiled_harness: Path,
+    terrain: list[tuple[int, int, str]],
+    units: list[tuple],
+    scores: tuple[int, int, int],
+    orders: list[tuple],
+) -> ResolveResult:
+    payload = _protocol(terrain, units, scores, orders)
+    cp = f"{LIB_CLASSES}{os.pathsep}{compiled_harness}"
+    proc = subprocess.run(
+        ["java", "-cp", cp, HARNESS_MAIN],
+        input=payload,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert proc.returncode == 0, f"harness failed\n{proc.stdout}\n{proc.stderr}"
+    raw = proc.stdout
+    assert raw.startswith("OK\n"), f"expected OK resolution, got:\n{raw}"
 
-    def test_record_report_matches(self, record_report, merged):
-        """Record-level aggregation matches recomputation."""
-        for _, row in record_report.iterrows():
-            part = merged[merged["RecordID"] == row["RecordID"]]
-            assert int(row["n_rows"]) == len(part)
-            assert row["obs_family"] == part["Family"].iloc[0]
-            assert row["obs_genus"] == part["Genus"].iloc[0]
-            assert row["obs_species"] == part["Species"].iloc[0]
-            fam = part[family_cols()].mean(axis=0)
-            gen = part[genus_cols()].mean(axis=0)
-            sp = part[species_cols()].mean(axis=0)
-            assert row["pred_family"] == fam.idxmax().replace("prob_family_", "")
-            assert row["pred_genus"] == gen.idxmax().replace("prob_genus_", "")
-            assert row["pred_species"] == sp.idxmax().replace("prob_species_", "")
-            assert abs(float(row["mean_pred_family_prob"]) - float(fam.max())) <= TOL
-            assert abs(float(row["mean_pred_genus_prob"]) - float(gen.max())) <= TOL
-            assert abs(float(row["mean_pred_species_prob"]) - float(sp.max())) <= TOL
-            assert int(row["record_abstain"]) == int(sp.max() < 0.55)
+    status = ""
+    amber = cobalt = score_to_win = 0
+    units_out: list[UnitState] = []
+    terrain_out: list[tuple[int, int, str]] = []
+    events: list[Event] = []
+    inputs_untouched = False
+    immutable = (False, False, False)
 
-    def test_record_abstain_rate_matches(self, audit, record_report):
-        """Audit record-abstain rate matches the record report."""
-        assert abs(float(audit["record_abstain_rate"]) - float(record_report["record_abstain"].mean())) <= TOL
-
-
-class TestBaselines:
-    def test_candidate_beats_species_prior(self, audit, source, eval_truth, merged):
-        """Candidate beats a naive species-prior baseline."""
-        train = source[source["row_id"] % 5 != 0]
-        prior = train["Species"].value_counts(normalize=True).reindex(SPECIES_LEVELS).fillna(0).to_numpy()
-        baseline = np.tile(prior, (len(eval_truth), 1))
-        assert float(audit["species_log_loss"]) < float(log_loss(eval_truth["Species"], baseline, labels=SPECIES_LEVELS))
-
-    def test_candidate_beats_family_uniform_baseline(self, audit, source, eval_truth):
-        """Candidate beats a family-uniform baseline."""
-        train = source[source["row_id"] % 5 != 0]
-        fam_prior = train["Family"].value_counts(normalize=True).reindex(FAMILY_LEVELS).fillna(0).to_numpy()
-        family = np.tile(fam_prior, (len(eval_truth), 1))
-        species = np.zeros((len(eval_truth), len(SPECIES_LEVELS)))
-        for i, sp in enumerate(SPECIES_LEVELS):
-            if sp.startswith("Adenomera"):
-                fam = "Leptodactylidae"
-            elif sp.startswith("Ameerega"):
-                fam = "Dendrobatidae"
-            elif sp.startswith(("Hyla", "Hypsiboas", "Osteocephalus", "Scinax")):
-                fam = "Hylidae"
-            else:
-                fam = "Bufonidae"
-            species[:, i] = family[:, FAMILY_LEVELS.index(fam)] / sum(
-                1 for ss in SPECIES_LEVELS if (
-                    (ss.startswith("Adenomera") and fam == "Leptodactylidae")
-                    or (ss.startswith("Ameerega") and fam == "Dendrobatidae")
-                    or (ss.startswith(("Hyla", "Hypsiboas", "Osteocephalus", "Scinax")) and fam == "Hylidae")
-                    or (ss.startswith("Rhinella") and fam == "Bufonidae")
-                )
+    for line in raw.splitlines():
+        if line.startswith("STATUS "):
+            status = line.split()[1]
+        elif line.startswith("SCORES "):
+            _, a, c, w = line.split()
+            amber, cobalt, score_to_win = int(a), int(c), int(w)
+        elif line.startswith("INPUTS_UNTOUCHED "):
+            inputs_untouched = line.split()[1] == "true"
+        elif line.startswith("IMMUTABLE "):
+            parts = line.split()
+            immutable = (parts[1] == "true", parts[2] == "true", parts[3] == "true")
+        elif line.startswith("UNIT "):
+            _, uid, team, q, r, health, initiative, rng, power = line.split()
+            units_out.append(
+                UnitState(uid, team, int(q), int(r), int(health), int(initiative), int(rng), int(power))
             )
-        species = species / species.sum(axis=1, keepdims=True)
-        assert float(audit["species_log_loss"]) < float(log_loss(eval_truth["Species"], species, labels=SPECIES_LEVELS))
+        elif line.startswith("TERRAIN "):
+            _, q, r, kind = line.split()
+            terrain_out.append((int(q), int(r), kind))
+        elif line.startswith("EVENT "):
+            parts = line.split()
+            # EVENT TYPE unit related q r amount  OR related=- and at=- -
+            etype = parts[1]
+            uid = parts[2]
+            related = None if parts[3] == "-" else parts[3]
+            if parts[4] == "-":
+                at = None
+                amount = int(parts[6])
+            else:
+                at = (int(parts[4]), int(parts[5]))
+                amount = int(parts[6])
+            events.append(Event(etype, uid, related, at, amount))
 
-    def test_incoherent_head_baseline_is_incoherent(self, source, eval_truth):
-        """Independent heads violate the nested-probability contract."""
-        train = source[source["row_id"] % 5 != 0]
-        sp = train["Species"].value_counts(normalize=True).reindex(SPECIES_LEVELS).fillna(0).to_numpy()
-        fam = train["Family"].value_counts(normalize=True).reindex(FAMILY_LEVELS).fillna(0).to_numpy()
-        gen = train["Genus"].value_counts(normalize=True).reindex(GENUS_LEVELS).fillna(0).to_numpy()
-        species = np.tile(sp, (len(eval_truth), 1))
-        genus = np.roll(np.tile(gen, (len(eval_truth), 1)), shift=1, axis=1)
-        family = np.roll(np.tile(fam, (len(eval_truth), 1)), shift=1, axis=1)
-        genus_map, family_map = species_to_group_maps()
-        species_to_genus = np.zeros((len(SPECIES_LEVELS), len(GENUS_LEVELS)))
-        species_to_family = np.zeros((len(SPECIES_LEVELS), len(FAMILY_LEVELS)))
-        for i, sp_name in enumerate(SPECIES_LEVELS):
-            species_to_genus[i, GENUS_LEVELS.index(genus_map[sp_name])] = 1
-            species_to_family[i, FAMILY_LEVELS.index(family_map[sp_name])] = 1
-        genus_from_species = species @ species_to_genus
-        family_from_species = species @ species_to_family
-        assert np.max(np.abs(genus - genus_from_species)) > 0.01
-        assert np.max(np.abs(family - family_from_species)) > 0.01
+    return ResolveResult(
+        status=status,
+        amber=amber,
+        cobalt=cobalt,
+        score_to_win=score_to_win,
+        units=units_out,
+        terrain=terrain_out,
+        events=events,
+        inputs_untouched=inputs_untouched,
+        immutable=immutable,
+        raw=raw,
+    )
 
 
-class TestHiddenVariant:
-    @pytest.mark.skipif(ANURAN_VARIANT == "public", reason="only runs on hidden variants")
-    def test_hidden_eval_recordids_not_in_training(self, source):
-        """Hidden variants prevent RecordID memorization across the split."""
-        train_ids = set(source.loc[source["row_id"] % 5 != 0, "RecordID"].astype(int))
-        eval_ids = set(source.loc[source["row_id"] % 5 == 0, "RecordID"].astype(int))
-        assert train_ids.isdisjoint(eval_ids)
+def resolve_error(
+    compiled_harness: Path,
+    terrain: list[tuple[int, int, str]],
+    units: list[tuple],
+    scores: tuple[int, int, int],
+    orders: list[tuple],
+) -> str:
+    payload = _protocol(terrain, units, scores, orders)
+    cp = f"{LIB_CLASSES}{os.pathsep}{compiled_harness}"
+    proc = subprocess.run(
+        ["java", "-cp", cp, HARNESS_MAIN],
+        input=payload,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert proc.returncode == 0, f"harness failed\n{proc.stdout}\n{proc.stderr}"
+    assert proc.stdout.startswith("ERROR IllegalArgumentException"), proc.stdout
+    return proc.stdout
 
-    @pytest.mark.skipif(ANURAN_VARIANT == "public", reason="only runs on hidden variants")
-    def test_hidden_variant_metrics_finite(self, audit):
-        """Hidden variant metrics stay finite."""
-        for value in audit.values():
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                assert math.isfinite(float(value))
+
+def rectangle(w: int, h: int, fill: str = "PLAIN") -> list[tuple[int, int, str]]:
+    return [(q, r, fill) for q in range(w) for r in range(h)]
+
+
+def unit_pos(result: ResolveResult, uid: str) -> tuple[int, int]:
+    for unit in result.units:
+        if unit.id == uid:
+            return unit.q, unit.r
+    raise AssertionError(f"unit {uid} missing")
+
+
+def unit_health(result: ResolveResult, uid: str) -> int:
+    for unit in result.units:
+        if unit.id == uid:
+            return unit.health
+    raise AssertionError(f"unit {uid} missing")
+
+
+def events_of(result: ResolveResult, etype: str) -> list[Event]:
+    return [e for e in result.events if e.type == etype]
+
+
+# ---------------------------------------------------------------------------
+# Independent verifier-side simulator (not a copy of the Java oracle source)
+# ---------------------------------------------------------------------------
+
+
+def _axial_distance(a: tuple[int, int], b: tuple[int, int]) -> int:
+    dq = a[0] - b[0]
+    dr = a[1] - b[1]
+    return (abs(dq) + abs(dr) + abs(dq + dr)) // 2
+
+
+def simulate(
+    terrain: dict[tuple[int, int], str],
+    units: list[tuple],
+    scores: tuple[int, int, int],
+    orders: list[tuple],
+) -> tuple[str, list[Event], dict[str, tuple[int, int, int]]]:
+    """Return status, events, and surviving unit map id->(q,r,health)."""
+    by_id = {
+        u[0]: {
+            "team": u[1],
+            "pos": (u[2], u[3]),
+            "health": u[4],
+            "initiative": u[5],
+            "range": u[6],
+            "power": u[7],
+        }
+        for u in units
+    }
+    order_map = {}
+    for order in orders:
+        if order[1] == "HOLD":
+            order_map[order[0]] = ("HOLD", None)
+        else:
+            order_map[order[0]] = (order[1], (order[2], order[3]))
+
+    occupancy = {info["pos"]: uid for uid, info in by_id.items()}
+    contenders: dict[tuple[int, int], list[str]] = {}
+    for uid, (otype, target) in order_map.items():
+        if otype == "MOVE":
+            contenders.setdefault(target, []).append(uid)
+
+    retained: dict[str, tuple[int, int]] = {}
+    rejected: set[str] = set()
+    for dest, ids in contenders.items():
+        ids = sorted(ids, key=lambda i: (-by_id[i]["initiative"], i))
+        retained[ids[0]] = dest
+        rejected.update(ids[1:])
+
+    success: dict[str, bool] = {}
+    visiting: set[str] = set()
+
+    def determine(mover: str) -> bool:
+        if mover in success:
+            return success[mover]
+        if mover in visiting:
+            return True
+        visiting.add(mover)
+        dest = retained[mover]
+        occ = occupancy.get(dest)
+        if occ is None:
+            ok = True
+        elif occ not in retained:
+            ok = False
+        elif occ == mover:
+            ok = True
+        else:
+            ok = determine(occ)
+        visiting.remove(mover)
+        success[mover] = ok
+        return ok
+
+    for mover in list(retained):
+        determine(mover)
+
+    final_pos = {uid: info["pos"] for uid, info in by_id.items()}
+    move_events: list[Event] = []
+    for uid in sorted(rejected):
+        move_events.append(Event("MOVE_BLOCKED", uid, None, order_map[uid][1], 0))
+    for uid in sorted(retained):
+        dest = retained[uid]
+        if success[uid]:
+            final_pos[uid] = dest
+            move_events.append(Event("MOVE", uid, None, dest, 0))
+        else:
+            move_events.append(Event("MOVE_BLOCKED", uid, None, dest, 0))
+    move_events.sort(key=lambda e: e.unit_id)
+
+    occ_after = {pos: uid for uid, pos in final_pos.items()}
+    damage: dict[str, int] = {}
+    attack_events: list[Event] = []
+    for uid in sorted(by_id):
+        otype, target = order_map[uid]
+        if otype != "ATTACK":
+            continue
+        defender = occ_after.get(target)
+        if defender is None or by_id[defender]["team"] == by_id[uid]["team"]:
+            attack_events.append(Event("ATTACK_MISS", uid, None, target, 0))
+        else:
+            power = by_id[uid]["power"]
+            attack_events.append(Event("ATTACK_HIT", uid, defender, target, power))
+            damage[defender] = damage.get(defender, 0) + power
+    attack_events.sort(key=lambda e: e.unit_id)
+
+    for uid, pos in final_pos.items():
+        if terrain.get(pos) == "HAZARD":
+            damage[uid] = damage.get(uid, 0) + 1
+
+    damage_events: list[Event] = []
+    defeat_events: list[Event] = []
+    survivors: dict[str, tuple[int, int, int]] = {}
+    for uid in sorted(by_id):
+        taken = damage.get(uid, 0)
+        health = by_id[uid]["health"] - taken
+        if taken > 0:
+            damage_events.append(Event("DAMAGE", uid, None, final_pos[uid], taken))
+        if health <= 0:
+            defeat_events.append(Event("DEFEATED", uid, None, None, 0))
+        else:
+            survivors[uid] = (final_pos[uid][0], final_pos[uid][1], health)
+
+    amber, cobalt, win = scores
+    amber_scores: list[Event] = []
+    cobalt_scores: list[Event] = []
+    for uid in sorted(survivors):
+        q, r, _ = survivors[uid]
+        if terrain.get((q, r)) != "BEACON":
+            continue
+        ev = Event("SCORE", uid, None, (q, r), 1)
+        if by_id[uid]["team"] == "AMBER":
+            amber += 1
+            amber_scores.append(ev)
+        else:
+            cobalt += 1
+            cobalt_scores.append(ev)
+
+    if amber >= win and cobalt >= win:
+        status = "DRAW"
+    elif amber >= win:
+        status = "AMBER_WINS"
+    elif cobalt >= win:
+        status = "COBALT_WINS"
+    else:
+        status = "ONGOING"
+
+    events = move_events + attack_events + damage_events + defeat_events + amber_scores + cobalt_scores
+    return status, events, survivors
+
+
+# ---------------------------------------------------------------------------
+# Tests (exactly 35)
+# ---------------------------------------------------------------------------
+
+
+def test_01_library_and_harness_compile_offline(compiled_harness: Path):
+    """The Java 21 library and verifier harness compile offline from a clean directory."""
+    assert (LIB_CLASSES / "dev" / "emberline" / "game" / "TurnResolver.class").exists()
+    assert (compiled_harness / "ResolverHarness.class").exists()
+    # Recompile from a second clean directory to prove offline reproducibility.
+    alt = WORK / "alt-lib"
+    if alt.exists():
+        shutil.rmtree(alt)
+    alt.mkdir(parents=True)
+    sources = sorted(SRC.rglob("*.java"))
+    _run(["javac", "--release", "21", "-d", str(alt), *map(str, sources)])
+    assert (alt / "dev" / "emberline" / "game" / "Board.class").exists()
+
+
+def test_02_library_only_no_public_main():
+    """The public environment remains library-only, with no public main class or installed game executable."""
+    mains = []
+    for path in SRC.rglob("*.java"):
+        text = path.read_text(encoding="utf-8")
+        if re.search(r"public\s+static\s+void\s+main\s*\(", text):
+            mains.append(str(path))
+    assert mains == [], f"public main classes found: {mains}"
+    for candidate in (
+        APP / "emberline",
+        APP / "bin" / "emberline",
+        Path("/usr/local/bin/emberline"),
+        Path("/usr/bin/emberline"),
+    ):
+        assert not candidate.exists(), f"unexpected executable {candidate}"
+
+
+def test_03_hold_only_preserves_state(compiled_harness: Path):
+    """A turn containing only holds preserves positions, health, scores, and an empty event list."""
+    terrain = rectangle(3, 3)
+    units = [
+        ("a1", "AMBER", 0, 0, 3, 1, 1, 1),
+        ("c1", "COBALT", 2, 2, 4, 2, 1, 1),
+    ]
+    orders = [("a1", "HOLD"), ("c1", "HOLD")]
+    result = resolve(compiled_harness, terrain, units, (1, 2, 5), orders)
+    assert result.status == "ONGOING"
+    assert result.amber == 1 and result.cobalt == 2
+    assert {(u.id, u.q, u.r, u.health) for u in result.units} == {
+        ("a1", 0, 0, 3),
+        ("c1", 2, 2, 4),
+    }
+    assert result.events == []
+
+
+def test_04_single_move_into_empty(compiled_harness: Path):
+    """A single mover enters an empty adjacent playable hex."""
+    terrain = rectangle(3, 2)
+    units = [("scout", "AMBER", 0, 0, 2, 1, 1, 1)]
+    orders = [("scout", "MOVE", 1, 0)]
+    result = resolve(compiled_harness, terrain, units, (0, 0, 3), orders)
+    assert unit_pos(result, "scout") == (1, 0)
+    assert result.events == [Event("MOVE", "scout", None, (1, 0), 0)]
+
+
+def test_05_contention_prefers_higher_initiative(compiled_harness: Path):
+    """Competing movers select the contender with greater initiative."""
+    terrain = rectangle(3, 2)
+    units = [
+        ("slow", "AMBER", 0, 0, 2, 1, 1, 1),
+        ("fast", "COBALT", 2, 0, 2, 5, 1, 1),
+    ]
+    orders = [("slow", "MOVE", 1, 0), ("fast", "MOVE", 1, 0)]
+    result = resolve(compiled_harness, terrain, units, (0, 0, 3), orders)
+    assert unit_pos(result, "fast") == (1, 0)
+    assert unit_pos(result, "slow") == (0, 0)
+    assert events_of(result, "MOVE") == [Event("MOVE", "fast", None, (1, 0), 0)]
+
+
+def test_06_equal_initiative_prefers_smallest_id(compiled_harness: Path):
+    """Equal-initiative contention selects the bytewise-smallest unit ID."""
+    terrain = rectangle(3, 2)
+    units = [
+        ("zeta", "AMBER", 0, 0, 2, 3, 1, 1),
+        ("alpha", "COBALT", 2, 0, 2, 3, 1, 1),
+    ]
+    orders = [("zeta", "MOVE", 1, 0), ("alpha", "MOVE", 1, 0)]
+    result = resolve(compiled_harness, terrain, units, (0, 0, 3), orders)
+    assert unit_pos(result, "alpha") == (1, 0)
+    assert unit_pos(result, "zeta") == (0, 0)
+
+
+def test_07_rejected_contender_blocked_event(compiled_harness: Path):
+    """A rejected contender remains at its source and emits one blocked event."""
+    terrain = rectangle(3, 2)
+    units = [
+        ("a", "AMBER", 0, 0, 2, 1, 1, 1),
+        ("b", "COBALT", 2, 0, 2, 9, 1, 1),
+    ]
+    orders = [("a", "MOVE", 1, 0), ("b", "MOVE", 1, 0)]
+    result = resolve(compiled_harness, terrain, units, (0, 0, 3), orders)
+    assert unit_pos(result, "a") == (0, 0)
+    blocked = events_of(result, "MOVE_BLOCKED")
+    assert blocked == [Event("MOVE_BLOCKED", "a", None, (1, 0), 0)]
+
+
+def test_08_chain_into_empty_succeeds(compiled_harness: Path):
+    """A movement chain ending at an empty hex succeeds in full."""
+    terrain = rectangle(4, 1)
+    units = [
+        ("u1", "AMBER", 0, 0, 2, 1, 1, 1),
+        ("u2", "AMBER", 1, 0, 2, 1, 1, 1),
+    ]
+    orders = [("u1", "MOVE", 1, 0), ("u2", "MOVE", 2, 0)]
+    result = resolve(compiled_harness, terrain, units, (0, 0, 3), orders)
+    assert unit_pos(result, "u1") == (1, 0)
+    assert unit_pos(result, "u2") == (2, 0)
+    assert [e.type for e in result.events] == ["MOVE", "MOVE"]
+
+
+def test_09_two_unit_swap_cycle(compiled_harness: Path):
+    """A two-unit swap succeeds as a closed movement cycle."""
+    terrain = rectangle(2, 1)
+    units = [
+        ("left", "AMBER", 0, 0, 2, 1, 1, 1),
+        ("right", "COBALT", 1, 0, 2, 1, 1, 1),
+    ]
+    orders = [("left", "MOVE", 1, 0), ("right", "MOVE", 0, 0)]
+    result = resolve(compiled_harness, terrain, units, (0, 0, 3), orders)
+    assert unit_pos(result, "left") == (1, 0)
+    assert unit_pos(result, "right") == (0, 0)
+    assert {e.type for e in result.events} == {"MOVE"}
+
+
+def test_10_longer_rotation_cycle(compiled_harness: Path):
+    """A longer closed rotation succeeds without duplicate occupancy."""
+    # Triangle of mutually adjacent hexes: (0,0) -> (1,0) -> (0,1) -> (0,0)
+    terrain = [(0, 0, "PLAIN"), (1, 0, "PLAIN"), (0, 1, "PLAIN")]
+    units = [
+        ("a", "AMBER", 0, 0, 2, 1, 1, 1),
+        ("b", "AMBER", 1, 0, 2, 1, 1, 1),
+        ("c", "COBALT", 0, 1, 2, 1, 1, 1),
+    ]
+    orders = [("a", "MOVE", 1, 0), ("b", "MOVE", 0, 1), ("c", "MOVE", 0, 0)]
+    result = resolve(compiled_harness, terrain, units, (0, 0, 3), orders)
+    assert unit_pos(result, "a") == (1, 0)
+    assert unit_pos(result, "b") == (0, 1)
+    assert unit_pos(result, "c") == (0, 0)
+    positions = {(u.q, u.r) for u in result.units}
+    assert len(positions) == 3
+
+
+def test_11_chain_into_holder_fails(compiled_harness: Path):
+    """A chain ending at a holding or attacking occupant fails in full."""
+    terrain = rectangle(3, 1)
+    units = [
+        ("pusher", "AMBER", 0, 0, 2, 1, 1, 1),
+        ("anchor", "COBALT", 1, 0, 2, 1, 1, 1),
+    ]
+    orders = [("pusher", "MOVE", 1, 0), ("anchor", "HOLD")]
+    result = resolve(compiled_harness, terrain, units, (0, 0, 3), orders)
+    assert unit_pos(result, "pusher") == (0, 0)
+    assert unit_pos(result, "anchor") == (1, 0)
+    assert events_of(result, "MOVE_BLOCKED") == [
+        Event("MOVE_BLOCKED", "pusher", None, (1, 0), 0)
+    ]
+
+    orders_atk = [("pusher", "MOVE", 1, 0), ("anchor", "ATTACK", 2, 0)]
+    result_atk = resolve(compiled_harness, terrain, units, (0, 0, 3), orders_atk)
+    assert unit_pos(result_atk, "pusher") == (0, 0)
+    assert any(e.type == "MOVE_BLOCKED" and e.unit_id == "pusher" for e in result_atk.events)
+
+
+def test_12_failure_propagates_through_predecessors(compiled_harness: Path):
+    """Failure of a retained downstream move propagates through every predecessor."""
+    terrain = rectangle(4, 1)
+    units = [
+        ("a", "AMBER", 0, 0, 2, 1, 1, 1),
+        ("b", "AMBER", 1, 0, 2, 1, 1, 1),
+        ("c", "COBALT", 2, 0, 2, 1, 1, 1),
+    ]
+    orders = [("a", "MOVE", 1, 0), ("b", "MOVE", 2, 0), ("c", "HOLD")]
+    result = resolve(compiled_harness, terrain, units, (0, 0, 3), orders)
+    assert unit_pos(result, "a") == (0, 0)
+    assert unit_pos(result, "b") == (1, 0)
+    assert unit_pos(result, "c") == (2, 0)
+    blocked_ids = {e.unit_id for e in events_of(result, "MOVE_BLOCKED")}
+    assert blocked_ids == {"a", "b"}
+
+
+def test_13_independent_move_components(compiled_harness: Path):
+    """Independent successful and blocked movement components resolve correctly in one turn."""
+    terrain = rectangle(5, 2)
+    units = [
+        ("ok1", "AMBER", 0, 0, 2, 1, 1, 1),
+        ("block", "AMBER", 3, 0, 2, 1, 1, 1),
+        ("hold", "COBALT", 4, 0, 2, 1, 1, 1),
+        ("ok2", "COBALT", 0, 1, 2, 1, 1, 1),
+    ]
+    orders = [
+        ("ok1", "MOVE", 1, 0),
+        ("block", "MOVE", 4, 0),
+        ("hold", "HOLD"),
+        ("ok2", "MOVE", 1, 1),
+    ]
+    result = resolve(compiled_harness, terrain, units, (0, 0, 3), orders)
+    assert unit_pos(result, "ok1") == (1, 0)
+    assert unit_pos(result, "ok2") == (1, 1)
+    assert unit_pos(result, "block") == (3, 0)
+    assert unit_pos(result, "hold") == (4, 0)
+
+
+def test_14_attack_hits_stationary_opponent(compiled_harness: Path):
+    """An attack hits an opposing unit that remains on the targeted post-move hex."""
+    terrain = rectangle(3, 1)
+    units = [
+        ("atk", "AMBER", 0, 0, 3, 1, 2, 2),
+        ("def", "COBALT", 2, 0, 3, 1, 1, 1),
+    ]
+    orders = [("atk", "ATTACK", 2, 0), ("def", "HOLD")]
+    result = resolve(compiled_harness, terrain, units, (0, 0, 5), orders)
+    assert events_of(result, "ATTACK_HIT") == [
+        Event("ATTACK_HIT", "atk", "def", (2, 0), 2)
+    ]
+    assert unit_health(result, "def") == 1
+
+
+def test_15_attack_misses_when_target_moves_away(compiled_harness: Path):
+    """An attack misses when its intended target moves away."""
+    terrain = rectangle(3, 2)
+    units = [
+        ("atk", "AMBER", 0, 0, 3, 1, 2, 2),
+        ("def", "COBALT", 2, 0, 3, 1, 1, 1),
+    ]
+    orders = [("atk", "ATTACK", 2, 0), ("def", "MOVE", 2, 1)]
+    result = resolve(compiled_harness, terrain, units, (0, 0, 5), orders)
+    assert events_of(result, "ATTACK_MISS") == [
+        Event("ATTACK_MISS", "atk", None, (2, 0), 0)
+    ]
+    assert unit_health(result, "def") == 3
+
+
+def test_16_attack_hits_unit_moving_into_hex(compiled_harness: Path):
+    """An attack hits an opponent that moves into the targeted hex."""
+    terrain = rectangle(3, 2)
+    units = [
+        ("atk", "AMBER", 0, 0, 3, 1, 2, 2),
+        ("def", "COBALT", 2, 1, 3, 1, 1, 1),
+    ]
+    orders = [("atk", "ATTACK", 2, 0), ("def", "MOVE", 2, 0)]
+    result = resolve(compiled_harness, terrain, units, (0, 0, 5), orders)
+    assert events_of(result, "ATTACK_HIT") == [
+        Event("ATTACK_HIT", "atk", "def", (2, 0), 2)
+    ]
+
+
+def test_17_lethal_attacker_still_strikes(compiled_harness: Path):
+    """A lethally damaged attacker still executes its simultaneous attack."""
+    terrain = rectangle(2, 1)
+    units = [
+        ("a", "AMBER", 0, 0, 1, 1, 1, 3),
+        ("c", "COBALT", 1, 0, 1, 1, 1, 3),
+    ]
+    orders = [("a", "ATTACK", 1, 0), ("c", "ATTACK", 0, 0)]
+    result = resolve(compiled_harness, terrain, units, (0, 0, 5), orders)
+    hits = events_of(result, "ATTACK_HIT")
+    assert len(hits) == 2
+    assert {e.unit_id for e in hits} == {"a", "c"}
+    assert result.units == []
+    assert {e.unit_id for e in events_of(result, "DEFEATED")} == {"a", "c"}
+
+
+def test_18_combined_damage_from_several_attacks(compiled_harness: Path):
+    """Several attacks on one defender produce one combined damage event."""
+    terrain = rectangle(3, 2)
+    units = [
+        ("a1", "AMBER", 0, 0, 3, 1, 2, 2),
+        ("a2", "AMBER", 0, 1, 3, 1, 2, 3),
+        ("def", "COBALT", 2, 0, 9, 1, 1, 1),
+    ]
+    orders = [("a1", "ATTACK", 2, 0), ("a2", "ATTACK", 2, 0), ("def", "HOLD")]
+    result = resolve(compiled_harness, terrain, units, (0, 0, 5), orders)
+    damage = events_of(result, "DAMAGE")
+    assert damage == [Event("DAMAGE", "def", None, (2, 0), 5)]
+    assert unit_health(result, "def") == 4
+
+
+def test_19_friendly_and_empty_attacks_miss(compiled_harness: Path):
+    """An attack against a friendly or empty target emits the correct miss event and no damage."""
+    terrain = rectangle(3, 1)
+    units = [
+        ("a1", "AMBER", 0, 0, 3, 1, 2, 2),
+        ("a2", "AMBER", 1, 0, 3, 1, 1, 1),
+    ]
+    orders = [("a1", "ATTACK", 1, 0), ("a2", "ATTACK", 2, 0)]
+    result = resolve(compiled_harness, terrain, units, (0, 0, 5), orders)
+    misses = events_of(result, "ATTACK_MISS")
+    assert misses == [
+        Event("ATTACK_MISS", "a1", None, (1, 0), 0),
+        Event("ATTACK_MISS", "a2", None, (2, 0), 0),
+    ]
+    assert events_of(result, "DAMAGE") == []
+    assert unit_health(result, "a2") == 3
+
+
+def test_20_attack_exactly_at_range(compiled_harness: Path):
+    """An attack exactly at the permitted axial range is valid and resolves correctly."""
+    terrain = rectangle(4, 1)
+    units = [
+        ("bow", "AMBER", 0, 0, 3, 1, 3, 2),
+        ("mark", "COBALT", 3, 0, 3, 1, 1, 1),
+    ]
+    assert _axial_distance((0, 0), (3, 0)) == 3
+    orders = [("bow", "ATTACK", 3, 0), ("mark", "HOLD")]
+    result = resolve(compiled_harness, terrain, units, (0, 0, 5), orders)
+    assert events_of(result, "ATTACK_HIT") == [
+        Event("ATTACK_HIT", "bow", "mark", (3, 0), 2)
+    ]
+
+
+def test_21_hazard_damage_exactly_one(compiled_harness: Path):
+    """A surviving unit on hazard terrain receives exactly one hazard damage."""
+    terrain = [(0, 0, "PLAIN"), (1, 0, "HAZARD"), (2, 0, "PLAIN")]
+    units = [("runner", "AMBER", 0, 0, 3, 1, 1, 1)]
+    orders = [("runner", "MOVE", 1, 0)]
+    result = resolve(compiled_harness, terrain, units, (0, 0, 5), orders)
+    assert events_of(result, "DAMAGE") == [
+        Event("DAMAGE", "runner", None, (1, 0), 1)
+    ]
+    assert unit_health(result, "runner") == 2
+
+
+def test_22_attack_and_hazard_combine(compiled_harness: Path):
+    """Attack and hazard damage combine into one damage event before defeat evaluation."""
+    terrain = [(0, 0, "PLAIN"), (1, 0, "HAZARD")]
+    units = [
+        ("atk", "AMBER", 0, 0, 3, 1, 1, 2),
+        ("def", "COBALT", 1, 0, 3, 1, 1, 1),
+    ]
+    orders = [("atk", "ATTACK", 1, 0), ("def", "HOLD")]
+    result = resolve(compiled_harness, terrain, units, (0, 0, 5), orders)
+    assert events_of(result, "DAMAGE") == [
+        Event("DAMAGE", "def", None, (1, 0), 3)
+    ]
+    assert "def" not in {u.id for u in result.units}
+    assert any(e.unit_id == "def" and e.type == "DEFEATED" for e in result.events)
+
+
+def test_23_defeat_events_canonical(compiled_harness: Path):
+    """Units reduced to zero or less health are removed and emit canonically ordered defeat events."""
+    terrain = rectangle(4, 1)
+    units = [
+        ("yy", "AMBER", 0, 0, 2, 1, 3, 5),
+        ("zz", "AMBER", 3, 0, 2, 1, 3, 5),
+        ("m", "COBALT", 1, 0, 1, 1, 1, 1),
+        ("a", "COBALT", 2, 0, 1, 1, 1, 1),
+    ]
+    orders = [
+        ("yy", "ATTACK", 1, 0),
+        ("zz", "ATTACK", 2, 0),
+        ("m", "HOLD"),
+        ("a", "HOLD"),
+    ]
+    result = resolve(compiled_harness, terrain, units, (0, 0, 5), orders)
+    defeats = events_of(result, "DEFEATED")
+    assert [e.unit_id for e in defeats] == ["a", "m"]
+    assert {u.id for u in result.units} == {"yy", "zz"}
+
+
+def test_24_multiple_beacons_score(compiled_harness: Path):
+    """Surviving units on multiple beacons add one score each for their respective teams."""
+    terrain = [
+        (0, 0, "BEACON"),
+        (1, 0, "PLAIN"),
+        (2, 0, "BEACON"),
+    ]
+    units = [
+        ("ember", "AMBER", 0, 0, 2, 1, 1, 1),
+        ("tide", "COBALT", 2, 0, 2, 1, 1, 1),
+    ]
+    orders = [("ember", "HOLD"), ("tide", "HOLD")]
+    result = resolve(compiled_harness, terrain, units, (0, 0, 5), orders)
+    assert result.amber == 1 and result.cobalt == 1
+    scores = events_of(result, "SCORE")
+    assert scores == [
+        Event("SCORE", "ember", None, (0, 0), 1),
+        Event("SCORE", "tide", None, (2, 0), 1),
+    ]
+
+
+def test_25_defeated_unit_does_not_score(compiled_harness: Path):
+    """A unit defeated during the turn contributes no beacon score."""
+    terrain = [(0, 0, "PLAIN"), (1, 0, "BEACON")]
+    units = [
+        ("atk", "AMBER", 0, 0, 3, 1, 1, 5),
+        ("camp", "COBALT", 1, 0, 2, 1, 1, 1),
+    ]
+    orders = [("atk", "ATTACK", 1, 0), ("camp", "HOLD")]
+    result = resolve(compiled_harness, terrain, units, (0, 0, 5), orders)
+    assert "camp" not in {u.id for u in result.units}
+    assert events_of(result, "SCORE") == []
+    assert result.cobalt == 0
+
+
+def test_26_single_team_victory(compiled_harness: Path):
+    """Reaching the score target produces the correct single-team victory status."""
+    terrain = [(0, 0, "BEACON"), (1, 0, "PLAIN")]
+    units = [
+        ("ember", "AMBER", 0, 0, 2, 1, 1, 1),
+        ("tide", "COBALT", 1, 0, 2, 1, 1, 1),
+    ]
+    orders = [("ember", "HOLD"), ("tide", "HOLD")]
+    result = resolve(compiled_harness, terrain, units, (4, 0, 5), orders)
+    assert result.status == "AMBER_WINS"
+    assert result.amber == 5
+
+
+def test_27_draw_when_both_reach_target(compiled_harness: Path):
+    """Both teams reaching the target in the same turn produces DRAW."""
+    terrain = [(0, 0, "BEACON"), (1, 0, "BEACON")]
+    units = [
+        ("ember", "AMBER", 0, 0, 2, 1, 1, 1),
+        ("tide", "COBALT", 1, 0, 2, 1, 1, 1),
+    ]
+    orders = [("ember", "HOLD"), ("tide", "HOLD")]
+    result = resolve(compiled_harness, terrain, units, (4, 4, 5), orders)
+    assert result.status == "DRAW"
+    assert result.amber == 5 and result.cobalt == 5
+
+
+def test_28_mixed_turn_canonical_event_order(compiled_harness: Path):
+    """A mixed turn returns the exact movement, attack, damage, defeat, and score phase ordering and event fields."""
+    terrain = [
+        (0, 0, "PLAIN"),
+        (1, 0, "PLAIN"),
+        (2, 0, "HAZARD"),
+        (3, 0, "BEACON"),
+        (1, 1, "PLAIN"),
+    ]
+    units = [
+        ("amber1", "AMBER", 0, 0, 3, 2, 2, 2),
+        ("amber2", "AMBER", 3, 0, 2, 1, 1, 1),
+        ("cobalt1", "COBALT", 2, 0, 2, 1, 1, 1),
+        ("cobalt2", "COBALT", 1, 1, 2, 1, 1, 1),
+    ]
+    orders = [
+        ("amber1", "MOVE", 1, 0),
+        ("amber2", "HOLD"),
+        ("cobalt1", "ATTACK", 3, 0),
+        ("cobalt2", "MOVE", 1, 0),  # contends with amber1 for (1,0); amber1 wins init
+    ]
+    result = resolve(compiled_harness, terrain, units, (0, 0, 5), orders)
+    types = [e.type for e in result.events]
+    phase = []
+    for t in types:
+        if t in ("MOVE", "MOVE_BLOCKED"):
+            phase.append(0)
+        elif t in ("ATTACK_HIT", "ATTACK_MISS"):
+            phase.append(1)
+        elif t == "DAMAGE":
+            phase.append(2)
+        elif t == "DEFEATED":
+            phase.append(3)
+        elif t == "SCORE":
+            phase.append(4)
+    assert phase == sorted(phase)
+
+    terrain_map = {(q, r): k for q, r, k in terrain}
+    status, expected_events, _ = simulate(terrain_map, units, (0, 0, 5), orders)
+    assert result.status == status
+    assert result.events == expected_events
+
+
+def test_29_permutation_invariant(compiled_harness: Path):
+    """Permuting terrain, unit, and order insertion order leaves the resolution unchanged."""
+    terrain = [
+        (0, 0, "PLAIN"),
+        (1, 0, "BEACON"),
+        (2, 0, "HAZARD"),
+        (0, 1, "PLAIN"),
+        (1, 1, "PLAIN"),
+    ]
+    units = [
+        ("b", "AMBER", 0, 0, 3, 2, 2, 1),
+        ("a", "COBALT", 2, 0, 3, 1, 1, 2),
+        ("c", "AMBER", 0, 1, 2, 3, 1, 1),
+    ]
+    orders = [
+        ("b", "MOVE", 1, 0),
+        ("a", "ATTACK", 1, 0),
+        ("c", "MOVE", 1, 1),
+    ]
+    base = resolve(compiled_harness, terrain, units, (1, 1, 5), orders)
+
+    terrain2 = list(reversed(terrain))
+    units2 = list(reversed(units))
+    orders2 = list(reversed(orders))
+    alt = resolve(compiled_harness, terrain2, units2, (1, 1, 5), orders2)
+    assert alt.status == base.status
+    assert alt.amber == base.amber and alt.cobalt == base.cobalt
+    assert alt.units == base.units
+    assert alt.events == base.events
+    assert alt.terrain == base.terrain
+
+    # Cross-check with independent simulator
+    status, events, _ = simulate({(q, r): k for q, r, k in terrain}, units, (1, 1, 5), orders)
+    assert base.status == status
+    assert base.events == events
+
+
+def test_30_deterministic_repeat(compiled_harness: Path):
+    """Repeating an identical turn produces byte-for-byte equivalent serialized state and events."""
+    terrain = rectangle(3, 2)
+    units = [
+        ("x", "AMBER", 0, 0, 3, 2, 2, 2),
+        ("y", "COBALT", 2, 1, 3, 1, 1, 1),
+    ]
+    orders = [("x", "MOVE", 1, 0), ("y", "ATTACK", 1, 1)]
+    first = resolve(compiled_harness, terrain, units, (0, 0, 4), orders)
+    second = resolve(compiled_harness, terrain, units, (0, 0, 4), orders)
+    assert first.raw == second.raw
+
+
+def test_31_concurrent_independent_resolutions(compiled_harness: Path):
+    """Concurrent independent resolutions are correct and show no shared-state contamination."""
+    cases = []
+    for i in range(8):
+        terrain = rectangle(3, 2)
+        units = [
+            (f"a{i}", "AMBER", 0, 0, 3, 1 + i, 1, 1),
+            (f"c{i}", "COBALT", 2, 0, 3, 1, 1, 1),
+        ]
+        orders = [(f"a{i}", "MOVE", 1, 0), (f"c{i}", "HOLD")]
+        cases.append((terrain, units, (0, 0, 5), orders, f"a{i}"))
+
+    results: dict[str, ResolveResult] = {}
+    lock = threading.Lock()
+
+    def run_case(case):
+        terrain, units, scores, orders, mover = case
+        result = resolve(compiled_harness, terrain, units, scores, orders)
+        with lock:
+            results[mover] = result
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(run_case, case) for case in cases]
+        for fut in as_completed(futures):
+            fut.result()
+
+    for terrain, units, scores, orders, mover in cases:
+        result = results[mover]
+        assert unit_pos(result, mover) == (1, 0)
+        assert result.status == "ONGOING"
+        # Ensure no foreign unit ids leaked into this result.
+        ids = {u.id for u in result.units}
+        assert ids == {units[0][0], units[1][0]}
+
+
+def test_32_immutability_and_no_input_mutation(compiled_harness: Path):
+    """Resolution neither mutates input collections nor exposes mutable aliases through returned records."""
+    terrain = rectangle(2, 2)
+    units = [("u", "AMBER", 0, 0, 2, 1, 1, 1)]
+    orders = [("u", "MOVE", 1, 0)]
+    result = resolve(compiled_harness, terrain, units, (0, 0, 3), orders)
+    assert result.inputs_untouched is True
+    assert result.immutable == (True, True, True)
+
+
+def test_33_invalid_board_nullish_and_scores(compiled_harness: Path):
+    """Null data, invalid terrain maps, bad scores, and an invalid score target throw IllegalArgumentException before effects."""
+    terrain = rectangle(2, 1)
+    units = [("u", "AMBER", 0, 0, 2, 1, 1, 1)]
+    orders = [("u", "HOLD")]
+
+    # scoreToWin <= 0
+    resolve_error(compiled_harness, terrain, units, (0, 0, 0), orders)
+    # score already at/above target
+    resolve_error(compiled_harness, terrain, units, (3, 0, 3), orders)
+    # negative score
+    resolve_error(compiled_harness, terrain, units, (-1, 0, 3), orders)
+    # empty terrain
+    resolve_error(compiled_harness, [], units, (0, 0, 3), orders)
+
+
+def test_34_invalid_units_and_positions(compiled_harness: Path):
+    """Duplicate IDs or positions, invalid unit fields, wall occupancy, and off-board positions throw IllegalArgumentException."""
+    terrain = [(0, 0, "PLAIN"), (1, 0, "WALL"), (2, 0, "PLAIN")]
+    # duplicate ids
+    resolve_error(
+        compiled_harness,
+        terrain,
+        [("u", "AMBER", 0, 0, 2, 1, 1, 1), ("u", "COBALT", 2, 0, 2, 1, 1, 1)],
+        (0, 0, 3),
+        [("u", "HOLD")],
+    )
+    # duplicate positions
+    resolve_error(
+        compiled_harness,
+        [(0, 0, "PLAIN"), (1, 0, "PLAIN")],
+        [("a", "AMBER", 0, 0, 2, 1, 1, 1), ("b", "COBALT", 0, 0, 2, 1, 1, 1)],
+        (0, 0, 3),
+        [("a", "HOLD"), ("b", "HOLD")],
+    )
+    # wall occupancy
+    resolve_error(
+        compiled_harness,
+        terrain,
+        [("w", "AMBER", 1, 0, 2, 1, 1, 1)],
+        (0, 0, 3),
+        [("w", "HOLD")],
+    )
+    # off board
+    resolve_error(
+        compiled_harness,
+        terrain,
+        [("o", "AMBER", 9, 9, 2, 1, 1, 1)],
+        (0, 0, 3),
+        [("o", "HOLD")],
+    )
+    # non-positive health
+    resolve_error(
+        compiled_harness,
+        terrain,
+        [("h", "AMBER", 0, 0, 0, 1, 1, 1)],
+        (0, 0, 3),
+        [("h", "HOLD")],
+    )
+    # bad id
+    resolve_error(
+        compiled_harness,
+        terrain,
+        [("-bad", "AMBER", 0, 0, 2, 1, 1, 1)],
+        (0, 0, 3),
+        [("-bad", "HOLD")],
+    )
+
+
+def test_35_invalid_orders(compiled_harness: Path):
+    """Missing, duplicate, unknown, malformed, non-adjacent, wall-targeted, off-board, or out-of-range orders throw IllegalArgumentException."""
+    terrain = [(0, 0, "PLAIN"), (1, 0, "PLAIN"), (2, 0, "WALL"), (0, 1, "PLAIN")]
+    units = [
+        ("a", "AMBER", 0, 0, 2, 1, 1, 1),
+        ("b", "COBALT", 1, 0, 2, 1, 1, 1),
+    ]
+
+    # missing order
+    resolve_error(compiled_harness, terrain, units, (0, 0, 3), [("a", "HOLD")])
+    # duplicate order
+    resolve_error(
+        compiled_harness,
+        terrain,
+        units,
+        (0, 0, 3),
+        [("a", "HOLD"), ("b", "HOLD"), ("a", "HOLD")],
+    )
+    # unknown unit
+    resolve_error(
+        compiled_harness,
+        terrain,
+        units,
+        (0, 0, 3),
+        [("a", "HOLD"), ("ghost", "HOLD")],
+    )
+    # HOLD with non-null target
+    resolve_error(
+        compiled_harness,
+        terrain,
+        units,
+        (0, 0, 3),
+        [("a", "HOLD", 1, 0), ("b", "HOLD")],
+    )
+    # non-adjacent move
+    resolve_error(
+        compiled_harness,
+        terrain,
+        units,
+        (0, 0, 3),
+        [("a", "MOVE", 1, 1), ("b", "HOLD")],
+    )
+    # wall-targeted move
+    resolve_error(
+        compiled_harness,
+        terrain,
+        units,
+        (0, 0, 3),
+        [("a", "HOLD"), ("b", "MOVE", 2, 0)],
+    )
+    # off-board attack
+    resolve_error(
+        compiled_harness,
+        terrain,
+        units,
+        (0, 0, 3),
+        [("a", "ATTACK", 9, 9), ("b", "HOLD")],
+    )
+    # out of range attack
+    terrain2 = rectangle(5, 1)
+    units2 = [("a", "AMBER", 0, 0, 2, 1, 1, 1), ("b", "COBALT", 4, 0, 2, 1, 1, 1)]
+    resolve_error(
+        compiled_harness,
+        terrain2,
+        units2,
+        (0, 0, 3),
+        [("a", "ATTACK", 4, 0), ("b", "HOLD")],
+    )

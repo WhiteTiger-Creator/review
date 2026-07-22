@@ -1,0 +1,25 @@
+# Scenario: hazard-ring
+# Hazardous battlefield ring around a contested center.
+#
+# Terrain:
+#   PLAIN:  (1,1)
+#   HAZARD: (0,1) (1,0) (2,0) (2,1) (1,2) (0,2)
+#   WALL:   (0,0) (2,2)
+#   BEACON: (3,1)
+#
+# Units:
+#   ash    AMBER  at (1,0)  health=2 initiative=2 range=1 power=2
+#   spark  AMBER  at (0,1)  health=2 initiative=1 range=2 power=1
+#   brine  COBALT at (2,1)  health=2 initiative=3 range=1 power=2
+#   mist   COBALT at (1,2)  health=3 initiative=1 range=1 power=1
+#
+# Sample orders (illustrative):
+#   ash   MOVE (1,1)
+#   spark ATTACK (2,1)
+#   brine MOVE (1,1)
+#   mist  HOLD
+#
+# Governing idea: ending movement on HAZARD adds one damage after attacks;
+# attack and hazard combine into a single DAMAGE event before defeat checks.
+#
+# Scores: amber=0 cobalt=0 scoreToWin=3

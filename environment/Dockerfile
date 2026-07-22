@@ -1,25 +1,31 @@
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
+FROM public.ecr.aws/docker/library/eclipse-temurin:21-jdk-jammy@sha256:25d1276565738d3c805e632a4542c3a7598866ef967f4def6544c15de3a74b14
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+WORKDIR /app/emberline
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-         asciinema \
-         ca-certificates \
-         python3-numpy \
-         python3-pandas \
-         python3-pytest \
-         python3-sklearn \
-         r-base-core \
-         r-cran-jsonlite \
-         r-cran-mass \
-         r-cran-nnet \
-         tmux \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    make \
+    tmux \
+    asciinema \
+    python3 \
+    python3-pip \
+    python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
-RUN mkdir -p /app/data /app/output
+RUN python3 -m venv /opt/emberline-venv \
+ && /opt/emberline-venv/bin/pip install --no-cache-dir \
+      pytest==8.4.1 \
+      pytest-json-ctrf==0.3.5
 
-COPY data/ /app/data/
-COPY pytest_json_ctrf.py /app/pytest_json_ctrf.py
+COPY Makefile README.md ./
+COPY src ./src
+COPY scenarios ./scenarios
+
+RUN make \
+ && java -version \
+ && make -v \
+ && tmux -V \
+ && asciinema --version \
+ && /opt/emberline-venv/bin/python -c "import pytest; import ctrf"
+
+CMD ["sleep", "infinity"]

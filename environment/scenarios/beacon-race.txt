@@ -1,0 +1,25 @@
+# Scenario: beacon-race
+# Two-team race to claim BEACON hexes.
+#
+# Terrain:
+#   PLAIN: (0,0) (1,0) (2,0) (0,1) (2,1) (0,2) (1,2) (2,2)
+#   BEACON: (1,1)
+#   BEACON: (3,1)
+#   WALL: (3,0) (3,2)
+#
+# Units:
+#   ember1  AMBER  at (0,1)  health=4 initiative=3 range=2 power=2
+#   ember2  AMBER  at (0,2)  health=4 initiative=1 range=1 power=1
+#   tide1   COBALT at (2,0)  health=4 initiative=2 range=2 power=2
+#   tide2   COBALT at (2,2)  health=4 initiative=2 range=1 power=1
+#
+# Sample orders (illustrative):
+#   ember1 MOVE (1,1)
+#   ember2 HOLD
+#   tide1  MOVE (3,1)
+#   tide2  ATTACK (1,1)
+#
+# Governing idea: after movement and combat, each surviving unit standing on a
+# BEACON scores one point for its team; reaching scoreToWin ends the match.
+#
+# Scores: amber=3 cobalt=3 scoreToWin=5

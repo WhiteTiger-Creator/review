@@ -1,0 +1,24 @@
+# Scenario: crossing-lines
+# Intersecting movement chains on a small plain field.
+#
+# Terrain (PLAIN unless noted), axial q,r:
+#   (0,0) (1,0) (2,0) (3,0)
+#   (0,1) (1,1) (2,1) (3,1)
+#   (0,2) (1,2) (2,2) (3,2)
+#
+# Units:
+#   scoutA  AMBER  at (0,1)  health=3 initiative=2 range=1 power=1
+#   wingA   AMBER  at (1,0)  health=3 initiative=1 range=1 power=1
+#   guardC  COBALT at (2,1)  health=3 initiative=2 range=1 power=1
+#   pivotC  COBALT at (3,2)  health=3 initiative=1 range=1 power=1
+#
+# Sample orders (illustrative):
+#   scoutA MOVE (1,1)
+#   wingA  MOVE (1,1)   # contends with scoutA for (1,1)
+#   guardC MOVE (1,1)   # three-way contention example variant
+#   pivotC HOLD
+#
+# Governing idea: contention keeps the highest initiative (then smallest id);
+# retained movers form chains or cycles against initial occupancy.
+#
+# Scores: amber=0 cobalt=0 scoreToWin=5
