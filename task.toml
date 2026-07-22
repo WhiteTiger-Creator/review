@@ -1,27 +1,30 @@
-version = "2.0"
+version = "2.2"
 
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
-difficulty = "unknown"
-category = "games"
-subcategories = []
+difficulty = "hard"
+category = "build-and-dependency-management"
+subcategories = ["tool_specific", "api_integration"]
+codebase_size = "large"
+languages = ["rust", "sql"]
+tags = ["rustsec", "cargo-audit", "cargo-deny", "lockfile-reconciliation", "release-ledger"]
+expert_time_estimate_min = 240
+junior_time_estimate_min = 660
 number_of_milestones = 0
-codebase_size = "minimal"
-languages = ["java"]
-tags = ["simultaneous-turns", "hex-grid", "tactics", "deterministic-resolution"]
-expert_time_estimate_min = 150
-junior_time_estimate_min = 300
-
-[verifier]
-timeout_sec = 480.0
 
 [agent]
-timeout_sec = 900.0
+timeout_sec = 900
+
+[verifier]
+timeout_sec = 420
 
 [environment]
-build_timeout_sec = 600.0
+build_timeout_sec = 600
+docker_flags = []
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-allow_internet = false
+gpus = 0
+gpu_types = []
+allow_internet = true

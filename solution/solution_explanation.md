@@ -1,0 +1,3 @@
+The reference operation updates only the workspace policy files. Cargo resolves the three fixed boundaries against the live index and moves Serde to the matching core and derive generation required by the safe `time` release. It then rebuilds the vendor tree from the final format-4 lockfile. The final source replacement makes metadata and all workspace tests replay without a network.
+
+The operation runs cargo-audit and cargo-deny against the current RustSec database without ignores. It binds the resulting handoff to the exact lockfile hash and the live advisory database HEAD in SQLite. The runbook carries the same versions, commands, and identifiers, while the existing Rust source stays untouched.
