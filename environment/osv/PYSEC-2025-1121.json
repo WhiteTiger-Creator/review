@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.6.0",
+  "id": "PYSEC-2025-1121",
+  "modified": "2026-05-02T00:00:00Z",
+  "published": "2026-02-10T00:00:00Z",
+  "summary": "Stored XSS through run tags rendered in the experiment UI",
+  "aliases": [
+    "CVE-2025-51377",
+    "GHSA-7p9q-hrqf-2f2x"
+  ],
+  "affected": [
+    {
+      "package": {
+        "ecosystem": "PyPI",
+        "name": "mlflow"
+      },
+      "ranges": [
+        {
+          "type": "ECOSYSTEM",
+          "events": [
+            {
+              "introduced": "0"
+            },
+            {
+              "fixed": "2.12.0"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "references": [
+    {
+      "type": "ADVISORY",
+      "url": "https://osv.dev/vulnerability/PYSEC-2025-1121"
+    }
+  ],
+  "severity": [
+    {
+      "type": "CVSS_V3",
+      "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N"
+    }
+  ]
+}

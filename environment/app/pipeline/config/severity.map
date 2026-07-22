@@ -1,0 +1,8 @@
+# curated severity table, methodology revision 4, values in tenths
+label CRITICAL 95
+label HIGH 78
+label MODERATE 54
+label LOW 21
+coeff extra_group 4
+coeff page 2
+cap 100

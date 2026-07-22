@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.6.0",
+  "id": "PYSEC-2025-0983",
+  "modified": "2026-05-02T00:00:00Z",
+  "published": "2026-02-10T00:00:00Z",
+  "summary": "Arbitrary code execution when loading untrusted serialized modules",
+  "aliases": [
+    "CVE-2025-61188"
+  ],
+  "affected": [
+    {
+      "package": {
+        "ecosystem": "PyPI",
+        "name": "torch"
+      },
+      "ranges": [
+        {
+          "type": "ECOSYSTEM",
+          "events": [
+            {
+              "introduced": "0"
+            },
+            {
+              "fixed": "2.3.0"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "references": [
+    {
+      "type": "ADVISORY",
+      "url": "https://osv.dev/vulnerability/PYSEC-2025-0983"
+    }
+  ],
+  "severity": [
+    {
+      "type": "CVSS_V3",
+      "score": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H"
+    }
+  ]
+}

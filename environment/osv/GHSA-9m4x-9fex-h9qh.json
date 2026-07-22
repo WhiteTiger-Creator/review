@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.6.0",
+  "id": "GHSA-9m4x-9fex-h9qh",
+  "modified": "2026-05-02T00:00:00Z",
+  "published": "2026-02-10T00:00:00Z",
+  "summary": "Malformed header line causes connection handler to spin",
+  "aliases": [
+    "CVE-2026-24793"
+  ],
+  "affected": [
+    {
+      "package": {
+        "ecosystem": "PyPI",
+        "name": "waitress"
+      },
+      "ranges": [
+        {
+          "type": "ECOSYSTEM",
+          "events": [
+            {
+              "introduced": "0"
+            },
+            {
+              "fixed": "2.1.4"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "references": [
+    {
+      "type": "ADVISORY",
+      "url": "https://osv.dev/vulnerability/GHSA-9m4x-9fex-h9qh"
+    }
+  ],
+  "severity": [
+    {
+      "type": "CVSS_V3",
+      "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N"
+    }
+  ]
+}

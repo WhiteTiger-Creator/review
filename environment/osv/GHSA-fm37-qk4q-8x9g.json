@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.6.0",
+  "id": "GHSA-fm37-qk4q-8x9g",
+  "modified": "2026-05-02T00:00:00Z",
+  "published": "2026-02-10T00:00:00Z",
+  "summary": "Session cookie may be cached by proxies when Vary header is dropped",
+  "aliases": [
+    "CVE-2026-30861"
+  ],
+  "affected": [
+    {
+      "package": {
+        "ecosystem": "PyPI",
+        "name": "flask"
+      },
+      "ranges": [
+        {
+          "type": "ECOSYSTEM",
+          "events": [
+            {
+              "introduced": "0"
+            },
+            {
+              "fixed": "2.2.5"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "references": [
+    {
+      "type": "ADVISORY",
+      "url": "https://osv.dev/vulnerability/GHSA-fm37-qk4q-8x9g"
+    }
+  ],
+  "severity": [
+    {
+      "type": "CVSS_V3",
+      "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"
+    }
+  ]
+}

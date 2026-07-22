@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.6.0",
+  "id": "GHSA-w2rc-8xqm-9q5v",
+  "modified": "2026-05-02T00:00:00Z",
+  "published": "2026-02-10T00:00:00Z",
+  "summary": "Server-side request forgery via model source URI (disputed, withdrawn)",
+  "aliases": [
+    "CVE-2025-52988"
+  ],
+  "affected": [
+    {
+      "package": {
+        "ecosystem": "PyPI",
+        "name": "mlflow"
+      },
+      "ranges": [
+        {
+          "type": "ECOSYSTEM",
+          "events": [
+            {
+              "introduced": "0"
+            },
+            {
+              "fixed": "2.13.0"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "references": [
+    {
+      "type": "ADVISORY",
+      "url": "https://osv.dev/vulnerability/GHSA-w2rc-8xqm-9q5v"
+    }
+  ],
+  "withdrawn": "2026-01-15T00:00:00Z",
+  "severity": [
+    {
+      "type": "CVSS_V3",
+      "score": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H"
+    }
+  ]
+}

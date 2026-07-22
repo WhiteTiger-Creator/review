@@ -1,872 +1,247 @@
-"""Verifier tests for golub-kahan-bidiagonal-svd-relative-accuracy.
+"""Verifier for the MLflow advisory pipeline build task.
 
-Builds the agent's tree with CMake (from a clean `build/` directory, so a
-stale binary can never be trusted), then runs the resulting `svd_solve`
-binary against every graded case and checks it against an independent route
-that never calls the agent's own code:
-
-  (a) self-consistency: `U^H U` and `V^H V` against identity, and
-      `U * diag(sigma) * V^H` against the case's own complex `A` (re-parsed
-      independently from the case file), both scaled by `A`'s own
-      magnitude -- catches any implementation whose reported factors do not
-      actually reconstruct the disclosed input, regardless of what it
-      claims about its own correctness.
-  (b) ground-truth singular values for the "graded embedding" family: these
-      cases are constructed at authoring time as `A = Q1 diag(sigma_true)
-      Q2^H` for a disclosed real `sigma_true` and random COMPLEX UNITARY
-      `Q1, Q2`; `sigma_true` is stored verbatim (never computed by any SVD
-      routine) under `tests/reference/*.sigma` and compared against the
-      candidate's reported singular values at a per-index tolerance.
-  (c) ground-truth singular values for the "clustered bidiagonal" family:
-      these cases are exactly upper bidiagonal by construction (all
-      off-band entries exactly zero, real diagonal/superdiagonal), so their
-      entries are read directly back out of the disclosed `A` and each
-      independent 2x2 diagonal block's exact singular values are computed
-      via a closed-form stable formula -- no SVD routine, agent or
-      otherwise, is used to produce this reference.
-  (d) ground-truth singular values for the "rank-deficient" family: a
-      connected (not block-decoupled) bidiagonal chain -- real-valued or
-      genuinely complex -- with one entry planted at exactly zero, so the
-      matrix is exactly rank-deficient. Ground truth is an independent
-      50-digit mpmath eigendecomposition of B^H B disclosed at authoring
-      time. An exact-zero pivot makes the ordinary trailing-2x2 Wilkinson
-      shift singular; a candidate that never special-cases it either fails
-      to converge or reports a spurious spectrum, both caught below.
-  (e) metamorphic relations (unitary invariance, complex phase/magnitude
-      scaling, conjugate transpose) checked by re-running the candidate on
-      a second, independently disclosed derived fixture and comparing its
-      own two reported singular-value sets to each other -- no stored
-      reference needed at all.
-
-Case visibility has two tiers:
-
-  - "public" cases live under `/app/environment/data/case_*.txt`, copied
-    into the agent's own image.
-  - "hidden" cases live under `tests/hidden_data/`, never copied into the
-    agent-visible image (see environment/Dockerfile and
-    environment/.dockerignore, which excludes `tests/` entirely) -- written
-    to a fresh temp directory and run through the compiled binary only at
-    verification time.
-
-All matrix/vector arithmetic in this file is plain Python complex numbers
-(no numpy, no scipy, no external SVD or eigensolver of any kind): every
-case here is small (n <= 16), so there is no performance reason to take on
-a dependency in the verifier image, and doing so would risk the verifier's
-own reference silently sharing a bug with a candidate that happens to link
-the same library.
+The graded artifact is the shipped CMake project: the verifier re-runs the
+build from a clean tree with no extra flags and checks the report the built
+pipeline produces.
 """
 
-from __future__ import annotations
-
+import hashlib
 import json
-import math
-import shutil
+import os
+import pathlib
 import subprocess
-from pathlib import Path
+import tempfile
 
+import jsonschema
 import pytest
 
-ENV = Path("/app/environment")
-DATA_DIR = ENV / "data"
-INCLUDE_DIR = ENV / "include"
-BUILD_DIR = ENV / "build"
+PIPELINE = "/app/pipeline"
+OUT_JSON = "/app/out/risk-report.json"
+SCHEMA_JSON = "/app/schema/risk-report.schema.json"
+DOCS_DIR = "/app/docs/pages"
+MIRROR_DIR = "/var/lib/osv"
+TOOLS = ("extract", "advise", "score")
 
-TESTS_DIR = Path(__file__).resolve().parent
-HIDDEN_DATA_DIR = TESTS_DIR / "hidden_data"
-REF_DIR = TESTS_DIR / "reference"
+PRISTINE = {
+    "/app/pipeline/src/advise.c": "a098879e4b09b04319901218a3168445b71e6f51e7bb6576839782e13fc58e14",
+    "/app/pipeline/src/common.c": "1c1db4d823854ca0cbd7664a793ec767f7f003eb02198c9ad5c92fde5fa34021",
+    "/app/pipeline/src/common.h": "a13a7c651a8a89c8bfde1fa6cf548847be74027a3d9fdc742e1b4837e442a31a",
+    "/app/pipeline/src/cvss.c": "f2a1a87dc74bfdd7e0eac4de63b816a578833f57470880f2382a97085c3050fd",
+    "/app/pipeline/src/cvss.h": "2669676a854aa191f1ec2e1196a210b0df6dfcfd583477f503daa99b04314570",
+    "/app/pipeline/src/extract.c": "796e45d89db9fe5d2cdd798d570143ba5136a612371dc27c188dbd5daadb7e02",
+    "/app/pipeline/src/fold.h": "7e89ff821002d6ff3c8a3fbb4148257af23caeb21e4b9acc4ed993f3aa61e78f",
+    "/app/pipeline/src/fold_alias.c": "7e6e050d9b316210262f8248135fb35f9aba723a4a3a42e4d583a345d97a4616",
+    "/app/pipeline/src/fold_none.c": "19cd4fb9236de35f4b508f6037e897433cb32173a805b6bc5fd3f95008d3a691",
+    "/app/pipeline/src/order.h": "ac430d825c0fcd7822c399294fba8c343a799bc1f768aa13bbc55e564d5b7b8b",
+    "/app/pipeline/src/order_name.c": "43a67967d1514f3f20ce8a2c4a5f3768c077947dd4a7482bb8fb259c96c42a7c",
+    "/app/pipeline/src/order_weighted.c": "d3c9393d78a96517c1f9fe92e529f0415fb08466ff1792a1d6c202e2e32b6992",
+    "/app/pipeline/src/pinsel.h": "fbaa6ca3cf8111462576db15d76a22f855e415eb3db3d6b06cc5643da4ae9061",
+    "/app/pipeline/src/pinsel_floor.c": "6f1dbff96190430b24275de25cf0dee03a07aac2c770393938d701454dd68879",
+    "/app/pipeline/src/pinsel_latest.c": "6e51efbe7a91fa582692d8a2b2605ee035063d8b744344751730f56779c79f44",
+    "/app/pipeline/src/report_row.h": "b7511d0049ef579a00983c79fdb4d23ac1771262a008cef2553a870303aa6c0c",
+    "/app/pipeline/src/score.c": "a6225e7b1e1e3daed903a1ec045c3e2cf6d298a3a728cedba9a32da8b14938b1",
+    "/app/pipeline/src/sevagg.h": "f33fd18a8f15b0c3f1c5ac9f8c8823c7797f4f2ca1ea026c80e26906fc4a1692",
+    "/app/pipeline/src/sevagg_curated.c": "2714aa51aec2b08403701fef63ad64e0e4182c02225e11ecd5378133d3c0d9dc",
+    "/app/pipeline/src/sevagg_max.c": "5d6a457d21c1002d744e242cf3f52551cbb7fc5b5c391636b200cfc91b15b673",
+    "/app/pipeline/src/severity_table.h": "a79a61f5c88f09e10464902a31bfe01bc410b468e663a6b8e69f0388a539c5b3",
+    "/app/pipeline/src/vercmp.c": "fe686a5d294d96979f60974e2280587094115746ea1fbe0edf0030ffa9d19ac0",
+    "/app/pipeline/src/vercmp.h": "32c6d38cc500eb562c91b2684d8d3d80e4aa964527776ccd4d9d9c4eaff125a9",
+    "/app/pipeline/src/compat/vercmp.h": "f4d8c4c1e53955f0924156e81cf9b5d8e632f91f8bf3781a3248ab2dc0439ad0",
+    "/app/pipeline/vendor/qjson/qjson.c": "1dd94fa1e19a8a3edd5bea9090d75606241c9a0c9b22e4a387fec6330ddc88fd",
+    "/app/pipeline/vendor/qjson/qjson.h": "4990299921a72cd5b2cd7ee33003f0e178fd8295427677b903b61637fc9f79b6",
+    "/app/pipeline/tools/mkscore.c": "d2e874a42bf1a628bea182ed659f7624a2ab1ae8cb9d1caae64a6dbe695d8d11",
+    "/app/pipeline/config/severity.map": "d10b5093a04646e17f1ed4da21073b14a46095aa4cbb4964f3b63bfcc9c4c539",
+    "/app/docs/pages/artifact-store.md": "2f33427a4f504114922713eab4c8b89b633ddd6fbdfad393a4859c294ed8df0e",
+    "/app/docs/pages/auth.md": "5143da006eb23bf1219f579b0398b680530272f8e37e41e4934715a0b328dcf1",
+    "/app/docs/pages/model-serving.md": "b1714bf2757bbdbb41e6cadacfe4c075380285984d2350815b85d1a56f5db0ee",
+    "/app/docs/pages/projects.md": "8b35f5a103c1701ec21ca278c5b8f7dbdc680d7213acd2afdbeed2158905a5a0",
+    "/app/docs/pages/recipes.md": "1d2ea5290c7118f92898536259609a8f12e5aa2cb92899bf6da664ecf154d32f",
+    "/app/docs/pages/scoring-container.md": "23ff91ec6a1e2fa0c984ae65dc2f35c79160d34270c0d3cf3c1b096247ea2f3c",
+    "/app/docs/pages/tracking-server.md": "c5396e601c919b320beda884ca34c44ee0fd6b41ffad5d71707bc9610a289a81",
+    "/app/docs/samples/smoke.md": "3f31282a3797a6212c4666f6eb10f26fddbb71a40929d01ac5bce886e904da09",
+    "/var/lib/osv/GHSA-4f7p-27jc-3c36.json": "f960ade3f2d717e0896bfea29cc74af2ae6056b93335496a624b90692fc06e20",
+    "/var/lib/osv/GHSA-58q9-vppv-3g6c.json": "47c9b7982975f1e742d9acca203f521b648cf01709f7ffac45d36b23ca9c194b",
+    "/var/lib/osv/GHSA-6wvq-7f3h-6xmm.json": "a7532118253358e65fc01fe20f9af639e297eb5b5509208187d128ad8796e0b0",
+    "/var/lib/osv/GHSA-7p9q-hrqf-2f2x.json": "290df5db68367a27fc6f84848680aa35b4a81bf1050eb092aaf0b429c0656cd2",
+    "/var/lib/osv/GHSA-83mx-6h29-mm94.json": "075c542a3e025e1de4fd657a7d1f73b1eea3af138f8d2f8eba932005979e8701",
+    "/var/lib/osv/GHSA-9m4x-9fex-h9qh.json": "ed16103026475d9036535b69cdbaf53b8d2df4ca481f3034ec7af95e5c9bcd1b",
+    "/var/lib/osv/GHSA-cvw4-9r7p-vqqm.json": "d0bcb369d0006ab334b72ed5b56f70bfb1a9aa689883b9d849bf30368170ddef",
+    "/var/lib/osv/GHSA-fm37-qk4q-8x9g.json": "e2519cc0fec62bb1f8ab2abbaae22227827ebf1d62dd83021d58c3308ad39f1f",
+    "/var/lib/osv/GHSA-h5c8-rqwp-cp95.json": "7974cdc7411b8bbc4959a32e8b5a37af65f64d203540a39cdc547a294dbca34f",
+    "/var/lib/osv/GHSA-hrfv-mqp8-q5rw.json": "e8863a62d5541a8bb9f333847f2c38a103e5277c220dd1ef30f830408ecba248",
+    "/var/lib/osv/GHSA-p3v6-c6cx-hrgq.json": "144769750452e71e40a5b932c11aa7fc9fe8bc946a3d0bb81ee3a1e48b69011a",
+    "/var/lib/osv/GHSA-w2rc-8xqm-9q5v.json": "d12638d89dc594c3bfb344915cddc7cd08cc09d875ccdd4b81e543fe2c742029",
+    "/var/lib/osv/GHSA-x4qr-wcfg-2p9v.json": "2ad0c57b780000eaca8ee57700df1e3ed3cd08f008b67ca97bbc4c094d752cef",
+    "/var/lib/osv/PYSEC-2025-0983.json": "476940211987a10465560e6d2d3dd3ef83735d11fe9fb5f6739a8184b5e436d6",
+    "/var/lib/osv/PYSEC-2025-1104.json": "fde910d55391e80721e5db146f7b207136a4710aac97babc2665b2e020ef2ab1",
+    "/var/lib/osv/PYSEC-2025-1121.json": "80321abf09ab8a873eef14405661688f0a2ae22d54f1a784121dfd2c8fa69e2d",
+    "/var/lib/osv/PYSEC-2026-0219.json": "4df3e142a95c256f2af2d982ea74c075d0736c2305ef71424ed5e83f19e3e690",
+    "/app/report/model-risk-report.md": "8f94817dd04db540ddfb4e4cf834965f17b6fc87d981a80ccac8b74aefd3de71",
+    "/app/schema/risk-report.schema.json": "c1b566234eb4df9f4ff0bf8580691e763fa3b26c7627d46240e9f6911009dfbe"
+}
 
-EPS = 2.220446049250313e-16
-
-MANIFEST = json.loads((REF_DIR / "manifest.json").read_text())
-CASE_NAMES = MANIFEST["manifest"]
-META_DERIVED = MANIFEST["meta_derived"]
-
-GRADE_B_TOL_MULT = 100.0
-GRADE_B_TOL_FLOOR = 3e-10
-GRADE_C_TOL = 1e-6
-SELF_CONS_TOL = 1e-9
-GRADE_D_TOL = 1e-11
-GRADE_F_TOL = 1e-11
-META_TOL = 1e-7
-
-SELF_CONS_PUBLIC = [
-    n for fam in ["SC", "D_public", "E", "meta_base"] for n in CASE_NAMES[fam]
-]
-SELF_CONS_HIDDEN = list(CASE_NAMES["D_hidden"])
-
-GRADE_B_PUBLIC = list(CASE_NAMES["B_public"])
-GRADE_B_HIDDEN = list(CASE_NAMES["B_hidden"])
-GRADE_C_PUBLIC = list(CASE_NAMES["C_public"])
-GRADE_C_HIDDEN = list(CASE_NAMES["C_hidden"])
-GRADE_F_PUBLIC = list(CASE_NAMES["F_public"])
-GRADE_F_HIDDEN = list(CASE_NAMES["F_hidden"])
-
-META_UNITARY = META_DERIVED["unitary"]
-META_SCALE = META_DERIVED["scale"]
-META_CONJT = META_DERIVED["conj_transpose"]
-
-ALL_META_DERIVED_NAMES = (
-    [d for _, d in META_UNITARY]
-    + [d for _, d, *_ in META_SCALE]
-    + [d for _, d in META_CONJT]
-)
-
-ALL_PUBLIC_CASE_NAMES = (
-    SELF_CONS_PUBLIC
-    + GRADE_B_PUBLIC
-    + GRADE_C_PUBLIC
-    + GRADE_F_PUBLIC
-    + ALL_META_DERIVED_NAMES
-    + ["case_toy2x2"]
-)
-ALL_HIDDEN_CASE_NAMES = (
-    SELF_CONS_HIDDEN + GRADE_B_HIDDEN + GRADE_C_HIDDEN + GRADE_F_HIDDEN
-)
-
-ALL_GRADED_CASE_NAMES = (
-    SELF_CONS_PUBLIC
-    + SELF_CONS_HIDDEN
-    + GRADE_B_PUBLIC
-    + GRADE_B_HIDDEN
-    + GRADE_C_PUBLIC
-    + GRADE_C_HIDDEN
-    + GRADE_F_PUBLIC
-    + GRADE_F_HIDDEN
-    + [d for _, d in META_UNITARY]
-    + [d for _, d, *_ in META_SCALE]
-    + [d for _, d in META_CONJT]
-)
-
-
-# ---------------------------------------------------------------------------
-# Pure-Python complex linear algebra helpers (no third-party dependency)
-# ---------------------------------------------------------------------------
-
-
-def _matmul(A, B):
-    n = len(A)
-    k = len(B)
-    m = len(B[0]) if k else 0
-    C = [[0j] * m for _ in range(n)]
-    for i in range(n):
-        Ai = A[i]
-        Ci = C[i]
-        for p in range(k):
-            a = Ai[p]
-            if a == 0j:
-                continue
-            Bp = B[p]
-            for j in range(m):
-                Ci[j] += a * Bp[j]
-    return C
-
-
-def _conj_transpose(A):
-    n = len(A)
-    m = len(A[0]) if n else 0
-    return [[A[i][j].conjugate() for i in range(n)] for j in range(m)]
-
-
-def _max_abs(A):
-    return max((abs(v) for row in A for v in row), default=0.0)
-
-
-def _max_abs_diff(A, B):
-    result = 0.0
-    saw_nonfinite = False
-    for i in range(len(A)):
-        for j in range(len(A[0])):
-            d = abs(A[i][j] - B[i][j])
-            if not math.isfinite(d):
-                saw_nonfinite = True
-                continue
-            if d > result:
-                result = d
-    return math.nan if saw_nonfinite else result
-
-
-def _identity(n):
-    return [[1 + 0j if i == j else 0j for j in range(n)] for i in range(n)]
-
-
-def svd2x2_closed_form(d1, e, d2):
-    """Exact singular values of the REAL 2x2 upper-bidiagonal [[d1,e],[0,d2]],
-    via a stable closed-form (cancellation-safe) formula -- no iteration."""
-    fa, ga, ha = abs(d1), abs(e), abs(d2)
-    fhmn, fhmx = min(fa, ha), max(fa, ha)
-    if fhmn == 0.0:
-        smin = 0.0
-        if fhmx == 0.0:
-            smax = ga
-        else:
-            smax = max(fhmx, ga) * math.sqrt(1.0 + (min(fhmx, ga) / max(fhmx, ga)) ** 2)
-        return smax, smin
-    if ga < fhmx:
-        as_ = 1.0 + fhmn / fhmx
-        at = (fhmx - fhmn) / fhmx
-        au = (ga / fhmx) ** 2
-        c = 2.0 / (math.sqrt(as_ * as_ + au) + math.sqrt(at * at + au))
-        smin = fhmn * c
-        smax = fhmx / c
-    else:
-        au = fhmx / ga
-        if au == 0.0:
-            smin = (fhmn * fhmx) / ga
-            smax = ga
-        else:
-            as_ = 1.0 + fhmn / fhmx
-            at = (fhmx - fhmn) / fhmx
-            c = 1.0 / (math.sqrt(1 + (as_ * au) ** 2) + math.sqrt(1 + (at * au) ** 2))
-            smin = (fhmn * c) * au * 2.0
-            smax = ga / (c * 2.0)
-    return smax, smin
-
-
-# ---------------------------------------------------------------------------
-# Case / output file parsing
-# ---------------------------------------------------------------------------
-
-
-def _case_path(case_name: str) -> Path:
-    public_path = DATA_DIR / f"{case_name}.txt"
-    if public_path.exists():
-        return public_path
-    return HIDDEN_DATA_DIR / f"{case_name}.txt"
-
-
-def parse_case_file(path: Path):
-    tokens: list[float] = []
-    for line in path.read_text().splitlines():
-        s = line.strip()
-        if not s:
-            continue
-        tokens.extend(float(t) for t in s.split())
-    m = int(round(tokens[0]))
-    n = int(round(tokens[1]))
-    A = [[0j] * n for _ in range(m)]
-    idx = 2
-    for i in range(m):
-        for j in range(n):
-            re = tokens[idx]
-            im = tokens[idx + 1]
-            idx += 2
-            A[i][j] = complex(re, im)
-    assert idx == len(tokens), f"{path.name}: unexpected trailing tokens"
-    return m, n, A
-
-
-def parse_output_file(path: Path) -> dict:
-    lines = path.read_text().splitlines()
-    pos = 0
-
-    def next_line() -> str:
-        nonlocal pos
-        assert pos < len(lines), f"{path}: output file ended unexpectedly"
-        line = lines[pos]
-        pos += 1
-        return line
-
-    m_line = next_line()
-    assert m_line.startswith("m="), f"{path}: expected 'm=' line, got {m_line!r}"
-    m = int(m_line[len("m=") :])
-
-    n_line = next_line()
-    assert n_line.startswith("n="), f"{path}: expected 'n=' line, got {n_line!r}"
-    n = int(n_line[len("n=") :])
-
-    status_line = next_line()
-    assert status_line.startswith("status="), f"{path}: expected 'status=' line"
-    status = status_line[len("status=") :]
-
-    message_line = next_line()
-    assert message_line.startswith("message="), f"{path}: expected 'message=' line"
-
-    result = {"m": m, "n": n, "status": status}
-    if status != "OK":
-        return result
-
-    sv_line = next_line()
-    assert sv_line.startswith("singular_values="), (
-        f"{path}: expected 'singular_values=' line"
-    )
-    sigma = [float(v) for v in sv_line[len("singular_values=") :].split()]
-    assert len(sigma) == n, (
-        f"{path}: singular_values has {len(sigma)} entries, expected {n}"
-    )
-
-    def read_complex_rows(count: int, width: int):
-        rows = []
-        for _ in range(count):
-            vals = [float(v) for v in next_line().split()]
-            assert len(vals) == 2 * width, (
-                f"{path}: row has {len(vals)} numbers, expected {2 * width}"
-            )
-            rows.append([complex(vals[2 * k], vals[2 * k + 1]) for k in range(width)])
-        return rows
-
-    assert next_line() == "U", f"{path}: expected 'U' section header"
-    U = read_complex_rows(m, n)
-
-    assert next_line() == "V", f"{path}: expected 'V' section header"
-    V = read_complex_rows(n, n)
-
-    result.update({"sigma": sigma, "U": U, "V": V})
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Build + run fixtures
-# ---------------------------------------------------------------------------
+EXPECTED = {
+    "schema_version": "4",
+    "packages": [
+        {
+            "name": "pyarrow",
+            "assessed_version": "14.0.0",
+            "pages_referenced": 2,
+            "advisory_count": 1,
+            "max_severity": 9.6,
+            "risk_score": 10.0,
+            "advisories": [
+                "GHSA-6wvq-7f3h-6xmm"
+            ]
+        },
+        {
+            "name": "gunicorn",
+            "assessed_version": "20.1.0",
+            "pages_referenced": 2,
+            "advisory_count": 2,
+            "max_severity": 8.6,
+            "risk_score": 9.4,
+            "advisories": [
+                "GHSA-p3v6-c6cx-hrgq",
+                "PYSEC-2026-0219"
+            ]
+        },
+        {
+            "name": "mlflow",
+            "assessed_version": "2.9.2",
+            "pages_referenced": 4,
+            "advisory_count": 2,
+            "max_severity": 7.5,
+            "risk_score": 8.7,
+            "advisories": [
+                "PYSEC-2025-1104",
+                "PYSEC-2025-1121"
+            ]
+        },
+        {
+            "name": "waitress",
+            "assessed_version": "2.1.2",
+            "pages_referenced": 2,
+            "advisory_count": 2,
+            "max_severity": 7.5,
+            "risk_score": 8.3,
+            "advisories": [
+                "GHSA-4f7p-27jc-3c36",
+                "GHSA-9m4x-9fex-h9qh"
+            ]
+        },
+        {
+            "name": "jinja2",
+            "assessed_version": "3.1.2",
+            "pages_referenced": 1,
+            "advisory_count": 1,
+            "max_severity": 8.1,
+            "risk_score": 8.3,
+            "advisories": [
+                "GHSA-h5c8-rqwp-cp95"
+            ]
+        },
+        {
+            "name": "flask",
+            "assessed_version": "2.2.5",
+            "pages_referenced": 1,
+            "advisory_count": 1,
+            "max_severity": 5.4,
+            "risk_score": 5.6,
+            "advisories": [
+                "GHSA-hrfv-mqp8-q5rw"
+            ]
+        }
+    ]
+}
 
 
 @pytest.fixture(scope="session")
-def built() -> Path:
-    shutil.rmtree(BUILD_DIR, ignore_errors=True)
+def clean_build():
+    """Configure and build the report target from a clean tree, no extra flags."""
+    builddir = tempfile.mkdtemp(prefix="verify-build-")
+    pathlib.Path("/app/out").mkdir(parents=True, exist_ok=True)
+    out = pathlib.Path(OUT_JSON)
+    if out.exists():
+        out.unlink()
     configure = subprocess.run(
-        ["cmake", "-S", str(ENV), "-B", str(BUILD_DIR), "-DCMAKE_BUILD_TYPE=Release"],
-        cwd=str(ENV),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=120,
+        ["cmake", "-S", PIPELINE, "-B", builddir],
+        capture_output=True, text=True, timeout=240,
     )
-    assert configure.returncode == 0, f"cmake configure failed:\n{configure.stdout}"
-    build = subprocess.run(
-        ["cmake", "--build", str(BUILD_DIR), "-j"],
-        cwd=str(ENV),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=300,
-    )
-    assert build.returncode == 0, f"cmake build failed:\n{build.stdout}"
-    binary = BUILD_DIR / "svd_solve"
-    assert binary.exists(), "build did not produce build/svd_solve"
-    return binary
-
-
-def run_case(built_binary: Path, case_path: Path, tmp_path: Path):
-    out_file = tmp_path / f"{case_path.stem}.out"
-    result = subprocess.run(
-        [str(built_binary), str(case_path), str(out_file)],
-        cwd=str(ENV),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=60,
-    )
-    return result, out_file
-
-
-def _solve(built_binary: Path, case_name: str, tmp_path: Path) -> dict:
-    case_path = _case_path(case_name)
-    result, out_file = run_case(built_binary, case_path, tmp_path)
-    assert result.returncode == 0, (
-        f"{case_name}: svd_solve exited {result.returncode}\nstderr:\n{result.stderr}"
-    )
-    assert out_file.exists(), f"{case_name}: no output file was written"
-    return parse_output_file(out_file)
-
-
-def _validate_well_formed(case_name: str, m: int, n: int, out: dict) -> None:
-    assert out["status"] == "OK", f"{case_name}: status={out['status']!r}, expected OK"
-    assert out["m"] == m and out["n"] == n, (
-        f"{case_name}: output shape ({out['m']},{out['n']}), expected ({m},{n})"
-    )
-    sigma = out["sigma"]
-    assert all(math.isfinite(s) for s in sigma), (
-        f"{case_name}: singular_values not finite"
-    )
-    assert all(s >= 0.0 for s in sigma), (
-        f"{case_name}: singular_values must be nonnegative"
-    )
-    for i in range(len(sigma) - 1):
-        assert sigma[i] >= sigma[i + 1], f"{case_name}: singular_values not descending"
-    assert all(
-        math.isfinite(v.real) and math.isfinite(v.imag) for row in out["U"] for v in row
-    ), f"{case_name}: U not finite"
-    assert all(
-        math.isfinite(v.real) and math.isfinite(v.imag) for row in out["V"] for v in row
-    ), f"{case_name}: V not finite"
-
-
-def _self_consistency(m: int, n: int, A, out: dict):
-    U, V, sigma = out["U"], out["V"], out["sigma"]
-    Uh = _conj_transpose(U)
-    ortho_u = _max_abs_diff(_matmul(Uh, U), _identity(n))
-    Vh = _conj_transpose(V)
-    ortho_v = _max_abs_diff(_matmul(Vh, V), _identity(n))
-    Sigma = [[sigma[i] + 0j if i == j else 0j for j in range(n)] for i in range(n)]
-    recon = _matmul(_matmul(U, Sigma), Vh)
-    denom = max(_max_abs(A), 1e-300)
-    recon_err = _max_abs_diff(A, recon) / denom
-    return ortho_u, ortho_v, recon_err
-
-
-# ---------------------------------------------------------------------------
-# Structural / build tests
-# ---------------------------------------------------------------------------
-
-
-def test_binary_builds_successfully(built: Path) -> None:
-    assert built.exists() and built.is_file()
-
-
-def test_toy2x2_smoke_case_is_well_formed_and_exact(
-    built: Path, tmp_path: Path
-) -> None:
-    m, n, A = parse_case_file(DATA_DIR / "case_toy2x2.txt")
-    out = _solve(built, "case_toy2x2", tmp_path)
-    _validate_well_formed("case_toy2x2", m, n, out)
-    ortho_u, ortho_v, recon = _self_consistency(m, n, A, out)
-    assert max(ortho_u, ortho_v, recon) <= 1e-9, (
-        "case_toy2x2: self-consistency too loose"
-    )
-
-
-def test_interface_contract_unaltered() -> None:
-    header_text = (INCLUDE_DIR / "svd_types.hpp").read_text()
-    assert "SvdResult compute_svd(const Matrix& A);" in header_text, (
-        "compute_svd signature in include/svd_types.hpp was altered"
-    )
-    assert "using Cplx = std::complex<double>;" in header_text, (
-        "include/svd_types.hpp: the complex scalar alias was altered"
-    )
-    for field in (
-        "bool ok",
-        "std::vector<double> singular_values",
-        "Matrix U",
-        "Matrix V",
-        "std::string error_message",
-    ):
-        assert field in header_text, (
-            f"include/svd_types.hpp: expected field {field!r} is missing"
+    build = None
+    if configure.returncode == 0:
+        build = subprocess.run(
+            ["cmake", "--build", builddir, "--target", "report"],
+            capture_output=True, text=True, timeout=240,
         )
+    return {"builddir": builddir, "configure": configure, "build": build}
 
 
-def test_all_public_cases_present_under_data_directory() -> None:
-    for name in ALL_PUBLIC_CASE_NAMES:
-        assert (DATA_DIR / f"{name}.txt").exists(), (
-            f"missing expected public data file {name}.txt"
-        )
+def test_shipped_inputs_pristine():
+    """The C sources, vendored lib, docs, mirror, report and schema are unmodified."""
+    for path, want in PRISTINE.items():
+        p = pathlib.Path(path)
+        assert p.is_file(), f"shipped file missing: {path}"
+        got = hashlib.sha256(p.read_bytes()).hexdigest()
+        assert got == want, f"shipped file was modified: {path}"
 
 
-def test_all_hidden_cases_present_and_not_shipped_to_agent() -> None:
-    for name in ALL_HIDDEN_CASE_NAMES:
-        assert (HIDDEN_DATA_DIR / f"{name}.txt").exists(), (
-            f"missing expected hidden case {name}.txt"
-        )
-        assert not (DATA_DIR / f"{name}.txt").exists(), (
-            f"{name}.txt is present under environment/data/; a hidden case must not be agent-visible"
-        )
-
-
-def test_case_count_meets_minimum() -> None:
-    assert len(set(ALL_GRADED_CASE_NAMES)) == len(ALL_GRADED_CASE_NAMES), (
-        "duplicate case name in the graded suite"
+def test_clean_build_succeeds(clean_build):
+    """cmake -S /app/pipeline -B <dir> && cmake --build <dir> --target report succeed."""
+    configure = clean_build["configure"]
+    assert configure.returncode == 0, (
+        f"cmake configure failed:\n{configure.stdout}\n{configure.stderr}"
     )
-    assert len(ALL_GRADED_CASE_NAMES) >= 60, (
-        f"only {len(ALL_GRADED_CASE_NAMES)} graded cases, expected at least 60"
+    build = clean_build["build"]
+    assert build is not None and build.returncode == 0, (
+        f"cmake --build --target report failed:\n{build.stdout}\n{build.stderr}"
     )
 
 
-# ---------------------------------------------------------------------------
-# Self-consistency families (generic complex, Householder-trap, structured
-# sparsity, metamorphic base matrices)
-# ---------------------------------------------------------------------------
+def test_tools_built(clean_build):
+    """The build leaves extract, advise and score executables under <builddir>/bin."""
+    for tool in TOOLS:
+        exe = pathlib.Path(clean_build["builddir"]) / "bin" / tool
+        assert exe.is_file(), f"missing built tool: {exe}"
+        assert os.access(exe, os.X_OK), f"tool not executable: {exe}"
 
 
-@pytest.mark.parametrize("case_name", SELF_CONS_PUBLIC)
-def test_public_self_consistency(built: Path, tmp_path: Path, case_name: str) -> None:
-    m, n, A = parse_case_file(_case_path(case_name))
-    out = _solve(built, case_name, tmp_path)
-    _validate_well_formed(case_name, m, n, out)
-    ortho_u, ortho_v, recon = _self_consistency(m, n, A, out)
-    assert max(ortho_u, ortho_v, recon) <= SELF_CONS_TOL, (
-        f"{case_name}: ortho_u={ortho_u:.3e} ortho_v={ortho_v:.3e} recon={recon:.3e} "
-        f"exceeds {SELF_CONS_TOL:.1e}"
+def test_report_validates_against_schema(clean_build):
+    """The build writes /app/out/risk-report.json and it validates against the shipped schema."""
+    assert pathlib.Path(OUT_JSON).is_file(), f"report not written: {OUT_JSON}"
+    with open(OUT_JSON) as f:
+        report = json.load(f)
+    with open(SCHEMA_JSON) as f:
+        schema = json.load(f)
+    jsonschema.validate(report, schema)
+
+
+def test_report_matches_methodology(clean_build):
+    """The report equals the revision 4 result: membership, values, ordering, advisory ids."""
+    assert pathlib.Path(OUT_JSON).is_file(), f"report not written: {OUT_JSON}"
+    with open(OUT_JSON) as f:
+        report = json.load(f)
+    assert report == EXPECTED, (
+        f"report content does not match the revision 4 methodology:\n"
+        f"got: {json.dumps(report, indent=1)}"
     )
 
 
-@pytest.mark.parametrize("case_name", SELF_CONS_HIDDEN)
-def test_hidden_self_consistency(built: Path, tmp_path: Path, case_name: str) -> None:
-    m, n, A = parse_case_file(_case_path(case_name))
-    out = _solve(built, case_name, tmp_path)
-    _validate_well_formed(case_name, m, n, out)
-    ortho_u, ortho_v, recon = _self_consistency(m, n, A, out)
-    assert max(ortho_u, ortho_v, recon) <= GRADE_D_TOL, (
-        f"{case_name}: ortho_u={ortho_u:.3e} ortho_v={ortho_v:.3e} recon={recon:.3e} "
-        f"exceeds {GRADE_D_TOL:.1e}"
-    )
-
-
-# D_public is graded under the tighter Householder-trap tolerance; SC/E/meta_base
-# under the general self-consistency tolerance. Re-check D_public specifically.
-@pytest.mark.parametrize("case_name", list(CASE_NAMES["D_public"]))
-def test_public_householder_trap_case(
-    built: Path, tmp_path: Path, case_name: str
-) -> None:
-    m, n, A = parse_case_file(_case_path(case_name))
-    out = _solve(built, case_name, tmp_path)
-    _validate_well_formed(case_name, m, n, out)
-    ortho_u, ortho_v, recon = _self_consistency(m, n, A, out)
-    assert max(ortho_u, ortho_v, recon) <= GRADE_D_TOL, (
-        f"{case_name}: ortho_u={ortho_u:.3e} ortho_v={ortho_v:.3e} recon={recon:.3e} "
-        f"exceeds {GRADE_D_TOL:.1e}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Graded-spectrum family (complex unitary embedding): ground truth is the
-# disclosed sigma_true used at construction time.
-# ---------------------------------------------------------------------------
-
-
-def _grade_b_check(built: Path, tmp_path: Path, case_name: str) -> None:
-    m, n, A = parse_case_file(_case_path(case_name))
-    sigma_true = [
-        float(x) for x in (REF_DIR / f"{case_name}.sigma").read_text().split()
+def test_built_tools_reproduce_report(clean_build):
+    """Running the built tools directly on the shipped inputs regenerates the same report."""
+    bindir = pathlib.Path(clean_build["builddir"]) / "bin"
+    for tool in TOOLS:
+        assert (bindir / tool).is_file(), f"missing built tool: {bindir / tool}"
+    tmp = tempfile.mkdtemp(prefix="verify-run-")
+    steps = [
+        [str(bindir / "extract"), DOCS_DIR, f"{tmp}/packages.tsv"],
+        [str(bindir / "advise"), f"{tmp}/packages.tsv", MIRROR_DIR,
+         f"{tmp}/matches.json"],
+        [str(bindir / "score"), f"{tmp}/matches.json", f"{tmp}/report.json"],
     ]
-    assert len(sigma_true) == n
-    out = _solve(built, case_name, tmp_path)
-    _validate_well_formed(case_name, m, n, out)
-    for i in range(n):
-        st = sigma_true[i]
-        tol = max(GRADE_B_TOL_FLOOR, GRADE_B_TOL_MULT * EPS / max(st, 1e-300))
-        err = abs(out["sigma"][i] - st) / max(st, 1e-300)
-        assert err <= tol, (
-            f"{case_name}: singular value index {i} relative error {err:.3e} exceeds "
-            f"tolerance {tol:.3e} (sigma_true={st:.3e})"
-        )
-
-
-@pytest.mark.parametrize("case_name", GRADE_B_PUBLIC)
-def test_public_graded_spectrum_relative_accuracy(
-    built: Path, tmp_path: Path, case_name: str
-) -> None:
-    _grade_b_check(built, tmp_path, case_name)
-
-
-@pytest.mark.parametrize("case_name", GRADE_B_HIDDEN)
-def test_hidden_graded_spectrum_relative_accuracy(
-    built: Path, tmp_path: Path, case_name: str
-) -> None:
-    _grade_b_check(built, tmp_path, case_name)
-
-
-# ---------------------------------------------------------------------------
-# Clustered bidiagonal family: exactly bidiagonal by construction (real
-# diagonal/superdiagonal), so ground truth per independent 2x2 diagonal
-# block is read straight from A and computed via the closed-form formula
-# above.
-# ---------------------------------------------------------------------------
-
-
-def _grade_c_check(built: Path, tmp_path: Path, case_name: str) -> None:
-    m, n, A = parse_case_file(_case_path(case_name))
-    d = [A[i][i].real for i in range(n)]
-    e = [A[i][i + 1].real for i in range(n - 1)]
-    closed = []
-    for j in range(0, n, 2):
-        ee = e[j] if j < len(e) else 0.0
-        smax, smin = svd2x2_closed_form(d[j], ee, d[j + 1])
-        closed.append(smax)
-        closed.append(smin)
-    closed_sorted = sorted(closed, reverse=True)
-
-    out = _solve(built, case_name, tmp_path)
-    _validate_well_formed(case_name, m, n, out)
-    for i in range(n):
-        expected = closed_sorted[i]
-        got = out["sigma"][i]
-        err = abs(got - expected) / max(expected, 1e-300)
-        assert err <= GRADE_C_TOL, (
-            f"{case_name}: singular value index {i} relative error {err:.3e} exceeds "
-            f"{GRADE_C_TOL:.1e} (expected={expected:.6e}, got={got:.6e})"
-        )
-
-
-@pytest.mark.parametrize("case_name", GRADE_C_PUBLIC)
-def test_public_clustered_bidiagonal_relative_accuracy(
-    built: Path, tmp_path: Path, case_name: str
-) -> None:
-    _grade_c_check(built, tmp_path, case_name)
-
-
-@pytest.mark.parametrize("case_name", GRADE_C_HIDDEN)
-def test_hidden_clustered_bidiagonal_relative_accuracy(
-    built: Path, tmp_path: Path, case_name: str
-) -> None:
-    _grade_c_check(built, tmp_path, case_name)
-
-
-# ---------------------------------------------------------------------------
-# Rank-deficient bidiagonal family: connected chain (real-valued or
-# genuinely complex) with one entry planted at exactly zero. Ground truth
-# is an independent 50-digit eigendecomposition of B^H B computed at
-# authoring time, disclosed verbatim -- never produced by any bidiagonal-QR
-# routine. An exact-zero pivot makes the ordinary trailing-2x2 Wilkinson
-# shift singular; a candidate that never special-cases it either fails to
-# converge within the iteration budget or reports a spurious spectrum, both
-# caught below.
-# ---------------------------------------------------------------------------
-
-
-def _grade_f_check(built: Path, tmp_path: Path, case_name: str) -> None:
-    m, n, A = parse_case_file(_case_path(case_name))
-    sigma_true = [
-        float(x) for x in (REF_DIR / f"{case_name}.sigma").read_text().split()
-    ]
-    assert len(sigma_true) == n
-    out = _solve(built, case_name, tmp_path)
-    _validate_well_formed(case_name, m, n, out)
-    sigma_max = max(sigma_true) if sigma_true else 1.0
-    for i in range(n):
-        st = sigma_true[i]
-        got = out["sigma"][i]
-        if st == 0.0:
-            err = abs(got)
-            tol = 50.0 * EPS * max(sigma_max, 1.0)
-        else:
-            err = abs(got - st) / st
-            tol = max(GRADE_B_TOL_FLOOR, GRADE_B_TOL_MULT * EPS / st)
-        assert err <= tol, (
-            f"{case_name}: singular value index {i} error {err:.3e} exceeds "
-            f"tolerance {tol:.3e} (sigma_true={st:.3e}, got={got:.3e})"
-        )
-
-
-@pytest.mark.parametrize("case_name", GRADE_F_PUBLIC)
-def test_public_gradeF_rank_deficient_accuracy(
-    built: Path, tmp_path: Path, case_name: str
-) -> None:
-    _grade_f_check(built, tmp_path, case_name)
-
-
-@pytest.mark.parametrize("case_name", GRADE_F_HIDDEN)
-def test_hidden_gradeF_rank_deficient_accuracy(
-    built: Path, tmp_path: Path, case_name: str
-) -> None:
-    _grade_f_check(built, tmp_path, case_name)
-
-
-def _grade_f_self_consistency(built: Path, tmp_path: Path, case_name: str) -> None:
-    m, n, A = parse_case_file(_case_path(case_name))
-    out = _solve(built, case_name, tmp_path)
-    _validate_well_formed(case_name, m, n, out)
-    ortho_u, ortho_v, recon = _self_consistency(m, n, A, out)
-    assert max(ortho_u, ortho_v, recon) <= GRADE_F_TOL, (
-        f"{case_name}: ortho_u={ortho_u:.3e} ortho_v={ortho_v:.3e} recon={recon:.3e} "
-        f"exceeds {GRADE_F_TOL:.1e}"
-    )
-
-
-@pytest.mark.parametrize("case_name", GRADE_F_PUBLIC)
-def test_public_gradeF_self_consistency(
-    built: Path, tmp_path: Path, case_name: str
-) -> None:
-    _grade_f_self_consistency(built, tmp_path, case_name)
-
-
-@pytest.mark.parametrize("case_name", GRADE_F_HIDDEN)
-def test_hidden_gradeF_self_consistency(
-    built: Path, tmp_path: Path, case_name: str
-) -> None:
-    _grade_f_self_consistency(built, tmp_path, case_name)
-
-
-# ---------------------------------------------------------------------------
-# Naive-baseline divergence proxies: confirm, from the disclosed fixtures
-# alone (never from the compiled binary), that each planted trap is real.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("case_name", GRADE_C_PUBLIC + GRADE_C_HIDDEN)
-def test_naive_absolute_deflation_reference_diverges_decisively(case_name: str) -> None:
-    m, n, A = parse_case_file(_case_path(case_name))
-    d = [A[i][i].real for i in range(n)]
-    e = [A[i][i + 1].real for i in range(n - 1)]
-
-    closed_true = []
-    for j in range(0, n, 2):
-        ee = e[j] if j < len(e) else 0.0
-        smax, smin = svd2x2_closed_form(d[j], ee, d[j + 1])
-        closed_true.append(smax)
-        closed_true.append(smin)
-    closed_true_sorted = sorted(closed_true, reverse=True)
-
-    bnorm = max(max(abs(v) for v in d), max((abs(v) for v in e), default=0.0))
-    e_wrong = list(e)
-    any_wrongly_deflated = False
-    for i in range(len(e)):
-        if e[i] == 0.0:
-            continue
-        dk_thresh = 10.0 * EPS * (abs(d[i]) + abs(d[i + 1]))
-        abs_thresh = 10.0 * EPS * bnorm
-        if abs(e[i]) <= abs_thresh and abs(e[i]) > dk_thresh:
-            e_wrong[i] = 0.0
-            any_wrongly_deflated = True
-    assert any_wrongly_deflated, (
-        f"{case_name}: expected at least one within-cluster coupling that an "
-        f"absolute/norm-relative-only deflation test would wrongly zero"
-    )
-
-    closed_wrong = []
-    for j in range(0, n, 2):
-        ee = e_wrong[j] if j < len(e_wrong) else 0.0
-        smax, smin = svd2x2_closed_form(d[j], ee, d[j + 1])
-        closed_wrong.append(smax)
-        closed_wrong.append(smin)
-    closed_wrong_sorted = sorted(closed_wrong, reverse=True)
-
-    worst = max(
-        abs(a - b) / max(a, 1e-300)
-        for a, b in zip(closed_true_sorted, closed_wrong_sorted)
-    )
-    assert worst > 100 * GRADE_C_TOL, (
-        f"{case_name}: wrongly-deflated reference unexpectedly close to the true spectrum "
-        f"(relerr={worst:.3e}); this case would not discriminate an absolute-threshold "
-        f"deflation criterion from the relative one"
-    )
-
-
-def _naive_givens(a, b):
-    if b == 0.0:
-        return 1.0, 0.0
-    if a == 0.0:
-        return 0.0, 1.0
-    if abs(b) > abs(a):
-        t = a / b
-        s = 1.0 / math.sqrt(1.0 + t * t)
-        c = s * t
-    else:
-        t = b / a
-        c = 1.0 / math.sqrt(1.0 + t * t)
-        s = c * t
-    return c, s
-
-
-def _naive_wilkinson_shift(d0, d1, e0):
-    t11 = d0 * d0
-    t22 = d1 * d1 + e0 * e0
-    t12 = d0 * e0
-    if t12 == 0.0:
-        return t22
-    dmid = (t11 - t22) / 2.0
-    denom = (
-        math.copysign(math.sqrt(dmid * dmid + t12 * t12), dmid) + dmid
-        if dmid != 0.0
-        else abs(t12)
-    )
-    return t22 - (t12 * t12) / denom
-
-
-@pytest.mark.parametrize(
-    "case_name",
-    [
-        "case_gradeF_pub_chain_start_n5",
-        "case_gradeF_pub_cchain_start_n5",
-        "case_gradeF_hid_chain_start_n7",
-        "case_gradeF_hid_cchain_start_n7",
-    ],
-)
-def test_naive_zero_pivot_reference_stalls_decisively(case_name: str) -> None:
-    m, n, A = parse_case_file(_case_path(case_name))
-    # the naive-shift stall is a real-diagonal phenomenon (the bidiagonal QR
-    # phase is always real once bidiagonalization is done); genuinely
-    # complex fixtures still plant an exact-zero diagonal entry, but the
-    # entries surrounding it are complex, so only the STRUCTURAL fact (an
-    # exact zero at the leading position) is asserted here, and the
-    # decisive stall proof runs on the real-part reduction that the
-    # trailing-2x2 shift actually sees once B is real.
-    d0 = A[0][0]
-    assert d0 == 0j, f"{case_name}: expected an exact-zero leading pivot"
-    d1 = A[1][1].real
-    e0 = A[0][1].real
-    mu = _naive_wilkinson_shift(0.0, d1, e0)
-    y = 0.0 * 0.0 - mu
-    z = 0.0 * e0
-    c, s = _naive_givens(y, z)
-    assert (c, s) == (1.0, 0.0), (
-        f"{case_name}: expected the naive shift step to degenerate to an identity "
-        f"rotation at a zero leading pivot (got c={c!r}, s={s!r}); if it doesn't, "
-        "this fixture no longer demonstrates the zero-pivot stall"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Metamorphic relations: compare the candidate's own two outputs, no stored
-# reference required.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("base_name,derived_name", META_UNITARY)
-def test_metamorphic_unitary_invariance(
-    built: Path, tmp_path: Path, base_name: str, derived_name: str
-) -> None:
-    mb, nb, _ = parse_case_file(_case_path(base_name))
-    out_base = _solve(built, base_name, tmp_path)
-    _validate_well_formed(base_name, mb, nb, out_base)
-
-    md, nd, _ = parse_case_file(_case_path(derived_name))
-    out_der = _solve(built, derived_name, tmp_path)
-    _validate_well_formed(derived_name, md, nd, out_der)
-
-    worst = max(
-        abs(a - b) / max(abs(a), 1e-300)
-        for a, b in zip(out_base["sigma"], out_der["sigma"])
-    )
-    assert worst <= META_TOL, (
-        f"{base_name} vs {derived_name}: unitary-invariance relative mismatch {worst:.3e} "
-        f"exceeds {META_TOL:.1e}"
-    )
-
-
-@pytest.mark.parametrize("base_name,derived_name,cre,cim", META_SCALE)
-def test_metamorphic_complex_scaling(
-    built: Path,
-    tmp_path: Path,
-    base_name: str,
-    derived_name: str,
-    cre: float,
-    cim: float,
-) -> None:
-    mb, nb, _ = parse_case_file(_case_path(base_name))
-    out_base = _solve(built, base_name, tmp_path)
-    _validate_well_formed(base_name, mb, nb, out_base)
-
-    md, nd, _ = parse_case_file(_case_path(derived_name))
-    out_der = _solve(built, derived_name, tmp_path)
-    _validate_well_formed(derived_name, md, nd, out_der)
-
-    k = abs(complex(cre, cim))
-    worst = max(
-        abs(k * a - b) / max(k * a, 1e-300)
-        for a, b in zip(out_base["sigma"], out_der["sigma"])
-    )
-    assert worst <= META_TOL, (
-        f"{base_name} x{k:.3g} vs {derived_name}: scaling relative mismatch {worst:.3e} "
-        f"exceeds {META_TOL:.1e}"
-    )
-
-
-@pytest.mark.parametrize("base_name,derived_name", META_CONJT)
-def test_metamorphic_conjugate_transpose(
-    built: Path, tmp_path: Path, base_name: str, derived_name: str
-) -> None:
-    mb, nb, _ = parse_case_file(_case_path(base_name))
-    out_base = _solve(built, base_name, tmp_path)
-    _validate_well_formed(base_name, mb, nb, out_base)
-
-    md, nd, _ = parse_case_file(_case_path(derived_name))
-    out_der = _solve(built, derived_name, tmp_path)
-    _validate_well_formed(derived_name, md, nd, out_der)
-
-    worst = max(
-        abs(a - b) / max(abs(a), 1e-300)
-        for a, b in zip(out_base["sigma"], out_der["sigma"])
-    )
-    assert worst <= META_TOL, (
-        f"{base_name} vs {derived_name} (conjugate transpose): relative mismatch {worst:.3e} "
-        f"exceeds {META_TOL:.1e}"
-    )
+    for cmd in steps:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        assert proc.returncode == 0, f"{cmd[0]} failed: {proc.stderr}"
+    with open(f"{tmp}/report.json") as f:
+        rerun = json.load(f)
+    assert rerun == EXPECTED, "pipeline rerun does not reproduce the report"

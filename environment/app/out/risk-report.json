@@ -1,0 +1,14 @@
+{
+  "schema_version": "3",
+  "packages": [
+    {
+      "name": "flask",
+      "assessed_version": "2.2.5",
+      "pages_referenced": 1,
+      "advisory_count": 1,
+      "max_severity": 5.0,
+      "risk_score": 5.1,
+      "advisories": ["GHSA-hrfv-mqp8-q5rw"]
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.6.0",
+  "id": "PYSEC-2026-0219",
+  "modified": "2026-05-02T00:00:00Z",
+  "published": "2026-02-10T00:00:00Z",
+  "summary": "Worker exhaustion through crafted chunked request trailers",
+  "aliases": [],
+  "affected": [
+    {
+      "package": {
+        "ecosystem": "PyPI",
+        "name": "gunicorn"
+      },
+      "versions": [
+        "20.0.0",
+        "20.0.4",
+        "20.1.0"
+      ]
+    }
+  ],
+  "references": [
+    {
+      "type": "ADVISORY",
+      "url": "https://osv.dev/vulnerability/PYSEC-2026-0219"
+    }
+  ],
+  "severity": [
+    {
+      "type": "CVSS_V3",
+      "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+    }
+  ]
+}
