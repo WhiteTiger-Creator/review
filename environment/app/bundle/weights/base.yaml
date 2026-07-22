@@ -1,0 +1,4 @@
+version: '1'
+base:
+  correct_points: 10
+  wrong_points: 0

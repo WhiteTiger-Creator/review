@@ -1,0 +1,6 @@
+version: '1'
+id: gallery-literature
+room: gallery
+title: Literature Shelf
+trivia:
+  question_id: tc_0015

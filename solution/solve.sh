@@ -1,12 +1,20 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
-if [ -f /solution/workload_gate.go ]; then
-    cp /solution/workload_gate.go /app/workload_gate.go
-else
-    cp solution/workload_gate.go /app/workload_gate.go
-fi
+bash /usr/local/bin/entrypoint.sh
 
-/usr/local/go/bin/gofmt -w /app/workload_gate.go
-/usr/local/go/bin/go build -o /tmp/workload-gate /app/workload_gate.go
-/tmp/workload-gate /app/task_file/input_data /app/task_file/output_data
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export ROOT_DIR
+cd /app
+
+echo "Applying oracle patches..."
+bash "${ROOT_DIR}/apply_java_patches.sh"
+
+cp "${ROOT_DIR}/patches_test/ConfigLoaderTest.java" src/test/java/dev/terminus/trivia/ConfigLoaderTest.java
+
+rm -rf /output/* /app/.state/* 2>/dev/null || true
+mkdir -p /output /app/.state
+
+make verify
+
+echo "Oracle solution completed successfully."

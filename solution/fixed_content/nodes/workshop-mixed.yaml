@@ -1,0 +1,7 @@
+version: '1'
+id: workshop-mixed
+room: workshop
+title: Mixed Bench
+trivia:
+  row: 7
+  question_sha256: 89e0b7ea0a4f0730af7839e61dbc0ab8981620ab14c135198d5fbba628457164

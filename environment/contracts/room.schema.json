@@ -1,0 +1,43 @@
+{
+  "$defs": {
+    "version": {
+      "const": "1",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "encounters": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "exits": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "version": {
+      "$ref": "#/$defs/version"
+    }
+  },
+  "required": [
+    "version",
+    "id",
+    "title",
+    "encounters",
+    "exits"
+  ],
+  "type": "object"
+}
