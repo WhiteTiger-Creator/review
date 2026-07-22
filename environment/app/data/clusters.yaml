@@ -1,0 +1,122 @@
+clusters:
+  - cluster_id: prod-app-01
+    environment: production
+    roles:
+      - role_id: app_login
+        role_name: app_login
+        login: true
+        inherit: true
+        createdb: false
+        createrole: false
+        replication: false
+        bypassrls: false
+        connection_limit: 25
+    role_memberships: []
+    databases:
+      - database_id: app_primary
+        database_name: app_primary
+        owner_role_id: app_owner
+        template: template0
+        encoding: UTF8
+        connection_limit: 100
+        environment_allowlist:
+          - production
+    extensions:
+      - extension_request_id: ext_earth_01
+        database_id: app_primary
+        extension_id: earthdistance
+        version: "1.1"
+      - extension_request_id: ext_pgs_01
+        database_id: app_primary
+        extension_id: pg_stat_statements
+        version: "1.10"
+    privileges:
+      - grant_id: priv_schema_usage
+        scope: schema
+        database_id: app_primary
+        schema_name_or_null: public
+        table_name_or_null: null
+        grantee_role_id: app_login
+        privileges:
+          - USAGE
+        grant_option: false
+    hba_rules:
+      - hba_id: hba_local_allow
+        connection_type: host
+        database_selector: app_primary
+        role_selector: app_login
+        ipv4_cidr_or_null: 10.0.1.0/24
+        auth_method: scram-sha-256
+        priority: 10
+
+  - cluster_id: prod-reject-01
+    environment: production
+    roles:
+      - role_id: reject_login
+        role_name: reject_login
+        login: true
+        inherit: true
+        createdb: false
+        createrole: false
+        replication: false
+        bypassrls: false
+        connection_limit: 10
+    role_memberships: []
+    databases:
+      - database_id: reject_db
+        database_name: reject_db
+        owner_role_id: reject_login
+        template: template0
+        encoding: UTF8
+        connection_limit: 50
+        environment_allowlist:
+          - production
+    extensions: []
+    privileges:
+      - grant_id: priv_reject_connect
+        scope: database
+        database_id: reject_db
+        schema_name_or_null: null
+        table_name_or_null: null
+        grantee_role_id: reject_login
+        privileges:
+          - CONNECT
+        grant_option: false
+    hba_rules: []
+
+  - cluster_id: staging-api-01
+    environment: staging
+    roles:
+      - role_id: staging_svc
+        role_name: staging_svc
+        login: false
+        inherit: true
+        createdb: false
+        createrole: false
+        replication: false
+        bypassrls: false
+        connection_limit: -1
+    role_memberships: []
+    databases:
+      - database_id: staging_api
+        database_name: staging_api
+        owner_role_id: staging_svc
+        template: template1
+        encoding: UTF8
+        connection_limit: 25
+        environment_allowlist:
+          - staging
+    extensions:
+      - extension_request_id: ext_uuid_stg
+        database_id: staging_api
+        extension_id: uuid-ossp
+        version: "1.1"
+    privileges: []
+    hba_rules:
+      - hba_id: hba_staging_local
+        connection_type: local
+        database_selector: all
+        role_selector: staging_svc
+        ipv4_cidr_or_null: null
+        auth_method: peer
+        priority: 5

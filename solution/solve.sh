@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export PATH="/usr/local/cargo/bin:/app/bin:${PATH}"
-
-APP_ROOT="${APP_ROOT:-/app}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -d /solution/oracle_src ]; then
+  ORACLE_ROOT=/solution/oracle_src
+elif [ -d "$SCRIPT_DIR/oracle_src" ]; then
+  ORACLE_ROOT="$SCRIPT_DIR/oracle_src"
+else
+  echo "oracle_src not found (looked in /solution and $SCRIPT_DIR)" >&2
+  exit 1
+fi
 
-cp "${SCRIPT_DIR}/files/rng.rs" "${APP_ROOT}/src/rng.rs"
-cp "${SCRIPT_DIR}/files/score.rs" "${APP_ROOT}/src/score.rs"
-cp "${SCRIPT_DIR}/files/train.rs" "${APP_ROOT}/src/train.rs"
-cp "${SCRIPT_DIR}/files/persist.rs" "${APP_ROOT}/src/persist.rs"
-cp "${SCRIPT_DIR}/files/metrics.rs" "${APP_ROOT}/src/metrics.rs"
+rm -rf /app/src /app/target
+cp -r "$ORACLE_ROOT/src" /app/src
+cp "$ORACLE_ROOT/Cargo.toml" /app/Cargo.toml
+cp "$ORACLE_ROOT/Cargo.lock" /app/Cargo.lock
 
-cd "${APP_ROOT}"
-cargo build --release --locked
-mkdir -p /app/bin /app/state /app/output
-cp /app/target/release/fmctl /app/bin/fmctl
-test -x /app/bin/fmctl
+cd /app
+cargo build --release --locked --offline

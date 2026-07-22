@@ -4,25 +4,24 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "machine-learning"
+category = "build-and-dependency-management"
 subcategories = []
 number_of_milestones = 0
-codebase_size = "small"
+codebase_size = "large"
 languages = ["rust"]
-tags = ["factorization-machine", "click-through-rate", "logloss", "stochastic-gradient-descent", "auc", "model-training"]
-expert_time_estimate_min = 300
-junior_time_estimate_min = 600
+tags = ["postgresql", "bootstrap", "policy", "dependency-graph", "offline"]
+expert_time_estimate_min = 360
+junior_time_estimate_min = 720
 
 [verifier]
-timeout_sec = 900.0
+timeout_sec = 600.0
 
 [agent]
 timeout_sec = 1800.0
 
 [environment]
+allow_internet = false
 build_timeout_sec = 900.0
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-workdir = "/app"
-allow_internet = false
