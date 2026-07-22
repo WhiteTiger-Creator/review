@@ -4,27 +4,31 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "security"
-subcategories = [ "tool_specific" ]
-codebase_size = "small"
-languages = [ "go" ]
-tags = [ "nist-randomness-beacon", "cryptographic-audit", "x509", "security-hardening", "incident-evidence" ]
-expert_time_estimate_min = 120
-junior_time_estimate_min = 360
+category = "machine-learning"
+codebase_size = "minimal"
+subcategories = []
 number_of_milestones = 0
-
-[agent]
-timeout_sec = 1800.0
+languages = ["r"]
+tags = [
+  "r",
+  "multiclass-classification",
+  "hierarchical-labels",
+  "calibration",
+  "abstention",
+  "grouped-validation",
+]
+expert_time_estimate_min = 240
+junior_time_estimate_min = 480
 
 [verifier]
-timeout_sec = 600.0
+timeout_sec = 1200
+
+[agent]
+timeout_sec = 1200
 
 [environment]
-build_timeout_sec = 1800.0
-docker_flags = []
+build_timeout_sec = 1800
 cpus = 2
-memory_mb = 4096
+memory_mb = 8192
 storage_mb = 10240
-gpus = 0
-gpu_types = []
-allow_internet = true
+allow_internet = false

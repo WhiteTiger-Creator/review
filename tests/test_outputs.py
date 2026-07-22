@@ -1,591 +1,410 @@
-"""Behavioral verification for the retained NIST Beacon audit."""
+"""Deterministic verifier for anuran-record-taxonomy-coherence."""
 
-import hashlib
+from __future__ import annotations
+
 import json
+import math
 import os
-import pathlib
-import shutil
-import subprocess
+from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
+from sklearn.metrics import log_loss
+
+OUTPUT_DIR = Path(os.environ.get("AGENT_OUTPUT_DIR", "/home/output"))
+DATA_DIR = Path(os.environ.get("RAW_DATA_DIR", "/home/data"))
+ANURAN_VARIANT = os.environ.get("ANURAN_VARIANT", "public")
+
+FAMILY_LEVELS = ["Bufonidae", "Dendrobatidae", "Hylidae", "Leptodactylidae"]
+GENUS_LEVELS = [
+    "Adenomera",
+    "Ameerega",
+    "Dendropsophus",
+    "Hypsiboas",
+    "Leptodactylus",
+    "Osteocephalus",
+    "Rhinella",
+    "Scinax",
+]
+SPECIES_LEVELS = [
+    "AdenomeraAndre",
+    "AdenomeraHylaedactylus",
+    "Ameeregatrivittata",
+    "HylaMinuta",
+    "HypsiboasCinerascens",
+    "HypsiboasCordobae",
+    "LeptodactylusFuscus",
+    "OsteocephalusOophagus",
+    "Rhinellagranulosa",
+    "ScinaxRuber",
+]
+SAMPLED_ROW_IDS = list(range(0, 1500, 25))
+TOL = 1e-5
+AUDIT_KEYS = [
+    "n_train_rows",
+    "n_eval_rows",
+    "n_train_records",
+    "n_eval_records",
+    "species_log_loss",
+    "genus_log_loss",
+    "family_log_loss",
+    "species_brier",
+    "genus_brier",
+    "family_brier",
+    "species_ece_10bin",
+    "genus_ece_10bin",
+    "family_ece_10bin",
+    "family_residual_max",
+    "genus_residual_max",
+    "row_abstain_rate",
+    "record_abstain_rate",
+]
 
 
-APP = pathlib.Path("/app")
-AUDIT = APP / "audit"
-EVIDENCE = AUDIT / "evidence"
-RECEIPT = AUDIT / "receipt.json"
-CASE = APP / "cases" / "chain1-220390-220394.json"
-CERTIFICATE_ID = (
-    "5501E3D72BC42F3B96E16DE4DCADCB16768E109662BD16D667D5FD9AEE585AF3"
-    "1BBDC5DD4F53592276064B53DDDD76C8F3604B2A41DB6E09F78F82BB5D6569E7"
-)
-EXPECTED = {
-    220390: (
-        "2018-12-26T16:03:00.000Z",
-        "E317D2DC8DEAA4C5E91C0A90357CA2B0C04F0CAB5F0ABE109773ECDFB63B7850"
-        "0563E6DFF7C8B4243820AFA39952562F5BE99238092AADAF75C7DD5D8534A1E4",
-        "B9564A6C20BB47E2537F4FF8CF22C26413D9BF893C0FC52E64112B7D15CA978A"
-        "948326C447930A17D36D25F3CD6DEEAB11BE496D0CCB7F700406824D66C57BB0",
-    ),
-    220391: (
-        "2018-12-26T16:04:00.000Z",
-        "EDBD7F83C2EDD95508A870A1A57FFA821A7E50B4C7FABEF6FC3B79D0BF6608A7"
-        "36B8D6D75474DBEB91FE5DE59F0AE29E92844ADD7DF86A678CC906C992D8288C",
-        "F19E748BA06A6AC30259250E8AF1623C0DA050AB006BC0BD396E96D9465F3431"
-        "B760773AC68CC3B9C6AB5923C8059D68829D856E6D674A41621603D565766ECF",
-    ),
-    220392: (
-        "2018-12-26T16:05:00.000Z",
-        "2833B6A8891875955AD8854B2FC503A44A0A6A7B589A815340D32AC0ABE6FDFA"
-        "3BAD71F5D6650E4F333B0B97A634A97ECF1E576EFE46E3A061416A407B1742E9",
-        "34C364F419E643952092B7FB9176FB43483103254D978258F158080F8780E77A8"
-        "A329D1AFF8A573D04D1FC1F9A7A78E554B19A56563354B501F8BD906379D9A8",
-    ),
-    220393: (
-        "2018-12-26T16:06:00.000Z",
-        "BA646CC4E7AE195D2C85E9D3AE9C9722B974F2134699D2493FA9E296C34995E8"
-        "E471B329CB5F63235982CEE3395A749C618E61466847951D543ADC2FBAD23ECB",
-        "22D5EC946E3F4AFBD12633C22A10CD3E3657CA487B1537CC0DC988F952B9B9C2"
-        "95E445AA8795421A222785B7DC85E7BDF3DFFE1729D176D66B7F55D55D78716D",
-    ),
-    220394: (
-        "2018-12-26T16:07:00.000Z",
-        "0A8863E03E200F694CBA50F0F9A009B078555FE637B07CA2C0A0E4D5640801737"
-        "87B26376C4762377A139D1BCAA916A10419504850EB7CF91552A17FDCAA0463",
-        "28EACA6042EBE5DFBF3ECF479023A155A1C2D69E9C0064E36485F23681D83D36"
-        "02BD85E4F6663A264F914219157104CDDB47C34940FA5789B8AB4DC57C64F246",
-    ),
-}
+def ece(y: np.ndarray, p: np.ndarray, bins: int = 10) -> float:
+    p = np.clip(np.asarray(p, dtype=float), 0, 1)
+    y = np.asarray(y, dtype=float)
+    idx = np.minimum((p * bins).astype(int), bins - 1)
+    total = len(p)
+    score = 0.0
+    for b in range(bins):
+        sel = idx == b
+        if not np.any(sel):
+            continue
+        score += abs(float(p[sel].mean()) - float(y[sel].mean())) * sel.sum() / total
+    return float(score)
 
 
-def sha512(path: pathlib.Path) -> str:
-    """Return an uppercase SHA-512 digest for one retained artifact."""
-    return hashlib.sha512(path.read_bytes()).hexdigest().upper()
+def multiclass_brier(y: np.ndarray, probs: np.ndarray, levels: list[str]) -> float:
+    y_idx = pd.Categorical(y, categories=levels, ordered=False).codes
+    truth = np.zeros_like(probs)
+    truth[np.arange(len(y_idx)), y_idx] = 1
+    return float(np.mean(np.sum((probs - truth) ** 2, axis=1)))
 
 
-def load_receipt() -> dict:
-    """Load the submitted receipt as an ordered Python mapping."""
-    return json.loads(RECEIPT.read_text(encoding="utf-8"))
-
-
-def run_verify(case: pathlib.Path, evidence: pathlib.Path, receipt: pathlib.Path):
-    """Run the installed verifier against an arbitrary runtime evidence set."""
-    return subprocess.run(
-        [
-            "beacon-audit",
-            "verify",
-            "--case",
-            str(case),
-            "--directory",
-            str(evidence),
-            "--receipt",
-            str(receipt),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=20,
-    )
-
-
-@pytest.fixture(scope="session")
-def fresh_chain(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
-    """Generate a hidden, freshly signed chain that cannot be fixture-hardcoded."""
-    root = tmp_path_factory.mktemp("fresh-chain")
-    generator = pathlib.Path(__file__).with_name("fresh_chain.go")
-    result = subprocess.run(
-        ["go", "run", str(generator), "--directory", str(root)],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=90,
-    )
-    assert result.returncode == 0, result.stderr
-    return root
-
-
-def copy_fresh(fresh_chain: pathlib.Path, tmp_path: pathlib.Path) -> pathlib.Path:
-    target = tmp_path / "chain"
-    shutil.copytree(fresh_chain, target)
-    case_path = target / "case.json"
-    case = json.loads(case_path.read_text(encoding="utf-8"))
-    case["policy"] = str(target / "policy.json")
-    case["trust"] = str(target / "trust.json")
-    case_path.write_text(json.dumps(case), encoding="utf-8")
-    receipt = target / "receipt.json"
-    if receipt.exists():
-        receipt.unlink()
-    return target
-
-
-def repin_pulse(root: pathlib.Path, index: int) -> None:
-    """Update a generated case pin after a deliberate semantic mutation."""
-    case_path = root / "case.json"
-    case = json.loads(case_path.read_text(encoding="utf-8"))
-    case["pulse_sha512"][str(index)] = sha512(
-        root / "evidence" / f"pulse-{index}.json"
-    )
-    case_path.write_text(json.dumps(case), encoding="utf-8")
-
-
-def test_evidence_layout_is_complete_and_safe() -> None:
-    """The evidence set contains only the requested regular files."""
-    assert EVIDENCE.is_dir() and not EVIDENCE.is_symlink()
-    expected_names = {"certificate.pem"} | {
-        f"pulse-{index}.json" for index in EXPECTED
-    }
-    assert {path.name for path in EVIDENCE.iterdir()} == expected_names
-    for path in EVIDENCE.iterdir():
-        assert path.is_file()
-        assert not path.is_symlink()
-
-
-def test_retained_bodies_are_authoritative_nist_responses() -> None:
-    """Every pulse body matches the stable authoritative API evidence."""
-    for index, (timestamp, output, digest) in EXPECTED.items():
-        path = EVIDENCE / f"pulse-{index}.json"
-        assert sha512(path) == digest
-        pulse = json.loads(path.read_bytes())["pulse"]
-        assert pulse["uri"] == (
-            f"https://beacon.nist.gov/beacon/2.0/chain/1/pulse/{index}"
-        )
-        assert pulse["chainIndex"] == 1
-        assert pulse["pulseIndex"] == index
-        assert pulse["timeStamp"] == timestamp
-        assert pulse["outputValue"] == output
-        assert pulse["certificateId"].upper() == CERTIFICATE_ID
-    assert sha512(EVIDENCE / "certificate.pem") == (
-        "135CBCC3AB4580D893780D33A54C919F78FCE050F39900A4BC5A0652D3FBD8BE"
-        "0B176E83374F0AFB08EC4EA712FF9D2BD5458A0177CF910FD186C3E9658F5617"
-    )
-
-
-def test_receipt_has_exact_top_level_contract() -> None:
-    """The receipt exposes the ordered case, trust, result, and time fields."""
-    receipt = load_receipt()
-    assert list(receipt) == [
-        "case_id",
-        "api_origin",
-        "chain_index",
-        "first_pulse",
-        "last_pulse",
-        "certificate_id",
-        "certificate_sha512",
-        "policy_profile",
-        "trust_profile",
-        "pulses",
-        "continuity",
-        "audited_at",
-        "result",
-    ]
-    assert receipt["case_id"] == "IR-2018-12-26-NIST-CHAIN1"
-    assert receipt["api_origin"] == "https://beacon.nist.gov"
-    assert (receipt["chain_index"], receipt["first_pulse"], receipt["last_pulse"]) == (
-        1,
-        220390,
-        220394,
-    )
-    assert receipt["certificate_id"] == CERTIFICATE_ID
-    assert receipt["certificate_sha512"] == CERTIFICATE_ID
-    assert receipt["policy_profile"] == "nist-v2-strict"
-    assert receipt["trust_profile"] == "nist-chain1-pinned-certificate"
-    assert receipt["audited_at"] == "2018-12-26T16:07:00.000Z"
-    assert receipt["result"] == "PASS"
-    assert RECEIPT.read_bytes().endswith(b"\n")
-
-
-def test_receipt_records_each_cryptographic_check() -> None:
-    """Per-pulse receipt records bind evidence digests and verification results."""
-    pulses = load_receipt()["pulses"]
-    assert [pulse["index"] for pulse in pulses] == list(EXPECTED)
-    for pulse in pulses:
-        timestamp, output, digest = EXPECTED[pulse["index"]]
-        assert list(pulse) == [
-            "index",
-            "timestamp",
-            "source_uri",
-            "evidence_file",
-            "evidence_sha512",
-            "output_value",
-            "signature_verified",
-            "output_hash_verified",
-            "certificate_valid_at_pulse",
-        ]
-        assert pulse["timestamp"] == timestamp
-        assert pulse["output_value"] == output
-        assert pulse["evidence_sha512"] == digest
-        assert pulse["evidence_file"] == f"pulse-{pulse['index']}.json"
-        assert pulse["source_uri"].endswith(f"/pulse/{pulse['index']}")
-        assert pulse["signature_verified"] is True
-        assert pulse["output_hash_verified"] is True
-        assert pulse["certificate_valid_at_pulse"] is True
-
-
-def test_chain_continuity_is_fully_attested() -> None:
-    """The receipt attests all four interval continuity properties."""
-    continuity = load_receipt()["continuity"]
-    assert list(continuity) == [
-        "indexes_consecutive",
-        "timestamps_consecutive",
-        "previous_links_verified",
-        "precommitments_verified",
-    ]
-    assert all(value is True for value in continuity.values())
-
-
-def test_installed_tool_reproduces_receipt(tmp_path: pathlib.Path) -> None:
-    """Fresh verification of retained evidence deterministically reproduces receipt."""
-    regenerated = tmp_path / "receipt.json"
-    result = subprocess.run(
-        [
-            "beacon-audit",
-            "verify",
-            "--case",
-            str(CASE),
-            "--directory",
-            str(EVIDENCE),
-            "--receipt",
-            str(regenerated),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=20,
-    )
-    assert result.returncode == 0, result.stderr
-    assert regenerated.read_bytes() == RECEIPT.read_bytes()
-
-
-def test_tampered_fresh_evidence_fails_closed(tmp_path: pathlib.Path) -> None:
-    """Runtime-created pulse tampering is rejected without issuing a receipt."""
-    copied = tmp_path / "evidence"
-    shutil.copytree(EVIDENCE, copied)
-    pulse_path = copied / "pulse-220392.json"
-    pulse = json.loads(pulse_path.read_text(encoding="utf-8"))
-    value = pulse["pulse"]["outputValue"]
-    pulse["pulse"]["outputValue"] = ("0" if value[0] != "0" else "1") + value[1:]
-    pulse_path.write_text(json.dumps(pulse), encoding="utf-8")
-    attempted = tmp_path / "forged-receipt.json"
-    result = subprocess.run(
-        [
-            "beacon-audit",
-            "verify",
-            "--case",
-            str(CASE),
-            "--directory",
-            str(copied),
-            "--receipt",
-            str(attempted),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=20,
-    )
-    assert result.returncode != 0
-    assert not attempted.exists()
-
-
-def test_symlinked_fresh_evidence_fails_closed(tmp_path: pathlib.Path) -> None:
-    """Runtime-created symlink substitution is rejected as unsafe evidence."""
-    copied = tmp_path / "evidence"
-    shutil.copytree(EVIDENCE, copied)
-    target = copied / "pulse-220393.json"
-    backup = tmp_path / "outside.json"
-    shutil.copyfile(target, backup)
-    target.unlink()
-    os.symlink(backup, target)
-    attempted = tmp_path / "symlink-receipt.json"
-    result = subprocess.run(
-        [
-            "beacon-audit",
-            "verify",
-            "--case",
-            str(CASE),
-            "--directory",
-            str(copied),
-            "--receipt",
-            str(attempted),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=20,
-    )
-    assert result.returncode != 0
-    assert not attempted.exists()
-
-
-def test_fresh_runtime_chain_verifies(
-    fresh_chain: pathlib.Path, tmp_path: pathlib.Path
-) -> None:
-    """The implementation verifies a newly generated signed chain."""
-    root = copy_fresh(fresh_chain, tmp_path)
-    receipt = root / "receipt.json"
-    result = run_verify(root / "case.json", root / "evidence", receipt)
-    assert result.returncode == 0, result.stderr
-    body = json.loads(receipt.read_text(encoding="utf-8"))
-    assert body["case_id"] == "FRESH-RUNTIME-CHAIN"
-    assert [item["index"] for item in body["pulses"]] == [9001, 9002, 9003]
-    assert body["result"] == "PASS"
-
-
-@pytest.mark.parametrize("mutation", ["duplicate", "trailing"])
-def test_noncanonical_json_is_rejected(
-    fresh_chain: pathlib.Path, tmp_path: pathlib.Path, mutation: str
-) -> None:
-    """Duplicate keys and trailing JSON documents fail before receipt issuance."""
-    root = copy_fresh(fresh_chain, tmp_path)
-    pulse = root / "evidence" / "pulse-9002.json"
-    raw = pulse.read_text(encoding="utf-8")
-    if mutation == "duplicate":
-        value = json.loads(raw)["pulse"]
-        pulse.write_text(
-            json.dumps({"pulse": value})[:-1]
-            + ',"pulse":'
-            + json.dumps(value)
-            + "}",
-            encoding="utf-8",
-        )
+def read_source() -> pd.DataFrame:
+    df = pd.read_csv(DATA_DIR / "Frogs_MFCCs.csv")
+    df.columns = [c.replace(" ", "") for c in df.columns]
+    df = df.rename(columns={f"MFCCs_{i}": f"MFCC_{i}" for i in range(1, 23)})
+    if "row_id" in df.columns:
+        df["row_id"] = df["row_id"].astype(int)
     else:
-        pulse.write_text(raw + "{}\n", encoding="utf-8")
-    repin_pulse(root, 9002)
-    receipt = root / "receipt.json"
-    result = run_verify(root / "case.json", root / "evidence", receipt)
-    assert result.returncode != 0
-    assert not receipt.exists()
+        df["row_id"] = np.arange(len(df), dtype=int)
+    return df
 
 
-def test_weakened_strict_policy_is_rejected(
-    fresh_chain: pathlib.Path, tmp_path: pathlib.Path
-) -> None:
-    """A policy cannot turn required cryptographic checks off."""
-    root = copy_fresh(fresh_chain, tmp_path)
-    policy_path = root / "policy.json"
-    policy = json.loads(policy_path.read_text(encoding="utf-8"))
-    policy["require_signatures"] = False
-    policy_path.write_text(json.dumps(policy), encoding="utf-8")
-    receipt = root / "receipt.json"
-    result = run_verify(root / "case.json", root / "evidence", receipt)
-    assert result.returncode != 0
-    assert not receipt.exists()
+@pytest.fixture(scope="module")
+def source():
+    return read_source()
 
 
-def test_noncanonical_trust_profile_is_rejected(
-    fresh_chain: pathlib.Path, tmp_path: pathlib.Path
-) -> None:
-    """Trust pins must be unique canonical uppercase SHA-512 values."""
-    root = copy_fresh(fresh_chain, tmp_path)
-    trust_path = root / "trust.json"
-    trust = json.loads(trust_path.read_text(encoding="utf-8"))
-    trust["allowed_certificate_ids"][0] = trust["allowed_certificate_ids"][0].lower()
-    trust_path.write_text(json.dumps(trust), encoding="utf-8")
-    receipt = root / "receipt.json"
-    result = run_verify(root / "case.json", root / "evidence", receipt)
-    assert result.returncode != 0
-    assert not receipt.exists()
+@pytest.fixture(scope="module")
+def eval_truth(source):
+    df = source[source["row_id"] % 5 == 0].copy()
+    return df.sort_values("row_id").reset_index(drop=True)
 
 
-def test_case_body_pins_are_mandatory(
-    fresh_chain: pathlib.Path, tmp_path: pathlib.Path
-) -> None:
-    """A fresh evidence body cannot diverge from its case SHA-512 manifest."""
-    root = copy_fresh(fresh_chain, tmp_path)
-    case_path = root / "case.json"
-    case = json.loads(case_path.read_text(encoding="utf-8"))
-    case["pulse_sha512"]["9002"] = "0" * 128
-    case_path.write_text(json.dumps(case), encoding="utf-8")
-    receipt = root / "receipt.json"
-    result = run_verify(case_path, root / "evidence", receipt)
-    assert result.returncode != 0
-    assert not receipt.exists()
+@pytest.fixture(scope="module")
+def predictions():
+    return pd.read_csv(OUTPUT_DIR / "predictions.csv")
 
 
-@pytest.mark.parametrize("mode", ["no-san", "ca", "no-digital"])
-def test_unfit_signing_certificates_are_rejected(
-    tmp_path: pathlib.Path, mode: str
-) -> None:
-    """Only the pinned DNS end-entity digital-signature certificate is accepted."""
-    root = tmp_path / mode
-    generator = pathlib.Path(__file__).with_name("fresh_chain.go")
-    generated = subprocess.run(
-        [
-            "go",
-            "run",
-            str(generator),
-            "--directory",
-            str(root),
-            "--certificate-mode",
-            mode,
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=90,
-    )
-    assert generated.returncode == 0, generated.stderr
-    receipt = root / "receipt.json"
-    result = run_verify(root / "case.json", root / "evidence", receipt)
-    assert result.returncode != 0
-    assert not receipt.exists()
+@pytest.fixture(scope="module")
+def record_report():
+    return pd.read_csv(OUTPUT_DIR / "record_report.csv")
 
 
-def test_duplicate_list_value_is_rejected_before_crypto(
-    fresh_chain: pathlib.Path, tmp_path: pathlib.Path
-) -> None:
-    """Each required list-value type appears exactly once."""
-    root = copy_fresh(fresh_chain, tmp_path)
-    pulse_path = root / "evidence" / "pulse-9002.json"
-    envelope = json.loads(pulse_path.read_text(encoding="utf-8"))
-    envelope["pulse"]["listValues"].append(envelope["pulse"]["listValues"][0])
-    pulse_path.write_text(json.dumps(envelope), encoding="utf-8")
-    repin_pulse(root, 9002)
-    receipt = root / "receipt.json"
-    result = run_verify(root / "case.json", root / "evidence", receipt)
-    assert result.returncode != 0
-    assert not receipt.exists()
+@pytest.fixture(scope="module")
+def audit():
+    return json.loads((OUTPUT_DIR / "taxonomy_audit.json").read_text())
 
 
-def test_foreign_list_uri_is_rejected(
-    fresh_chain: pathlib.Path, tmp_path: pathlib.Path
-) -> None:
-    """A list value cannot claim provenance from a foreign chain origin."""
-    root = copy_fresh(fresh_chain, tmp_path)
-    pulse_path = root / "evidence" / "pulse-9002.json"
-    envelope = json.loads(pulse_path.read_text(encoding="utf-8"))
-    envelope["pulse"]["listValues"][1]["uri"] = (
-        "https://example.com/beacon/2.0/chain/7/pulse/8999"
-    )
-    pulse_path.write_text(json.dumps(envelope), encoding="utf-8")
-    repin_pulse(root, 9002)
-    receipt = root / "receipt.json"
-    result = run_verify(root / "case.json", root / "evidence", receipt)
-    assert result.returncode != 0
-    assert not receipt.exists()
+@pytest.fixture(scope="module")
+def merged(predictions, eval_truth):
+    return eval_truth.merge(predictions, on=["row_id", "RecordID"], how="inner", validate="one_to_one").sort_values("row_id").reset_index(drop=True)
 
 
-def test_nonzero_signed_pulse_status_is_rejected(tmp_path: pathlib.Path) -> None:
-    """A cryptographically valid pulse with a nonzero status still fails closed."""
-    root = tmp_path / "nonzero"
-    generator = pathlib.Path(__file__).with_name("fresh_chain.go")
-    generated = subprocess.run(
-        ["go", "run", str(generator), "--directory", str(root), "--status", "1"],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=90,
-    )
-    assert generated.returncode == 0, generated.stderr
-    receipt = root / "receipt.json"
-    result = run_verify(root / "case.json", root / "evidence", receipt)
-    assert result.returncode != 0
-    assert not receipt.exists()
+def species_cols():
+    return [f"prob_species_{nm}" for nm in SPECIES_LEVELS]
 
 
-def test_extra_and_oversized_evidence_fail_closed(
-    fresh_chain: pathlib.Path, tmp_path: pathlib.Path
-) -> None:
-    """The evidence inventory and per-file size cap are exact."""
-    extra = copy_fresh(fresh_chain, tmp_path / "extra")
-    (extra / "evidence" / "notes.txt").write_text("not evidence", encoding="utf-8")
-    result = run_verify(extra / "case.json", extra / "evidence", extra / "receipt.json")
-    assert result.returncode != 0
-    assert not (extra / "receipt.json").exists()
-
-    oversized = copy_fresh(fresh_chain, tmp_path / "oversized")
-    pulse_path = oversized / "evidence" / "pulse-9002.json"
-    pulse_path.write_bytes(pulse_path.read_bytes() + b" " * (2 << 20))
-    repin_pulse(oversized, 9002)
-    result = run_verify(
-        oversized / "case.json", oversized / "evidence", oversized / "receipt.json"
-    )
-    assert result.returncode != 0
-    assert not (oversized / "receipt.json").exists()
+def genus_cols():
+    return [f"prob_genus_{nm}" for nm in GENUS_LEVELS]
 
 
-def test_receipt_paths_fail_closed_without_clobbering(
-    fresh_chain: pathlib.Path, tmp_path: pathlib.Path
-) -> None:
-    """Receipt writes cannot enter evidence or replace a symlink target."""
-    root = copy_fresh(fresh_chain, tmp_path)
-    inside = root / "evidence" / "receipt.json"
-    result = run_verify(root / "case.json", root / "evidence", inside)
-    assert result.returncode != 0
-    assert not inside.exists()
-
-    victim = root / "victim.txt"
-    victim.write_text("KEEP\n", encoding="utf-8")
-    linked = root / "receipt.json"
-    linked.symlink_to(victim)
-    result = run_verify(root / "case.json", root / "evidence", linked)
-    assert result.returncode != 0
-    assert victim.read_text(encoding="utf-8") == "KEEP\n"
-    assert linked.is_symlink()
+def family_cols():
+    return [f"prob_family_{nm}" for nm in FAMILY_LEVELS]
 
 
-def test_failed_verification_preserves_existing_receipt(
-    fresh_chain: pathlib.Path, tmp_path: pathlib.Path
-) -> None:
-    """A failed rerun never destroys a previously committed receipt."""
-    root = copy_fresh(fresh_chain, tmp_path)
-    receipt = root / "receipt.json"
-    receipt.write_text("PREVIOUS-RECEIPT\n", encoding="utf-8")
-    pulse = root / "evidence" / "pulse-9002.json"
-    pulse.write_bytes(pulse.read_bytes().replace(b'"statusCode": 0', b'"statusCode": 9', 1))
-    result = run_verify(root / "case.json", root / "evidence", receipt)
-    assert result.returncode != 0
-    assert receipt.read_text(encoding="utf-8") == "PREVIOUS-RECEIPT\n"
+def species_to_group_maps() -> tuple[dict[str, str], dict[str, str]]:
+    genus_map = {
+        "AdenomeraAndre": "Adenomera",
+        "AdenomeraHylaedactylus": "Adenomera",
+        "Ameeregatrivittata": "Ameerega",
+        "HylaMinuta": "Dendropsophus",
+        "HypsiboasCinerascens": "Hypsiboas",
+        "HypsiboasCordobae": "Hypsiboas",
+        "LeptodactylusFuscus": "Leptodactylus",
+        "OsteocephalusOophagus": "Osteocephalus",
+        "Rhinellagranulosa": "Rhinella",
+        "ScinaxRuber": "Scinax",
+    }
+    family_map = {
+        "AdenomeraAndre": "Leptodactylidae",
+        "AdenomeraHylaedactylus": "Leptodactylidae",
+        "Ameeregatrivittata": "Dendrobatidae",
+        "HylaMinuta": "Hylidae",
+        "HypsiboasCinerascens": "Hylidae",
+        "HypsiboasCordobae": "Hylidae",
+        "LeptodactylusFuscus": "Leptodactylidae",
+        "OsteocephalusOophagus": "Hylidae",
+        "Rhinellagranulosa": "Bufonidae",
+        "ScinaxRuber": "Hylidae",
+    }
+    return genus_map, family_map
 
 
-def test_origin_confusion_and_symlinked_acquisition_are_rejected(
-    fresh_chain: pathlib.Path, tmp_path: pathlib.Path
-) -> None:
-    """The exact HTTPS origin and safe acquisition destination are mandatory."""
-    generator = pathlib.Path(__file__).with_name("fresh_chain.go")
-    confused_root = tmp_path / "confused"
-    generated = subprocess.run(
-        [
-            "go",
-            "run",
-            str(generator),
-            "--directory",
-            str(confused_root),
-            "--origin",
-            "https://attacker@beacon.nist.gov",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=90,
-    )
-    assert generated.returncode == 0, generated.stderr
-    confused = run_verify(
-        confused_root / "case.json",
-        confused_root / "evidence",
-        confused_root / "receipt.json",
-    )
-    assert confused.returncode != 0
+def row_metrics(df: pd.DataFrame, row_id: int):
+    genus_map, family_map = species_to_group_maps()
+    row = df[df["row_id"] == row_id].iloc[0]
+    s = row[species_cols()].to_numpy(dtype=float)
+    g = row[genus_cols()].to_numpy(dtype=float)
+    f = row[family_cols()].to_numpy(dtype=float)
+    return row, s, g, f, genus_map, family_map
 
-    root = copy_fresh(fresh_chain, tmp_path / "symlink")
-    case_path = root / "case.json"
-    outside = root / "outside"
-    outside.mkdir()
-    destination = root / "acquired"
-    destination.symlink_to(outside, target_is_directory=True)
-    acquired = subprocess.run(
-        [
-            "beacon-audit",
-            "acquire",
-            "--case",
-            str(case_path),
-            "--directory",
-            str(destination),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=20,
-    )
-    assert acquired.returncode != 0
-    assert "not a safe directory" in acquired.stderr
-    assert not any(outside.iterdir())
+
+def normalise_frame(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    out = df[cols].copy()
+    out = out.div(out.sum(axis=1), axis=0)
+    return out
+
+
+class TestPresence:
+    def test_files_exist(self):
+        """Required output files exist."""
+        for name in ("predictions.csv", "record_report.csv", "taxonomy_audit.json"):
+            assert (OUTPUT_DIR / name).exists(), f"missing {name}"
+
+    def test_prediction_schema(self, predictions):
+        """Prediction columns match the contract."""
+        assert list(predictions.columns) == [
+            "row_id",
+            "RecordID",
+            "pred_family",
+            "pred_genus",
+            "pred_species",
+            "pred_abstain",
+            *family_cols(),
+            *genus_cols(),
+            *species_cols(),
+        ]
+
+    def test_record_report_schema(self, record_report):
+        """Record report columns match the contract."""
+        assert list(record_report.columns) == [
+            "RecordID",
+            "n_rows",
+            "obs_family",
+            "obs_genus",
+            "obs_species",
+            "pred_family",
+            "pred_genus",
+            "pred_species",
+            "record_abstain",
+            "mean_pred_family_prob",
+            "mean_pred_genus_prob",
+            "mean_pred_species_prob",
+        ]
+
+    def test_audit_schema(self, audit):
+        """Audit JSON exposes the complete flat metric schema."""
+        assert set(audit) == set(AUDIT_KEYS)
+        for key in AUDIT_KEYS:
+            assert isinstance(audit[key], (int, float)) and not isinstance(audit[key], bool)
+            assert math.isfinite(float(audit[key]))
+
+
+class TestCoverage:
+    def test_eval_rows(self, predictions, eval_truth, audit, source):
+        """Predictions and metrics cover all evaluation rows."""
+        assert len(predictions) == len(eval_truth) == int(audit["n_eval_rows"])
+        assert int(audit["n_train_rows"]) == len(source) - len(eval_truth)
+
+    def test_predictions_sorted_unique(self, predictions):
+        """Prediction row identifiers are sorted and unique."""
+        ids = predictions["row_id"].astype(int).tolist()
+        assert ids == sorted(ids)
+        assert len(ids) == len(set(ids))
+
+    def test_eval_join_complete(self, predictions, eval_truth):
+        """Predictions join one-to-one with the evaluation fold."""
+        merged = eval_truth.merge(predictions, on=["row_id", "RecordID"], how="inner")
+        assert len(merged) == len(eval_truth)
+
+    def test_record_report_sorted_unique(self, record_report):
+        """Record report is sorted and one row per evaluation record."""
+        ids = record_report["RecordID"].astype(int).tolist()
+        assert ids == sorted(ids)
+        assert len(ids) == len(set(ids))
+
+
+class TestPerRow:
+    @pytest.mark.parametrize("row_id", SAMPLED_ROW_IDS)
+    def test_row_contract(self, row_id, predictions, eval_truth):
+        """Sampled rows satisfy the hierarchical probability contract."""
+        pred = predictions[predictions["row_id"] == row_id].iloc[0]
+        truth = eval_truth[eval_truth["row_id"] == row_id].iloc[0]
+        _, s, g, f, genus_map, family_map = row_metrics(predictions, row_id)
+        assert pred["RecordID"] == truth["RecordID"]
+        assert pred["pred_species"] == SPECIES_LEVELS[int(np.argmax(s))]
+        assert pred["pred_genus"] == GENUS_LEVELS[int(np.argmax(g))]
+        assert pred["pred_family"] == FAMILY_LEVELS[int(np.argmax(f))]
+        assert math.isfinite(float(s.sum())) and abs(float(s.sum()) - 1.0) <= TOL
+        assert math.isfinite(float(g.sum())) and abs(float(g.sum()) - 1.0) <= TOL
+        assert math.isfinite(float(f.sum())) and abs(float(f.sum()) - 1.0) <= TOL
+        assert all(0.0 <= float(x) <= 1.0 for x in s)
+        assert all(0.0 <= float(x) <= 1.0 for x in g)
+        assert all(0.0 <= float(x) <= 1.0 for x in f)
+        assert abs(float(pred[family_cols()].sum()) - 1.0) <= TOL
+        assert abs(float(pred[genus_cols()].sum()) - 1.0) <= TOL
+        species_family_sums = {}
+        species_genus_sums = {}
+        for sp, genus in genus_map.items():
+            species_genus_sums.setdefault(genus, 0.0)
+            species_genus_sums[genus] += float(pred[f"prob_species_{sp}"])
+        for sp, family in family_map.items():
+            species_family_sums.setdefault(family, 0.0)
+            species_family_sums[family] += float(pred[f"prob_species_{sp}"])
+        for family in FAMILY_LEVELS:
+            assert abs(float(pred[f"prob_family_{family}"]) - float(species_family_sums[family])) <= TOL
+        for genus in GENUS_LEVELS:
+            assert abs(float(pred[f"prob_genus_{genus}"]) - float(species_genus_sums[genus])) <= TOL
+        assert pred["pred_abstain"] in (0, 1)
+        assert int(pred["pred_abstain"]) == int(max(s) < 0.55)
+
+
+class TestMetricConsistency:
+    def test_metrics_match(self, audit, merged):
+        """Audit metrics match recomputation from predictions."""
+        y_species = merged["Species"].astype(str).to_numpy()
+        y_genus = merged["Genus"].astype(str).to_numpy()
+        y_family = merged["Family"].astype(str).to_numpy()
+        sprob = merged[species_cols()].to_numpy(dtype=float)
+        gprob = merged[genus_cols()].to_numpy(dtype=float)
+        fprob = merged[family_cols()].to_numpy(dtype=float)
+        genus_map, family_map = species_to_group_maps()
+        species_to_genus = np.zeros((len(SPECIES_LEVELS), len(GENUS_LEVELS)))
+        species_to_family = np.zeros((len(SPECIES_LEVELS), len(FAMILY_LEVELS)))
+        for i, sp_name in enumerate(SPECIES_LEVELS):
+            species_to_genus[i, GENUS_LEVELS.index(genus_map[sp_name])] = 1
+            species_to_family[i, FAMILY_LEVELS.index(family_map[sp_name])] = 1
+        sprob_norm = normalise_frame(merged, species_cols()).to_numpy(dtype=float)
+        gprob_norm = normalise_frame(merged, genus_cols()).to_numpy(dtype=float)
+        fprob_norm = normalise_frame(merged, family_cols()).to_numpy(dtype=float)
+        assert abs(float(audit["species_log_loss"]) - float(log_loss(y_species, sprob_norm, labels=SPECIES_LEVELS))) <= TOL
+        assert abs(float(audit["genus_log_loss"]) - float(log_loss(y_genus, gprob_norm, labels=GENUS_LEVELS))) <= TOL
+        assert abs(float(audit["family_log_loss"]) - float(log_loss(y_family, fprob_norm, labels=FAMILY_LEVELS))) <= TOL
+        assert abs(float(audit["species_brier"]) - multiclass_brier(y_species, sprob, SPECIES_LEVELS)) <= TOL
+        assert abs(float(audit["genus_brier"]) - multiclass_brier(y_genus, gprob, GENUS_LEVELS)) <= TOL
+        assert abs(float(audit["family_brier"]) - multiclass_brier(y_family, fprob, FAMILY_LEVELS)) <= TOL
+        assert abs(float(audit["species_ece_10bin"]) - ece(y_species == np.array(SPECIES_LEVELS)[np.argmax(sprob, axis=1)], np.max(sprob_norm, axis=1), 10)) <= TOL
+        assert abs(float(audit["genus_ece_10bin"]) - ece(y_genus == np.array(GENUS_LEVELS)[np.argmax(gprob, axis=1)], np.max(gprob_norm, axis=1), 10)) <= TOL
+        assert abs(float(audit["family_ece_10bin"]) - ece(y_family == np.array(FAMILY_LEVELS)[np.argmax(fprob, axis=1)], np.max(fprob_norm, axis=1), 10)) <= TOL
+        assert abs(float(audit["family_residual_max"]) - float(np.max(np.abs(fprob - sprob @ species_to_family)))) <= TOL
+        assert abs(float(audit["genus_residual_max"]) - float(np.max(np.abs(gprob - sprob @ species_to_genus)))) <= TOL
+        assert abs(float(audit["row_abstain_rate"]) - float(merged["pred_abstain"].mean())) <= TOL
+
+    def test_record_report_matches(self, record_report, merged):
+        """Record-level aggregation matches recomputation."""
+        for _, row in record_report.iterrows():
+            part = merged[merged["RecordID"] == row["RecordID"]]
+            assert int(row["n_rows"]) == len(part)
+            assert row["obs_family"] == part["Family"].iloc[0]
+            assert row["obs_genus"] == part["Genus"].iloc[0]
+            assert row["obs_species"] == part["Species"].iloc[0]
+            fam = part[family_cols()].mean(axis=0)
+            gen = part[genus_cols()].mean(axis=0)
+            sp = part[species_cols()].mean(axis=0)
+            assert row["pred_family"] == fam.idxmax().replace("prob_family_", "")
+            assert row["pred_genus"] == gen.idxmax().replace("prob_genus_", "")
+            assert row["pred_species"] == sp.idxmax().replace("prob_species_", "")
+            assert abs(float(row["mean_pred_family_prob"]) - float(fam.max())) <= TOL
+            assert abs(float(row["mean_pred_genus_prob"]) - float(gen.max())) <= TOL
+            assert abs(float(row["mean_pred_species_prob"]) - float(sp.max())) <= TOL
+            assert int(row["record_abstain"]) == int(sp.max() < 0.55)
+
+    def test_record_abstain_rate_matches(self, audit, record_report):
+        """Audit record-abstain rate matches the record report."""
+        assert abs(float(audit["record_abstain_rate"]) - float(record_report["record_abstain"].mean())) <= TOL
+
+
+class TestBaselines:
+    def test_candidate_beats_species_prior(self, audit, source, eval_truth, merged):
+        """Candidate beats a naive species-prior baseline."""
+        train = source[source["row_id"] % 5 != 0]
+        prior = train["Species"].value_counts(normalize=True).reindex(SPECIES_LEVELS).fillna(0).to_numpy()
+        baseline = np.tile(prior, (len(eval_truth), 1))
+        assert float(audit["species_log_loss"]) < float(log_loss(eval_truth["Species"], baseline, labels=SPECIES_LEVELS))
+
+    def test_candidate_beats_family_uniform_baseline(self, audit, source, eval_truth):
+        """Candidate beats a family-uniform baseline."""
+        train = source[source["row_id"] % 5 != 0]
+        fam_prior = train["Family"].value_counts(normalize=True).reindex(FAMILY_LEVELS).fillna(0).to_numpy()
+        family = np.tile(fam_prior, (len(eval_truth), 1))
+        species = np.zeros((len(eval_truth), len(SPECIES_LEVELS)))
+        for i, sp in enumerate(SPECIES_LEVELS):
+            if sp.startswith("Adenomera"):
+                fam = "Leptodactylidae"
+            elif sp.startswith("Ameerega"):
+                fam = "Dendrobatidae"
+            elif sp.startswith(("Hyla", "Hypsiboas", "Osteocephalus", "Scinax")):
+                fam = "Hylidae"
+            else:
+                fam = "Bufonidae"
+            species[:, i] = family[:, FAMILY_LEVELS.index(fam)] / sum(
+                1 for ss in SPECIES_LEVELS if (
+                    (ss.startswith("Adenomera") and fam == "Leptodactylidae")
+                    or (ss.startswith("Ameerega") and fam == "Dendrobatidae")
+                    or (ss.startswith(("Hyla", "Hypsiboas", "Osteocephalus", "Scinax")) and fam == "Hylidae")
+                    or (ss.startswith("Rhinella") and fam == "Bufonidae")
+                )
+            )
+        species = species / species.sum(axis=1, keepdims=True)
+        assert float(audit["species_log_loss"]) < float(log_loss(eval_truth["Species"], species, labels=SPECIES_LEVELS))
+
+    def test_incoherent_head_baseline_is_incoherent(self, source, eval_truth):
+        """Independent heads violate the nested-probability contract."""
+        train = source[source["row_id"] % 5 != 0]
+        sp = train["Species"].value_counts(normalize=True).reindex(SPECIES_LEVELS).fillna(0).to_numpy()
+        fam = train["Family"].value_counts(normalize=True).reindex(FAMILY_LEVELS).fillna(0).to_numpy()
+        gen = train["Genus"].value_counts(normalize=True).reindex(GENUS_LEVELS).fillna(0).to_numpy()
+        species = np.tile(sp, (len(eval_truth), 1))
+        genus = np.roll(np.tile(gen, (len(eval_truth), 1)), shift=1, axis=1)
+        family = np.roll(np.tile(fam, (len(eval_truth), 1)), shift=1, axis=1)
+        genus_map, family_map = species_to_group_maps()
+        species_to_genus = np.zeros((len(SPECIES_LEVELS), len(GENUS_LEVELS)))
+        species_to_family = np.zeros((len(SPECIES_LEVELS), len(FAMILY_LEVELS)))
+        for i, sp_name in enumerate(SPECIES_LEVELS):
+            species_to_genus[i, GENUS_LEVELS.index(genus_map[sp_name])] = 1
+            species_to_family[i, FAMILY_LEVELS.index(family_map[sp_name])] = 1
+        genus_from_species = species @ species_to_genus
+        family_from_species = species @ species_to_family
+        assert np.max(np.abs(genus - genus_from_species)) > 0.01
+        assert np.max(np.abs(family - family_from_species)) > 0.01
+
+
+class TestHiddenVariant:
+    @pytest.mark.skipif(ANURAN_VARIANT == "public", reason="only runs on hidden variants")
+    def test_hidden_eval_recordids_not_in_training(self, source):
+        """Hidden variants prevent RecordID memorization across the split."""
+        train_ids = set(source.loc[source["row_id"] % 5 != 0, "RecordID"].astype(int))
+        eval_ids = set(source.loc[source["row_id"] % 5 == 0, "RecordID"].astype(int))
+        assert train_ids.isdisjoint(eval_ids)
+
+    @pytest.mark.skipif(ANURAN_VARIANT == "public", reason="only runs on hidden variants")
+    def test_hidden_variant_metrics_finite(self, audit):
+        """Hidden variant metrics stay finite."""
+        for value in audit.values():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                assert math.isfinite(float(value))

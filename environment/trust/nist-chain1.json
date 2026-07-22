@@ -1,7 +1,0 @@
-{
-  "trust_profile": "nist-chain1-pinned-certificate",
-  "allowed_certificate_ids": [
-    "5501E3D72BC42F3B96E16DE4DCADCB16768E109662BD16D667D5FD9AEE585AF31BBDC5DD4F53592276064B53DDDD76C8F3604B2A41DB6E09F78F82BB5D6569E7"
-  ],
-  "expected_subject_common_name": "engine.beacon.nist.gov"
-}
