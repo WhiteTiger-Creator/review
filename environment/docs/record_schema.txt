@@ -1,7 +1,0 @@
-ciphertexts.csv has columns id, a, b, ciphertext.
-The a and b columns are public row parameters.
-The true plaintext count is chunk_count times share_count from relation.txt.
-True plaintexts use frag<index>.<share>:<10 lowercase hex> with zero-based indices.
-The recovered 40-bit share values for each index combine by bitwise XOR.
-Fragment-shaped decoy plaintexts use the same syntax, and unrelated rows are also present.
-The true chunk sequence is governed by the public relation parameters modulo 2^40.

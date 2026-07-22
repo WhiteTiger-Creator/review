@@ -1,4 +1,0 @@
-public.txt contains the public modulus and exponent.
-ciphertexts.csv contains row parameters and ciphertexts.
-commitment.txt contains the SHA-256 digest used to select the completed flag.
-relation.txt contains the public 40-bit sequence and layout parameters.

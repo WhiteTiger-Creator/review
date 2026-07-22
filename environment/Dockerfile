@@ -1,22 +1,29 @@
-# Current submission policy lists this exact digest-pinned ECR Go image as the
-# canonical Go final base.
-FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+FROM public.ecr.aws/docker/library/gcc:13-bookworm@sha256:930f2ebe239275fa67226654cb79273ea34eee672ae61c8a39f689c37fb7ac5c
 
-ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        tmux \
+        asciinema \
+        python3 \
+        python3-pip \
+        python-is-python3 \
+        libmumps-seq-dev \
+        liblapack-dev \
+        libblas-dev \
+        curl \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN apt-get update &&     apt-get install -y --no-install-recommends       asciinema       ca-certificates       python3       python3-pip       python3-venv       tmux       util-linux &&     ln -sf /usr/local/go/bin/go /usr/local/bin/go &&     rm -rf /var/lib/apt/lists/*
-
-COPY requirements.txt /tmp/requirements.txt
-RUN python3 -m pip install --no-cache-dir --break-system-packages --require-hashes -r /tmp/requirements.txt
-
-RUN groupadd --gid 10001 candidate && useradd --uid 10001 --gid 10001 --create-home candidate
+RUN python -m pip install --no-cache-dir --break-system-packages \
+        pytest==8.4.1 \
+        pytest-json-ctrf==0.3.5
 
 WORKDIR /app
 
-COPY go.mod /app/go.mod
-COPY challenge/ /app/challenge/
-COPY docs/ /app/docs/
-COPY samples/ /app/samples/
-COPY cmd/ /app/cmd/
-COPY internal/ /app/internal/
-COPY tools/ /app/tools/
+COPY src /app/src
+COPY include /app/include
+COPY docs /app/docs
+COPY data /app/data
+COPY scripts /app/scripts
+COPY Makefile /app/Makefile
+COPY README.md /app/README.md

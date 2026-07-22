@@ -1,8 +1,0 @@
-multiplier=0xf91741bb75
-lag_multiplier=0xb59469b331
-third_multiplier=0x7bb58215a7
-increment=0xb9ec24521e
-modulus=0x10000000000
-chunk_count=9
-share_count=5
-share_bits=40

@@ -1,1 +1,0 @@
-The recovery logic must support newly generated instances that follow the same file contracts.

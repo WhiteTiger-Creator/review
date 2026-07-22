@@ -1,1 +1,0 @@
-go run /app/cmd/recover.go /app/challenge /app/recovered_flag.txt

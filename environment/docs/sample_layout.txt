@@ -1,2 +1,0 @@
-Samples mirror the public challenge file names and include only public arithmetic inputs.
-They are not guaranteed to contain the same row order or decoy placement as the evaluated cases.
