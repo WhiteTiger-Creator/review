@@ -1,43 +1,38 @@
-# Canonical Terminal-Bench Node base, digest-pinned for reproducibility.
-FROM public.ecr.aws/docker/library/node:22-bookworm-slim@sha256:f3a68cf41a855d227d1b0ab832bed9749469ef38cf4f58182fb8c893bc462383
+FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
 
-ENV DEBIAN_FRONTEND=noninteractive
-COPY requirements.lock /tmp/requirements.lock
+ENV CARGO_NET_OFFLINE=true
+ENV CARGO_HOME=/usr/local/cargo
+ENV RUSTUP_HOME=/usr/local/rustup
+ENV PATH=/usr/local/cargo/bin:$PATH
+
+# The base image ships cargo/rustc as rustup proxy shims on a PATH set by the
+# base image's ENV. Some agent harnesses launch a shell that does not inherit
+# that ENV, leaving `cargo` unreachable and the build failing silently. Symlink
+# the real toolchain binaries into /usr/local/bin (always on PATH) so the build
+# works from a bare shell.
+RUN set -eux; \
+    real_cargo="$(find /usr/local/rustup/toolchains -maxdepth 3 -type f -name cargo | head -n1)"; \
+    real_rustc="$(find /usr/local/rustup/toolchains -maxdepth 3 -type f -name rustc | head -n1)"; \
+    ln -sf "$real_cargo" /usr/local/bin/cargo; \
+    ln -sf "$real_rustc" /usr/local/bin/rustc; \
+    /usr/local/bin/cargo --version; \
+    /usr/local/bin/rustc --version
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
         tmux \
         asciinema \
-        git \
-        ripgrep \
-        patch \
-        make \
-        unzip \
-        curl \
-        ca-certificates \
         python3 \
-        python3-venv \
-    && python3 -m venv /opt/verifier-venv \
-    && /opt/verifier-venv/bin/pip install --no-cache-dir --require-hashes -r /tmp/requirements.lock \
+        python3-pip \
+        make \
+    && pip3 install --no-cache-dir --break-system-packages pytest==8.3.4 \
     && rm -rf /var/lib/apt/lists/*
 
-# node:slim ships python3 for the base OS but pytest and its hash-locked plugins
-# live in a dedicated virtualenv; expose that interpreter as a wrapper script
-# (not a symlink) so pytest resolves from the locked environment.
-RUN printf '#!/bin/sh\nexec /opt/verifier-venv/bin/python3 "$@"\n' > /usr/local/bin/python3 \
-    && chmod 0755 /usr/local/bin/python3
-ENV VERIFIER_PYTHON=/opt/verifier-venv/bin/python3
-
 WORKDIR /app
-COPY repo/ /app/
 
-# Install the siftfit command that runs the built service.
-RUN install -m 0755 /app/siftfit /usr/local/bin/siftfit
+COPY src/ /app/src/
+COPY docs/ /app/docs/
+COPY data/ /app/data/
+COPY Cargo.toml /app/Cargo.toml
+COPY Makefile /app/Makefile
 
-# Prime the build, then drop the artifact so rebuilds start clean.
-RUN make dist/main.mjs && rm -rf /app/dist
-
-# /app is a git repo so git apply / git diff work in place.
-RUN git init -q \
-    && git config user.email task@example.com \
-    && git config user.name task \
-    && git add -A \
-    && git commit -q -m "initial task state"
+RUN cargo build --release --offline

@@ -1,7 +1,25 @@
-A TypeScript program in `/app` runs Empirical Mode Decomposition, Huang's 1998 data-adaptive method that pulls a signal apart into a handful of Intrinsic Mode Functions (IMFs) plus a slow residual trend. For each input signal it returns the IMFs it extracts and the leftover residual, and those numbers have to match what the reference `EMD-signal` package (imported in Python as `from PyEMD import EMD`) produces in its default configuration, called as `EMD().emd(signal, max_imf=...)`. Input arrives as one JSON object on standard input, `{"inputs": [ ... ]}`, and the output is one JSON object on standard output, `{"results": [ ... ]}`, holding one `{"imfs": [ ... ], "residual": [ ... ]}` per input in the same order. Here `imfs` is a list of series, each as long as the signal, and `residual` is a single series of that same length.
+A dependency resolver decides, build by build, which prerelease it installs for
+a release line. This task models that install-preference policy. Nothing is
+fetched or executed; scenarios arrive as rows of text on standard input.
 
-Each input carries a `signal` (an ordered list of samples) and an integer `max_imf` that caps the IMF count, where a negative value means "as many as the decomposition yields". For every signal, the `imfs` you emit and the `residual` must equal what the reference produces for that signal, checked component-by-component to a tight floating-point tolerance (`rel_tol = 1e-6`, `abs_tol = 1e-6`); the reported `residual` is the original signal minus every extracted IMF. That numeric match is the whole contract: how you arrive at those values is up to you, and a partial solution still earns credit on the cases it gets right.
+Each scenario opens with a line reading SCENARIO and an identifier and closes
+with ENDSCENARIO, and is an independent resolver session. Two row kinds sit
+between them, processed top to bottom. A REQUIRE row names a version and records
+a requirement the resolver must honour for that version's release line;
+requirements raised earlier stay in force and can accumulate. A CMP row reads
+CMP, a short query label, then two candidate version strings, each
+major.minor.patch, a hyphen, and a prerelease tag of dot-separated identifiers
+(row grammar in environment/docs).
 
-The exact behavior you must reproduce is documented in the read-only `/app/REFERENCE.md`, which transcribes the reference package's default configuration in full: the exact default parameters and thresholds, the "simple" extrema detector (including flat-plateau handling), the `nbsym = 2` left- and right-branch mirroring of `prepare_points_simple` with its edge-correction, the not-a-knot and 3-point cubic splines, the `check_imf` convergence tests and the first-sift behavior, and the inner- and outer-loop stopping rules. It is documentation of what the reference does, not a prescribed set of steps to follow — but because the outputs must line up to the stated tolerance, every constant, tie-break, and branch it records is effectively part of the contract, so read it closely. The container is offline with no third-party toolchain, so the reference package itself is not available to call.
+For each CMP one line is emitted, in scenario and query order: the scenario id,
+a bar, the query label, a bar, and the result. The result is one candidate
+string copied verbatim when the resolver installs a build; the token NONE when
+it installs neither; the token INCOMPARABLE when the candidates differ in
+major.minor.patch core. REQUIRE rows emit nothing.
 
-The standard-input reading, JSON framing, and output are already wired up in `/app/src/main.ts`, which calls `decompose` from `/app/src/emd.ts`; the task is to complete `decompose` in `/app/src/emd.ts`. Build with `make dist/main.mjs`, which strips the TypeScript types offline and emits `/app/dist/main.mjs`, and run the service with the `siftfit` command.
+Which build is installed follows from the prerelease install-preference ordering
+— read identifier by identifier, left to right, not always agreeing with
+standard version precedence — together with the requirements in force. Infer the
+precise policy from the worked scenarios under environment/data/examples, which
+pair inputs with expected output. Building cargo in release mode offline in the
+app directory produces the binary, which reads scenarios from stdin.

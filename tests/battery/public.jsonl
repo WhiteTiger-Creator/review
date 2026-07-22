@@ -1,0 +1,11 @@
+{"scenario": "SCENARIO p00\nCMP q0 1.0.0-beta.2 1.0.0-beta.9\nENDSCENARIO", "expected": ["p00|q0|1.0.0-beta.2"]}
+{"scenario": "SCENARIO p01\nCMP q0 1.0.0-rc.1 1.0.0-rc\nENDSCENARIO", "expected": ["p01|q0|1.0.0-rc.1"]}
+{"scenario": "SCENARIO p02\nREQUIRE 1.0.0-beta\nCMP q0 1.0.0-alpha.9 1.0.0-rc.1\nENDSCENARIO", "expected": ["p02|q0|1.0.0-rc.1"]}
+{"scenario": "SCENARIO p03\nREQUIRE 1.0.0-rc\nREQUIRE 1.0.0-alpha\nCMP q0 1.0.0-beta.2 1.0.0-rc.5\nENDSCENARIO", "expected": ["p03|q0|NONE"]}
+{"scenario": "SCENARIO p04\nREQUIRE 1.0.0-rc\nREQUIRE 1.0.0-alpha\nCMP q0 1.0.0-beta 1.0.0-rc\nENDSCENARIO", "expected": ["p04|q0|1.0.0-rc"]}
+{"scenario": "SCENARIO p05\nREQUIRE 1.0.0-rc.9\nCMP q0 1.0.0-alpha.1 1.0.0-beta.2\nENDSCENARIO", "expected": ["p05|q0|NONE"]}
+{"scenario": "SCENARIO p06\nCMP q0 1.0.0-rc.4 1.0.0-rc\nENDSCENARIO", "expected": ["p06|q0|1.0.0-rc.4"]}
+{"scenario": "SCENARIO p07\nCMP q0 1.0.0-x.10 1.0.0-x.9\nENDSCENARIO", "expected": ["p07|q0|1.0.0-x.9"]}
+{"scenario": "SCENARIO p08\nCMP q0 1.0.0-x.1a 1.0.0-x.2\nENDSCENARIO", "expected": ["p08|q0|1.0.0-x.2"]}
+{"scenario": "SCENARIO p09\nCMP q0 1.2.0-alpha 1.3.0-alpha\nENDSCENARIO", "expected": ["p09|q0|INCOMPARABLE"]}
+{"scenario": "SCENARIO p10\nREQUIRE 1.0.0-beta\nCMP q0 1.0.0-beta.20 1.0.0-rc\nENDSCENARIO", "expected": ["p10|q0|1.0.0-rc"]}
