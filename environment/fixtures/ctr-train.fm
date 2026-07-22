@@ -1,0 +1,10 @@
+1 device_mobile:1 country_us:1 hour_evening:1 campaign_sports:1
+0 device_desktop:1 country_us:1 hour_morning:1 campaign_finance:1
+1 device_mobile:1 country_gb:1 hour_evening:1 campaign_sports:1
+0 device_desktop:1 country_gb:1 hour_morning:1 campaign_finance:1
+1 device_mobile:1 country_us:1 hour_morning:1 campaign_sports:1
+0 device_mobile:1 country_us:1 hour_morning:1 campaign_finance:1
+1 device_desktop:1 country_gb:1 hour_evening:1 campaign_sports:1
+0 device_desktop:1 country_us:1 hour_evening:1 campaign_finance:1
+1 device_mobile:0.5 device_mobile:0.5 country_gb:1 campaign_sports:1
+0 device_desktop:1 country_gb:1 campaign_finance:1 hour_evening:0

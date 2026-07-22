@@ -1,5 +1,0 @@
-feature,index,unit
-airflow_flatness,0,ratio
-spo2_drop,1,percentage_points
-resp_pause,2,seconds
-body_motion,3,normalized_activity

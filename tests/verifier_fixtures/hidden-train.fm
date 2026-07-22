@@ -1,0 +1,8 @@
+1 slot_top:1 device_phone:1 publisher_news:1 hour_night:1
+0 slot_bottom:1 device_laptop:1 publisher_news:1 hour_day:1
+1 slot_top:1 device_laptop:1 publisher_games:1 hour_night:1
+0 slot_bottom:1 device_phone:1 publisher_games:1 hour_day:1
+1 slot_top:0.4 slot_top:0.6 publisher_news:1 device_phone:1
+0 slot_bottom:1 publisher_news:1 device_laptop:1
+1 slot_top:1 publisher_games:1 device_phone:1
+0 slot_bottom:1 publisher_games:1 device_laptop:1
