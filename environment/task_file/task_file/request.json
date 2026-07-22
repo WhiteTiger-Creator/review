@@ -1,0 +1,23 @@
+{
+  "platform": "linux-x64",
+  "roots": [
+    {
+      "name": "atlas",
+      "min": "1.0.0",
+      "min_inclusive": true,
+      "max": "3.0.0",
+      "max_inclusive": false,
+      "features": ["seal"],
+      "allow_yanked": false
+    },
+    {
+      "name": "beacon",
+      "min": "1.0.0",
+      "min_inclusive": true,
+      "max": null,
+      "max_inclusive": false,
+      "features": [],
+      "allow_yanked": false
+    }
+  ]
+}
