@@ -1,1 +1,0 @@
-//! Setting resolution (starter stub).

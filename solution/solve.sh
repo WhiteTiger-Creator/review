@@ -1,20 +1,25 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -d /solution/oracle_src ]; then
-  ORACLE_ROOT=/solution/oracle_src
-elif [ -d "$SCRIPT_DIR/oracle_src" ]; then
-  ORACLE_ROOT="$SCRIPT_DIR/oracle_src"
-else
-  echo "oracle_src not found (looked in /solution and $SCRIPT_DIR)" >&2
-  exit 1
-fi
+case_file=/app/cases/chain1-220390-220394.json
+evidence=/app/audit/evidence
+receipt=/app/audit/receipt.json
 
-rm -rf /app/src /app/target
-cp -r "$ORACLE_ROOT/src" /app/src
-cp "$ORACLE_ROOT/Cargo.toml" /app/Cargo.toml
-cp "$ORACLE_ROOT/Cargo.lock" /app/Cargo.lock
+for area in acquire cli config receipt verify; do
+  cp -f /solution/fixed/internal/"$area"/*.go /app/internal/"$area"/
+done
 
 cd /app
-cargo build --release --locked --offline
+gofmt -w ./internal ./cmd
+go test ./...
+go build -trimpath -ldflags='-s -w' -o /usr/local/bin/beacon-audit ./cmd/beacon-audit
+
+install -d -m 0750 /app/audit
+beacon-audit acquire --case "$case_file" --directory "$evidence"
+beacon-audit verify --case "$case_file" --directory "$evidence" --receipt "$receipt"
+
+smoke=$(mktemp /tmp/beacon-receipt.XXXXXX)
+trap 'rm -f "$smoke"' EXIT
+beacon-audit verify --case "$case_file" --directory "$evidence" --receipt "$smoke"
+cmp -s "$receipt" "$smoke"
+test "$(find "$evidence" -maxdepth 1 -type f | wc -l)" -eq 6

@@ -1,27 +1,5 @@
-We're blocked on the Postgres cutover. The checked-in cluster manifests under
-`/app/data` disagree with the organization policy snapshot, so bootstraps keep
-shipping wrong identities, privileges, HBA first-match order, and extension
-prerequisites.
+An incident review needs independently retained evidence for the NIST Randomness Beacon interval in `/app/cases/chain1-220390-220394.json`. Security testing found that the deployed evidence control can be bypassed with malformed metadata and unsafe filesystem objects. Harden the control under `/app`, make the corrected enforcement active at `/usr/local/bin/beacon-audit`, and complete the live audit under `/app/audit`. The pulse bodies and certificate must come from the HTTPS resources at the case’s exact `https://beacon.nist.gov` origin; they are deliberately not bundled.
 
-Finish the unfinished planner already living in `/app`. The binary is named
-`pg-bootstrap`. Its `plan` entrypoint must fetch and digest-check the policy
-snapshot from the localhost base URL it already takes, merge that snapshot with
-the local YAML/TOML plus the extension and setting catalogs, reject forbidden
-capabilities, place every operation after its dependencies in a legal phase, and
-emit `/app/output/bootstrap.sql` together with `/app/output/bootstrap_plan.json`.
+Acquisition must safely replace only `/app/audit/evidence`, retain byte-exact responses as `pulse-<index>.json` plus `certificate.pem`, enforce every case-file SHA-512 body pin, reject cross-origin redirects and responses over 2 MiB, and refuse symlinked destinations or parents without destroying prior evidence. Verification must accept exactly the expected regular-file inventory, open it without following symlinks, recheck the body pins and 2 MiB limit, and strictly decode one JSON value with no unknown or duplicate fields. The case origin must be exact, the strict policy may not disable any required check, and trust pins must be unique uppercase SHA-512 identifiers. Each pulse must have successful status codes, canonical hexadecimal fields, and exactly one `previous`, `hour`, `day`, `month`, and `year` list value whose URI remains in the declared chain; the `previous` URI names the preceding index.
 
-Do real HTTP against the supplied policy service. Do not replace that fixture,
-edit verifier files, or dump precomputed SQL/plan tables from Python or shell.
-
-Whole-run fatals exit nonzero, print a stderr line that starts with
-`<reason_token>:`, and delete both requested outputs. A rejected cluster only
-gets a rejection row; later clusters still get planned, and the process still
-exits zero if nothing whole-run fatal happened.
-
-The rules are in `/app/docs/incident_summary.md`,
-`/app/docs/bootstrap_policy_profile.md`, `/app/docs/input_schema.md`,
-`/app/docs/policy_fragment_schema.md`, `/app/docs/rejection_precedence.md`,
-`/app/docs/extension_resolution.md`, `/app/docs/phase_contract.md`,
-`/app/docs/api_contract.md`, `/app/docs/plan_schema.md`, and
-`/app/docs/sql_serialization.md`. The supported argument surface is already
-declared in `/app/src/cli.rs`.
+Write `/app/audit/receipt.json` outside the evidence directory using the pinned policy and trust profile. Receipt destinations and parents must not be symlinks, and any failed verification must preserve an existing receipt and leave no new one. A passing audit requires the pinned end-entity RSA certificate to match its identifier, trusted CN and SAN, digital-signature usage, and pulse validity time; every signature and output hash must verify; indexes and timestamps must be consecutive; previous links and precommitment openings must join the interval. The receipt schema, key order, uppercase digest encoding, deterministic audit time, and binary failure behavior in `/app/docs/audit-format.md` and `/app/schemas/receipt.schema.json` are part of the contract.
