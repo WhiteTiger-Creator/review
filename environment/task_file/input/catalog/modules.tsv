@@ -1,0 +1,20 @@
+module	version	compatibility_level	license	min_bazel	yanked
+com_acme_app	1.0.0	1	Apache-2.0	7.2.0	-
+telemetry_rules	2.1.0	1	Apache-2.0	7.1.0	-
+rules_java	7.6.0	1	Apache-2.0	7.0.0	-
+rules_java	7.4.0	1	Apache-2.0	7.0.0	-
+bazel_skylib	1.7.1	1	Apache-2.0	6.0.0	-
+bazel_skylib	1.6.1	1	Apache-2.0	6.0.0	-
+protobuf	29.0.0	1	BSD-3-Clause	7.0.0	-
+protobuf	28.2.0	1	BSD-3-Clause	7.0.0	-
+rules_proto	6.0.0	1	Apache-2.0	7.0.0	-
+zlib	1.3.1	1	MIT	6.0.0	-
+zlib	1.2.13	1	MIT	6.0.0	-
+linux_sandbox	1.2.0	1	Apache-2.0	7.0.0	-
+darwin_support	1.0.0	1	Apache-2.0	7.0.0	-
+lint_tools	0.4.0	1	MIT	7.0.0	-
+legacy_crypto	0.9.1	1	BSD-3-Clause	6.0.0	CVE carryover accepted for factory-linux
+forbidden_jar	3.0.0	1	GPL-3.0	7.0.0	-
+future_rules	9.0.0	1	Apache-2.0	8.0.0	-
+compat_lib	2.0.0	2	Apache-2.0	7.0.0	-
+compat_lib	1.5.0	1	Apache-2.0	7.0.0	-

@@ -1,5 +1,0 @@
-version: '1'
-streaks:
-  bonuses:
-  - threshold: 2
-    bonus: 5

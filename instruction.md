@@ -1,28 +1,24 @@
-# Repair the Trivia Dungeon Publication Gate
+We are freezing a Bazel module registry snapshot for air-gapped build workers, and the current Bash gate at `/app/bin/freeze-bazel-registry` is letting yanked modules, wrong Bzlmod versions, and unverified source archives into the release bundle. Fix the command so release engineering can run `/app/bin/freeze-bazel-registry` before copying the registry into the factory image. By default it reads `/app/input` and writes `/app/out`; it must also accept `/app/bin/freeze-bazel-registry INPUT_DIR OUTPUT_DIR` and recompute from the files in that input directory on every run.
 
-The Java trivia dungeon in `/app` has a broken offline publication workflow. Audit and playthrough disagree on playable room and encounter content, and identical reruns are not always byte-identical.
+Keep the command as a Bash executable using only offline tools already in the image. Do not replace it with Python, Ruby, Perl, Node, Go, Java, Bazel, Docker, Podman, registry clients, network calls, or runtime package installation. The input may contain additional valid modules, versions, archives, patches, provenance rows, and profiles when invoked, so derive decisions from the current files instead of hardcoding the bundled sample.
 
-Repair the implementation under `/app`. From `/app`, `make verify` must build without network access, audit the configured dungeon, and complete the configured deterministic playthrough with correct room traversal, encounter scoring, and trivia resolution. Treat `make verify` as a bundled-sample check only—passing it is required but not sufficient. Behavior must also match the Output contract summary and scoring rules in `/app/docs/` for alternate roots and boundary cases.
-
-Keep `/data` and bundled Parquet immutable. The workflow writes `/output/audit-report.json` and `/output/playthrough.json`. Do not write those files by hand; `make verify` must regenerate them.
-
-Preserve the existing command entry point, Makefile verify target, and documented command contract.
-
-## Authoritative contracts
-
-Behavior is specified in `/app/docs/`:
-
-- **domain-contracts.md** — exit codes, issue tuples, fingerprints, registry digests, Output contract summary (path fields, `dataset_digest` format, digest path normalization)
-- **configuration.md** — configuration precedence, environment variables, relative path resolution
-- **manifest-format.md** — YAML 1.2 scalar semantics, locator formats, alias and scoring rules
-- **state-notes.md** — content-addressed audit state, cache invalidation, registry snapshot semantics
-
-Audit and playthrough must share the same audited registry identity. Shared helpers document fingerprint and `dataset_digest` formulas for reproducibility across primary and secondary roots.
-
-## Critical requirements
-
-Content errors—including schema, graph, missing or duplicate stable IDs, and legacy fingerprint mismatches—produce exit 2 and a completed unsuccessful audit report. Operational failures produce exit 1 without a completed validation report. Successful runs produce exit 0.
-
-Stable question IDs must match exactly one dataset row. Legacy rows use logical `question_id` order and require the documented question fingerprint. Cache identity is based on input bytes rather than file metadata.
-
-Reusable audit state is content-addressed: manifest, contract, or dataset byte changes invalidate cached state even when paths and mtimes are unchanged. Failed, truncated, or corrupt state is never a successful cache hit. Playthrough consumes the audited registry snapshot. Warm reruns produce byte-identical reports regardless of CWD.
+- `/app/input/profile.env` is key/value data with `profile_name`, comma-separated `roots` as `module@version`, `target_platform`, numeric dotted `bazel_version`, comma-separated `allowed_licenses`, comma-separated `trusted_attestors`, `current_date` as `YYYY-MM-DD`, numeric `source_date_epoch`, comma-separated `force_dev_modules`, and comma-separated `yank_allowlist`; trim whitespace around keys, values, and comma-separated items, and ignore blank lines and comments.
+- Catalog files live under `/app/input/catalog`: `modules.tsv` is `module<TAB>version<TAB>compatibility_level<TAB>license<TAB>min_bazel<TAB>yanked`; `deps.tsv` is `owner<TAB>dep_module<TAB>version<TAB>dev<TAB>platforms`; `archives.tsv` is `module<TAB>version<TAB>path<TAB>sha256<TAB>size<TAB>strip_prefix`; `patches.tsv` is `module<TAB>version<TAB>patch_path<TAB>sha256<TAB>size<TAB>apply`; `provenance.tsv` is `module<TAB>version<TAB>sha256<TAB>attestor<TAB>status<TAB>expires`. Trim whitespace around every field, and treat module names as opaque catalog names that may contain dots, hyphens, and underscores.
+- `owner` values in `deps.tsv` are `module@version`; archive paths and applied patch paths are relative to the input directory, must not be absolute or contain `..`, and must still resolve under the input directory after following symlinks; `modules.tsv` duplicate module/version rows fail with category `policy`, and `archives.tsv` duplicate module/version rows fail with category `artifact`.
+- Start from the profile roots. Follow dependency rows for the selected version of each reachable module when `dev` is `false`, or when `dev` is `true` and `dep_module` appears in `force_dev_modules`.
+- A dependency row is active for the target when any comma-separated `platforms` item is `all` or `target_platform`; it is inactive when no item permits the target, and any `!<target_platform>` item overrides `all` or a positive match.
+- For each module name, select the highest required version reached by the active graph using dotted numeric version comparison, so `1.10.0` is higher than `1.9.9`. If two reached versions for the same module have different compatibility levels, fail with category `compatibility`.
+- When a module version changes because a higher version is selected, use the dependencies of that selected version for the final graph. Missing modules or missing archives fail with category `missing`; dependency cycles fail with category `cycle`.
+- A selected module with a non-empty `yanked` field fails with category `yanked` unless `module@version` appears in `yank_allowlist`.
+- Every selected module license must be listed in `allowed_licenses`, and every selected `min_bazel` must be less than or equal to `bazel_version`; policy failures use category `policy`.
+- For every selected module archive, verify the file exists under the input directory, byte size matches `archives.tsv`, and SHA256 matches `archives.tsv`. Applied patch rows (`apply=true`) need the same path containment, size, and SHA256 validation; unapplied patch rows are ignored and must not be copied or validated. Archive or patch failures use category `artifact`.
+- A selected archive fails with category `provenance` if any matching provenance row for module/version/SHA256 has status `revoked`, or if no matching row has status `verified`, an attestor listed in `trusted_attestors`, and `expires` on or after `current_date`.
+- On success, clean and recreate the output directory, remove `error.txt`, and write only `registry.tar.gz`, `module-order.txt`, `selection.tsv`, `artifact-manifest.tsv`, `registry-report.json`, and `registry/` at the top level.
+- `module-order.txt` lists selected `module@version` pairs once, dependency before dependent; whenever multiple modules are available, choose alphabetically by module name and then dotted numeric version.
+- `selection.tsv` has no header and follows `module-order.txt` as `module<TAB>version<TAB>compatibility_level<TAB>depth<TAB>direct`, where `direct` is `true` only for profile roots and `depth` is the shortest active dependency distance from any root.
+- Under `registry/`, write a Bazel registry rooted at `bazel-registry/`: each selected module has `modules/<module>/<version>/MODULE.bazel`, `modules/<module>/<version>/source.json`, its source archive under `archives/<module>/<version>/<archive basename>`, and applied patches under `patches/<module>/<version>/<patch basename>`.
+- Each generated `MODULE.bazel` begins with `module(name = "<module>", version = "<version>", compatibility_level = <level>)`, then one de-duplicated `bazel_dep(name = "<dep_module>", version = "<selected_version>")` for each active selected dependency sorted by dependency module name.
+- Each `source.json` contains exactly `archive`, `sha256`, `strip_prefix`, and `patches`; `archive` and each patch entry are paths relative to `bazel-registry/`, and `patches` is sorted.
+- `artifact-manifest.tsv` has no header and is sorted by path as `sha256<TAB>size<TAB>path`, with paths relative to `bazel-registry/` for every regular file under `registry/bazel-registry/`, including generated `MODULE.bazel` and `source.json` files.
+- `registry-report.json` contains exactly `profile_name`, `module_count`, `archive_count`, `patch_count`, `registry`, `registry_sha256`, and `closure_sha256`; `module_count` is the number of selected modules, `archive_count` is the number of selected module archives, `patch_count` is the number of applied patches copied into the registry, `registry` is `registry.tar.gz`, `registry_sha256` hashes that archive, and `closure_sha256` hashes the byte concatenation of `module-order.txt`, `selection.tsv`, and `artifact-manifest.tsv`.
+- Repeating a successful run from unchanged inputs must produce byte-identical outputs; tar entries must be sorted, owned by root uid/gid 0, and have mtime equal to `source_date_epoch`. On failure, exit nonzero, remove all success outputs, and write `error.txt` whose first word is one of `missing`, `compatibility`, `cycle`, `yanked`, `policy`, `artifact`, or `provenance`. Use only the provided offline snapshot; live registries, network access, package managers, Bazel resolution, and host filesystem discovery are out of scope.

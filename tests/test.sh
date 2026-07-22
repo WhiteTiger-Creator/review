@@ -1,7 +1,6 @@
 #!/bin/bash
 set -uo pipefail
 
-# Check if we're in a valid working directory
 if [ "$PWD" = "/" ]; then
     echo "Error: No working directory set. Please set a WORKDIR in your Dockerfile before running this script."
     mkdir -p /logs/verifier
@@ -11,9 +10,7 @@ fi
 
 mkdir -p /logs/verifier
 
-bash -c 'bash /usr/local/bin/entrypoint.sh && exec runuser -u nobody -- python3 -m pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA'
-
-# Produce reward file (REQUIRED)
+python -m pytest --ctrf /logs/verifier/ctrf.json /tests/test_freeze.py -rA
 rc=$?
 if [ "$rc" -eq 0 ]; then
     echo 1 > /logs/verifier/reward.txt

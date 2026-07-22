@@ -1,7 +1,0 @@
-version: '1'
-id: foyer
-title: Foyer
-encounters:
-- archive-history
-exits:
-  default: archive
