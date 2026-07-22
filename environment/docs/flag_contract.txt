@@ -1,0 +1,1 @@
+Write exactly CICADA{chunk_count times ten lowercase hex characters} and a newline.

@@ -1,4 +1,0 @@
-SCENARIO p02
-REQUIRE 1.0.0-beta
-CMP q0 1.0.0-alpha.9 1.0.0-rc.1
-ENDSCENARIO

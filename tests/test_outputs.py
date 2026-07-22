@@ -1,466 +1,433 @@
+import csv
+import hashlib
+import json
 import os
 import re
+import secrets
 import subprocess
-import sys
+import tempfile
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(__file__))
-import reference as ref
+import pytest
+from reference.generator import instance, write_challenge
 
-APP = "/app"
-BIN = os.path.join(APP, "preorder")
-
-PUBLIC = ref.load_battery("public.jsonl")
-HIDDEN = ref.load_battery("hidden.jsonl")
-ALL = PUBLIC + HIDDEN
-
-FULL_INPUT = "".join(rec["scenario"].rstrip("\n") + "\n" for rec in ALL)
-EXPECTED = [line for rec in ALL for line in rec["expected"]]
-PUB_ROWS = sum(len(r["expected"]) for r in PUBLIC)
-
-TOKEN_INCOMP = ref.TOKEN_INCOMP
-TOKEN_NONE = ref.TOKEN_NONE
-VER_RE = re.compile(r"^\d+\.\d+\.\d+-[0-9A-Za-z.\-]+$")
-
-# The naive/idiomatic readings a strong model reaches for first. Each is the
-# retired shortcut or a plausible alternative; every one must diverge from the
-# pinned reference on the battery and be visibly wrong on the public examples.
-KERNELS = {
-    "near": ref.nearrelease_lines,
-    "smin": ref.stateless_min_lines,
-    "latest": ref.latest_floor_lines,
-    "semver": ref.semver_lines,
-}
+VISIBLE_CHALLENGE = Path("/app/challenge")
+VISIBLE_SECRET = Path("/tests/reference/visible_secret.json")
+FLAG_RE = re.compile(r"^CICADA\{[0-9a-f]+\}$")
 
 
-def _build():
-    r = subprocess.run(["make", "-C", APP], capture_output=True, text=True)
-    return r.returncode == 0 and os.path.exists(BIN)
+def parse_int(text):
+    value = str(text).strip()
+    if value.startswith("0x"):
+        return int(value, 16)
+    return int(value)
 
 
-BUILT = _build()
-
-
-def _run(text):
-    r = subprocess.run([BIN], input=text, capture_output=True, text=True, timeout=180)
-    return [ln for ln in r.stdout.splitlines()]
-
-
-ACTUAL = _run(FULL_INPUT) if BUILT else []
-
-
-def _kernel_rows(fn, recs):
-    out = []
-    for rec in recs:
-        out.extend(fn(rec["scenario"]))
+def read_public(path):
+    out = {}
+    for line in (path / "public.txt").read_text(encoding="utf-8").splitlines():
+        key, value = line.split("=", 1)
+        out[key] = parse_int(value)
     return out
 
 
-PINNED_ALL = _kernel_rows(ref.pinned_lines, ALL)
-KERNEL_ALL = {name: _kernel_rows(fn, ALL) for name, fn in KERNELS.items()}
-# Per-kernel trap rows: battery indices where the naive reading is wrong.
-TRAPS = {
-    name: [i for i, (k, e) in enumerate(zip(rows, EXPECTED)) if k != e]
-    for name, rows in KERNEL_ALL.items()
-}
-
-ROWMETA = []
-for rec in ALL:
-    sid, evs = ref.parse_block(rec["scenario"])
-    qs = [e for e in evs if e[0] == "CMP"]
-    for j, (_, qid, va, vb) in enumerate(qs):
-        ROWMETA.append(
-            {"sid": sid, "qid": qid, "va": va, "vb": vb, "exp": rec["expected"][j]}
-        )
+def read_records(path):
+    with (path / "ciphertexts.csv").open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows and rows[0].keys() == {"id", "a", "b", "ciphertext"}
+    return [
+        {
+            "id": row["id"],
+            "a": parse_int(row["a"]),
+            "b": parse_int(row["b"]),
+            "ciphertext": parse_int(row["ciphertext"]),
+        }
+        for row in rows
+    ]
 
 
-def _result(line):
-    return line.split("|")[2]
-
-
-def _scen(*rows, sid="s"):
-    return "\n".join(["SCENARIO " + sid] + list(rows) + ["ENDSCENARIO"]) + "\n"
-
-
-def _expected_for(text):
-    """Pinned output for a stream of one or more independent scenarios."""
-    blocks, cur = [], []
-    for line in text.splitlines():
-        p = line.split()
-        if p and p[0] == "SCENARIO":
-            if cur:
-                blocks.append(cur)
-            cur = [line]
-        elif cur:
-            cur.append(line)
-    if cur:
-        blocks.append(cur)
-    out = []
-    for b in blocks:
-        out.extend(ref.pinned_lines("\n".join(b) + "\n"))
+def read_relation(path):
+    out = {}
+    for line in (path / "relation.txt").read_text(encoding="utf-8").splitlines():
+        key, value = line.split("=", 1)
+        out[key] = parse_int(value)
     return out
 
 
-# ---------------------------------------------------------------------------
-# Build + whole-battery conformance
-# ---------------------------------------------------------------------------
-def test_binary_built():
-    """The agent program builds and produces an executable."""
-    assert BUILT, "make did not produce /app/preorder"
+def read_challenge(path):
+    return {
+        **read_public(path),
+        **read_relation(path),
+        "commitment": (path / "commitment.txt").read_text(encoding="utf-8").strip(),
+        "records": read_records(path),
+    }
 
 
-def test_total_row_count():
-    """The program emits exactly one line per CMP query across the battery."""
-    assert len(ACTUAL) == len(EXPECTED)
-
-
-def test_full_battery_matches():
-    """Every battery row matches the committed expected line exactly."""
-    assert ACTUAL == EXPECTED
-
-
-def _chunk(k, n=10):
-    lo = (len(EXPECTED) * k) // n
-    hi = (len(EXPECTED) * (k + 1)) // n
-    assert ACTUAL[lo:hi] == EXPECTED[lo:hi]
-
-
-def test_chunk_0():
-    """Battery rows in the first decile match exactly."""
-    _chunk(0)
-
-
-def test_chunk_1():
-    """Battery rows in the second decile match exactly."""
-    _chunk(1)
-
-
-def test_chunk_2():
-    """Battery rows in the third decile match exactly."""
-    _chunk(2)
-
-
-def test_chunk_3():
-    """Battery rows in the fourth decile match exactly."""
-    _chunk(3)
-
-
-def test_chunk_4():
-    """Battery rows in the fifth decile match exactly."""
-    _chunk(4)
-
-
-def test_chunk_5():
-    """Battery rows in the sixth decile match exactly."""
-    _chunk(5)
-
-
-def test_chunk_6():
-    """Battery rows in the seventh decile match exactly."""
-    _chunk(6)
-
-
-def test_chunk_7():
-    """Battery rows in the eighth decile match exactly."""
-    _chunk(7)
-
-
-def test_chunk_8():
-    """Battery rows in the ninth decile match exactly."""
-    _chunk(8)
-
-
-def test_chunk_9():
-    """Battery rows in the tenth decile match exactly."""
-    _chunk(9)
-
-
-# ---------------------------------------------------------------------------
-# Expected == pinned reference; examples mirror the public battery
-# ---------------------------------------------------------------------------
-def test_public_expected_is_pinned():
-    """Committed public expected equals the pinned reference output."""
-    for rec in PUBLIC:
-        assert rec["expected"] == ref.pinned_lines(rec["scenario"])
-
-
-def test_hidden_expected_is_pinned():
-    """Committed hidden expected equals the pinned reference output."""
-    for rec in HIDDEN:
-        assert rec["expected"] == ref.pinned_lines(rec["scenario"])
-
-
-def test_public_slice_matches():
-    """The public example rows resolve exactly as shipped."""
-    assert ACTUAL[:PUB_ROWS] == EXPECTED[:PUB_ROWS]
-
-
-def test_examples_match_public_battery():
-    """The shipped example files reproduce the public battery byte for byte."""
-    for i, rec in enumerate(PUBLIC):
-        inp = os.path.join(APP, "data", "examples", "ex%02d.in" % (i + 1))
-        outp = os.path.join(APP, "data", "examples", "ex%02d.out" % (i + 1))
-        with open(inp) as f:
-            got = _run(f.read())
-        with open(outp) as f:
-            want = [ln for ln in f.read().splitlines()]
-        assert got == want == rec["expected"]
-
-
-# ---------------------------------------------------------------------------
-# Idiomatic-adversary divergence: every naive reading is a trap
-# ---------------------------------------------------------------------------
-def test_pinned_reference_is_ground_truth():
-    """The pinned reference reproduces the committed battery."""
-    assert PINNED_ALL == EXPECTED
-
-
-def test_near_release_diverges_on_battery():
-    """Ignoring floors and installing the nearest-release build is wrong widely."""
-    assert len(TRAPS["near"]) >= 40
-
-
-def test_stateless_min_diverges_on_battery():
-    """Installing the least-mature build but ignoring floors is wrong widely."""
-    assert len(TRAPS["smin"]) >= 30
-
-
-def test_latest_floor_diverges_on_battery():
-    """Honouring only the last REQUIRE, not the accumulated floor, is wrong."""
-    assert len(TRAPS["latest"]) >= 12
-
-
-def test_semver_diverges_on_battery():
-    """Standard-semver within-tag length (longer higher) is wrong widely."""
-    assert len(TRAPS["semver"]) >= 25
-
-
-def test_no_naive_kernel_scores_full():
-    """No naive reading reproduces the whole battery."""
-    for name, rows in KERNEL_ALL.items():
-        assert rows != EXPECTED, name
-
-
-def test_program_correct_on_every_trap():
-    """On each naive reading's trap rows the program gives the pinned answer."""
-    for name, idxs in TRAPS.items():
-        for i in idxs:
-            assert ACTUAL[i] == EXPECTED[i]
-            assert ACTUAL[i] != KERNEL_ALL[name][i]
-
-
-def test_public_disambiguates_near():
-    """At least two public scenarios expose the nearest-release reading as wrong."""
-    n = sum(1 for r in PUBLIC if ref.nearrelease_lines(r["scenario"]) != r["expected"])
-    assert n >= 2
-
-
-def test_public_disambiguates_stateless_min():
-    """At least two public scenarios expose the floor-ignoring reading as wrong."""
-    n = sum(
-        1 for r in PUBLIC if ref.stateless_min_lines(r["scenario"]) != r["expected"]
-    )
-    assert n >= 2
-
-
-def test_public_disambiguates_latest_floor():
-    """At least two public scenarios expose the last-REQUIRE-only reading as wrong."""
-    n = sum(1 for r in PUBLIC if ref.latest_floor_lines(r["scenario"]) != r["expected"])
-    assert n >= 2
-
-
-def test_public_disambiguates_semver():
-    """At least two public scenarios expose the standard-semver reading as wrong."""
-    n = sum(1 for r in PUBLIC if ref.semver_lines(r["scenario"]) != r["expected"])
-    assert n >= 2
-
-
-# ---------------------------------------------------------------------------
-# Output-form coverage
-# ---------------------------------------------------------------------------
-def test_none_rows_present_and_correct():
-    """NONE (no candidate clears the floor) appears and resolves exactly."""
-    idx = [i for i, ln in enumerate(EXPECTED) if _result(ln) == TOKEN_NONE]
-    assert len(idx) >= 5
-    for i in idx:
-        assert ACTUAL[i] == EXPECTED[i]
-
-
-def test_incomparable_rows_present_and_correct():
-    """INCOMPARABLE appears and resolves exactly."""
-    idx = [i for i, ln in enumerate(EXPECTED) if _result(ln) == TOKEN_INCOMP]
-    assert len(idx) >= 5
-    for i in idx:
-        assert ACTUAL[i] == EXPECTED[i]
-
-
-def test_incomparable_matches_core_mismatch():
-    """INCOMPARABLE appears exactly when the two candidate cores differ."""
-    for i, m in enumerate(ROWMETA):
-        a = ref.parse_version(m["va"])["core"]
-        b = ref.parse_version(m["vb"])["core"]
-        if a != b:
-            assert _result(m["exp"]) == TOKEN_INCOMP
+def read_secret(path):
+    data = json.loads(path.read_text(encoding="utf-8"))
+    out = {}
+    for key, value in data.items():
+        if isinstance(value, str) and value.startswith("0x"):
+            out[key] = int(value, 16)
+        elif key == "records":
+            out[key] = [
+                {
+                    **row,
+                    "a": parse_int(row["a"]),
+                    "b": parse_int(row["b"]),
+                    "ciphertext": parse_int(row["ciphertext"]),
+                    "source_m": parse_int(row["source_m"]),
+                }
+                for row in value
+            ]
         else:
-            assert _result(m["exp"]) != TOKEN_INCOMP
+            out[key] = value
+    return out
 
 
-def test_winner_is_verbatim_input():
-    """A version result copies one of the two input candidates verbatim."""
-    for i, m in enumerate(ROWMETA):
-        res = _result(ACTUAL[i])
-        if res in (TOKEN_NONE, TOKEN_INCOMP):
-            continue
-        assert res in (m["va"], m["vb"]), ACTUAL[i]
+def candidate_output(prefix):
+    directory = Path(tempfile.mkdtemp(prefix=prefix, dir="/tmp"))
+    directory.chmod(0o777)
+    return directory / "flag.txt"
 
 
-def test_output_tokens_wellformed():
-    """Every result is a valid version string or a defined token."""
-    for ln in ACTUAL:
-        tok = _result(ln)
-        assert tok in (TOKEN_NONE, TOKEN_INCOMP) or VER_RE.match(tok), ln
-
-
-# ---------------------------------------------------------------------------
-# Line format / ordering / determinism / independence
-# ---------------------------------------------------------------------------
-def test_query_echo_matches():
-    """Each output line echoes the queried scenario and query id."""
-    for i, m in enumerate(ROWMETA):
-        parts = ACTUAL[i].split("|")
-        assert parts[0] == m["sid"] and parts[1] == m["qid"], ACTUAL[i]
-
-
-def test_line_format():
-    """Every output line has exactly three fields and no stray whitespace."""
-    for ln in ACTUAL:
-        assert ln.count("|") == 2 and ln.strip() == ln
-
-
-def test_no_blank_lines():
-    """No output line is empty."""
-    assert all(ln != "" for ln in ACTUAL)
-
-
-def test_scenario_order_preserved():
-    """Output lines follow scenario and query order."""
-    got = [(ln.split("|")[0], ln.split("|")[1]) for ln in ACTUAL]
-    want = [(ln.split("|")[0], ln.split("|")[1]) for ln in EXPECTED]
-    assert got == want
-
-
-def test_determinism_repeat_single():
-    """Re-running one scenario yields identical output."""
-    rec = HIDDEN[0]
-    a = _run(rec["scenario"] + "\n")
-    b = _run(rec["scenario"] + "\n")
-    assert a == b == rec["expected"]
-
-
-def test_determinism_full_battery_twice():
-    """Re-running the whole battery yields identical output."""
-    assert _run(FULL_INPUT) == ACTUAL
-
-
-def test_each_scenario_independent():
-    """Running a scenario in isolation matches its slice of the battery."""
-    for rec in ALL[:20]:
-        assert _run(rec["scenario"] + "\n") == rec["expected"]
-
-
-def test_largest_scenario():
-    """The largest committed scenario resolves exactly."""
-    rec = max(ALL, key=lambda r: len(r["scenario"]))
-    assert _run(rec["scenario"] + "\n") == rec["expected"]
-
-
-def test_state_does_not_cross_scenarios():
-    """A REQUIRE in one scenario does not constrain the next."""
-    text = _scen("REQUIRE 1.0.0-rc", "CMP q0 1.0.0-alpha 1.0.0-beta", sid="a") + _scen(
-        "CMP q0 1.0.0-alpha 1.0.0-beta", sid="b"
+def run_candidate(challenge, output, timeout=180):
+    output.parent.chmod(0o777)
+    proc = subprocess.run(
+        [
+            "setpriv",
+            "--no-new-privs",
+            "--reuid=10001",
+            "--regid=10001",
+            "--clear-groups",
+            "go",
+            "run",
+            "/app/cmd/recover.go",
+            str(challenge),
+            str(output),
+        ],
+        cwd="/app",
+        env={
+            **os.environ,
+            "HOME": "/home/candidate",
+            "GOCACHE": "/tmp/candidate-go-cache",
+        },
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        check=False,
     )
-    assert _run(text) == ["a|q0|NONE", "b|q0|1.0.0-alpha"]
+    raw_output = output.read_text(encoding="utf-8") if output.exists() else ""
+    return {"proc": proc, "flag": raw_output.strip(), "raw_output": raw_output}
 
 
-# ---------------------------------------------------------------------------
-# Inline semantic anchors on fresh (non-battery) inputs
-# ---------------------------------------------------------------------------
-def test_inline_no_floor_installs_least_mature_numeric():
-    """With no floor the resolver installs the least-mature (smaller numeric) build."""
-    t = _scen("CMP q0 1.4.0-alpha.9 1.4.0-alpha.10")
-    assert _run(t) == ["s|q0|1.4.0-alpha.9"] == _expected_for(t)
-
-
-def test_inline_no_floor_longer_tag_is_less_mature():
-    """A longer tag sharing a prefix is less mature, so it is installed with no floor."""
-    t = _scen("CMP q0 1.0.0-alpha 1.0.0-alpha.1")
-    assert _run(t) == ["s|q0|1.0.0-alpha.1"] == _expected_for(t)
-
-
-def test_inline_numeric_below_alnum():
-    """A numeric identifier is less mature than an alphanumeric one at the same slot."""
-    t = _scen("CMP q0 1.0.0-x.2 1.0.0-x.1a")
-    assert _run(t) == ["s|q0|1.0.0-x.2"] == _expected_for(t)
-
-
-def test_inline_floor_blocks_lower_candidate():
-    """A REQUIRE floor rejects the candidate below it, installing the one that clears."""
-    t = _scen("REQUIRE 1.0.0-beta", "CMP q0 1.0.0-alpha 1.0.0-rc")
-    assert _run(t) == ["s|q0|1.0.0-rc"] == _expected_for(t)
-
-
-def test_inline_floor_yields_none():
-    """When no candidate clears the floor the result is NONE."""
-    t = _scen("REQUIRE 1.0.0-rc", "CMP q0 1.0.0-alpha 1.0.0-beta")
-    assert _run(t) == ["s|q0|NONE"] == _expected_for(t)
-
-
-def test_inline_floor_accumulates_most_mature():
-    """The floor is the most-mature REQUIRE seen, not the latest one."""
-    t = _scen(
-        "REQUIRE 1.0.0-alpha",
-        "REQUIRE 1.0.0-rc",
-        "REQUIRE 1.0.0-beta",
-        "CMP q0 1.0.0-beta 1.0.0-rc",
+def run_naive(challenge, output, timeout=60):
+    proc = subprocess.run(
+        [
+            "go",
+            "run",
+            "/tests/reference/naive_reference.go",
+            str(challenge),
+            str(output),
+        ],
+        cwd="/app",
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        check=False,
     )
-    assert _run(t) == ["s|q0|1.0.0-rc"] == _expected_for(t)
+    flag = output.read_text(encoding="utf-8").strip() if output.exists() else ""
+    return {"proc": proc, "flag": flag}
 
 
-def test_inline_floor_minimal_above():
-    """Above the floor the resolver installs the least-mature clearing build."""
-    t = _scen("REQUIRE 1.0.0-alpha", "CMP q0 1.0.0-beta 1.0.0-rc")
-    assert _run(t) == ["s|q0|1.0.0-beta"] == _expected_for(t)
-
-
-def test_inline_incomparable_core_mismatch():
-    """Two versions with different cores resolve to INCOMPARABLE."""
-    t = _scen("CMP q0 1.2.0-a 1.3.0-a")
-    assert _run(t) == ["s|q0|INCOMPARABLE"] == _expected_for(t)
-
-
-def test_inline_per_core_floors_independent():
-    """Floors are tracked per release line; a floor on one core does not touch another."""
-    t = _scen(
-        "REQUIRE 1.0.0-rc",
-        "CMP q0 2.0.0-alpha 2.0.0-beta",
-        "CMP q1 1.0.0-alpha 1.0.0-rc",
+@pytest.fixture(scope="session")
+def hidden_material():
+    hidden = instance(
+        "hidden-" + secrets.token_hex(16),
+        exponent=secrets.choice((29, 31, 37)),
+        chunk_count=secrets.choice((9, 10)),
     )
-    assert _run(t) == ["s|q0|2.0.0-alpha", "s|q1|1.0.0-rc"] == _expected_for(t)
+    target = Path(tempfile.mkdtemp(prefix="rsa-affine-hidden-", dir="/tmp"))
+    target.chmod(0o755)
+    write_challenge(target, hidden)
+    for path in target.iterdir():
+        path.chmod(0o644)
+    return {"path": target, "secret": hidden}
 
 
-def test_inline_two_scenarios_stream():
-    """Two scenarios in one stream each reset resolver state and emit in order."""
-    t = _scen("CMP q0 1.0.0-x.9 1.0.0-x.10", sid="a") + _scen(
-        "REQUIRE 2.0.0-rc", "CMP q0 2.0.0-beta 2.0.0-rc", sid="b"
+@pytest.fixture(scope="session")
+def hidden_challenge_path(hidden_material):
+    return hidden_material["path"]
+
+
+@pytest.fixture(scope="session")
+def visible_challenge():
+    return read_challenge(VISIBLE_CHALLENGE)
+
+
+@pytest.fixture(scope="session")
+def hidden_challenge(hidden_challenge_path):
+    return read_challenge(hidden_challenge_path)
+
+
+@pytest.fixture(scope="session")
+def visible_secret():
+    return read_secret(VISIBLE_SECRET)
+
+
+@pytest.fixture(scope="session")
+def hidden_secret(hidden_material):
+    return hidden_material["secret"]
+
+
+@pytest.fixture(scope="session")
+def visible_run():
+    out = candidate_output("rsa-visible-")
+    return run_candidate(VISIBLE_CHALLENGE, out)
+
+
+@pytest.fixture(scope="session")
+def hidden_run(hidden_challenge_path):
+    out = candidate_output("rsa-hidden-")
+    return run_candidate(hidden_challenge_path, out)
+
+
+@pytest.fixture(scope="session")
+def naive_visible(tmp_path_factory):
+    out = tmp_path_factory.mktemp("naive_visible") / "flag.txt"
+    return run_naive(VISIBLE_CHALLENGE, out)
+
+
+@pytest.fixture(scope="session")
+def naive_hidden(tmp_path_factory, hidden_challenge_path):
+    out = tmp_path_factory.mktemp("naive_hidden") / "flag.txt"
+    return run_naive(hidden_challenge_path, out)
+
+
+def valid_records(secret):
+    return [row for row in secret["records"] if row["source"] == "fragment"]
+
+
+def decoy_records(secret):
+    return [row for row in secret["records"] if row["source"] == "decoy"]
+
+
+def poison_records(secret):
+    return [row for row in secret["records"] if row["source"] == "poison"]
+
+
+def by_id(rows):
+    return {row["id"]: row for row in rows}
+
+
+def assert_command_success(run):
+    assert run["proc"].returncode == 0, run["proc"].stderr
+
+
+def assert_records_match_secret(challenge, secret):
+    actual = by_id(challenge["records"])
+    expected = by_id(secret["records"])
+    assert set(actual) == set(expected)
+    for record_id, row in actual.items():
+        exp = expected[record_id]
+        assert row["a"] == exp["a"]
+        assert row["b"] == exp["b"]
+        assert row["ciphertext"] == exp["ciphertext"]
+
+
+def assert_affine_generation(challenge, secret):
+    assert challenge["n"] == secret["p"] * secret["q"]
+    assert challenge["e"] == secret["e"]
+    assert challenge["e"] in {29, 31, 37}
+    assert challenge["commitment"] == secret["commitment"]
+    assert challenge["multiplier"] == secret["multiplier"]
+    assert challenge["lag_multiplier"] == secret["lag_multiplier"]
+    assert challenge["third_multiplier"] == secret["third_multiplier"]
+    assert challenge["increment"] == secret["increment"]
+    assert challenge["modulus"] == 1 << 40
+    assert challenge["chunk_count"] == secret["chunk_count"]
+    assert challenge["share_count"] == secret["share_count"]
+    assert challenge["share_bits"] == 40
+    assert hashlib.sha256(secret["flag"].encode()).hexdigest() == secret["commitment"]
+    flag_int = int.from_bytes(secret["flag"].encode(), "big")
+    flag_cipher = pow(flag_int, challenge["e"], challenge["n"])
+    assert all(row["ciphertext"] != flag_cipher for row in challenge["records"])
+    assert all((row["a"], row["b"]) != (1, 0) for row in challenge["records"])
+    message_ints = {
+        int.from_bytes(message["text"].encode(), "big"): (
+            message["index"],
+            message["share"],
+        )
+        for message in secret["messages"]
+    }
+    seen = {message_int: 0 for message_int in message_ints}
+    for row in secret["records"]:
+        transformed = (row["a"] * row["source_m"] + row["b"]) % challenge["n"]
+        assert pow(transformed, challenge["e"], challenge["n"]) == row["ciphertext"]
+        if row["source"] == "fragment":
+            assert row["source_m"] in message_ints
+            assert row["source_index"] == message_ints[row["source_m"]][0]
+            seen[row["source_m"]] += 1
+        if row["source"] != "fragment":
+            assert row["source_m"] not in message_ints
+    assert set(seen.values()) == {2}
+    body = secret["flag"][7:-1]
+    chunks = []
+    for index in range(secret["chunk_count"]):
+        shares = [
+            int(message["text"].split(":", 1)[1], 16)
+            for message in secret["messages"]
+            if message["index"] == index
+        ]
+        assert len(shares) == secret["share_count"]
+        combined = 0
+        for share in shares:
+            combined ^= share
+        expected = int(body[index * 10 : (index + 1) * 10], 16)
+        assert combined == expected
+        chunks.append(combined)
+    for index in range(3, len(chunks)):
+        assert chunks[index] == (
+            secret["multiplier"] * chunks[index - 1]
+            + secret["lag_multiplier"] * chunks[index - 2]
+            + secret["third_multiplier"] * chunks[index - 3]
+            + secret["increment"]
+        ) & ((1 << 40) - 1)
+
+
+def assert_no_easy_pair_order(secret):
+    first_two = secret["records"][:2]
+    assert first_two[0]["source_m"] != first_two[1]["source_m"]
+
+
+def assert_record_ids_do_not_mark_source(secret):
+    ids = [row["id"] for row in secret["records"]]
+    assert ids == [f"c{index:02d}" for index in range(1, len(ids) + 1)]
+    assert all(not row["id"].startswith(("r", "d")) for row in secret["records"])
+
+
+def test_visible_command_exits_successfully(visible_run):
+    """Visible command exits successfully."""
+    assert_command_success(visible_run)
+
+
+def test_hidden_command_exits_successfully(hidden_run):
+    """Hidden command exits successfully."""
+    assert_command_success(hidden_run)
+
+
+def test_visible_flag_matches_secret(visible_run, visible_secret):
+    """Visible flag matches secret."""
+    assert visible_run["flag"] == visible_secret["flag"]
+
+
+def test_hidden_flag_matches_secret(hidden_run, hidden_secret):
+    """Hidden flag matches secret."""
+    assert hidden_run["flag"] == hidden_secret["flag"]
+
+
+def test_visible_flag_schema(visible_run):
+    """Visible flag schema is exact."""
+    assert FLAG_RE.fullmatch(visible_run["flag"])
+    assert len(visible_run["flag"][7:-1]) % 10 == 0
+    assert visible_run["raw_output"] == visible_run["flag"] + "\n"
+
+
+def test_hidden_flag_schema(hidden_run):
+    """Hidden flag schema is exact."""
+    assert FLAG_RE.fullmatch(hidden_run["flag"])
+    assert len(hidden_run["flag"][7:-1]) % 10 == 0
+    assert hidden_run["raw_output"] == hidden_run["flag"] + "\n"
+
+
+def test_naive_visible_does_not_recover(naive_visible, visible_secret):
+    """Naive visible reference does not recover the flag."""
+    assert naive_visible["proc"].returncode == 0, naive_visible["proc"].stderr
+    assert FLAG_RE.fullmatch(naive_visible["flag"])
+    assert naive_visible["flag"] != visible_secret["flag"]
+
+
+def test_naive_hidden_does_not_recover(naive_hidden, hidden_secret):
+    """Naive hidden reference does not recover the flag."""
+    assert naive_hidden["proc"].returncode == 0, naive_hidden["proc"].stderr
+    assert FLAG_RE.fullmatch(naive_hidden["flag"])
+    assert naive_hidden["flag"] != hidden_secret["flag"]
+
+
+def test_visible_records_match_secret_manifest(visible_challenge, visible_secret):
+    """Visible public records match the hidden manifest."""
+    assert_records_match_secret(visible_challenge, visible_secret)
+
+
+def test_hidden_records_match_secret_manifest(hidden_challenge, hidden_secret):
+    """Hidden public records match the hidden manifest."""
+    assert_records_match_secret(hidden_challenge, hidden_secret)
+
+
+def test_visible_affine_records_are_noisy(visible_challenge, visible_secret):
+    """Visible records contain valid affine rows and decoys."""
+    assert len(valid_records(visible_secret)) == (
+        2 * visible_secret["chunk_count"] * visible_secret["share_count"]
     )
-    assert _run(t) == ["a|q0|1.0.0-x.9", "b|q0|2.0.0-rc"] == _expected_for(t)
+    assert len(poison_records(visible_secret)) == (
+        2
+        * visible_secret["chunk_count"]
+        * visible_secret["share_count"]
+        * visible_secret["poison_choices"]
+    )
+    assert len(decoy_records(visible_secret)) == 20
+    assert_affine_generation(visible_challenge, visible_secret)
+    assert_no_easy_pair_order(visible_secret)
+    assert_record_ids_do_not_mark_source(visible_secret)
 
 
-def test_inline_numeric_by_value_not_width():
-    """Numeric identifiers compare by value; the least-mature is the smaller value."""
-    t = _scen("CMP q0 2.0.0-x.5.9 2.0.0-x.5.12")
-    assert _run(t) == ["s|q0|2.0.0-x.5.9"] == _expected_for(t)
+def test_hidden_affine_records_are_noisy(hidden_challenge, hidden_secret):
+    """Hidden records contain valid affine rows and decoys."""
+    assert len(valid_records(hidden_secret)) == (
+        2 * hidden_secret["chunk_count"] * hidden_secret["share_count"]
+    )
+    assert len(poison_records(hidden_secret)) == (
+        2
+        * hidden_secret["chunk_count"]
+        * hidden_secret["share_count"]
+        * hidden_secret["poison_choices"]
+    )
+    assert len(decoy_records(hidden_secret)) == 20
+    assert_affine_generation(hidden_challenge, hidden_secret)
+    assert_no_easy_pair_order(hidden_secret)
+    assert_record_ids_do_not_mark_source(hidden_secret)
 
 
-def test_min_semantic_cases():
-    """The battery executes well over the semantic-case floor."""
-    assert len(EXPECTED) >= 60
+def test_poison_groups_are_plausible_and_repeated(visible_secret, hidden_secret):
+    """Each case contains repeated fragment-shaped poison plaintexts."""
+    for secret in (visible_secret, hidden_secret):
+        pattern = re.compile(r"^frag(?:[0-9]+)\.(?:[0-9]+):[0-9a-f]{10}$")
+        texts = [message["text"] for message in secret["poison_messages"]]
+        assert len(texts) == (
+            secret["chunk_count"] * secret["share_count"] * secret["poison_choices"]
+        )
+        assert len(set(texts)) == len(texts)
+        assert all(pattern.fullmatch(text) for text in texts)
+        assert all(
+            0 <= int(text.split(".", 1)[0][4:]) < secret["chunk_count"]
+            and 0 <= int(text.split(".", 1)[1].split(":", 1)[0]) < secret["share_count"]
+            for text in texts
+        )
+        labels = [text.split(":", 1)[0] for text in texts]
+        assert set(labels.count(label) for label in set(labels)) == {
+            secret["poison_choices"]
+        }
+        counts = {}
+        for row in poison_records(secret):
+            counts[row["source_m"]] = counts.get(row["source_m"], 0) + 1
+        assert set(counts.values()) == {2}
+
+
+def test_hidden_instance_is_fresh(visible_secret, hidden_secret):
+    """The runtime-generated private case differs from the visible challenge."""
+    assert visible_secret["n"] != hidden_secret["n"]
+    assert visible_secret["flag"] != hidden_secret["flag"]
+    assert visible_secret["chunk_count"] in {9, 10}
+    assert hidden_secret["chunk_count"] in {9, 10}

@@ -1,0 +1,4 @@
+public=public.txt
+ciphertexts=ciphertexts.csv
+commitment=commitment.txt
+relation=relation.txt

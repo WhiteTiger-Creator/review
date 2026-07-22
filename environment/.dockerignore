@@ -1,7 +1,3 @@
-.dockerignore
-preorder
-target/
-*.o
 .git
 .gitignore
 **/__pycache__/
