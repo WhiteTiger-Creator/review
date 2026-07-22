@@ -1,0 +1,10 @@
+sequence_id,t,airflow_flatness,spo2_drop,resp_pause,body_motion,state
+holdout-01,0,0.13,0.1,0.5,0.16,quiet
+holdout-01,1,0.17,0.3,0.9,0.19,quiet
+holdout-01,2,0.40,1.0,2.6,0.26,flow_limited
+holdout-01,3,0.49,1.5,3.6,0.25,flow_limited
+holdout-01,4,0.84,4.3,11.7,0.12,apnea
+holdout-01,5,0.88,4.9,14.8,0.09,apnea
+holdout-01,6,0.58,2.0,5.0,0.22,flow_limited
+holdout-01,7,0.20,0.4,1.1,0.24,quiet
+holdout-01,8,0.14,0.1,0.6,0.17,quiet

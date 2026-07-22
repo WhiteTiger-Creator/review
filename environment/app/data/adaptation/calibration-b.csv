@@ -1,0 +1,10 @@
+sequence_id,t,airflow_flatness,spo2_drop,resp_pause,body_motion
+calibration-b,0,0.16,0.2,0.7,0.18
+calibration-b,1,0.44,1.3,3.2,0.27
+calibration-b,2,0.50,1.8,4.1,0.26
+calibration-b,3,0.56,2.3,5.0,0.24
+calibration-b,4,0.78,4.3,11.3,0.13
+calibration-b,5,0.84,5.0,13.8,0.10
+calibration-b,6,0.89,5.7,16.0,0.08
+calibration-b,7,0.55,2.1,4.7,0.25
+calibration-b,8,0.19,0.3,0.9,0.18

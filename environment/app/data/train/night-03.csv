@@ -1,0 +1,13 @@
+sequence_id,t,airflow_flatness,spo2_drop,resp_pause,body_motion,state
+night-03,0,0.09,0.0,0.3,0.11,quiet
+night-03,1,0.14,0.2,0.8,0.16,quiet
+night-03,2,0.38,0.8,2.1,0.25,flow_limited
+night-03,3,0.43,1.0,2.9,0.27,flow_limited
+night-03,4,0.81,3.9,10.9,0.13,apnea
+night-03,5,0.87,4.6,12.8,0.10,apnea
+night-03,6,0.90,5.0,14.4,0.08,apnea
+night-03,7,0.92,5.4,16.0,0.06,apnea
+night-03,8,0.55,2.0,4.7,0.20,flow_limited
+night-03,9,0.37,0.9,2.5,0.25,flow_limited
+night-03,10,0.16,0.2,0.9,0.23,quiet
+night-03,11,0.11,0.1,0.4,0.17,quiet

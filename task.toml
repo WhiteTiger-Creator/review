@@ -4,32 +4,24 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "games"
-subcategories = ["db_interaction"]
+category = "machine-learning"
+subcategories = []
 number_of_milestones = 0
 codebase_size = "small"
-languages = ["java", "bash", "sql"]
-tags = [
-  "terminal-game",
-  "trivia",
-  "dungeon",
-  "playthrough",
-  "scoring",
-  "rooms",
-]
+languages = ["cpp", "bash"]
+tags = ["sleep-monitoring", "duration-aware-hmm", "anchored-em", "student-t-mixture", "full-covariance-emissions"]
 expert_time_estimate_min = 300
 junior_time_estimate_min = 720
 
 [verifier]
-timeout_sec = 900
+timeout_sec = 600.0
 
 [agent]
-timeout_sec = 1800
+timeout_sec = 1800.0
 
 [environment]
-build_timeout_sec = 1200
-cpus = 4
-memory_mb = 8192
-storage_mb = 12288
-workdir = "/app"
+build_timeout_sec = 900.0
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240
 allow_internet = false

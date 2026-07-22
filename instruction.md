@@ -1,28 +1,5 @@
-# Repair the Trivia Dungeon Publication Gate
+The sleep lab needs its duration-aware sleep-stage model restored for an offline batch of home-monitor excerpts. Work in /app to establish the model from labeled studies, adapt its robust correlated multimodal emissions with the unlabeled calibration batch from a replacement sensor, stage held-out sequences, quantify posterior confidence, and summarize apnea episodes whose duration matters to triage.
 
-The Java trivia dungeon in `/app` has a broken offline publication workflow. Audit and playthrough disagree on playable room and encounter content, and identical reruns are not always byte-identical.
+Complete the C++17 model implementation in /app/src/apnea_hmm.cpp. The operational entrypoint /app/scripts/run-triage.sh builds /app/bin/apnea_hmm and writes model.json, predictions.csv, posterior.csv, apnea_events.csv, and validation_metrics.json under /app/out. The trace format, duration-aware model, calibration policy, required JSON and CSV layouts, decoder rules, posterior calculation, validation metrics, and apnea-event summary contract are described in /app/docs/trace-format.md, /app/docs/model-contract.md, /app/docs/duration-decoder.md, /app/docs/adaptation-policy.md, and /app/docs/validation-policy.md.
 
-Repair the implementation under `/app`. From `/app`, `make verify` must build without network access, audit the configured dungeon, and complete the configured deterministic playthrough with correct room traversal, encounter scoring, and trivia resolution.
-
-Keep `/data` and bundled Parquet immutable. The workflow writes `/output/audit-report.json` and `/output/playthrough.json`. Do not write those files by hand; `make verify` must regenerate them.
-
-Preserve the existing command entry point, Makefile verify target, and documented command contract.
-
-## Authoritative contracts
-
-Behavior is specified in `/app/docs/`:
-
-- **domain-contracts.md** — exit codes, issue tuples, fingerprints, registry digests, report fields, determinism
-- **configuration.md** — configuration precedence, environment variables, relative path resolution
-- **manifest-format.md** — YAML 1.2 scalar semantics, locator formats, alias and scoring rules
-- **state-notes.md** — content-addressed audit state, cache invalidation, registry snapshot semantics
-
-Audit and playthrough must share the same audited registry identity. Shared helpers document fingerprint and `dataset_digest` formulas for reproducibility across primary and secondary roots.
-
-## Critical requirements
-
-Content errors—including schema, graph, missing or duplicate stable IDs, and legacy fingerprint mismatches—produce exit 2 and a completed unsuccessful audit report. Operational failures produce exit 1 without a completed validation report. Successful runs produce exit 0.
-
-Stable question IDs must match exactly one dataset row. Legacy rows use logical `question_id` order and require the documented question fingerprint. Cache identity is based on input bytes rather than file metadata.
-
-Reusable audit state is content-addressed: manifest, contract, or dataset byte changes invalidate cached state even when paths and mtimes are unchanged. Failed, truncated, or corrupt state is never a successful cache hit. Playthrough consumes the audited registry snapshot. Warm reruns produce byte-identical reports regardless of CWD.
+The run must use /app/data/train, /app/data/adaptation, /app/data/validation, and /app/data/inference without internet. Calibration and validation contribute no rows or events to the three inference CSVs; validation contributes aggregate metrics only. Keep the tool reusable with the same flags on another directory of traces, deterministic, and able to replace stale outputs on rerun. Treat task.toml as project metadata and leave its version at 2.0.

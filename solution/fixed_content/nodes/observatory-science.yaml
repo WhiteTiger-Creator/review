@@ -1,6 +1,0 @@
-version: '1'
-id: observatory-science
-room: workshop
-title: Science Lens
-trivia:
-  question_id: tc_0020

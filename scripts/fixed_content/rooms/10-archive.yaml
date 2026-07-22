@@ -1,7 +1,0 @@
-version: '1'
-id: archive
-title: Archive
-encounters:
-- archive-history
-exits:
-  default: gallery
