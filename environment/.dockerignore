@@ -1,0 +1,14 @@
+.git
+**/.git
+.gitignore
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.DS_Store
+**/._*
+
+solution/
+tests/
+.env
