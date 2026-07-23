@@ -4,20 +4,20 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "scientific-computing"
-subcategories = ["long_context", "db_interaction"]
-number_of_milestones = 0
+category = "system-administration"
+subcategories = ["tool_specific"]
+tags = ["filesystem-operations", "crash-recovery", "systemd", "offline-maintenance"]
+languages = ["C++", "bash", "systemd"]
 codebase_size = "small"
-languages = ["rust", "bash"]
-tags = ["wind-farm", "icing", "ftrl", "envelope", "ber", "numeric-policy"]
-expert_time_estimate_min = 180
-junior_time_estimate_min = 540
+number_of_milestones = 0
+expert_time_estimate_min = 120
+junior_time_estimate_min = 360
 
 [agent]
 timeout_sec = 1800
 
 [verifier]
-timeout_sec = 900
+timeout_sec = 600
 
 [environment]
 allow_internet = false
