@@ -1,0 +1,10 @@
+[package]
+name = "m7q"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+path = "SynthCore.rs"
+
+[dependencies]
+sha2.workspace = true

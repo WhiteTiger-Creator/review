@@ -1,0 +1,46 @@
+--- a/environment/m7q/SynthCore.rs	2026-07-19 08:50:48.132007267 +0530
++++ b/environment/m7q/SynthCore.rs	2026-07-19 09:01:36.480720641 +0530
+@@ -39,15 +39,40 @@
+         let chunk = &body[i + 2..i + 2 + len];
+         if let Some(mut row) = parse_row(chunk) {
+             row.arm = row.arm.saturating_add(shift);
+-            out.push(row);
++            push_ready_row(&mut out, row);
+         }
+         i += 2 + len;
+     }
+-    out
++    finalize_rows(out)
++}
++
++fn row_ready(row: &Row) -> bool {
++    if row.mode.is_empty() {
++        return false;
++    }
++    if row.arm == 0 {
++        return false;
++    }
++    if row.weight_tok == 0 {
++        return false;
++    }
++    true
++}
++
++fn push_ready_row(out: &mut Vec<Row>, row: Row) {
++    if row_ready(&row) {
++        out.push(row);
++    }
++}
++
++fn finalize_rows(mut rows: Vec<Row>) -> Vec<Row> {
++    rows.retain(|r| row_ready(r));
++    rows.sort_by(|a, b| a.arm.cmp(&b.arm).then(a.mode.cmp(&b.mode)));
++    rows
+ }
+ 
+ fn arm_shift() -> u32 {
+-    1
++    0
+ }
+ 
+ fn unwrap_body(buf: &[u8]) -> &[u8] {

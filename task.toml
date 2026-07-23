@@ -4,14 +4,14 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "machine-learning"
-tags = ["typescript", "inference", "label-shift", "temporal-leakage", "uncertainty-brief", "ml"]
-languages = ["typescript"]
-codebase_size = "small"
+category = "scientific-computing"
+subcategories = ["long_context", "db_interaction"]
 number_of_milestones = 0
-subcategories = []
-expert_time_estimate_min = 90
-junior_time_estimate_min = 240
+codebase_size = "small"
+languages = ["rust", "bash"]
+tags = ["wind-farm", "icing", "ftrl", "envelope", "ber", "numeric-policy"]
+expert_time_estimate_min = 180
+junior_time_estimate_min = 540
 
 [agent]
 timeout_sec = 1800

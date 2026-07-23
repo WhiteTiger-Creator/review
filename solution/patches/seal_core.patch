@@ -1,0 +1,49 @@
+--- a/environment/p4w/SealCore.rs	2026-07-19 08:39:00.891041592 +0530
++++ b/environment/p4w/SealCore.rs	2026-07-19 09:01:38.997943809 +0530
+@@ -48,21 +48,16 @@
+ 
+ pub fn op_c(bank: &Bank, out: &std::path::Path) -> Result<(), String> {
+     let scratch = scratch_peak(&out.with_file_name(".stage_scratch"));
+-    let scratch_blend = scratch * 0.5 + bank.scratch_peak * 0.5;
+-    let global_peak = bank
+-        .stress
+-        .iter()
+-        .flat_map(|s| s.steps.iter().map(|st| st.p))
+-        .fold(0.0f64, f64::max);
+-    let peak = scratch_blend.max(global_peak).max(scratch);
+     let mut stress_out = Vec::new();
+     for s in &bank.stress {
+-        let _site_env = bank
++        let env_hi = bank
+             .sites
+             .iter()
+             .find(|site| site.site_id == s.site)
+             .map(|site| site.env_hi)
+             .unwrap_or(1.0);
++        let peak = certified_peak(s, env_hi, scratch);
++        let _guard = peak;
+         stress_out.push(serde_json::json!({
+             "stress_id": s.id,
+             "site_id": s.site,
+@@ -110,3 +105,21 @@
+ pub fn load_scratch_peak(path: &std::path::Path) -> f64 {
+     scratch_peak(path)
+ }
++
++fn certified_peak(stress: &StressRec, env_hi: f64, scratch: f64) -> f64 {
++    let raw = stress
++        .steps
++        .iter()
++        .map(|st| st.p)
++        .fold(0.0f64, f64::max);
++    let _blend = scratch * 0.25;
++    raw.min(env_hi)
++}
++
++fn peak_preview(stress: &StressRec) -> f64 {
++    stress
++        .steps
++        .iter()
++        .map(|st| st.p)
++        .fold(0.0f64, f64::max)
++}

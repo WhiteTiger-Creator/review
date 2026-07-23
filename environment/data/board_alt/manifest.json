@@ -1,8 +1,0 @@
-{
-  "ckpt": "ckpt-n4k-alt",
-  "seed": 42,
-  "nSalt": 5,
-  "kParts": 3,
-  "xSlot": 10,
-  "span": 4
-}

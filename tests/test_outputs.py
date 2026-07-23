@@ -1,443 +1,249 @@
-"""Behavioral checks for the advocacy label-shift desk outputs."""
+"""Domain checks for icing formal witness bundle regeneration."""
 
 from __future__ import annotations
 
-import hashlib
 import json
-import re
 import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
 
-PACK = Path("/app/data/board_q3")
-ALT_PACK = Path("/app/data/board_alt")
-OUT = Path("/app/output")
-SCORE = OUT / "scenario_score.json"
-BRIEF = OUT / "uncertainty_brief.md"
-LEDGER = OUT / "desk_ledger.json"
-TAPE = OUT / "stage_tape.jsonl"
-DESK = "/app/environment/scripts/run_desk.sh"
+ENV = Path("/app/environment")
+OUT = Path("/app/output/k_out.json")
+SITE_ROOT = ENV / "k8"
 
 
-def _execute_discharge_risk_pipeline(pack: str = "/app/data/board_q3", out: str = "/app/output") -> None:
-    subprocess.run(
-        [DESK, "--pack", pack, "--out", out],
+def _sha256_hex(data: bytes) -> str:
+    proc = subprocess.run(
+        ["sha256sum"],
+        input=data,
+        capture_output=True,
         check=True,
-        cwd="/app",
     )
+    return proc.stdout.decode().split()[0]
 
 
-def _read_scenario_score_json(path: Path = SCORE) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
+def _mode_digest(mode: bytes) -> str:
+    return _sha256_hex(mode)[:8]
 
 
-def _format_to_six_decimals(n: float) -> str:
-    return f"{float(n):.6f}"
+def _parse_ber_rows(buf: bytes) -> list[tuple[int, int, bytes]]:
+    body = buf
+    if len(buf) >= 4 and buf[0] == 0x30 and buf[1] == 0x80:
+        body = buf[2:-2]
+    rows: list[tuple[int, int, bytes]] = []
+    i = 0
+    while i + 2 < len(body):
+        if body[i] != 0x30:
+            i += 1
+            continue
+        ln = body[i + 1]
+        chunk = body[i + 2 : i + 2 + ln]
+        arm = weight = 0
+        mode = b""
+        j = 0
+        ints: list[int] = []
+        while j + 2 <= len(chunk):
+            tag = chunk[j]
+            vlen = chunk[j + 1]
+            val = chunk[j + 2 : j + 2 + vlen]
+            if tag == 0x02 and val:
+                ints.append(val[0])
+            elif tag == 0x04:
+                mode = bytes(val)
+            j += 2 + vlen
+        if len(ints) >= 2:
+            arm, weight = ints[0], ints[1]
+        if mode:
+            rows.append((arm, weight, mode))
+        i += 2 + ln
+    return rows
 
 
-def _calculate_sha256_hash(parts: list[object]) -> str:
-    line = "|".join(str(p) for p in parts)
-    return hashlib.sha256(line.encode("utf-8")).hexdigest()
+def _canon_fold_digest(rows: list[tuple[int, int, bytes]]) -> str:
+    keyed = sorted((a, _mode_digest(m), w) for a, w, m in rows)
+    joined = "\n".join(f"{a}|{md}|{w}" for a, md, w in keyed)
+    return _sha256_hex(joined.encode())
 
 
-def _compute_pack_manifest_digest(manifest: dict) -> str:
-    return _calculate_sha256_hash(
+def _score_rows(rows: list[tuple[int, int, bytes]], eta: float) -> dict[str, int]:
+    obs: dict[str, int] = {}
+    for arm, weight, _ in rows:
+        w_prev = float(weight)
+        w_next = w_prev * pow(2.718281828, -eta * w_prev / 100.0)
+        obs[str(arm)] = int(round(w_next / 10.0))
+    return obs
+
+
+def _read_sched(site: str) -> tuple[float, int, float]:
+    lines = (SITE_ROOT / site / "schedule.tsv").read_text().splitlines()
+    row = lines[1].split("\t")
+    return float(row[2]), int(row[1]), float(row[3])
+
+
+def _catalog_digest() -> str:
+    proc = subprocess.run(
         [
-            manifest["ckpt"],
-            int(manifest["seed"]),
-            int(manifest["nSalt"]),
-            int(manifest["kParts"]),
-            int(manifest["xSlot"]),
-            int(manifest["span"]),
-        ]
+            "sqlite3",
+            str(ENV / "var/k9.db"),
+            "SELECT arm_id || '|' || mode_tag || '|' || lineage_seq || '|' || weight_base "
+            "FROM arm_lineage ORDER BY arm_id, mode_tag",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
     )
+    joined = proc.stdout.strip()
+    return _sha256_hex(joined.encode())
 
 
-def _compute_expected_stage_seals(score: dict, brief: str, n_salt: int) -> dict[str, str]:
-    table = score["scoring_table"]
-    return {
-        "cal": _calculate_sha256_hash(
-            [
-                "cal",
-                int(score["train_end_slot"]),
-                int(score["eval_start_slot"]),
-                int(score["temporal_leak_probe"]),
-            ]
-        ),
-        "prio": _calculate_sha256_hash(
-            ["prio", _format_to_six_decimals(score["prior_delta"]), _format_to_six_decimals(score["prior_delta_residual"])]
-        ),
-        "gauge": _calculate_sha256_hash(
-            [
-                "gauge",
-                _format_to_six_decimals(score["acc_home"]),
-                _format_to_six_decimals(score["acc_shift"]),
-                _format_to_six_decimals(score["acc_gap"]),
-                int(n_salt),
-            ]
-        ),
-        "brief": _calculate_sha256_hash(["brief", len(brief), len(table)]),
-    }
+def _closed_keys() -> set[tuple[int, str]]:
+    proc = subprocess.run(
+        ["sqlite3", str(ENV / "var/k9.db"), "SELECT arm_id, mode_tag FROM arm_lineage"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    keys: set[tuple[int, str]] = set()
+    for line in proc.stdout.strip().splitlines():
+        arm_s, mode = line.split("|", 1)
+        keys.add((int(arm_s), _mode_digest(mode.encode())))
+    return keys
 
 
-def _compute_reproducibility_digest(score: dict, n_salt: int) -> str:
-    return _calculate_sha256_hash(
+def _obligation_count(rows: list[tuple[int, int, bytes]]) -> int:
+    closed = _closed_keys()
+    return sum(1 for a, _, m in rows if (a, _mode_digest(m)) not in closed)
+
+
+def _apply_perm(rows: list[tuple[int, int, bytes]], perm: list[int]) -> list[tuple[int, int, bytes]]:
+    if len(perm) != len(rows):
+        return list(rows)
+    return [rows[i] for i in perm]
+
+
+def _regen() -> dict:
+    if OUT.exists():
+        OUT.unlink()
+    subprocess.run(
         [
-            int(score["seed"]),
-            int(score["train_end_slot"]),
-            int(score["eval_start_slot"]),
-            int(score["temporal_leak_probe"]),
-            _format_to_six_decimals(score["prior_delta"]),
-            _format_to_six_decimals(score["prior_delta_residual"]),
-            _format_to_six_decimals(score["acc_home"]),
-            _format_to_six_decimals(score["acc_shift"]),
-            _format_to_six_decimals(score["acc_gap"]),
-            int(n_salt),
-            score["pack_digest"],
-            score["ledger_chain"],
-        ]
+            "/app/environment/exec/k_run.sh",
+            "--site-root",
+            "/app/environment/k8",
+            "--out",
+            "/app/output/k_out.json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
     )
+    return json.loads(OUT.read_text(encoding="utf-8"))
 
 
-def _parse_brief_table_rows(text: str) -> dict[str, str]:
-    vals: dict[str, str] = {}
-    for line in text.splitlines():
-        if not line.strip().startswith("|"):
-            continue
-        parts = [p.strip() for p in line.strip().strip("|").split("|")]
-        if len(parts) < 2:
-            continue
-        key, val = parts[0], parts[1]
-        if key in {"question", "---"} or set(key) <= {"-"}:
-            continue
-        vals[key] = val
-    return vals
+@pytest.fixture(scope="session", autouse=True)
+def _bundle():
+    data = _regen()
+    assert OUT.exists()
+    return data
 
 
-def _parse_stage_tape_events(path: Path = TAPE) -> list[dict]:
-    if not path.exists():
-        return []
-    lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    return [json.loads(ln) for ln in lines]
+def _site(bundle: dict, site_id: str) -> dict:
+    for s in bundle["sites"]:
+        if s["site_id"] == site_id:
+            return s
+    raise KeyError(site_id)
 
 
-@pytest.fixture(scope="module")
-def desk_once() -> dict:
-    _execute_discharge_risk_pipeline()
-    return _read_scenario_score_json()
+def test_m7_closed_zero(_bundle):
+    """Closed site packs show zero catalog obligation violations after regen."""
+    for site in ("s01", "s02", "s03"):
+        rows = _parse_ber_rows((SITE_ROOT / site / "xslice.bin").read_bytes())
+        assert _site(_bundle, site)["obligation_count"] == _obligation_count(rows)
 
 
-def test_brief_table_and_fences(desk_once: dict) -> None:
-    """Artifacts exist; brief floats match scoring_table; no fences; tape has 4 lines."""
-    assert SCORE.exists()
-    assert BRIEF.exists()
-    assert LEDGER.exists()
-    assert TAPE.exists()
-    score = desk_once
-    assert int(score["tape_seal_count"]) == 4
-    brief = BRIEF.read_text(encoding="utf-8")
-    assert "```" not in brief
-    table = score["scoring_table"]
-    brief_map = _parse_brief_table_rows(brief)
-    float_keys = {
-        "prior_delta",
-        "prior_delta_residual",
-        "acc_home",
-        "acc_shift",
-        "acc_gap",
+def test_h4_env_hold(_bundle):
+    """Synth arm score observations stay within certified envelope caps."""
+    for site in ("s01", "s02", "s03"):
+        _, _, env_hi = _read_sched(site)
+        srec = _site(_bundle, site)
+        cap = int(round(env_hi * 10.0))
+        for val in srec["synth_obs"].values():
+            assert int(val) <= cap
+
+
+def test_n2_fold_stable(_bundle):
+    """Fold digest is stable under annex presentation permutations."""
+    for site in ("s01", "s02", "s03"):
+        base = _parse_ber_rows((SITE_ROOT / site / "xslice.bin").read_bytes())
+        for orb_path in sorted((SITE_ROOT / "_orbits").glob("*.json")):
+            spec = json.loads(orb_path.read_text())
+            if spec.get("site") != site:
+                continue
+            permuted = _apply_perm(base, spec["perm"])
+            expected = _canon_fold_digest(permuted)
+            assert _site(_bundle, site)["fold_digest"] == expected
+
+
+def test_j9_perm_stable(_bundle):
+    """Admission label does not flip when annex rows are permuted."""
+    for site in ("s01", "s02", "s03"):
+        eta, threshold, _ = _read_sched(site)
+        base = _parse_ber_rows((SITE_ROOT / site / "xslice.bin").read_bytes())
+        obs = _score_rows(base, eta)
+        adm = "open" if max(obs.values(), default=0) >= threshold else "hold"
+        for orb_path in sorted((SITE_ROOT / "_orbits").glob("*.json")):
+            spec = json.loads(orb_path.read_text())
+            if spec.get("site") != site:
+                continue
+            permuted = _apply_perm(base, spec["perm"])
+            obs2 = _score_rows(permuted, eta)
+            adm2 = "open" if max(obs2.values(), default=0) >= threshold else "hold"
+            assert adm2 == adm
+        assert _site(_bundle, site)["admission"] == adm
+
+
+def test_p4_path_hold(_bundle):
+    """Stress path peaks stay inside site certified envelopes."""
+    for rec in _bundle["stress"]:
+        _, _, env_hi = _read_sched(rec["site_id"])
+        assert float(rec["path_peak"]) <= env_hi + 1e-9
+
+
+def test_z5_emit_shape(_bundle):
+    """Regenerated bundle matches schema, digests, and is byte-stable across runs."""
+    required_site = {
+        "site_id",
+        "obligation_count",
+        "env_hi",
+        "synth_obs",
+        "fold_digest",
+        "catalog_digest",
+        "admission",
+        "reach_obs",
     }
-    assert len(score) > 0
-    assert "partition_policy" in score
-    assert "temporal_leak_probe" in score
-    assert "acc_gap" in score
-    assert isinstance(score["acc_gap"], (int, float))
-    assert isinstance(score["prior_delta"], (int, float))
-    assert isinstance(score["acc_home"], (int, float))
-    assert isinstance(score["acc_shift"], (int, float))
-    assert isinstance(score["prior_delta_residual"], (int, float))
-    assert isinstance(score["temporal_leak_probe"], (int, float))
-    assert isinstance(score["train_end_slot"], (int, float))
-    assert isinstance(score["eval_start_slot"], (int, float))
-    assert isinstance(score["seed"], (int, float))
-    assert isinstance(score["tape_seal_count"], (int, float))
-    assert isinstance(score["checkpoint_stamp"], str)
-    assert isinstance(score["pack_digest"], str)
-    assert isinstance(score["ledger_chain"], str)
-    assert isinstance(score["resume_stamp"], str)
-    assert isinstance(score["repro_digest"], str)
-    assert isinstance(score["partition_policy"], str)
-    assert isinstance(score["scoring_table"], dict)
-    assert isinstance(score["stage_seals"], dict)
-    assert isinstance(score["held_out"], dict)
-    assert len(score["checkpoint_stamp"]) > 0
-    assert len(score["pack_digest"]) > 0
-    assert len(score["ledger_chain"]) > 0
-    assert len(score["resume_stamp"]) > 0
-    assert len(score["repro_digest"]) > 0
-    assert len(score["partition_policy"]) > 0
-    for key, raw in table.items():
-        assert key in brief_map
-        if key in float_keys:
-            assert brief_map[key] == _format_to_six_decimals(float(raw))
-        else:
-            assert brief_map[key] == str(int(raw))
-    ordered_keys = sorted(table.keys(), key=lambda k: (len(k), k))
-    brief_keys = [k for k in brief_map.keys() if k in table]
-    assert brief_keys == ordered_keys, "Brief rows not length-then-alpha"
-    tape = _parse_stage_tape_events()
-    assert len(tape) == 4
-    tags = [ev["tag"] for ev in tape]
-    assert tags == ["cal", "prio", "gauge", "brief"]
-    assert all(isinstance(ev["tag"], str) for ev in tape)
-    assert all(len(ev["tag"]) > 0 for ev in tape)
-
-
-def test_overwrite_trap_regeneration() -> None:
-    """Overwrite trap regenerates score, brief, ledger, and tape."""
-    from os import makedirs
-
-    makedirs(str(OUT), exist_ok=True)
-    SCORE.write_text("{}\n", encoding="utf-8")
-    fence = chr(96) * 3
-    BRIEF.write_text(fence + "\nx\n" + fence + "\n", encoding="utf-8")
-    LEDGER.write_text("{}\n", encoding="utf-8")
-    TAPE.write_text('{"tag":"stale"}\n', encoding="utf-8")
-    _execute_discharge_risk_pipeline()
-    score = _read_scenario_score_json()
-    assert "prior_delta" in score
-    assert score.get("pack_digest")
-    assert score.get("ledger_chain")
-    assert int(score["tape_seal_count"]) == 4
-    ledger = json.loads(LEDGER.read_text(encoding="utf-8"))
-    assert ledger["ledger_chain"] == score["ledger_chain"]
-    assert ledger["pack_digest"] == score["pack_digest"]
-    brief = BRIEF.read_text(encoding="utf-8")
-    assert fence not in brief
-    tape = _parse_stage_tape_events()
-    assert len(tape) == 4
-    assert all(ev.get("pack_digest") == score["pack_digest"] for ev in tape)
-    assert isinstance(ledger["stage_seals"], dict)
-    assert len(ledger["stage_seals"]) == 4
-    assert "cal" in ledger["stage_seals"]
-    assert "prio" in ledger["stage_seals"]
-    assert "gauge" in ledger["stage_seals"]
-    assert "brief" in ledger["stage_seals"]
-
-
-def test_temporal_leak_split(desk_once: dict) -> None:
-    """Temporal leak probe clean with positive calendar gap."""
-    score = desk_once
-    assert int(score["temporal_leak_probe"]) == 0
-    assert int(score["train_end_slot"]) < int(score["eval_start_slot"])
-    assert isinstance(score["train_end_slot"], int)
-    assert isinstance(score["eval_start_slot"], int)
-
-
-def test_prior_shift_and_residuals(desk_once: dict) -> None:
-    """Primary prior shift surfaces and residual survives covariates."""
-    score = desk_once
-    assert float(score["prior_delta"]) >= 0.12
-    assert float(score["prior_delta_residual"]) >= 0.08
-    assert isinstance(score["prior_delta"], (int, float))
-    assert isinstance(score["prior_delta_residual"], (int, float))
-
-
-def test_held_out_rejection(desk_once: dict) -> None:
-    """Held-out corpus rejects covariate burial; differs from primary."""
-    score = desk_once
-    held = score["held_out"]
-    assert float(held["prior_delta"]) >= 0.12
-    assert float(held["prior_delta_residual"]) >= 0.08
-    assert int(held["temporal_leak_probe"]) == 0
-    assert float(held["prior_delta"]) != float(score["prior_delta"])
-    assert isinstance(held, dict)
-    assert "prior_delta" in held
-
-
-def test_accuracy_gap_perturbed(desk_once: dict) -> None:
-    """Accuracy gap remains when prior shift is present."""
-    score = desk_once
-    assert float(score["prior_delta"]) >= 0.12
-    assert float(score["acc_gap"]) >= 0.05
-    assert float(score["acc_home"]) > float(score["acc_shift"])
-    assert isinstance(score["acc_home"], (int, float))
-    assert isinstance(score["acc_shift"], (int, float))
-
-
-def test_ledger_integrity_and_seals(desk_once: dict) -> None:
-    """Pack digest, stage seals, ledger chain, resume stamp, and repro digest."""
-    score = desk_once
-    brief = BRIEF.read_text(encoding="utf-8")
-    manifest = json.loads((PACK / "manifest.json").read_text(encoding="utf-8"))
-    n_salt = int(manifest["nSalt"])
-    assert score["checkpoint_stamp"] == manifest["ckpt"]
-    assert score["pack_digest"] == _compute_pack_manifest_digest(manifest)
-    assert int(score["tape_seal_count"]) == 4
-    seals = _compute_expected_stage_seals(score, brief, n_salt)
-    assert score["stage_seals"] == seals
-    expected_chain = _calculate_sha256_hash(
-        [score["pack_digest"], seals["cal"], seals["prio"], seals["gauge"], seals["brief"]]
+    required_stress = {"stress_id", "site_id", "path_peak"}
+    assert _bundle["schema_version"] == 1
+    assert len(_bundle["sites"]) == 3
+    assert len(_bundle["lineage_rows"]) >= 5
+    for site in _bundle["sites"]:
+        for key in required_site:
+            assert key in site
+        assert len(site["fold_digest"]) == 64
+        assert site["catalog_digest"] == _catalog_digest()
+    for rec in _bundle["stress"]:
+        for key in required_stress:
+            assert key in rec
+    if OUT.exists():
+        OUT.unlink()
+    subprocess.run(
+        [
+            "/app/environment/exec/k_run.sh",
+            "--site-root",
+            "/app/environment/k8",
+            "--out",
+            "/app/output/k_out.json",
+        ],
+        check=True,
     )
-    assert score["ledger_chain"] == expected_chain
-    assert score["resume_stamp"] == _calculate_sha256_hash([score["ledger_chain"], 4])
-    assert score["repro_digest"] == _compute_reproducibility_digest(score, n_salt)
-    ledger = json.loads(LEDGER.read_text(encoding="utf-8"))
-    assert ledger["ledger_chain"] == score["ledger_chain"]
-    assert ledger["resume_stamp"] == score["resume_stamp"]
-    assert ledger["stage_seals"] == seals
-    tape = _parse_stage_tape_events()
-    for tag, seal in seals.items():
-        ev = next(e for e in tape if e["tag"] == tag)
-        assert ev["seal"] == seal
-        assert ev["pack_digest"] == score["pack_digest"]
-    assert len(score["pack_digest"]) == 64
-    assert len(score["ledger_chain"]) == 64
-    assert len(score["resume_stamp"]) == 64
-    assert len(score["repro_digest"]) == 64
-
-
-def test_consecutive_byte_identity() -> None:
-    """Consecutive identical runs emit byte-identical score and ledger."""
-    _execute_discharge_risk_pipeline()
-    first = SCORE.read_bytes()
-    first_ledger = LEDGER.read_bytes()
-    _execute_discharge_risk_pipeline()
-    second = SCORE.read_bytes()
-    second_ledger = LEDGER.read_bytes()
-    assert first == second
-    assert first_ledger == second_ledger
-    score = json.loads(first.decode("utf-8"))
-    assert score["partition_policy"] == "strict_calendar_gap"
-    assert int(score["seed"]) == 42
-    brief = BRIEF.read_text(encoding="utf-8")
-    assert "```" not in brief
-    assert re.search(r"\|", brief) is not None
-    if float(score["prior_delta"]) >= 0.12 and float(score["prior_delta_residual"]) >= 0.08:
-        assert float(score["acc_gap"]) >= 0.05
-    assert isinstance(score["stage_seals"], dict)
-    assert len(score["stage_seals"]) == 4
-
-
-def test_journal_tape_recovery() -> None:
-    """Journal recovery restores ledger from stage tape when checkpoint is gone."""
-    _execute_discharge_risk_pipeline()
-    score = _read_scenario_score_json()
-    ckpt = score["checkpoint_stamp"]
-    ckpt_file = OUT / "checkpoints" / f"{ckpt}.json"
-    assert ckpt_file.exists()
-    assert TAPE.exists()
-
-    original_chain = score["ledger_chain"]
-    ledger_data = json.loads(LEDGER.read_text(encoding="utf-8"))
-    ledger_data["ledger_chain"] = "corrupt_chain_value_12345"
-    LEDGER.write_text(json.dumps(ledger_data, indent=2) + "\n", encoding="utf-8")
-    ckpt_file.unlink()
-
-    _execute_discharge_risk_pipeline()
-
-    restored_ledger = json.loads(LEDGER.read_text(encoding="utf-8"))
-    assert restored_ledger["ledger_chain"] == original_chain
-    assert restored_ledger["ledger_chain"] == score["ledger_chain"]
-    tape = _parse_stage_tape_events()
-    assert len(tape) == 4
-    assert all(ev.get("pack_digest") == score["pack_digest"] for ev in tape)
-    assert isinstance(restored_ledger["stage_seals"], dict)
-    assert len(restored_ledger["stage_seals"]) == 4
-
-
-def test_journal_tape_replay_fails_on_bad_digest() -> None:
-    """Corrupt ledger + missing checkpoint + wrong tape digest must not silently heal."""
-    _execute_discharge_risk_pipeline()
-    score = _read_scenario_score_json()
-    ckpt = score["checkpoint_stamp"]
-    ckpt_file = OUT / "checkpoints" / f"{ckpt}.json"
-    assert ckpt_file.exists()
-    assert TAPE.exists()
-
-    corrupt_chain = "corrupt_chain_value_12345"
-    ledger_data = json.loads(LEDGER.read_text(encoding="utf-8"))
-    ledger_data["ledger_chain"] = corrupt_chain
-    LEDGER.write_text(json.dumps(ledger_data, indent=2) + "\n", encoding="utf-8")
-    ckpt_file.unlink()
-
-    bad_events = []
-    for line in TAPE.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        ev = json.loads(line)
-        ev["pack_digest"] = "0" * 64
-        bad_events.append(ev)
-    TAPE.write_text("\n".join(json.dumps(ev) for ev in bad_events) + "\n", encoding="utf-8")
-
-    _execute_discharge_risk_pipeline()
-
-    unrecovered = json.loads(LEDGER.read_text(encoding="utf-8"))
-    assert unrecovered["ledger_chain"] == corrupt_chain
-    assert unrecovered["ledger_chain"] != score["ledger_chain"]
-
-
-def test_margin_perturbation_controlled() -> None:
-    """Margin tie-break perturbation yields accShift 0.25 for controlled logits."""
-    code = """
-    const { setTrueBuf } = require('/app/dist/c5/g2/gauge_types');
-    const { vGauge } = require('/app/dist/c5/g2/v_gauge');
-    setTrueBuf([0.1, -0.1, 0.5, -0.5]);
-    const res = vGauge([1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0], 1);
-    console.log(res.accShift);
-    """
-    res = subprocess.run(["node", "-e", code], capture_output=True, text=True, check=True)
-    acc_shift = float(res.stdout.strip())
-    assert acc_shift == 0.25
-    assert res.returncode == 0
-    assert len(res.stdout) > 0
-
-
-def test_alternate_pack_handling() -> None:
-    """Alternate pack yields distinct digest, prior, and valid ledger with K=2 gap."""
-    alt_manifest = json.loads((ALT_PACK / "manifest.json").read_text(encoding="utf-8"))
-    assert int(alt_manifest["nSalt"]) == 5
-
-    with tempfile.TemporaryDirectory(prefix="board_alt_") as tmp:
-        alt_out = Path(tmp)
-        _execute_discharge_risk_pipeline(pack=str(ALT_PACK), out=str(alt_out))
-        alt_score = _read_scenario_score_json(alt_out / "scenario_score.json")
-        primary_score = _read_scenario_score_json()
-
-        assert alt_score["pack_digest"] != primary_score["pack_digest"]
-        assert alt_score["pack_digest"] == _compute_pack_manifest_digest(alt_manifest)
-        assert float(alt_score["prior_delta"]) != float(primary_score["prior_delta"])
-        assert float(alt_score["prior_delta"]) >= 0.12
-
-        brief = (alt_out / "uncertainty_brief.md").read_text(encoding="utf-8")
-        seals = _compute_expected_stage_seals(alt_score, brief, int(alt_manifest["nSalt"]))
-        expected_chain = _calculate_sha256_hash(
-            [
-                alt_score["pack_digest"],
-                seals["cal"],
-                seals["prio"],
-                seals["gauge"],
-                seals["brief"],
-            ]
-        )
-        assert alt_score["ledger_chain"] == expected_chain
-        assert float(alt_score["acc_gap"]) >= 0.05
-        assert float(alt_score["acc_home"]) > float(alt_score["acc_shift"])
-        assert isinstance(alt_score, dict)
-        assert "ledger_chain" in alt_score
-        assert "resume_stamp" in alt_score
-
-
-def test_stage_tape_event_order(desk_once: dict) -> None:
-    """Primary run tape lines share pack digest and cal/prio/gauge/brief order."""
-    score = desk_once
-    tape = _parse_stage_tape_events()
-    assert len(tape) == 4
-    digest = score["pack_digest"]
-    for ev in tape:
-        assert ev["pack_digest"] == digest
-    assert [ev["tag"] for ev in tape] == ["cal", "prio", "gauge", "brief"]
-    assert len(digest) == 64
-    assert isinstance(digest, str)
-
+    second = json.loads(OUT.read_text())
+    assert second == _bundle
