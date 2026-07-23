@@ -1,22 +1,17 @@
-# Java Trivia Dungeon
+# authgw
 
-Offline terminal trivia dungeon with rooms, encounters, scoring weights, and a deterministic verification playthrough. Players (and the publication check) resolve trivia questions while walking the dungeon graph.
+Internal authentication gateway for Meridian Logistics. Issues session
+tokens on password login, supports a "remember me" cookie fallback, and
+lets admins mint service tokens for internal integrations.
 
-## Commands
+See [docs/API.md](docs/API.md) for the full endpoint reference.
 
-```bash
-make verify        # offline build, audit bundled dungeon, run playthrough
-./bin/trivia-dungeon audit ...       # audit room/encounter manifests and trivia references
-./bin/trivia-dungeon playthrough ... # deterministic verification run
+## Development
+
+```
+make build   # compile ./bin/authgw
+make test    # run the unit test suite
+make run     # build and start the server on :8080
 ```
 
-## Layout
-
-| Path | Role |
-|------|------|
-| `bin/trivia-dungeon` | Dungeon command wrapper |
-| `config/` | Dungeon TOML and verification answer script |
-| `bundle/` | Room, encounter, and scoring manifests |
-| `docs/` | Domain contracts for manifests, configuration, and audit state |
-
-See `docs/configuration.md` for precedence and path rules. Exit codes: `0` success, `1` operational failure, `2` content violations.
+Configuration is read from the environment; see `internal/config`.

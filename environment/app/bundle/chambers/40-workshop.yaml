@@ -1,7 +1,0 @@
-version: '1'
-id: workshop
-title: Workshop
-encounters:
-- workshop-mixed
-exits:
-  default: vault
