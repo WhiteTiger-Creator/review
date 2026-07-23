@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "encounters": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "reached_exit": {
+      "type": "boolean"
+    },
+    "registry_digest": {
+      "type": "string"
+    },
+    "total_score": {
+      "type": "integer"
+    },
+    "visited_rooms": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "reached_exit",
+    "total_score",
+    "visited_rooms",
+    "encounters",
+    "registry_digest"
+  ],
+  "type": "object"
+}

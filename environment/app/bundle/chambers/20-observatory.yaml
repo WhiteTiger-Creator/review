@@ -1,0 +1,7 @@
+version: '1'
+id: observatory
+title: Observatory
+encounters:
+- observatory-science
+exits:
+  default: workshop
