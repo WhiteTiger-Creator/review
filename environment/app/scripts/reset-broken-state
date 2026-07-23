@@ -1,8 +1,0 @@
-#!/bin/bash
-set -euo pipefail
-install -m 0640 /app/fixtures/broken-config/relay.conf /app/etc/harbor-relay/relay.conf
-install -m 0640 /app/fixtures/broken-config/limits.conf /app/etc/harbor-relay/limits.conf
-install -m 0640 /app/fixtures/broken-config/routes.map /app/etc/harbor-relay/routes.map
-rm -f /app/var/repair-audit.db /app/var/repair-manifest.json /app/var/harbor-repair.lock
-rm -f /app/etc/harbor-relay/*.tmp /app/etc/harbor-relay/*.bak /app/var/*.tmp /app/var/*.bak /app/var/*-journal /app/var/*-wal /app/var/*-shm
-rm -f /app/run/harbor-relay/*.sock
