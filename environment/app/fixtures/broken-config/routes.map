@@ -1,0 +1,2 @@
+method	external_path	upstream	auth_mode	timeout_ms	source_route_id
+POST	/v1/berth/arrivals	http://127.0.0.1:4891/legacy/arrivals	preserve	1200	rt-220

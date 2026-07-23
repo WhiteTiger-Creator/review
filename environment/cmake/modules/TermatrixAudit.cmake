@@ -1,5 +1,0 @@
-function(termatrix_require_cache_key value)
-  if("${value}" STREQUAL "")
-    message(FATAL_ERROR "Termatrix cache key must not be empty")
-  endif()
-endfunction()

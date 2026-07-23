@@ -4,24 +4,27 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "build-and-dependency-management"
-subcategories = ["tool_specific"]
-tags = ["cmake", "abi", "cache", "pkg-config", "recovery"]
-languages = ["c", "cpp", "bash", "cmake"]
-codebase_size = "small"
+category = "system-administration"
+subcategories = ["long_context", "tool_specific", "api_integration", "db_interaction"]
 number_of_milestones = 0
-expert_time_estimate_min = 300
-junior_time_estimate_min = 1080
-
-[agent]
-timeout_sec = 1800
+codebase_size = "small"
+languages = ["SQL", "Bash"]
+tags = ["sqlite", "strace", "lsof", "unix-sockets", "service-recovery"]
+expert_time_estimate_min = 180
+junior_time_estimate_min = 360
 
 [verifier]
-timeout_sec = 1800
+timeout_sec = 600.0
+
+[agent]
+timeout_sec = 1800.0
 
 [environment]
-allow_internet = false
-build_timeout_sec = 600
+build_timeout_sec = 900.0
+docker_flags = []
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
+gpus = 0
+gpu_types = []
+allow_internet = false
