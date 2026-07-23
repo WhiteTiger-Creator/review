@@ -4,24 +4,24 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "games"
-subcategories = []
+category = "security"
+subcategories = ["api_integration"]
 number_of_milestones = 0
-codebase_size = "minimal"
-languages = ["fortran"]
-tags = ["havannah", "hex-board", "win-detection", "connectivity", "board-game"]
-expert_time_estimate_min = 120
-junior_time_estimate_min = 300
-
-[verifier]
-timeout_sec = 600.0
+codebase_size = "small"
+languages = ["ruby", "shell", "yaml"]
+tags = ["supply-chain-security", "gpg-attestation", "archive-security", "secret-scanning", "json-signatures"]
+expert_time_estimate_min = 180
+junior_time_estimate_min = 420
 
 [agent]
-timeout_sec = 1800.0
+timeout_sec = 1800
+
+[verifier]
+timeout_sec = 900
 
 [environment]
-allow_internet = false
-build_timeout_sec = 1800.0
+build_timeout_sec = 1200
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
+allow_internet = false
