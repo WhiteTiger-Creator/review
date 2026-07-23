@@ -1,0 +1,2 @@
+Harness notes for the apk-lab-west-1 freeze desk.
+fixture_seals.json records the sha256 of each sealed fixture input.

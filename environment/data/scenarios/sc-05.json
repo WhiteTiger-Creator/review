@@ -1,0 +1,10 @@
+{
+  "scenario_id": "sc-05",
+  "requests": [
+    {"package_id": "apk-06"},
+    {"package_id": "apk-07"}
+  ],
+  "proposed_writes": [
+    {"package_id": "apk-06", "index_id": "index-open", "payload_digest": "dg-apk-06"}
+  ]
+}

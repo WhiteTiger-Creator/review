@@ -1,0 +1,13 @@
+{
+  "scenario_id": "sc-10",
+  "requests": [
+    {"package_id": "apk-01"},
+    {"package_id": "apk-02"},
+    {"package_id": "apk-11"}
+  ],
+  "proposed_writes": [
+    {"package_id": "apk-01", "index_id": "index-locked", "payload_digest": "dg-apk-01-STALE"},
+    {"package_id": "apk-02", "index_id": "index-open", "payload_digest": "dg-apk-02"},
+    {"package_id": "apk-11", "index_id": "index-open", "payload_digest": "dg-apk-11"}
+  ]
+}

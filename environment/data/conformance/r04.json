@@ -1,0 +1,36 @@
+{
+  "id": "r04",
+  "selected": {
+    "a": {
+      "package_id": "a",
+      "provides": [
+        "x"
+      ]
+    },
+    "b": {
+      "package_id": "b",
+      "provides": [
+        "y"
+      ]
+    }
+  },
+  "conflicts": [
+    {
+      "left": "x",
+      "right": "y",
+      "loser": "b",
+      "kind": "provide"
+    }
+  ],
+  "survivor_ids": [
+    "a"
+  ],
+  "hits": [
+    {
+      "loser": "b",
+      "left": "x",
+      "right": "y",
+      "kind": "provide"
+    }
+  ]
+}

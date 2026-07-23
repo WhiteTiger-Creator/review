@@ -1,0 +1,2 @@
+Lab retention notes for the west-1 freeze desk.
+Fixture corpus under data/ is treated as immutable for publish runs.

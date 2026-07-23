@@ -1,0 +1,12 @@
+{
+  "package_id": "apk-03",
+  "pkgname": "openssl",
+  "version": "3.1.4",
+  "sources": [
+    {"uri": "u-openssl-3.1", "sha": "sha-openssl-STALE"}
+  ],
+  "patches": [],
+  "provides": [],
+  "replaces": [],
+  "content_digest": "dg-apk-03"
+}

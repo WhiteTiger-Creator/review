@@ -1,0 +1,34 @@
+{
+  "id": "r03",
+  "selected": {
+    "apk-08": {
+      "package_id": "apk-08",
+      "provides": [
+        "net-tools"
+      ]
+    },
+    "apk-09": {
+      "package_id": "apk-09",
+      "provides": []
+    }
+  },
+  "conflicts": [
+    {
+      "left": "apk-08",
+      "right": "apk-09",
+      "loser": "apk-09",
+      "kind": "replace"
+    }
+  ],
+  "survivor_ids": [
+    "apk-08"
+  ],
+  "hits": [
+    {
+      "loser": "apk-09",
+      "left": "apk-08",
+      "right": "apk-09",
+      "kind": "replace"
+    }
+  ]
+}

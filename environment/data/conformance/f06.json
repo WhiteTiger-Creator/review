@@ -1,0 +1,22 @@
+{
+  "id": "f06",
+  "lines": [
+    {
+      "scenario_id": "ex",
+      "package_id": "a",
+      "version": "1",
+      "pinned": false,
+      "patches_ok": true,
+      "admitted": true
+    },
+    {
+      "scenario_id": "ex",
+      "package_id": "b",
+      "version": "1",
+      "pinned": true,
+      "patches_ok": false,
+      "admitted": false
+    }
+  ],
+  "digest_hex": "42cef71a25840825133b37ee873b7e5f75f28f63dc31750232e1acf2e6c71475"
+}

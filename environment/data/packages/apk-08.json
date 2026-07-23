@@ -1,0 +1,12 @@
+{
+  "package_id": "apk-08",
+  "pkgname": "iproute2",
+  "version": "6.6.0",
+  "sources": [
+    {"uri": "u-iproute2-6.6", "sha": "sha-iproute2-6.6"}
+  ],
+  "patches": [],
+  "provides": ["net-tools"],
+  "replaces": ["busybox-net"],
+  "content_digest": "dg-apk-08"
+}

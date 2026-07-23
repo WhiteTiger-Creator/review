@@ -1,0 +1,12 @@
+{
+  "package_id": "apk-07",
+  "pkgname": "gnutls-compat",
+  "version": "3.8.2",
+  "sources": [
+    {"uri": "u-gnutls-3.8", "sha": "sha-gnutls-3.8"}
+  ],
+  "patches": [],
+  "provides": ["libssl-legacy"],
+  "replaces": [],
+  "content_digest": "dg-apk-07"
+}

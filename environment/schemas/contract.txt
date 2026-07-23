@@ -1,0 +1,50 @@
+Alpine APKBUILD Checksum Freeze Board — Lab Contract
+====================================================
+
+Lab gates
+---------
+- Environment variable `TB_APK_LAB` must equal `1`.
+- `/app/config/lab.toml` must set `replay_ready = true`, `graph_generation = "freeze-1"`,
+  and `graph_lock_sha256` to the sealed scenario corpus digest (SHA-256 over scenario
+  file bytes concatenated in sorted filename order).
+- Entry binaries: `/app/bin/apkfold` and `/app/bin/apk-board` (built by `/app/scripts/build.sh`).
+
+Authoritative inputs
+--------------------
+- Sealed package, pin, patch, conflict, gate, and scenario fixtures under `/app/data/`.
+  Do not alter these files.
+- `/app/data/conformance/f*.json`: sealed ledger-fold worked examples (`lines`, `digest_hex`).
+- `/app/data/conformance/r*.json`: sealed provide/replace closure worked examples
+  (`selected`, `conflicts`, `survivor_ids`, `hits`). Do not alter these files.
+
+Provide/replace closure
+-----------------------
+Conflict rows fire in table order. A row may remove at most one loser package id once.
+Left/right side presence may be satisfied by a package id or by a provides token. The
+exact presence rule as earlier rows remove packages — whether presence is frozen to the
+pre-closure selection or tracks the live survivor set — is defined *normatively* by the
+worked examples under `/app/data/conformance/r*.json` and is deliberately not restated
+here. Reproduce every example before trusting an induced rule. The same rule applies to
+live freeze scenarios.
+
+Ledger fold
+-----------
+Board `digest_hex` is the lowercase hex SHA-256 of the ledger formed from the ordered
+package rows the publisher emits. Each contributing line uses the pipe layout
+`scenario_id|package_id|version|pinned|patches_ok|admitted` with lowercase booleans and a
+trailing newline.
+
+Which rows contribute to that ledger — and whether the input order is preserved,
+re-sorted, or filtered — is defined *normatively* by the worked examples under
+`/app/data/conformance/f*.json` and is deliberately not restated here. Reproduce every
+example exactly before trusting an induced rule. The same rule applies to the live freeze
+board.
+
+Artifacts
+---------
+- `/app/output/apkbuild_checksum_freeze.json`
+- `/app/output/pkg_findings.jsonl`
+
+Finding detail templates and board field/sort contracts live on `/app/pkg/emit`.
+Policy stubs under `/app/pkg/` that the publisher calls are incomplete placeholders and
+must be reimplemented so live scenarios and the conformance corpus agree.

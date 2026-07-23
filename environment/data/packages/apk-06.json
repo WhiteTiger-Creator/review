@@ -1,0 +1,12 @@
+{
+  "package_id": "apk-06",
+  "pkgname": "libretls",
+  "version": "3.8.1",
+  "sources": [
+    {"uri": "u-libretls-3.8", "sha": "sha-libretls-3.8"}
+  ],
+  "patches": [],
+  "provides": ["libssl"],
+  "replaces": [],
+  "content_digest": "dg-apk-06"
+}

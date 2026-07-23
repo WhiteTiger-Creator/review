@@ -1,0 +1,12 @@
+{
+  "package_id": "apk-14",
+  "pkgname": "alpha-core",
+  "version": "1.0.0",
+  "sources": [
+    {"uri": "u-alpha-1.0", "sha": "sha-alpha-1.0"}
+  ],
+  "patches": [],
+  "provides": ["alpha"],
+  "replaces": [],
+  "content_digest": "dg-apk-14"
+}

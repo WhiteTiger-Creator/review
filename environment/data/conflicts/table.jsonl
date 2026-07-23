@@ -1,0 +1,5 @@
+{"left": "libssl", "right": "libssl-legacy", "loser": "apk-07", "kind": "provide"}
+{"left": "apk-06", "right": "apk-07", "loser": "apk-07", "kind": "replace"}
+{"left": "apk-08", "right": "apk-09", "loser": "apk-09", "kind": "replace"}
+{"left": "apk-14", "right": "apk-15", "loser": "apk-15", "kind": "replace"}
+{"left": "apk-15", "right": "apk-16", "loser": "apk-16", "kind": "replace"}

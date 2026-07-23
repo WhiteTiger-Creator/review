@@ -1,0 +1,12 @@
+{
+  "package_id": "apk-15",
+  "pkgname": "beta-core",
+  "version": "1.0.0",
+  "sources": [
+    {"uri": "u-beta-1.0", "sha": "sha-beta-1.0"}
+  ],
+  "patches": [],
+  "provides": ["beta"],
+  "replaces": [],
+  "content_digest": "dg-apk-15"
+}
