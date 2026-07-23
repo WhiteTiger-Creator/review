@@ -1,0 +1,12 @@
+{
+  "name": "qx-desk",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "typescript": "5.7.3",
+    "@types/node": "22.10.2"
+  }
+}

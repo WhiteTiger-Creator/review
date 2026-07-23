@@ -1,248 +1,443 @@
-"""Verifier for the native backend matrix workspace."""
+"""Behavioral checks for the advocacy label-shift desk outputs."""
 
 from __future__ import annotations
 
+import hashlib
 import json
-import os
+import re
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
 
-APP = Path("/app")
-OUT = APP / "output"
-REPORT = OUT / "matrix_report.json"
-MATRIX = APP / "contracts" / "matrix_arms.json"
-
-# Floor that rejects echo/stub placeholders while staying well below any
-# real cargo-built `probe` binary (debug or release).
-_MIN_PROBE_BYTES = 4096
-_ELF_MAGIC = b"\x7fELF"
-
-
-def _load_matrix() -> dict:
-    return json.loads(MATRIX.read_text())
+PACK = Path("/app/data/board_q3")
+ALT_PACK = Path("/app/data/board_alt")
+OUT = Path("/app/output")
+SCORE = OUT / "scenario_score.json"
+BRIEF = OUT / "uncertainty_brief.md"
+LEDGER = OUT / "desk_ledger.json"
+TAPE = OUT / "stage_tape.jsonl"
+DESK = "/app/environment/scripts/run_desk.sh"
 
 
-def _probe_paths_for_arm(arm_id: str) -> list[Path]:
-    return sorted((APP / "target").glob(f"arm_{arm_id}/**/probe"))
-
-
-def _assert_real_elf_probe(path: Path) -> None:
-    assert path.is_file(), f"missing probe binary: {path}"
-    size = path.stat().st_size
-    assert size >= _MIN_PROBE_BYTES, (
-        f"probe {path} too small ({size} bytes); expected a real linked ELF"
-    )
-    with path.open("rb") as fh:
-        magic = fh.read(4)
-    assert magic == _ELF_MAGIC, f"probe {path} is not an ELF binary (magic={magic!r})"
-
-
-def _run_probe_independently(arm_id: str, mode: str, probe: Path) -> None:
-    """Execute a rebuilt probe outside run_matrix.sh (anti-stub)."""
-    env = os.environ.copy()
-    env["NEXUS_ARM"] = arm_id
-    env["NEXUS_MODE"] = mode
-    env["NEXUS_OUT"] = str(OUT)
-    OUT.mkdir(parents=True, exist_ok=True)
-    proc = subprocess.run(
-        [str(probe)],
-        cwd=str(APP),
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    assert proc.returncode == 0, (
-        f"independent probe run for arm {arm_id} failed "
-        f"(rc={proc.returncode}): {proc.stdout[-1000:]}\n{proc.stderr[-1000:]}"
-    )
-
-
-def _prepare_verifier_runtime() -> None:
-    """Best-effort cleanup so agent leftovers cannot stall the verifier."""
-    OUT.mkdir(parents=True, exist_ok=True)
-    try:
-        Path("/tmp").mkdir(parents=True, exist_ok=True)
-        Path("/var/tmp").mkdir(parents=True, exist_ok=True)
-        os.chmod("/tmp", 0o1777)
-        os.chmod("/var/tmp", 0o1777)
-    except OSError:
-        pass
-    # Drop stale tmux server sockets that block a later session attach.
-    for sock in Path("/tmp").glob("tmux-*"):
-        try:
-            if sock.is_dir():
-                for child in sock.iterdir():
-                    child.unlink(missing_ok=True)
-                sock.rmdir()
-            else:
-                sock.unlink(missing_ok=True)
-        except OSError:
-            pass
-    # Agent cargo/rustc orphans can exhaust cgroup memory before pytest finishes.
+def _execute_discharge_risk_pipeline(pack: str = "/app/data/board_q3", out: str = "/app/output") -> None:
     subprocess.run(
-        ["killall", "-9", "cargo", "rustc", "cc1", "collect2"],
-        capture_output=True,
-        check=False,
+        [DESK, "--pack", pack, "--out", out],
+        check=True,
+        cwd="/app",
     )
 
 
-def _run_matrix() -> dict:
-    _prepare_verifier_runtime()
-    OUT.mkdir(parents=True, exist_ok=True)
-    if REPORT.exists():
-        REPORT.unlink()
-    proc = subprocess.run(
-        ["bash", str(APP / "scripts" / "run_matrix.sh")],
-        cwd=str(APP),
-        capture_output=True,
-        text=True,
-        timeout=1200,
+def _read_scenario_score_json(path: Path = SCORE) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _format_to_six_decimals(n: float) -> str:
+    return f"{float(n):.6f}"
+
+
+def _calculate_sha256_hash(parts: list[object]) -> str:
+    line = "|".join(str(p) for p in parts)
+    return hashlib.sha256(line.encode("utf-8")).hexdigest()
+
+
+def _compute_pack_manifest_digest(manifest: dict) -> str:
+    return _calculate_sha256_hash(
+        [
+            manifest["ckpt"],
+            int(manifest["seed"]),
+            int(manifest["nSalt"]),
+            int(manifest["kParts"]),
+            int(manifest["xSlot"]),
+            int(manifest["span"]),
+        ]
     )
-    assert proc.returncode == 0, (
-        f"run_matrix.sh failed (rc={proc.returncode}): "
-        f"{proc.stdout[-2000:]}\n{proc.stderr[-2000:]}"
+
+
+def _compute_expected_stage_seals(score: dict, brief: str, n_salt: int) -> dict[str, str]:
+    table = score["scoring_table"]
+    return {
+        "cal": _calculate_sha256_hash(
+            [
+                "cal",
+                int(score["train_end_slot"]),
+                int(score["eval_start_slot"]),
+                int(score["temporal_leak_probe"]),
+            ]
+        ),
+        "prio": _calculate_sha256_hash(
+            ["prio", _format_to_six_decimals(score["prior_delta"]), _format_to_six_decimals(score["prior_delta_residual"])]
+        ),
+        "gauge": _calculate_sha256_hash(
+            [
+                "gauge",
+                _format_to_six_decimals(score["acc_home"]),
+                _format_to_six_decimals(score["acc_shift"]),
+                _format_to_six_decimals(score["acc_gap"]),
+                int(n_salt),
+            ]
+        ),
+        "brief": _calculate_sha256_hash(["brief", len(brief), len(table)]),
+    }
+
+
+def _compute_reproducibility_digest(score: dict, n_salt: int) -> str:
+    return _calculate_sha256_hash(
+        [
+            int(score["seed"]),
+            int(score["train_end_slot"]),
+            int(score["eval_start_slot"]),
+            int(score["temporal_leak_probe"]),
+            _format_to_six_decimals(score["prior_delta"]),
+            _format_to_six_decimals(score["prior_delta_residual"]),
+            _format_to_six_decimals(score["acc_home"]),
+            _format_to_six_decimals(score["acc_shift"]),
+            _format_to_six_decimals(score["acc_gap"]),
+            int(n_salt),
+            score["pack_digest"],
+            score["ledger_chain"],
+        ]
     )
-    assert REPORT.is_file(), (
-        f"matrix report missing after run_matrix (rc={proc.returncode}): "
-        f"{proc.stdout[-2000:]}\n{proc.stderr[-2000:]}"
-    )
-    return json.loads(REPORT.read_text())
+
+
+def _parse_brief_table_rows(text: str) -> dict[str, str]:
+    vals: dict[str, str] = {}
+    for line in text.splitlines():
+        if not line.strip().startswith("|"):
+            continue
+        parts = [p.strip() for p in line.strip().strip("|").split("|")]
+        if len(parts) < 2:
+            continue
+        key, val = parts[0], parts[1]
+        if key in {"question", "---"} or set(key) <= {"-"}:
+            continue
+        vals[key] = val
+    return vals
+
+
+def _parse_stage_tape_events(path: Path = TAPE) -> list[dict]:
+    if not path.exists():
+        return []
+    lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    return [json.loads(ln) for ln in lines]
 
 
 @pytest.fixture(scope="module")
-def report() -> dict:
-    return _run_matrix()
+def desk_once() -> dict:
+    _execute_discharge_risk_pipeline()
+    return _read_scenario_score_json()
 
 
-def _arm(report: dict, arm_id: str) -> dict:
-    for row in report.get("arms", []):
-        if row.get("arm_id") == arm_id:
-            return row
-    raise AssertionError(f"arm {arm_id} missing from report")
+def test_brief_table_and_fences(desk_once: dict) -> None:
+    """Artifacts exist; brief floats match scoring_table; no fences; tape has 4 lines."""
+    assert SCORE.exists()
+    assert BRIEF.exists()
+    assert LEDGER.exists()
+    assert TAPE.exists()
+    score = desk_once
+    assert int(score["tape_seal_count"]) == 4
+    brief = BRIEF.read_text(encoding="utf-8")
+    assert "```" not in brief
+    table = score["scoring_table"]
+    brief_map = _parse_brief_table_rows(brief)
+    float_keys = {
+        "prior_delta",
+        "prior_delta_residual",
+        "acc_home",
+        "acc_shift",
+        "acc_gap",
+    }
+    assert len(score) > 0
+    assert "partition_policy" in score
+    assert "temporal_leak_probe" in score
+    assert "acc_gap" in score
+    assert isinstance(score["acc_gap"], (int, float))
+    assert isinstance(score["prior_delta"], (int, float))
+    assert isinstance(score["acc_home"], (int, float))
+    assert isinstance(score["acc_shift"], (int, float))
+    assert isinstance(score["prior_delta_residual"], (int, float))
+    assert isinstance(score["temporal_leak_probe"], (int, float))
+    assert isinstance(score["train_end_slot"], (int, float))
+    assert isinstance(score["eval_start_slot"], (int, float))
+    assert isinstance(score["seed"], (int, float))
+    assert isinstance(score["tape_seal_count"], (int, float))
+    assert isinstance(score["checkpoint_stamp"], str)
+    assert isinstance(score["pack_digest"], str)
+    assert isinstance(score["ledger_chain"], str)
+    assert isinstance(score["resume_stamp"], str)
+    assert isinstance(score["repro_digest"], str)
+    assert isinstance(score["partition_policy"], str)
+    assert isinstance(score["scoring_table"], dict)
+    assert isinstance(score["stage_seals"], dict)
+    assert isinstance(score["held_out"], dict)
+    assert len(score["checkpoint_stamp"]) > 0
+    assert len(score["pack_digest"]) > 0
+    assert len(score["ledger_chain"]) > 0
+    assert len(score["resume_stamp"]) > 0
+    assert len(score["repro_digest"]) > 0
+    assert len(score["partition_policy"]) > 0
+    for key, raw in table.items():
+        assert key in brief_map
+        if key in float_keys:
+            assert brief_map[key] == _format_to_six_decimals(float(raw))
+        else:
+            assert brief_map[key] == str(int(raw))
+    ordered_keys = sorted(table.keys(), key=lambda k: (len(k), k))
+    brief_keys = [k for k in brief_map.keys() if k in table]
+    assert brief_keys == ordered_keys, "Brief rows not length-then-alpha"
+    tape = _parse_stage_tape_events()
+    assert len(tape) == 4
+    tags = [ev["tag"] for ev in tape]
+    assert tags == ["cal", "prio", "gauge", "brief"]
+    assert all(isinstance(ev["tag"], str) for ev in tape)
+    assert all(len(ev["tag"]) > 0 for ev in tape)
 
 
-def test_slot_parity_alpha(report: dict) -> None:
-    """Release and LTO arms that share a backend must record the same digest."""
-    b1 = _arm(report, "b1")
-    d3 = _arm(report, "d3")
-    assert b1["probe_ok"] == True  # noqa: E712
-    assert d3["probe_ok"] == True  # noqa: E712
-    assert isinstance(b1["digest"], int)
-    assert b1["digest"] > 0
-    assert b1["digest"] == d3["digest"]
-    # Companion span may still diverge under the expanded feature arm; the
-    # shared-backend digest must remain identical anyway (do not shrink cfg).
-    b1_row = json.loads((OUT / "arm_b1.json").read_text())
-    d3_row = json.loads((OUT / "arm_d3.json").read_text())
-    assert b1_row.get("rust_w") != d3_row.get("rust_w"), (
-        "expected companion span drift between bx-only and bx+by arms"
+def test_overwrite_trap_regeneration() -> None:
+    """Overwrite trap regenerates score, brief, ledger, and tape."""
+    from os import makedirs
+
+    makedirs(str(OUT), exist_ok=True)
+    SCORE.write_text("{}\n", encoding="utf-8")
+    fence = chr(96) * 3
+    BRIEF.write_text(fence + "\nx\n" + fence + "\n", encoding="utf-8")
+    LEDGER.write_text("{}\n", encoding="utf-8")
+    TAPE.write_text('{"tag":"stale"}\n', encoding="utf-8")
+    _execute_discharge_risk_pipeline()
+    score = _read_scenario_score_json()
+    assert "prior_delta" in score
+    assert score.get("pack_digest")
+    assert score.get("ledger_chain")
+    assert int(score["tape_seal_count"]) == 4
+    ledger = json.loads(LEDGER.read_text(encoding="utf-8"))
+    assert ledger["ledger_chain"] == score["ledger_chain"]
+    assert ledger["pack_digest"] == score["pack_digest"]
+    brief = BRIEF.read_text(encoding="utf-8")
+    assert fence not in brief
+    tape = _parse_stage_tape_events()
+    assert len(tape) == 4
+    assert all(ev.get("pack_digest") == score["pack_digest"] for ev in tape)
+    assert isinstance(ledger["stage_seals"], dict)
+    assert len(ledger["stage_seals"]) == 4
+    assert "cal" in ledger["stage_seals"]
+    assert "prio" in ledger["stage_seals"]
+    assert "gauge" in ledger["stage_seals"]
+    assert "brief" in ledger["stage_seals"]
+
+
+def test_temporal_leak_split(desk_once: dict) -> None:
+    """Temporal leak probe clean with positive calendar gap."""
+    score = desk_once
+    assert int(score["temporal_leak_probe"]) == 0
+    assert int(score["train_end_slot"]) < int(score["eval_start_slot"])
+    assert isinstance(score["train_end_slot"], int)
+    assert isinstance(score["eval_start_slot"], int)
+
+
+def test_prior_shift_and_residuals(desk_once: dict) -> None:
+    """Primary prior shift surfaces and residual survives covariates."""
+    score = desk_once
+    assert float(score["prior_delta"]) >= 0.12
+    assert float(score["prior_delta_residual"]) >= 0.08
+    assert isinstance(score["prior_delta"], (int, float))
+    assert isinstance(score["prior_delta_residual"], (int, float))
+
+
+def test_held_out_rejection(desk_once: dict) -> None:
+    """Held-out corpus rejects covariate burial; differs from primary."""
+    score = desk_once
+    held = score["held_out"]
+    assert float(held["prior_delta"]) >= 0.12
+    assert float(held["prior_delta_residual"]) >= 0.08
+    assert int(held["temporal_leak_probe"]) == 0
+    assert float(held["prior_delta"]) != float(score["prior_delta"])
+    assert isinstance(held, dict)
+    assert "prior_delta" in held
+
+
+def test_accuracy_gap_perturbed(desk_once: dict) -> None:
+    """Accuracy gap remains when prior shift is present."""
+    score = desk_once
+    assert float(score["prior_delta"]) >= 0.12
+    assert float(score["acc_gap"]) >= 0.05
+    assert float(score["acc_home"]) > float(score["acc_shift"])
+    assert isinstance(score["acc_home"], (int, float))
+    assert isinstance(score["acc_shift"], (int, float))
+
+
+def test_ledger_integrity_and_seals(desk_once: dict) -> None:
+    """Pack digest, stage seals, ledger chain, resume stamp, and repro digest."""
+    score = desk_once
+    brief = BRIEF.read_text(encoding="utf-8")
+    manifest = json.loads((PACK / "manifest.json").read_text(encoding="utf-8"))
+    n_salt = int(manifest["nSalt"])
+    assert score["checkpoint_stamp"] == manifest["ckpt"]
+    assert score["pack_digest"] == _compute_pack_manifest_digest(manifest)
+    assert int(score["tape_seal_count"]) == 4
+    seals = _compute_expected_stage_seals(score, brief, n_salt)
+    assert score["stage_seals"] == seals
+    expected_chain = _calculate_sha256_hash(
+        [score["pack_digest"], seals["cal"], seals["prio"], seals["gauge"], seals["brief"]]
     )
-    assert b1_row.get("digest") == d3_row.get("digest")
+    assert score["ledger_chain"] == expected_chain
+    assert score["resume_stamp"] == _calculate_sha256_hash([score["ledger_chain"], 4])
+    assert score["repro_digest"] == _compute_reproducibility_digest(score, n_salt)
+    ledger = json.loads(LEDGER.read_text(encoding="utf-8"))
+    assert ledger["ledger_chain"] == score["ledger_chain"]
+    assert ledger["resume_stamp"] == score["resume_stamp"]
+    assert ledger["stage_seals"] == seals
+    tape = _parse_stage_tape_events()
+    for tag, seal in seals.items():
+        ev = next(e for e in tape if e["tag"] == tag)
+        assert ev["seal"] == seal
+        assert ev["pack_digest"] == score["pack_digest"]
+    assert len(score["pack_digest"]) == 64
+    assert len(score["ledger_chain"]) == 64
+    assert len(score["resume_stamp"]) == 64
+    assert len(score["repro_digest"]) == 64
 
 
-def test_slot_parity_beta(report: dict) -> None:
-    """Release and static arms that share a backend must record the same digest."""
-    b1 = _arm(report, "b1")
-    c2 = _arm(report, "c2")
-    assert b1["probe_ok"] == True  # noqa: E712
-    assert c2["probe_ok"] == True  # noqa: E712
-    assert b1["digest"] == c2["digest"]
-    assert c2["tag_p"] == c2["tag_q"]
-    assert c2["tag_p"] == "t4"
+def test_consecutive_byte_identity() -> None:
+    """Consecutive identical runs emit byte-identical score and ledger."""
+    _execute_discharge_risk_pipeline()
+    first = SCORE.read_bytes()
+    first_ledger = LEDGER.read_bytes()
+    _execute_discharge_risk_pipeline()
+    second = SCORE.read_bytes()
+    second_ledger = LEDGER.read_bytes()
+    assert first == second
+    assert first_ledger == second_ledger
+    score = json.loads(first.decode("utf-8"))
+    assert score["partition_policy"] == "strict_calendar_gap"
+    assert int(score["seed"]) == 42
+    brief = BRIEF.read_text(encoding="utf-8")
+    assert "```" not in brief
+    assert re.search(r"\|", brief) is not None
+    if float(score["prior_delta"]) >= 0.12 and float(score["prior_delta_residual"]) >= 0.08:
+        assert float(score["acc_gap"]) >= 0.05
+    assert isinstance(score["stage_seals"], dict)
+    assert len(score["stage_seals"]) == 4
 
 
-def test_cross_lane_gamma(report: dict) -> None:
-    """Static-link arm builds and its probe exits successfully with matching tags."""
-    c2 = _arm(report, "c2")
-    assert c2["build_ok"] == True  # noqa: E712
-    assert c2["probe_ok"] == True  # noqa: E712
-    assert c2["tag_agree"] == True  # noqa: E712
-    assert c2["tag_p"] == c2["tag_q"]
-    assert c2["tag_p"] == "t4"
-    assert c2["mode"] == "static"
+def test_journal_tape_recovery() -> None:
+    """Journal recovery restores ledger from stage tape when checkpoint is gone."""
+    _execute_discharge_risk_pipeline()
+    score = _read_scenario_score_json()
+    ckpt = score["checkpoint_stamp"]
+    ckpt_file = OUT / "checkpoints" / f"{ckpt}.json"
+    assert ckpt_file.exists()
+    assert TAPE.exists()
+
+    original_chain = score["ledger_chain"]
+    ledger_data = json.loads(LEDGER.read_text(encoding="utf-8"))
+    ledger_data["ledger_chain"] = "corrupt_chain_value_12345"
+    LEDGER.write_text(json.dumps(ledger_data, indent=2) + "\n", encoding="utf-8")
+    ckpt_file.unlink()
+
+    _execute_discharge_risk_pipeline()
+
+    restored_ledger = json.loads(LEDGER.read_text(encoding="utf-8"))
+    assert restored_ledger["ledger_chain"] == original_chain
+    assert restored_ledger["ledger_chain"] == score["ledger_chain"]
+    tape = _parse_stage_tape_events()
+    assert len(tape) == 4
+    assert all(ev.get("pack_digest") == score["pack_digest"] for ev in tape)
+    assert isinstance(restored_ledger["stage_seals"], dict)
+    assert len(restored_ledger["stage_seals"]) == 4
 
 
-def test_cross_lane_delta(report: dict) -> None:
-    """LTO multi-feature arm builds and its probe exits successfully."""
-    d3 = _arm(report, "d3")
-    assert d3["build_ok"] == True  # noqa: E712
-    assert d3["probe_ok"] == True  # noqa: E712
-    assert d3["mode"] == "lto"
-    assert d3["tag_p"] == "t4"
-    assert d3["tag_q"] == "t4"
+def test_journal_tape_replay_fails_on_bad_digest() -> None:
+    """Corrupt ledger + missing checkpoint + wrong tape digest must not silently heal."""
+    _execute_discharge_risk_pipeline()
+    score = _read_scenario_score_json()
+    ckpt = score["checkpoint_stamp"]
+    ckpt_file = OUT / "checkpoints" / f"{ckpt}.json"
+    assert ckpt_file.exists()
+    assert TAPE.exists()
+
+    corrupt_chain = "corrupt_chain_value_12345"
+    ledger_data = json.loads(LEDGER.read_text(encoding="utf-8"))
+    ledger_data["ledger_chain"] = corrupt_chain
+    LEDGER.write_text(json.dumps(ledger_data, indent=2) + "\n", encoding="utf-8")
+    ckpt_file.unlink()
+
+    bad_events = []
+    for line in TAPE.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        ev = json.loads(line)
+        ev["pack_digest"] = "0" * 64
+        bad_events.append(ev)
+    TAPE.write_text("\n".join(json.dumps(ev) for ev in bad_events) + "\n", encoding="utf-8")
+
+    _execute_discharge_risk_pipeline()
+
+    unrecovered = json.loads(LEDGER.read_text(encoding="utf-8"))
+    assert unrecovered["ledger_chain"] == corrupt_chain
+    assert unrecovered["ledger_chain"] != score["ledger_chain"]
 
 
-def test_bait_split_epsilon(report: dict) -> None:
-    """tag_agree must equal real tag equality; shared-backend digests must match."""
-    for row in report.get("arms", []):
-        tag_p = row["tag_p"]
-        tag_q = row["tag_q"]
-        agree = row["tag_agree"]
-        assert agree == (tag_p == tag_q), (
-            f"arm {row.get('arm_id')}: tag_agree={agree} but tags {tag_p!r} vs {tag_q!r}"
+def test_margin_perturbation_controlled() -> None:
+    """Margin tie-break perturbation yields accShift 0.25 for controlled logits."""
+    code = """
+    const { setTrueBuf } = require('/app/dist/c5/g2/gauge_types');
+    const { vGauge } = require('/app/dist/c5/g2/v_gauge');
+    setTrueBuf([0.1, -0.1, 0.5, -0.5]);
+    const res = vGauge([1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0], 1);
+    console.log(res.accShift);
+    """
+    res = subprocess.run(["node", "-e", code], capture_output=True, text=True, check=True)
+    acc_shift = float(res.stdout.strip())
+    assert acc_shift == 0.25
+    assert res.returncode == 0
+    assert len(res.stdout) > 0
+
+
+def test_alternate_pack_handling() -> None:
+    """Alternate pack yields distinct digest, prior, and valid ledger with K=2 gap."""
+    alt_manifest = json.loads((ALT_PACK / "manifest.json").read_text(encoding="utf-8"))
+    assert int(alt_manifest["nSalt"]) == 5
+
+    with tempfile.TemporaryDirectory(prefix="board_alt_") as tmp:
+        alt_out = Path(tmp)
+        _execute_discharge_risk_pipeline(pack=str(ALT_PACK), out=str(alt_out))
+        alt_score = _read_scenario_score_json(alt_out / "scenario_score.json")
+        primary_score = _read_scenario_score_json()
+
+        assert alt_score["pack_digest"] != primary_score["pack_digest"]
+        assert alt_score["pack_digest"] == _compute_pack_manifest_digest(alt_manifest)
+        assert float(alt_score["prior_delta"]) != float(primary_score["prior_delta"])
+        assert float(alt_score["prior_delta"]) >= 0.12
+
+        brief = (alt_out / "uncertainty_brief.md").read_text(encoding="utf-8")
+        seals = _compute_expected_stage_seals(alt_score, brief, int(alt_manifest["nSalt"]))
+        expected_chain = _calculate_sha256_hash(
+            [
+                alt_score["pack_digest"],
+                seals["cal"],
+                seals["prio"],
+                seals["gauge"],
+                seals["brief"],
+            ]
         )
-    shared = report["shared_backend_digests"]["bx"]
-    assert shared["identical"] == True  # noqa: E712
-    digests = shared["digests"]
-    assert len(digests) >= 2
-    assert len(set(digests)) == 1
-    assert digests[0] == digests[1]
+        assert alt_score["ledger_chain"] == expected_chain
+        assert float(alt_score["acc_gap"]) >= 0.05
+        assert float(alt_score["acc_home"]) > float(alt_score["acc_shift"])
+        assert isinstance(alt_score, dict)
+        assert "ledger_chain" in alt_score
+        assert "resume_stamp" in alt_score
 
 
-def test_shape_zeta(report: dict) -> None:
-    """Default/dev arm still builds and its probe exits successfully."""
-    a0 = _arm(report, "a0")
-    assert a0["build_ok"] == True  # noqa: E712
-    assert a0["probe_ok"] == True  # noqa: E712
-    assert a0["mode"] == "dev"
-    assert a0["tag_p"] == "dev"
-    assert a0["tag_q"] == "dev"
+def test_stage_tape_event_order(desk_once: dict) -> None:
+    """Primary run tape lines share pack digest and cal/prio/gauge/brief order."""
+    score = desk_once
+    tape = _parse_stage_tape_events()
+    assert len(tape) == 4
+    digest = score["pack_digest"]
+    for ev in tape:
+        assert ev["pack_digest"] == digest
+    assert [ev["tag"] for ev in tape] == ["cal", "prio", "gauge", "brief"]
+    assert len(digest) == 64
+    assert isinstance(digest, str)
 
-
-def test_emit_eta(report: dict) -> None:
-    """Report comes from rebuilt /app artifacts; matrix still has all documented arms."""
-    assert REPORT.is_file()
-    assert "arms" in json.loads(REPORT.read_text())
-    assert report["schema_version"] == 1
-    matrix = _load_matrix()
-    arm_ids = [a["id"] for a in matrix["arms"]]
-    assert len(arm_ids) >= 4
-    modes = {a["id"]: a["mode"] for a in matrix["arms"]}
-    for arm_id in arm_ids:
-        found = _probe_paths_for_arm(arm_id)
-        assert len(found) >= 1, f"missing rebuilt probe binary for arm {arm_id}"
-        probe = found[0]
-        _assert_real_elf_probe(probe)
-        # Run each probe outside run_matrix.sh so a stubbed matrix script cannot fake success.
-        _run_probe_independently(arm_id, modes[arm_id], probe)
-        row_path = OUT / f"arm_{arm_id}.json"
-        assert row_path.is_file(), f"missing probe row for arm {arm_id}"
-        row = json.loads(row_path.read_text())
-        reported = _arm(report, arm_id)
-        assert row.get("digest") == reported["digest"], (
-            f"arm {arm_id}: independent probe digest != report"
-        )
-        assert row.get("tag_p") == reported["tag_p"], (
-            f"arm {arm_id}: independent probe tag_p != report"
-        )
-
-
-def test_digest_theta(report: dict) -> None:
-    """Every documented arm is present, probes green, and features were not stripped."""
-    matrix = _load_matrix()
-    expected_ids = {a["id"] for a in matrix["arms"]}
-    seen = {row["arm_id"] for row in report["arms"]}
-    assert expected_ids == seen or expected_ids <= seen
-    for row in report["arms"]:
-        assert row["build_ok"] == True  # noqa: E712
-        assert row["probe_ok"] == True  # noqa: E712
-        assert isinstance(row["digest"], int)
-        assert row["digest"] > 0
-    shared = report["shared_backend_digests"]["bx"]
-    assert shared["identical"] == True  # noqa: E712
-    feats = {tuple(a.get("features") or []) for a in matrix["arms"]}
-    assert ("bx",) in feats
-    assert ("bx", "by") in feats

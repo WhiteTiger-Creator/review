@@ -4,24 +4,24 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "build-and-dependency-management"
-subcategories = ["tool_specific"]
+category = "machine-learning"
+tags = ["typescript", "inference", "label-shift", "temporal-leakage", "uncertainty-brief", "ml"]
+languages = ["typescript"]
 codebase_size = "small"
 number_of_milestones = 0
-languages = ["rust", "c", "bash"]
-tags = ["rust", "cargo-features", "build-rs", "cdylib", "lto", "layout-abi"]
-expert_time_estimate_min = 120
-junior_time_estimate_min = 360
+subcategories = []
+expert_time_estimate_min = 90
+junior_time_estimate_min = 240
 
 [agent]
 timeout_sec = 1800
 
 [verifier]
-timeout_sec = 1800
+timeout_sec = 900
 
 [environment]
 allow_internet = false
-build_timeout_sec = 900
+build_timeout_sec = 600
 cpus = 2
-memory_mb = 8192
-storage_mb = 20480
+memory_mb = 4096
+storage_mb = 10240

@@ -1,0 +1,8 @@
+{
+  "ckpt": "ckpt-n4k-42-hold",
+  "seed": 42,
+  "nSalt": 7,
+  "kParts": 3,
+  "xSlot": 20,
+  "span": 4
+}

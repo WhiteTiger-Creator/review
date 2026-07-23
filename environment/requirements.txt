@@ -1,3 +1,0 @@
-# Verifier Python deps are installed in the image; this file documents pins.
-pytest==8.4.1
-pytest-json-ctrf==0.3.5
