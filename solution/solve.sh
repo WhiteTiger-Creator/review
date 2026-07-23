@@ -1,298 +1,265 @@
 #!/bin/bash
 set -euo pipefail
 
-cd /app
+cd /app/environment
 
-# --- Fix 1: internal/auth/keys.go ---------------------------------------
-# The session HMAC secret must be independent random material generated
-# in-process, not delegated to the external authgw-signd helper (whose
-# key is a fixed constant compiled into the binary at /app/bin/authgw-signd
-# and recoverable with `strings`/a disassembler).
-cat > internal/auth/keys.go <<'EOF'
-// Package auth holds signing-key material and JWT issuance/verification
-// helpers for authgw.
-package auth
+python3 - <<'PY'
+from pathlib import Path
 
-import (
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/hex"
-	"encoding/pem"
-	"fmt"
-)
+root = Path("/app/environment")
 
-// Keys holds the symmetric secret used for user-session tokens, the RSA
-// keypair used for internal service tokens (see /admin/service-tokens and
-// /.well-known/jwks.json), and this process's instance identifier
-// (surfaced at /healthz so operators can tell which replica answered a
-// given request).
-type Keys struct {
-	HMACSecret []byte
-	RSAPriv    *rsa.PrivateKey
-	InstanceID string
+# A: matrix tags use i (not i+1) and mix width 37 (not 31)
+build = root / "m3/n1/build_t.go"
+text = build.read_text()
+text = text.replace("uint32(i+1)", "uint32(i)", 1)
+text = text.replace("rk*31", "rk*37", 1)
+build.write_text(text)
+
+# ranking must mix slot indices with LMul
+(root / "m3/n1/rank_h.go").write_text(r'''package n1
+
+// HMul and LMul are binder knobs set by the package facade before ranking.
+var HMul uint32 = 65521
+var LMul uint32 = 127
+
+func scoreAt(hints []uint32, layerIx []uint16, i int) uint32 {
+	return hints[i]*HMul + uint32(layerIx[i])*LMul
 }
 
-// NewKeys generates fresh signing material for a server process.
-func NewKeys() (*Keys, error) {
-	priv, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return nil, fmt.Errorf("generate rsa key: %w", err)
+func lessOrder(scores []uint32, a, b int) bool {
+	if scores[a] != scores[b] {
+		return scores[a] > scores[b]
 	}
-
-	idBytes := make([]byte, 8)
-	if _, err := rand.Read(idBytes); err != nil {
-		return nil, fmt.Errorf("generate instance id: %w", err)
-	}
-
-	secret := make([]byte, 32)
-	if _, err := rand.Read(secret); err != nil {
-		return nil, fmt.Errorf("generate hmac secret: %w", err)
-	}
-
-	return &Keys{
-		HMACSecret: secret,
-		RSAPriv:    priv,
-		InstanceID: hex.EncodeToString(idBytes),
-	}, nil
+	return a < b
 }
 
-// PublicKeyPEM returns the PKIX/PEM encoding of the RSA public key, the
-// same encoding published (in JWK form) at /.well-known/jwks.json.
-func (k *Keys) PublicKeyPEM() ([]byte, error) {
-	der, err := x509.MarshalPKIXPublicKey(&k.RSAPriv.PublicKey)
-	if err != nil {
-		return nil, fmt.Errorf("marshal public key: %w", err)
+// fn_h7 produces a ranking vector from schedule hints and slot indices.
+func fn_h7(hints []uint32, layerIx []uint16) []uint32 {
+	n := len(hints)
+	if len(layerIx) < n {
+		n = len(layerIx)
 	}
-	return pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}), nil
-}
-EOF
-
-# --- Fix 2: internal/auth/jwt.go ----------------------------------------
-# Sign and verify session tokens natively with the in-process HMAC secret
-# instead of shelling out to authgw-signd. The signing method is pinned
-# server-side so a token's own "alg" header can never select the
-# verification key material.
-cat > internal/auth/jwt.go <<'EOF'
-package auth
-
-import (
-	"fmt"
-	"time"
-
-	"github.com/golang-jwt/jwt/v5"
-)
-
-// SessionClaims is embedded in user-session tokens issued after a
-// successful password login.
-type SessionClaims struct {
-	UserID   int64  `json:"uid"`
-	Username string `json:"username"`
-	Role     string `json:"role"`
-	jwt.RegisteredClaims
-}
-
-// ServiceClaims is embedded in RS256 service tokens minted by admins for
-// internal service-to-service calls (see /admin/service-tokens).
-type ServiceClaims struct {
-	Scope string `json:"scope"`
-	jwt.RegisteredClaims
-}
-
-// IssueSessionToken signs a short-lived HS256 session token for an
-// authenticated user.
-func (k *Keys) IssueSessionToken(userID int64, username, role string) (string, error) {
-	claims := SessionClaims{
-		UserID:   userID,
-		Username: username,
-		Role:     role,
-		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    "authgw",
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(2 * time.Hour)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-		},
+	scores := []uint32{}
+	order := []int{}
+	for i := 0; i < n; i++ {
+		scores = append(scores, scoreAt(hints, layerIx, i))
+		order = append(order, i)
 	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(k.HMACSecret)
-}
-
-// ParseSessionToken verifies an HS256 session token and returns its claims.
-// The signing method is pinned server-side so a token's own "alg" header
-// can never select the verification key material.
-func (k *Keys) ParseSessionToken(raw string) (*SessionClaims, error) {
-	claims := &SessionClaims{}
-	token, err := jwt.ParseWithClaims(raw, claims, func(t *jwt.Token) (interface{}, error) {
-		return k.HMACSecret, nil
-	}, jwt.WithValidMethods([]string{"HS256"}), jwt.WithIssuer("authgw"))
-	if err != nil {
-		return nil, err
-	}
-	if !token.Valid {
-		return nil, fmt.Errorf("invalid token")
-	}
-	return claims, nil
-}
-
-// IssueServiceToken signs an RS256 service token used by internal
-// integrations. Only admins may mint these (see handlers.AdminServiceToken).
-func (k *Keys) IssueServiceToken(scope string) (string, error) {
-	claims := ServiceClaims{
-		Scope: scope,
-		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    "authgw",
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(10 * time.Minute)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-		},
-	}
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	return token.SignedString(k.RSAPriv)
-}
-
-// ParseServiceToken verifies an RS256 service token.
-func (k *Keys) ParseServiceToken(raw string) (*ServiceClaims, error) {
-	claims := &ServiceClaims{}
-	token, err := jwt.ParseWithClaims(raw, claims, func(t *jwt.Token) (interface{}, error) {
-		return &k.RSAPriv.PublicKey, nil
-	}, jwt.WithValidMethods([]string{"RS256"}), jwt.WithIssuer("authgw"))
-	if err != nil {
-		return nil, err
-	}
-	if !token.Valid {
-		return nil, fmt.Errorf("invalid token")
-	}
-	return claims, nil
-}
-EOF
-
-# --- Fix 3: internal/session/session.go ---------------------------------
-# Use a placeholder-bound query instead of interpolating the caller's
-# remember_token into the SQL text. A keyword blocklist is not sufficient
-# on its own (it's case-sensitive and doesn't touch the quote character),
-# so it's removed rather than patched.
-cat > internal/session/session.go <<'EOF'
-// Package session manages "remember me" tokens, a fallback login path that
-// lets a browser reauthenticate without a fresh HS256 session token.
-package session
-
-import (
-	"crypto/rand"
-	"database/sql"
-	"encoding/hex"
-	"fmt"
-)
-
-// Identity is the (user_id, role) pair a valid remember token resolves to.
-type Identity struct {
-	UserID int64
-	Role   string
-}
-
-// NewToken generates a fresh 32-byte random remember token, hex encoded.
-func NewToken() (string, error) {
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(buf), nil
-}
-
-// Create stores a new remember-me session for userID/role and returns the
-// token to set as a cookie.
-func Create(conn *sql.DB, userID int64, role string) (string, error) {
-	token, err := NewToken()
-	if err != nil {
-		return "", err
-	}
-	if _, err := conn.Exec(`INSERT INTO sessions (remember_token, user_id, role) VALUES (?, ?, ?)`,
-		token, userID, role); err != nil {
-		return "", fmt.Errorf("store remember token: %w", err)
-	}
-	return token, nil
-}
-
-// Lookup resolves a remember token to its owning identity. The token is
-// bound with a placeholder so caller-supplied input is never interpolated
-// into the query text.
-func Lookup(conn *sql.DB, token string) (*Identity, error) {
-	row := conn.QueryRow(`SELECT user_id, role FROM sessions WHERE remember_token = ?`, token)
-	var id Identity
-	if err := row.Scan(&id.UserID, &id.Role); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
+	for i := 1; i < n; i++ {
+		j := i
+		for j > 0 {
+			left, right := order[j-1], order[j]
+			if !lessOrder(scores, left, right) {
+				order[j-1], order[j] = order[j], order[j-1]
+				j--
+				continue
+			}
+			break
 		}
-		return nil, fmt.Errorf("lookup remember token: %w", err)
 	}
-	return &id, nil
+	ranks := []uint32{}
+	for i := 0; i < n; i++ {
+		ranks = append(ranks, 0)
+	}
+	for pos, idx := range order {
+		ranks[idx] = uint32(pos)
+	}
+	return ranks
 }
-EOF
 
-# --- Verify the fix builds and behaves correctly ------------------------
-go build ./...
-go vet ./...
-go test ./...
+// ApplyRank sets binders then invokes fn_h7.
+func ApplyRank(hints []uint32, layerIx []uint16, hintMul, laneMul uint32) []uint32 {
+	HMul = hintMul
+	LMul = laneMul
+	return fn_h7(hints, layerIx)
+}
+''')
 
-rm -rf /tmp/solve-check
-mkdir -p /tmp/solve-check
-go build -o /tmp/solve-check/authgw ./cmd/authgw
+# B: joint use vs reclaim-adjusted effective capacity
+(root / "p9/q2/fold_u.go").write_text(r'''package q2
 
-AUTHGW_DB_PATH=/tmp/solve-check/authgw.db PORT=18080 /tmp/solve-check/authgw &
-SERVER_PID=$!
-trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+// EdgeCap holds nominal capacity and reclaim for one adjacent-pair edge.
+type EdgeCap struct {
+	Key     string
+	Cap     float64
+	Reclaim float64
+}
 
-for i in $(seq 1 20); do
-	if curl -fs http://127.0.0.1:18080/healthz >/dev/null 2>&1; then
-		break
-	fi
-	sleep 0.5
-done
+// Assign is one use contribution on an edge.
+type Assign struct {
+	Key string
+	Use float64
+}
 
-# Legitimate admin login must still work.
-ADMIN_LOGIN=$(curl -fs -X POST http://127.0.0.1:18080/auth/login \
-	-d '{"username":"admin","password":"CorrectHorseBattery9"}')
-ADMIN_TOKEN=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['token'])" "$ADMIN_LOGIN")
-ADMIN_STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/users \
-	-H "Authorization: Bearer $ADMIN_TOKEN")
-if [ "$ADMIN_STATUS" != "200" ]; then
-	echo "legitimate admin login broke after the fix (status $ADMIN_STATUS)" >&2
-	exit 1
-fi
+// MassLedger accumulates joint uses and residuals per edge.
+type MassLedger struct {
+	Caps  map[string]EdgeCap
+	Uses  map[string]float64
+	Res   map[string]float64
+	Order []string
+}
 
-# A token forged with the authgw-signd helper's recovered key must now be
-# rejected, whether or not the fixed code still shells out to it.
-FORGED_STATUS=$(python3 <<'PYEOF'
-import base64, hashlib, hmac, json, time, urllib.request, urllib.error
+func effectiveCap(cap EdgeCap) float64 {
+	return cap.Cap - cap.Reclaim
+}
 
-def b64url(data):
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+func accumulateUses(ledgers *MassLedger, assigns []Assign) {
+	for _, a := range assigns {
+		ledgers.Uses[a.Key] += a.Use
+	}
+}
 
-recovered_key = b"authgw-signd-secret-4Kp9XvQ7RtmZs2"
-header = {"alg": "HS256", "typ": "JWT"}
-now = int(time.time())
-payload = {"uid": 1, "username": "admin", "role": "admin", "iss": "authgw", "exp": now + 3600, "iat": now}
-signing_input = b64url(json.dumps(header, separators=(",", ":")).encode()) + "." + \
-    b64url(json.dumps(payload, separators=(",", ":")).encode())
-sig = hmac.new(recovered_key, signing_input.encode(), hashlib.sha256).digest()
-token = f"{signing_input}.{b64url(sig)}"
+func countViolations(ledgers *MassLedger, eps float64) int {
+	viol := 0
+	for _, k := range ledgers.Order {
+		cap := ledgers.Caps[k]
+		eff := effectiveCap(cap)
+		use := ledgers.Uses[k]
+		ledgers.Res[k] = use - eff
+		if use > eff+eps {
+			viol++
+		}
+	}
+	return viol
+}
 
-req = urllib.request.Request("http://127.0.0.1:18080/admin/users", headers={"Authorization": f"Bearer {token}"})
-try:
-    urllib.request.urlopen(req)
-    print(200)
-except urllib.error.HTTPError as exc:
-    print(exc.code)
-PYEOF
+// fn_p9 folds assignment residuals into mass ledgers under epsilon.
+func fn_p9(ledgers *MassLedger, assigns []Assign, eps float64) int {
+	if ledgers.Uses == nil {
+		ledgers.Uses = map[string]float64{}
+	}
+	if ledgers.Res == nil {
+		ledgers.Res = map[string]float64{}
+	}
+	accumulateUses(ledgers, assigns)
+	return countViolations(ledgers, eps)
+}
+
+// ApplyFold invokes fn_p9 after clearing use maps.
+func ApplyFold(ledgers *MassLedger, assigns []Assign, eps float64) int {
+	ledgers.Uses = map[string]float64{}
+	ledgers.Res = map[string]float64{}
+	return fn_p9(ledgers, assigns, eps)
+}
+
+// UtilMax returns max joint_use/eff across edges.
+func UtilMax(ledgers *MassLedger) float64 {
+	max := 0.0
+	for _, k := range ledgers.Order {
+		cap := ledgers.Caps[k]
+		eff := effectiveCap(cap)
+		if eff < 1e-12 {
+			eff = 1e-12
+		}
+		u := ledgers.Uses[k] / eff
+		if u > max {
+			max = u
+		}
+	}
+	return max
+}
+''')
+
+# C: independent seal ignores green gauges; always policy payload
+(root / "r5/s4/zip_v.go").write_text(r'''package s4
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
 )
-if [ "$FORGED_STATUS" = "200" ]; then
-	echo "a token forged with the recovered authgw-signd key was still accepted after the fix" >&2
-	exit 1
-fi
 
-# The SQL-injection remember-token attack must now be rejected.
-INJECT_STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin/users \
-	-H "Cookie: remember_token=x'/**/union/**/select/**/id,'admin'/**/from/**/users/**/where/**/username='admin")
-if [ "$INJECT_STATUS" = "200" ]; then
-	echo "SQL-injection remember-token attack still succeeded after the fix" >&2
-	exit 1
-fi
+// StageRow is one early gauge row.
+type StageRow struct {
+	Mark int
+}
 
-echo "fix verified: legitimate admin access works, both attacks are rejected"
+// SealRecord holds independent seal material.
+type SealRecord struct {
+	Hex string
+}
+
+// JFrag holds the stitched journal binder for the active seal call.
+var JFrag []byte
+
+func journalPrefix() []byte {
+	sumJ := sha256.Sum256(JFrag)
+	return sumJ[:8]
+}
+
+func sealPayload(witness []byte) []byte {
+	payload := append([]byte("seal/t1:"), witness...)
+	payload = append(payload, journalPrefix()...)
+	return payload
+}
+
+// fn_r5 seals stages against witness bytes for independent replay.
+func fn_r5(stages []StageRow, witness []byte) SealRecord {
+	for range stages {
+		// Stage marks are early gauges only; independent replay ignores them.
+	}
+	sum := sha256.Sum256(sealPayload(witness))
+	return SealRecord{Hex: hex.EncodeToString(sum[:])}
+}
+
+// ApplyZip binds journal material then invokes fn_r5.
+func ApplyZip(stages []StageRow, witness []byte, journal []byte) SealRecord {
+	JFrag = append([]byte(nil), journal...)
+	return fn_r5(stages, witness)
+}
+''')
+
+# D: success concatenates journals; partial keeps gen and prior blob
+(root / "r5/s4/xfer_w.go").write_text(r'''package s4
+
+// AlgebraState is the running closed-algebra journal and generation.
+type AlgebraState struct {
+	Gen     uint32
+	Journal []byte
+	ArmBlob []byte
+	Partial int
+}
+
+func cloneBytes(src []byte) []byte {
+	return append([]byte(nil), src...)
+}
+
+func nextGen(prev uint32) uint32 {
+	return prev + 1
+}
+
+func rollbackPartial(prev *AlgebraState) AlgebraState {
+	out := AlgebraState{}
+	out.Gen = nextGen(prev.Gen)
+	out.Journal = cloneBytes(prev.Journal)
+	out.ArmBlob = cloneBytes(prev.ArmBlob)
+	out.Partial = 1
+	return out
+}
+
+func commitArm(prev *AlgebraState, next *AlgebraState) AlgebraState {
+	out := AlgebraState{}
+	out.Gen = nextGen(prev.Gen)
+	out.Journal = append(cloneBytes(prev.Journal), next.ArmBlob...)
+	out.ArmBlob = cloneBytes(next.ArmBlob)
+	out.Partial = 0
+	return out
+}
+
+// fn_w2 stitches fixture algebra state with rollback of partial seals.
+func fn_w2(prev *AlgebraState, next *AlgebraState) AlgebraState {
+	if next.Partial != 0 {
+		return rollbackPartial(prev)
+	}
+	return commitArm(prev, next)
+}
+
+// ApplyXfer invokes fn_w2.
+func ApplyXfer(prev *AlgebraState, next *AlgebraState) AlgebraState {
+	return fn_w2(prev, next)
+}
+''')
+PY
+
+bash tools/build.sh
+mkdir -p /app/output/stage
+./tools/hv7 --corpus /app/environment/data/pack_c --out /app/output/invariant_bundle.yaml

@@ -1,0 +1,4 @@
+[pack]
+name = "pack_c"
+arms = ["train_a", "host_b"]
+edge_keys = ["e0", "e1", "e2"]

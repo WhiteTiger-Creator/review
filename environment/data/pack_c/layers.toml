@@ -1,0 +1,23 @@
+[meta]
+n_layers = 4
+n_bins = 5
+
+[[slot]]
+id = 0
+mass0 = 12.5
+t0 = 35.0
+
+[[slot]]
+id = 1
+mass0 = 14.0
+t0 = 42.0
+
+[[slot]]
+id = 2
+mass0 = 11.0
+t0 = 58.0
+
+[[slot]]
+id = 3
+mass0 = 13.5
+t0 = 61.0

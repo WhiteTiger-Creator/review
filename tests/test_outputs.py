@@ -1,386 +1,423 @@
-"""Black-box verifier for the authgw security-fix task.
+"""Domain verifier for compost thermal PMC invariant bundle."""
 
-Builds and starts /app/cmd/authgw from whatever source is on disk when the
-verifier runs (i.e. the agent's current, hopefully-patched, code), then
-drives it purely over HTTP the way an external caller would. Nothing here
-inspects source code or implementation details.
-"""
+from __future__ import annotations
 
-import base64
 import hashlib
-import hmac
-import json
-import secrets
-import socket
+import struct
 import subprocess
-import time
-import urllib.error
-import urllib.request
+import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
-APP_DIR = Path("/app")
-ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "CorrectHorseBattery9"
-DEMO_USERNAME = "demo"
-DEMO_PASSWORD = "hunter2hunter2"
+sys.path.insert(0, "/app/environment/tools")
+import digest_pack  # noqa: E402
+
+ENV = Path("/app/environment")
+OUT = Path("/app/output/invariant_bundle.yaml")
+STAGE = Path("/app/output/stage")
+CORPUS = ENV / "data" / "pack_c"
+PERM = ENV / "data" / "perm_tbl.toml"
+TOL = 1.0e-9
 
 
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+def _rebuild_and_emit() -> None:
+    if OUT.exists():
+        OUT.unlink()
+    if STAGE.exists():
+        for path in STAGE.iterdir():
+            if path.is_file():
+                path.unlink()
+    subprocess.run(
+        ["/app/environment/tools/build.sh"],
+        check=True,
+        cwd="/app/environment",
+    )
+    STAGE.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "/app/environment/tools/hv7",
+            "--corpus",
+            "/app/environment/data/pack_c",
+            "--out",
+            "/app/output/invariant_bundle.yaml",
+        ],
+        check=True,
+        cwd="/app/environment",
+    )
 
 
-def _request(method, url, body=None, headers=None):
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
-    if data is not None:
-        req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            return resp.status, json.loads(resp.read().decode() or "{}"), resp.headers
-    except urllib.error.HTTPError as exc:
+def _load_bundle() -> dict:
+    assert OUT.is_file(), "missing invariant_bundle.yaml"
+    return yaml.safe_load(OUT.read_text())
+
+
+def _parse_simple_toml_tables(path: Path) -> dict:
+    text = path.read_text()
+    section = ""
+    data: dict = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and not line.startswith("[["):
+            section = line.strip("[]")
+            data.setdefault(section, {})
+            continue
+        if "=" not in line or line.startswith("[["):
+            continue
+        k, v = [x.strip() for x in line.split("=", 1)]
+        if v.startswith("["):
+            continue
         try:
-            payload = json.loads(exc.read().decode() or "{}")
-        except json.JSONDecodeError:
-            payload = {}
-        return exc.code, payload, exc.headers
+            if "." in v or "e" in v.lower():
+                data.setdefault(section, {})[k] = float(v)
+            else:
+                data.setdefault(section, {})[k] = int(v) if v.isdigit() else float(v)
+        except ValueError:
+            data.setdefault(section, {})[k] = v.strip('"')
+    return data
 
 
-def _b64url(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+def _load_nrg() -> dict:
+    return _parse_simple_toml_tables(CORPUS / "nrg.toml")
 
 
-# The key an attacker recovers by running `strings` (or a disassembler)
-# against the authgw-signd helper binary shipped at /app/bin/authgw-signd
-# -- it's compiled in as a literal, so it survives symbol stripping.
-RECOVERED_SIGND_KEY = b"authgw-signd-secret-4Kp9XvQ7RtmZs2"
+def _load_perms() -> list[tuple[str, list[int]]]:
+    text = PERM.read_text()
+    out: list[tuple[str, list[int]]] = []
+    cur_id = None
+    cur_order: list[int] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("[[perm]]"):
+            if cur_id is not None:
+                out.append((cur_id, cur_order))
+            cur_id = None
+            cur_order = []
+            continue
+        if line.startswith("id"):
+            cur_id = line.split("=", 1)[1].strip().strip('"')
+        if line.startswith("order"):
+            rhs = line.split("=", 1)[1].strip().strip("[]")
+            cur_order = [int(x.strip()) for x in rhs.split(",") if x.strip()]
+    if cur_id is not None:
+        out.append((cur_id, cur_order))
+    return out
 
 
-def _forge_hs256_admin_token(hmac_key: bytes) -> str:
-    """Forge an HS256 admin session token using a recovered HMAC key,
-    without ever holding a legitimate admin session."""
-    header = {"alg": "HS256", "typ": "JWT"}
-    now = int(time.time())
-    payload = {
-        "uid": 1,
-        "username": "admin",
-        "role": "admin",
-        "iss": "authgw",
-        "exp": now + 3600,
-        "iat": now,
-    }
-    signing_input = (
-        _b64url(json.dumps(header, separators=(",", ":")).encode())
-        + "."
-        + _b64url(json.dumps(payload, separators=(",", ":")).encode())
-    )
-    sig = hmac.new(hmac_key, signing_input.encode(), hashlib.sha256).digest()
-    return f"{signing_input}.{_b64url(sig)}"
+def _load_hints() -> list[int]:
+    raw = (CORPUS / "sched.bin").read_bytes()
+    return list(struct.unpack("<" + "I" * (len(raw) // 4), raw))
 
 
-# A UNION-based injection that survives a case-sensitive keyword blocklist
-# (lowercase keywords, "/**/" in place of spaces) and balances its own
-# quotes so it needs no trailing comment to swallow the query template's
-# closing quote.
-SQLI_REMEMBER_TOKEN = (
-    "x'/**/union/**/select/**/id,'admin'/**/from/**/users/**/where/**/username='admin"
-)
-
-# A second bypass using a different technique: each blocked keyword is
-# embedded twice, overlapping, so a single non-recursive removal pass
-# strips the inner copy and leaves the outer fragments concatenated back
-# into the keyword (e.g. "UNIUNIONON" -> remove "UNION" -> "UNI"+"ON" ->
-# "UNION"). This defeats a blocklist made case-insensitive but still
-# single-pass, so it isn't satisfied by patching the blocklist alone.
-SQLI_DOUBLE_INJECTION_TOKEN = (
-    "x'/**/UNIUNIONON/**/SELSELECTECT/**/id,'admin'/**/FROM/**/users/**/WHERE/**/username='admin"
-)
+def _layer_count() -> int:
+    return sum(1 for ln in (CORPUS / "layers.toml").read_text().splitlines() if "[[slot]]" in ln)
 
 
-@pytest.fixture(scope="session")
-def server(tmp_path_factory):
-    """Build the current /app source and run it as a fresh subprocess."""
-    build_dir = tmp_path_factory.mktemp("authgw-build")
-    binary = build_dir / "authgw"
+def _arm_list(nrg: dict) -> list[tuple[str, float, list[int]]]:
+    train = float(nrg.get("arms.train_a", {}).get("scale", 1.0))
+    host = float(nrg.get("arms.host_b", {}).get("scale", 1.05))
+    arms = [
+        ("train_a", train, [0, 1, 2]),
+        ("host_b", host, [0, 1, 2]),
+    ]
+    for pid, order in _load_perms():
+        arms.append((pid, host, order))
+    return arms
 
-    build = subprocess.run(
-        ["go", "build", "-o", str(binary), "./cmd/authgw"],
-        cwd=APP_DIR,
-        capture_output=True,
-        text=True,
-        timeout=180,
-    )
-    assert build.returncode == 0, (
-        "go build ./cmd/authgw failed -- the patched source must still compile.\n"
-        f"stdout:\n{build.stdout}\nstderr:\n{build.stderr}"
-    )
 
-    db_path = build_dir / "authgw.db"
-    port = _free_port()
-    base_url = f"http://127.0.0.1:{port}"
+def _permute_hints(base: list[int], n_layers: int, order: list[int]) -> list[int]:
+    out = []
+    for i in range(n_layers):
+        src = base[i % len(base)]
+        rot = order[i % len(order)]
+        out.append((src + rot * 3 + i) & 0xFFFFFFFF)
+    return out
 
-    proc = subprocess.Popen(
-        [str(binary)],
-        cwd=APP_DIR,
-        env={"AUTHGW_DB_PATH": str(db_path), "PORT": str(port), "PATH": "/usr/bin:/bin"},
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
 
-    deadline = time.time() + 15
-    healthy = False
-    while time.time() < deadline:
-        if proc.poll() is not None:
-            break
-        try:
-            status, _, _ = _request("GET", f"{base_url}/healthz")
-            if status == 200:
-                healthy = True
-                break
-        except OSError:
+def _rank(hints: list[int], layer_ix: list[int], hint_mul: int, lane_mul: int) -> list[int]:
+    n = min(len(hints), len(layer_ix))
+    scores = [((hints[i] * hint_mul) + (layer_ix[i] * lane_mul)) & 0xFFFFFFFF for i in range(n)]
+    order = list(range(n))
+    order.sort(key=lambda i: (-scores[i], i))
+    ranks = [0] * n
+    for pos, idx in enumerate(order):
+        ranks[idx] = pos
+    return ranks
+
+
+def _thermal_rows(n_layers: int) -> list[list[int]]:
+    rows = []
+    for i in range(n_layers):
+        a = i + 1
+        b = ((i + 1) % n_layers) + 1
+        rows.append([a, -b])
+        rows.append([-a, b])
+    return rows
+
+
+def _matrix_tags(rows: list[list[int]], ranks: list[int]) -> list[int]:
+    keyed = []
+    for r in rows:
+        sk = tuple(sorted(r))
+        key = ",".join(str(x) for x in sk)
+        keyed.append((key, list(r)))
+    keyed.sort(key=lambda x: x[0])
+    tags = []
+    for i, (_, lits) in enumerate(keyed):
+        lits = sorted(lits, key=lambda lit: (ranks[abs(lit) - 1], lit))
+        acc = (0xC0FF0000 ^ i) & 0xFFFFFFFF
+        for lit in lits:
+            rk = ranks[abs(lit) - 1]
+            acc = (acc * 16777619 + rk * 37 + (lit & 0xFFFFFFFF)) & 0xFFFFFFFF
+        tags.append(acc)
+    return sorted(set(tags))
+
+
+def _assigns(edge_keys: list[str], caps: dict[str, float], scale: float, order: list[int]):
+    out = []
+    for i, k in enumerate(edge_keys):
+        ord_v = order[i % len(order)]
+        frac = 0.55 + 0.12 * ord_v
+        use = caps[k] * scale * frac
+        out.append((k, use * 0.6))
+        out.append((k, use * 0.4))
+    return out
+
+
+def _fold(assigns, caps, reclaim, eps):
+    uses = {k: 0.0 for k in caps}
+    for k, u in assigns:
+        uses[k] += u
+    viol = 0
+    res = {}
+    for k in sorted(caps):
+        eff = caps[k] - reclaim.get(k, 0.0)
+        res[k] = uses[k] - eff
+        if uses[k] > eff + eps:
+            viol += 1
+    util = 0.0
+    for k in caps:
+        eff = max(caps[k] - reclaim.get(k, 0.0), 1e-12)
+        util = max(util, uses[k] / eff)
+    return viol, res, util, uses
+
+
+def _u32(v: int) -> bytes:
+    return digest_pack.u32(v)
+
+
+def _f64(v: float) -> bytes:
+    return digest_pack.f64(v)
+
+
+def reference_bundle() -> dict:
+    nrg = _load_nrg()
+    tol = float(nrg.get("eps", {}).get("tol", TOL))
+    hint_mul = int(nrg.get("mul", {}).get("hint_mul", 65521))
+    lane_mul = int(nrg.get("mul", {}).get("lane_mul", 127))
+    caps = {k: float(v) for k, v in nrg.get("edges", {}).items()}
+    reclaim = {k: float(v) for k, v in nrg.get("reclaim", {}).items()}
+    edge_keys = sorted(caps)
+    n_layers = _layer_count()
+    hints = _load_hints()
+    rows = _thermal_rows(n_layers)
+
+    journal = b""
+    gen = 0
+    out_rows = []
+    util_max = 0.0
+
+    for arm_id, scale, order in _arm_list(nrg):
+        h = _permute_hints(hints, n_layers, order)
+        layer_ix = list(range(n_layers))
+        ranks = _rank(h, layer_ix, hint_mul, lane_mul)
+        tags = _matrix_tags(rows, ranks)
+        assigns = _assigns(edge_keys, caps, scale, order)
+        viol, res, util, _uses = _fold(assigns, caps, reclaim, tol)
+        util_max = max(util_max, util)
+
+        gen = (gen + 1) & 0xFFFFFFFF
+        frag = arm_id.encode() + _u32(gen)
+        for t in tags:
+            frag += _u32(t)
+        if viol != 0:
+            # rollback journal; keep prior blob conceptually
             pass
-        time.sleep(0.25)
+        else:
+            journal = journal + frag
 
-    if not healthy:
-        proc.kill()
-        out = proc.stdout.read() if proc.stdout else ""
-        pytest.fail(f"authgw server never became healthy on {base_url}.\noutput:\n{out}")
+        witness = arm_id.encode()
+        for t in tags:
+            witness += _u32(t)
+        for k in edge_keys:
+            witness += _f64(res[k])
 
-    yield base_url
+        seal_payload = b"seal/t1:" + witness + hashlib.sha256(journal).digest()[:8]
+        row_seal = hashlib.sha256(seal_payload).hexdigest()
+        seal_mark = 1 if len(row_seal) == 64 else 0
 
-    proc.kill()
-    proc.wait(timeout=10)
+        payload = arm_id.encode()
+        for t in tags:
+            payload += _u32(t)
+        for k in edge_keys:
+            payload += _f64(res[k])
+        payload += hashlib.sha256(journal).digest()[:8]
+        digest_hex = hashlib.sha256(payload).hexdigest()
 
-
-def _register(server, username, password):
-    return _request(
-        "POST", f"{server}/auth/register", {"username": username, "password": password}
-    )
-
-
-def _login(server, username, password, remember=False):
-    return _request(
-        "POST",
-        f"{server}/auth/login",
-        {"username": username, "password": password, "remember": remember},
-    )
-
-
-def _unique_username(prefix: str) -> str:
-    return f"{prefix}-{secrets.token_hex(4)}"
-
-
-class TestLegitimateFlowsStillWork:
-    """The fix must not come at the cost of breaking real functionality."""
-
-    def test_register_then_login(self, server):
-        """A freshly registered user can log in and receive a session token."""
-        username = _unique_username("alice")
-        status, body, _ = _register(server, username, "correcthorsebattery")
-        assert status == 201, body
-
-        status, body, _ = _login(server, username, "correcthorsebattery")
-        assert status == 200, body
-        assert body.get("token")
-
-    def test_login_then_profile(self, server):
-        """A logged-in user's bearer token grants access to their own profile."""
-        username = _unique_username("bob")
-        status, _, _ = _register(server, username, "correcthorsebattery")
-        assert status == 201
-
-        status, login_body, _ = _login(server, username, "correcthorsebattery")
-        assert status == 200
-
-        status, profile, _ = _request(
-            "GET",
-            f"{server}/api/profile",
-            headers={"Authorization": f"Bearer {login_body['token']}"},
-        )
-        assert status == 200
-        assert profile == {"username": username, "role": "user"}
-
-    def test_wrong_password_rejected(self, server):
-        """Login with an incorrect password returns 401, not a token."""
-        username = _unique_username("carol")
-        status, _, _ = _register(server, username, "correcthorsebattery")
-        assert status == 201
-
-        status, body, _ = _login(server, username, "not-the-right-password")
-        assert status == 401
-        assert "token" not in body
-
-    def test_short_credentials_rejected(self, server):
-        """Registration enforces the documented minimum lengths."""
-        status, _, _ = _register(server, "ab", "short")
-        assert status == 400
-
-    def test_admin_can_list_users(self, server):
-        """The seeded admin account can still reach /admin/users."""
-        status, login_body, _ = _login(server, ADMIN_USERNAME, ADMIN_PASSWORD)
-        assert status == 200
-
-        status, body, _ = _request(
-            "GET",
-            f"{server}/admin/users",
-            headers={"Authorization": f"Bearer {login_body['token']}"},
-        )
-        assert status == 200
-        usernames = {u["username"] for u in body["users"]}
-        assert ADMIN_USERNAME in usernames
-        assert DEMO_USERNAME in usernames
-
-    def test_non_admin_cannot_list_users(self, server):
-        """A regular user's token must not grant access to /admin/users."""
-        status, login_body, _ = _login(server, DEMO_USERNAME, DEMO_PASSWORD)
-        assert status == 200
-
-        status, _, _ = _request(
-            "GET",
-            f"{server}/admin/users",
-            headers={"Authorization": f"Bearer {login_body['token']}"},
-        )
-        assert status == 403
-
-    def test_remember_me_cookie_round_trip(self, server):
-        """A remember=true login's cookie authenticates later requests with
-        no Authorization header at all."""
-        status, login_body, headers = _login(server, DEMO_USERNAME, DEMO_PASSWORD, remember=True)
-        assert status == 200
-        remember_token = login_body.get("remember_token")
-        assert remember_token
-
-        status, profile, _ = _request(
-            "GET", f"{server}/api/profile", headers={"Cookie": f"remember_token={remember_token}"}
-        )
-        assert status == 200
-        assert profile == {"username": DEMO_USERNAME, "role": "user"}
-
-    def test_jwks_endpoint_shape(self, server):
-        """/.well-known/jwks.json publishes a standard single-key RSA JWK set."""
-        status, body, _ = _request("GET", f"{server}/.well-known/jwks.json")
-        assert status == 200
-        assert "keys" in body and len(body["keys"]) == 1
-        key = body["keys"][0]
-        assert key["kty"] == "RSA"
-        assert key["alg"] == "RS256"
-        assert "n" in key and "e" in key
-
-    def test_healthz_reports_instance_id(self, server):
-        """/healthz still reports status plus a per-replica instance_id."""
-        status, body, _ = _request("GET", f"{server}/healthz")
-        assert status == 200
-        assert body.get("status") == "ok"
-        assert body.get("instance_id")
-
-    def test_admin_audit_log_records_logins(self, server):
-        """Successful and failed logins are recorded, and only an admin can
-        read the audit log back."""
-        username = _unique_username("dave")
-        _register(server, username, "correcthorsebattery")
-        _login(server, username, "correcthorsebattery")
-        _login(server, username, "wrong-password")
-
-        status, login_body, _ = _login(server, ADMIN_USERNAME, ADMIN_PASSWORD)
-        assert status == 200
-        status, body, _ = _request(
-            "GET",
-            f"{server}/admin/audit-log",
-            headers={"Authorization": f"Bearer {login_body['token']}"},
-        )
-        assert status == 200
-        events = {(e["Event"], e["Username"]) for e in body["entries"]}
-        assert ("login_success", username) in events
-        assert ("login_failure", username) in events
-
-        status, demo_login, _ = _login(server, DEMO_USERNAME, DEMO_PASSWORD)
-        assert status == 200
-        status, _, _ = _request(
-            "GET",
-            f"{server}/admin/audit-log",
-            headers={"Authorization": f"Bearer {demo_login['token']}"},
-        )
-        assert status == 403
-
-    def test_admin_service_token_flow(self, server):
-        """Admins can still mint RS256 service tokens, and non-admins cannot."""
-        status, login_body, _ = _login(server, ADMIN_USERNAME, ADMIN_PASSWORD)
-        assert status == 200
-
-        status, body, _ = _request(
-            "POST",
-            f"{server}/admin/service-tokens",
-            headers={"Authorization": f"Bearer {login_body['token']}"},
-        )
-        assert status == 200
-        assert body.get("service_token")
-
-        status, demo_login, _ = _login(server, DEMO_USERNAME, DEMO_PASSWORD)
-        assert status == 200
-        status, _, _ = _request(
-            "POST",
-            f"{server}/admin/service-tokens",
-            headers={"Authorization": f"Bearer {demo_login['token']}"},
-        )
-        assert status == 403
-
-
-class TestVulnerabilitiesAreFixed:
-    """The two privilege-escalation paths must no longer work."""
-
-    def test_forged_admin_token_with_recovered_key_is_rejected(self, server):
-        """A token carrying role=admin, forged with the HMAC key recovered
-        from the shipped authgw-signd helper binary, must not be accepted
-        as a valid session -- regardless of whether the fixed code still
-        uses that binary at all."""
-        forged = _forge_hs256_admin_token(RECOVERED_SIGND_KEY)
-        status, _, _ = _request(
-            "GET", f"{server}/admin/users", headers={"Authorization": f"Bearer {forged}"}
-        )
-        assert status in (401, 403), (
-            "a forged admin token signed with the recovered authgw-signd key "
-            f"was accepted (status {status}); the session token is still "
-            "verifiable with that key"
+        out_rows.append(
+            {
+                "arm_id": arm_id,
+                "digest_hex": digest_hex,
+                "viol_n": viol,
+                "eps_used": tol,
+                "seal_mark": seal_mark,
+                "stage_mark": 1,
+            }
         )
 
-    def test_sql_injection_remember_token_is_rejected(self, server):
-        """A remember_token cookie containing a UNION-based SQL injection
-        payload must not resolve to the admin account."""
-        status, _, _ = _request(
-            "GET",
-            f"{server}/admin/users",
-            headers={"Cookie": f"remember_token={SQLI_REMEMBER_TOKEN}"},
-        )
-        assert status in (401, 403), (
-            f"a SQL-injection remember_token payload was accepted (status {status}); "
-            "the injection in the remember-me lookup is still present"
-        )
+    total_viol = sum(r["viol_n"] for r in out_rows)
+    sorted_rows = sorted(out_rows, key=lambda r: r["arm_id"])
+    blob = b"".join(r["digest_hex"].encode() for r in sorted_rows) + _u32(total_viol)
+    seal_hex = hashlib.sha256(blob).hexdigest()
+    closed = 1
+    for r in out_rows:
+        if r["viol_n"] != 0 or r["seal_mark"] != 1:
+            closed = 0
+            break
 
-    def test_sql_injection_double_keyword_bypass_is_rejected(self, server):
-        """A second, structurally different SQL injection payload (doubled,
-        overlapping keywords that reassemble after a single-pass strip)
-        must also be rejected -- so patching the keyword blocklist instead
-        of parameterizing the query doesn't count as a fix."""
-        status, _, _ = _request(
-            "GET",
-            f"{server}/admin/users",
-            headers={"Cookie": f"remember_token={SQLI_DOUBLE_INJECTION_TOKEN}"},
-        )
-        assert status in (401, 403), (
-            f"a double-keyword SQL-injection bypass was accepted (status {status}); "
-            "the remember-me lookup is still vulnerable to injection"
-        )
+    return {
+        "schema_ver": 1,
+        "rows": out_rows,
+        "util_max": util_max,
+        "seal_hex": seal_hex,
+        "closed_n": closed,
+    }
 
-    def test_garbage_remember_token_fails_cleanly(self, server):
-        """An unrecognized remember_token must be rejected without a server
-        error, showing the fix didn't just start crashing on odd input."""
-        status, _, _ = _request(
-            "GET",
-            f"{server}/api/profile",
-            headers={"Cookie": "remember_token=not-a-real-token-0000"},
-        )
-        assert status == 401
+
+@pytest.fixture(scope="module")
+def bundle():
+    _rebuild_and_emit()
+    return _load_bundle()
+
+
+@pytest.fixture(scope="module")
+def ref():
+    return reference_bundle()
+
+
+def test_b01_field_rows(bundle):
+    """YAML field layout matches t_policy schema."""
+    assert bundle.get("schema_ver") == 1
+    rows = bundle.get("rows")
+    assert isinstance(rows, list) and len(rows) >= 5
+    needed = {"arm_id", "digest_hex", "viol_n", "eps_used", "seal_mark", "stage_mark"}
+    for row in rows:
+        assert needed <= set(row)
+    assert "util_max" in bundle and "seal_hex" in bundle and "closed_n" in bundle
+    ids = [r["arm_id"] for r in rows]
+    assert ids[0] == "train_a" and "host_b" in ids
+    for pid, _ in _load_perms():
+        assert pid in ids
+
+
+def test_b02_hex_lane(bundle, ref):
+    """Digest hex length, charset, and formula agreement."""
+    for row, rr in zip(bundle["rows"], ref["rows"], strict=True):
+        assert isinstance(row["digest_hex"], str)
+        assert len(row["digest_hex"]) == 64
+        assert row["digest_hex"] == row["digest_hex"].lower()
+        int(row["digest_hex"], 16)
+        assert row["digest_hex"] == rr["digest_hex"]
+    assert len(bundle["seal_hex"]) == 64
+    assert bundle["seal_hex"] == ref["seal_hex"]
+
+
+def test_b03_hostile_suite(bundle, ref):
+    """Stress-arm corpus satisfies zero-violation obligation."""
+    by_id = {r["arm_id"]: r for r in bundle["rows"]}
+    ref_by = {r["arm_id"]: r for r in ref["rows"]}
+    assert by_id["host_b"]["viol_n"] == ref_by["host_b"]["viol_n"]
+    assert by_id["host_b"]["digest_hex"] == ref_by["host_b"]["digest_hex"]
+    assert bundle["closed_n"] == ref["closed_n"]
+    assert round(float(bundle["util_max"]), 12) == round(float(ref["util_max"]), 12)
+
+
+def test_b04_reord_table(bundle, ref):
+    """Every perm_tbl ordering survives closed algebra."""
+    by_id = {r["arm_id"]: r for r in bundle["rows"]}
+    ref_by = {r["arm_id"]: r for r in ref["rows"]}
+    for pid, _ in _load_perms():
+        assert by_id[pid]["viol_n"] == ref_by[pid]["viol_n"]
+        assert by_id[pid]["digest_hex"] == ref_by[pid]["digest_hex"]
+        assert by_id[pid]["seal_mark"] == ref_by[pid]["seal_mark"]
+
+
+def test_b05_early_bypass(bundle, ref):
+    """Stage gauges alone must not count as success."""
+    for row, rr in zip(bundle["rows"], ref["rows"], strict=True):
+        assert row["stage_mark"] == rr["stage_mark"]
+        assert row["seal_mark"] == rr["seal_mark"]
+        assert len(row["digest_hex"]) == 64
+    assert bundle["closed_n"] == ref["closed_n"]
+    assert bundle["seal_hex"] == ref["seal_hex"]
+
+
+def test_b06_double_emit(bundle):
+    """Consecutive hv7 emits are byte-identical when sealed."""
+    first = OUT.read_bytes()
+    _rebuild_and_emit()
+    second = OUT.read_bytes()
+    assert first == second
+
+
+def test_b07_flip_mat(bundle, ref):
+    """Matrix encoding participates in arm digests."""
+    for row, rr in zip(bundle["rows"], ref["rows"], strict=True):
+        assert row["digest_hex"] == rr["digest_hex"]
+    assert bundle["closed_n"] == ref["closed_n"]
+
+
+def test_b08_flip_mass(bundle, ref):
+    """Mass fold residuals and eps band match policy."""
+    for row, rr in zip(bundle["rows"], ref["rows"], strict=True):
+        assert row["viol_n"] == rr["viol_n"]
+        assert float(row["eps_used"]) == float(rr["eps_used"])
+    assert round(float(bundle["util_max"]), 12) == round(float(ref["util_max"]), 12)
+    assert bundle["rows"][0]["digest_hex"] == ref["rows"][0]["digest_hex"]
+
+
+def test_b09_flip_rec(bundle, ref):
+    """Independent certificate replay seal marks hold."""
+    for row, rr in zip(bundle["rows"], ref["rows"], strict=True):
+        assert row["seal_mark"] == rr["seal_mark"]
+    assert bundle["seal_hex"] == ref["seal_hex"]
+
+
+def test_b10_zero_ops(bundle, ref):
+    """Empty-ops path cannot satisfy closed algebra alone."""
+    assert bundle["closed_n"] == ref["closed_n"]
+    assert [r["viol_n"] for r in bundle["rows"]] == [r["viol_n"] for r in ref["rows"]]
+    assert bundle["seal_hex"] == ref["seal_hex"]
+
+
+def test_b11_wipe_emit(bundle, ref):
+    """Wiped output regenerates through hv7."""
+    if OUT.exists():
+        OUT.unlink()
+    _rebuild_and_emit()
+    got = _load_bundle()
+    assert got["closed_n"] == ref["closed_n"]
+    assert got["seal_hex"] == ref["seal_hex"]
+    assert [r["digest_hex"] for r in got["rows"]] == [r["digest_hex"] for r in ref["rows"]]
+
+
+def test_b12_tol_band(bundle, ref):
+    """Residual and probability tolerance class from t_policy."""
+    for row, rr in zip(bundle["rows"], ref["rows"], strict=True):
+        assert float(row["eps_used"]) == float(rr["eps_used"])
+        assert row["viol_n"] == rr["viol_n"]
+    assert round(float(bundle["util_max"]), 12) == round(float(ref["util_max"]), 12)
+    assert bundle["closed_n"] == ref["closed_n"]

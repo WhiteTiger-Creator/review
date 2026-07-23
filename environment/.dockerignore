@@ -6,9 +6,5 @@
 **/.mypy_cache/
 **/.ruff_cache/
 **/node_modules/
-app/bin/
-app/data/
-signd-src/authgw-signd
-*.db
-*.db-shm
-*.db-wal
+**/*.bin.bak
+tools/hv7.bin

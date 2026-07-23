@@ -1,0 +1,4 @@
+[build]
+binary = "tools/hv7.bin"
+wrapper = "tools/hv7"
+entry = "./cmd/xbin"

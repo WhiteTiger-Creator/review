@@ -1,38 +1,34 @@
-# Task configuration schema version
 version = "2.0"
 
-# Task metadata (author, difficulty, categorization)
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
-difficulty = "medium"
-category = "security"
-# Options for subcategories are: "long_context", "tool_specific", "api_integration", "db_interaction", "ui_building"
-subcategories = [ "api_integration", "db_interaction" ]
-# The number of milestones in the task (can be zero if not a milestone task)
-number_of_milestones = 0
-# Size of the codebase: minimal -> 0-20 files, small -> 20+ files, large -> 200+ files
+difficulty = "hard"
+category = "scientific-computing"
+tags = [
+  "thermal-simulation",
+  "probabilistic-model-checking",
+  "heat-balance",
+  "pathogen-kill",
+  "composting",
+  "floating-point",
+]
+languages = ["go", "bash"]
 codebase_size = "small"
-# Coding languages used in the oracle solution or required by the agent
-languages = [ "go", "bash" ]
-# For tool_specific, api_integration, and db_interaction subcategories, please include specific tool, api framework, or database software
-tags = [ "jwt", "reverse-engineering", "sqlite", "sql-injection", "authentication" ]
-# Estimated time to complete (minutes)
-expert_time_estimate_min = 75
-junior_time_estimate_min = 210
+number_of_milestones = 0
+subcategories = ["tool_specific"]
+expert_time_estimate_min = 90
+junior_time_estimate_min = 240
 
-# Verifier: runs the test script to check task completion
-[verifier]
-timeout_sec = 300.0
-
-# Agent: limits how long the agent can run when attempting the task
 [agent]
-timeout_sec = 1800.0
+timeout_sec = 1800
 
-# Sandbox environment limits
+[verifier]
+timeout_sec = 900
+
 [environment]
 allow_internet = false
-build_timeout_sec = 900.0
+build_timeout_sec = 600
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
