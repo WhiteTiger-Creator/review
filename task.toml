@@ -1,28 +1,27 @@
 version = "2.0"
 
 [metadata]
-author_name = "Task Author"
-author_email = "author@example.com"
-difficulty = "hard"
-category = "scientific-computing"
-subcategories = [ "db_interaction" ]
-codebase_size = "small"
-languages = [ "janet", "bash" ]
-tags = [ "janet", "sqlite", "inverse-problem", "nonlinear-systems", "convex-optimization", "experimental-design" ]
-expert_time_estimate_min = 300
-junior_time_estimate_min = 900
+author_name = "Anonymous"
+author_email = "anonymous@example.com"
+difficulty = "medium"
+category = "build-and-dependency-management"
+subcategories = []
+tags = ["offline-resolution", "lockfile", "package-constraints", "go"]
+expert_time_estimate_min = 120
+junior_time_estimate_min = 240
+codebase_size = "minimal"
 number_of_milestones = 0
-
-[verifier]
-timeout_sec = 900.0
-
-[agent]
-timeout_sec = 1800.0
+languages = ["go"]
 
 [environment]
-allow_internet = false
-build_timeout_sec = 600.0
+build_timeout_sec = 600
 cpus = 2
-memory_mb = 4096
+memory_mb = 2048
 storage_mb = 4096
-workdir = "/app"
+allow_internet = false
+
+[agent]
+timeout_sec = 900
+
+[verifier]
+timeout_sec = 300

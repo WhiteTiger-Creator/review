@@ -1,6 +1,0 @@
-id,shell_km,depth_km,viscosity,base_mm,coupling,phase_offset,salinity_ppt,gas_ppm
-baghdad,24.0,6.2,1.15,0.42,0.18,0.0,18.0,900.0
-cairo,31.0,5.5,1.80,0.28,0.12,0.65,35.0,1500.0
-damascus,19.0,6.8,0.85,0.58,0.20,1.30,12.0,600.0
-alexandria,27.0,4.9,1.35,0.36,0.16,2.05,42.0,2200.0
-camphor,22.0,6.0,1.05,0.50,0.14,2.70,25.0,1100.0
