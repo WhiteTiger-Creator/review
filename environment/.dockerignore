@@ -10,3 +10,12 @@
 solution/
 tests/
 build/
+target/
+dist/
+.engine-build/
+.cache/
+.venv/
+venv/
+*.log
+*.o
+*.a

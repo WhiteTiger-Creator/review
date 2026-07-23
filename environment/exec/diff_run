@@ -1,4 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-make -C /app/environment -s
-exec java -jar /app/environment/build/diffrun.jar "$@"
