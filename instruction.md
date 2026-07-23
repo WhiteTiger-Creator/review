@@ -1,5 +1,25 @@
-Build the offline lock planner in /app. It must run within 20 seconds exactly as `go run . /app/task_file/request.json /app/task_file/registry.json /app/task_file/lock.json` and write only that JSON output. `/app/task_file/request.json` has `platform` and `roots`; `/app/task_file/registry.json` has `packages`. A requirement has `name`, `min`, `min_inclusive`, `max`, `max_inclusive`, `features`, and `allow_yanked`; `min` and `max` are `major.minor.patch` strings or null.
+A dependency resolver decides, build by build, which prerelease it installs for
+a release line. Complete the resolver's install-preference policy so every
+scenario resolves correctly. Nothing is fetched or executed; each scenario is a
+self-contained resolver session, supplied as rows of text on standard input.
 
-A package has `name`, `version`, `platforms`, `hash`, `yanked`, `features`, `deps`, `provides`, and `conflicts`. `deps` and `conflicts` are requirement arrays; `provides` is an array of objects with `name` and `version`. A package also provides its own `name@version`. A requirement may be satisfied by the package name/version or by one of its provided name/version pairs. The selected package must match the request platform or `any`, have hash equal to lowercase SHA-256 hex of `name@version`, contain every accumulated feature for each requirement name it satisfies, and be yanked only when every such requirement allows yanked packages.
+Each scenario opens with a line reading SCENARIO and an identifier and closes
+with ENDSCENARIO. Two row kinds sit between them, resolved top to bottom. A
+REQUIRE row names a version and records a requirement the resolver must honour
+for that version's release line; requirements raised earlier stay in force and
+accumulate. A CMP row reads CMP, a short query label, then two candidate version
+strings, each major.minor.patch, a hyphen, and a prerelease tag of dot-separated
+identifiers (row grammar in environment/docs).
 
-Dependencies from selected packages add more requirements, including requirements for names supplied through `provides`; repeated requirements accumulate. A complete lock must satisfy every accumulated requirement and must not contain two different selected packages where either package's `conflicts` entry matches the other's package name/version or provided name/version; conflict `features` and `allow_yanked` are ignored. Empty arrays must be `[]`, never null. If complete locks exist, choose fewest packages, then lexicographically largest selected `name@version` list sorted by package name, then lexicographically smallest hash list in that same order. Write exact JSON with `status`, `packages`, and `rejected`: ok locks have sorted package objects with `name`, `version`, `hash` and `rejected: []`; blocked locks have `packages: []` and root names in request order with `reason: "no_lock"`.
+For each CMP the resolver reports one line, in scenario and query order: the
+scenario id, a bar, the query label, a bar, and the resolution. The resolution is
+one candidate string copied verbatim when the resolver installs a build; the
+token NONE when it installs neither; the token INCOMPARABLE when the candidates
+differ in major.minor.patch core. REQUIRE rows report nothing.
+
+Which build is installed follows from the prerelease install-preference ordering
+over identifiers — not always agreeing with standard version precedence —
+together with the requirements in force. The worked scenarios under
+environment/data/examples pair inputs with resolutions; use them to pin the exact
+policy. The resolver is a Rust crate; building it in release mode offline in the
+app directory produces the binary.
