@@ -1,0 +1,9 @@
+scene	weight
+lowerdir	1
+lowerdir_echo	1
+upper	1
+upper_echo	1
+worker	1
+worker_echo	1
+x_alpha	1
+x_beta	1

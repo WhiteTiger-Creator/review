@@ -1,34 +1,5 @@
-After a layout bump, continued offline runs still show falling loss and ordinary rank
-histograms, but held-out score collapses versus a baseline run that uses the same seed
-and the same transition corpus. Rebuilding the store from raw transitions restores the
-score; loading the already-migrated store does not. Resume after a torn journal tail,
-assess-after-migrate, and a second migrate/fence also drift on shadow watermarks, draw
-ceilings after generation bumps, and payload digests.
+We need the local nftables-style policy compiler under `/app` to shrink the active ruleset without changing the allow/deny reachability matrix on the stateful flow graph. This is a permission and acl hardening problem on an authority-boundary between orchestrator health probes and durable mark state. Health can read green while worker-side marks and shadow pruning still disagree; a green health check alone is not enough.
 
-Fix sources under `/app/environment`, rebuild with `make -C /app/environment install`,
-and regenerate observations through the normal pipeline. Drive scenarios with
-`bash /app/environment/scripts/run_matrix.sh <case>` and `/app/bin/lanectl`
-(migrate, train, resume, assess, inspect, replay). Durable state under STATE_DIR uses
-`snap.json`, `journal.ndjson`, and `shadow.json`. The verifier regenerates those flows;
-static or manual output writes are not enough.
+Fix the TypeScript sources under `/app` so `npm run build` from `/app` and `/app/m3/k72/dist/fm` write `/app/output/cover_min_report.json`. Scene ids live in `/app/docs/scene_ids.txt`. Held-out permutations live in `/app/data/extra_scenes.toml`. Durable marks live in `/app/data/seed_bundle.json`. Step tuples that drive named scenes live in `/app/data/mix_table.toml`. The build pipeline must regenerate output from sources and rerun that build plus driver pipeline; hand-written JSON is not enough. Library and module-level behavior in the packages must be correct, not only the CLI output.
 
-Caps and formulas live in `/app/environment/configs/train.toml` and
-`/app/environment/docs/operator_contract.md` (seed 77103, eval band 0.05, duplicate-rank
-ceiling at least 0.85 with upper-bin skew at least 0.12, v1 to v2 migrate with payload
-preservation, v2 reload idempotence, torn-journal recover with replay_delta 0, generation
-bump ceilings stable within 5% across the last three post-bump draws, assess within band
-of final train scoring). Final draw `era` must equal inspect `live_gen`. Replay must leave
-the last training step ordinal unchanged. Emit `/app/output/training_observations.json`
-with seed, runs, scenario, steps, draws, scoring, ordinal, loss, rank_histogram, span,
-ceiling, era, heldout_score, baseline_score, payload_digest, shadow_seal, fence_gen,
-journal_epoch, and replay_delta. Emit `/app/output/halt_audit.json` with scenario,
-halt_step, gen_mark, live_gen, meta_digest, bindstamp, fence_gen, journal_epoch, and
-shadow_seal. Emit `/app/output/replay_audit.json` with scenario, journal_entries,
-chain_gap, fence_gen, shadow_seal, and replay_stamp. Loss stability alone is not success:
-held-out scoring must stay in the baseline band after migrate-load, draw ceilings must
-stay commensurate with rebuild-from-corpus, and after halt/continue gen_mark, final draw
-era, and fence_gen must agree with live state. Inspect bindstamp must stay stable across
-two inspects and include the shadow seal. Replay must rebuild its audit without advancing
-training and keep chain_gap at 0 when healthy.
-
-Do not wipe the store and retrain, tweak one anneal knob, or rewrite only the emitter.
+The report has rows and summary. Each row carries scenario_id, span_rc, hop_rc, mark_rc, drift_code, and facet_hex. The summary carries rows_total, consensus_status, span_band, lane_digest, and rule_count. Mirror pairs are lowerdir with lowerdir_echo, upper with upper_echo, and worker with worker_echo. Coherent covers set consensus_status to settled. Sole-witness retention, durable-mark authority over probe snapshots, witness reducer closure, minimization of rule_count, combine-order sensitivity, and premature-drift symptoms are documented in `/app/docs/reach_contract.md`. See `/app/docs/build_hints.txt` for argv.

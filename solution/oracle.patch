@@ -1,0 +1,107 @@
+--- m3/n4/src/bind_step.ts
++++ m3/n4/src/bind_step.ts
+@@ -1,11 +1,7 @@
+ import { prune_a } from "../../../p8/q3/src/prune_a";
+ import { track_b, PackState } from "../../../p8/q4/src/track_b";
+ 
+ export function fold_lane(stepIx: number, familyIx: number, prevFamily: number): bigint {
+-  const packed = prune_a(stepIx, familyIx, prevFamily);
+-  if (prevFamily === 0) {
+-    return packed & 0xffffffffn;
+-  }
+-  return packed;
++  return prune_a(stepIx, familyIx, prevFamily);
+ }
+ 
+--- m3/k72/src/mux_g2.ts
++++ m3/k72/src/mux_g2.ts
+@@ -5,7 +5,5 @@
+   side: () => void,
+   gate: () => void
+ ): number {
+-  const forceGateFirst = true;
+-  void gateFirst;
+-  return order_c(forceGateFirst, side, gate);
++  return order_c(gateFirst, side, gate);
+ }
+--- p8/core/src/lines_p7.ts
++++ p8/core/src/lines_p7.ts
+@@ -32,23 +32,37 @@
+   return (bits & 0xffffffffffffffffn).toString(16).padStart(16, "0").slice(-16);
+ }
+ 
++function durable_mark_for(
++  scenarioId: string,
++  seeds: SeedBundle,
++  markWitness: MarkWitness
++): number {
++  if (Object.prototype.hasOwnProperty.call(markWitness.durable, scenarioId)) {
++    return markWitness.durable[scenarioId] ?? 0;
++  }
++  if (Object.prototype.hasOwnProperty.call(seeds.marks, scenarioId)) {
++    return seeds.marks[scenarioId] ?? 0;
++  }
++  return 0;
++}
++
+ export function lines_p7(
+   targets: TargetRow[],
+   seeds: SeedBundle,
+   markWitness: MarkWitness
+ ): EmittedRow[] {
+-  void seeds;
+   const out: EmittedRow[] = [];
+   for (const t of targets) {
+-    const healthMark = markWitness.health[t.scenario_id] ?? 0;
++    const durable = durable_mark_for(t.scenario_id, seeds, markWitness);
+     const facet = facet_from_bits(t.fold_bits);
+     const closed = t.span_done && t.hop_done;
++    const markOk = durable === t.mark;
+     out.push({
+       scenario_id: t.scenario_id,
+       span_rc: t.span_done,
+       hop_rc: t.hop_done,
+-      mark_rc: healthMark === t.mark,
+-      drift_code: t.premature || !closed ? 1 : 0,
++      mark_rc: markOk,
++      drift_code: t.premature || !closed || !markOk ? 1 : 0,
+       facet_hex: facet,
+     });
+   }
+--- p8/q3/src/prune_a.ts
++++ p8/q3/src/prune_a.ts
+@@ -1,11 +1,10 @@
+ export function prune_a(stepIx: number, familyIx: number, prevFamily: number): bigint {
+-  const step = stepIx & 0xffff;
+-  const family = familyIx & 0xffff;
+-  const a = BigInt(step);
+-  const b = BigInt(family) << 16n;
+-  if (prevFamily === 0) {
+-    return a | b;
+-  }
+-  const sticky = 1n;
+-  return a | b | sticky;
++  const stepMask = 0xffff;
++  const step = stepIx & stepMask;
++  const family = familyIx & stepMask;
++  const use = prevFamily !== 0 ? prevFamily & stepMask : family;
++  const low = BigInt(step);
++  const mid = BigInt(family) << 16n;
++  const high = BigInt(use) << 32n;
++  return low | mid | high;
+ }
+--- p8/q4/src/track_b.ts
++++ p8/q4/src/track_b.ts
+@@ -4,9 +4,8 @@
+ }
+ 
+ export function track_b(state: PackState, incoming: PackState, stampB: number): number {
+-  const local = state.stamp ^ stampB;
+-  state.stamp = local >>> 0;
+-  void incoming.stamp;
+-  void incoming.mark;
++  const mixedStamp = (state.stamp ^ incoming.stamp ^ stampB) >>> 0;
++  state.stamp = mixedStamp;
++  state.mark = incoming.mark;
+   return state.mark;
+ }

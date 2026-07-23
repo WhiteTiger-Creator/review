@@ -1,0 +1,1 @@
+Operator notes for local runs. Prefer the driver over hand-written JSON. Health probes are not a substitute for the full cover report. Trace state through the orchestrator bind path, worker reducers, and witness emitter rather than patching the CLI alone.

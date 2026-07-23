@@ -1,334 +1,496 @@
-"""Observation verification for journaled prioritized-replay migration skew."""
-
-from __future__ import annotations
-
 import json
-import os
+import re
 import subprocess
-import tempfile
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+
 
 APP = Path("/app")
-OUT = APP / "output"
-OBS = OUT / "training_observations.json"
-AUDIT = OUT / "halt_audit.json"
-REPLAY = OUT / "replay_audit.json"
-BIN = APP / "bin" / "lanectl"
-MATRIX = APP / "environment" / "scripts" / "run_matrix.sh"
-CONFIG = APP / "environment" / "configs" / "train.toml"
-PACK = APP / "environment" / "data" / "pack_rows.json"
+OUT = APP / "output" / "cover_min_report.json"
+SCENE_IDS = (
+    (APP / "docs" / "scene_ids.txt").read_text(encoding="utf-8").strip().split(",")
+)
+PRUNE_A = APP / "p8/q3/src/prune_a.ts"
+TRACK_B = APP / "p8/q4/src/track_b.ts"
+MUX_G2 = APP / "m3/k72/src/mux_g2.ts"
+LINES_P7 = APP / "p8/core/src/lines_p7.ts"
+BIND_STEP = APP / "m3/n4/src/bind_step.ts"
+MIX_TOML = APP / "data/mix_table.toml"
+STRIDE_TS = APP / "p8/y6/src/stride.ts"
+CATALOG_TS = APP / "p8/y6/src/catalog.ts"
+MAIN_TS = APP / "m3/k72/src/main.ts"
 
-SEED = 77103
-EVAL_BAND = 0.05
-TWIN_SKEW_MAX = 0.12
-TWIN_CEILING_MIN = 0.85
+EXPECTED_LANE_DIGEST = None  # filled after first coherent oracle run locally; tests recompute
+
+BROKEN_PRUNE = """export function prune_a(stepIx: number, familyIx: number, prevFamily: number): bigint {
+  const step = stepIx & 0xffff;
+  const family = familyIx & 0xffff;
+  const a = BigInt(step);
+  const b = BigInt(family) << 16n;
+  if (prevFamily === 0) {
+    return a | b;
+  }
+  const sticky = 1n;
+  return a | b | sticky;
+}
+"""
+
+BROKEN_TRACK = """export interface PackState {
+  stamp: number;
+  mark: number;
+}
+
+export function track_b(state: PackState, incoming: PackState, stampB: number): number {
+  const local = state.stamp ^ stampB;
+  state.stamp = local >>> 0;
+  void incoming.stamp;
+  void incoming.mark;
+  return state.mark;
+}
+"""
+
+BROKEN_MUX = """import { order_c } from "../../../p8/q5/src/order_c";
+
+export function mux_g2(
+  gateFirst: boolean,
+  side: () => void,
+  gate: () => void
+): number {
+  const forceGateFirst = true;
+  void gateFirst;
+  return order_c(forceGateFirst, side, gate);
+}
+"""
+
+BROKEN_BIND = """import { prune_a } from "../../../p8/q3/src/prune_a";
+import { track_b, PackState } from "../../../p8/q4/src/track_b";
+
+export function fold_lane(stepIx: number, familyIx: number, prevFamily: number): bigint {
+  const packed = prune_a(stepIx, familyIx, prevFamily);
+  if (prevFamily === 0) {
+    return packed & 0xffffffffn;
+  }
+  return packed;
+}
+
+export function refresh_pack(
+  state: PackState,
+  incoming: PackState,
+  stampB: number
+): number {
+  return track_b(state, incoming, stampB);
+}
+"""
+
+BROKEN_LINES = """export interface TargetRow {
+  scenario_id: string;
+  step_ix: number;
+  family_ix: number;
+  prev_family: number;
+  fold_bits: bigint;
+  mark: number;
+  hop_done: boolean;
+  span_done: boolean;
+  premature: boolean;
+}
+
+export interface SeedBundle {
+  marks: Record<string, number>;
+}
+
+export interface MarkWitness {
+  durable: Record<string, number>;
+  health: Record<string, number>;
+}
+
+export interface EmittedRow {
+  scenario_id: string;
+  span_rc: boolean;
+  hop_rc: boolean;
+  mark_rc: boolean;
+  drift_code: number;
+  facet_hex: string;
+}
+
+export function facet_from_bits(bits: bigint): string {
+  return (bits & 0xffffffffffffffffn).toString(16).padStart(16, "0").slice(-16);
+}
+
+export function lines_p7(
+  targets: TargetRow[],
+  seeds: SeedBundle,
+  markWitness: MarkWitness
+): EmittedRow[] {
+  void seeds;
+  const out: EmittedRow[] = [];
+  for (const t of targets) {
+    const healthMark = markWitness.health[t.scenario_id] ?? 0;
+    const facet = facet_from_bits(t.fold_bits);
+    const closed = t.span_done && t.hop_done;
+    out.push({
+      scenario_id: t.scenario_id,
+      span_rc: t.span_done,
+      hop_rc: t.hop_done,
+      mark_rc: healthMark === t.mark,
+      drift_code: t.premature || !closed ? 1 : 0,
+      facet_hex: facet,
+    });
+  }
+  return out;
+}
+"""
 
 
-def _run_cmd(command: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    proc = subprocess.run(command, check=False, env=env, capture_output=True, text=True)
-    assert proc.returncode == 0, proc.stderr + proc.stdout
-    return proc
+@contextmanager
+def _patched_text(path: Path, replacement: str):
+    original = path.read_text(encoding="utf-8")
+    path.write_text(replacement, encoding="utf-8")
+    try:
+        yield
+    finally:
+        path.write_text(original, encoding="utf-8")
 
 
-def _run_matrix(case_id: str, state_root: Path) -> dict[str, Any]:
-    env = {
-        **dict(os.environ),
-        "LANE_STATE_ROOT": str(state_root),
-        "LANE_OUT": str(OBS),
-    }
-    if OBS.exists():
-        OBS.unlink()
-    _run_cmd(["bash", str(MATRIX), case_id], env=env)
-    payload = json.loads(OBS.read_text(encoding="utf-8"))
-    assert payload["seed"] == SEED
-    assert payload["runs"], "expected at least one run record"
-    return next(r for r in payload["runs"] if r["scenario"] == case_id)
+def _build_and_run() -> dict:
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    if OUT.exists():
+        OUT.unlink()
+    subprocess.run(["/bin/true", "/app/environment/p8"], cwd=APP, check=False)
+    subprocess.run(["npm", "run", "build"], cwd=APP, check=True)
+    subprocess.run([str(APP / "m3/k72/dist/fm")], cwd=APP, check=True)
+    return json.loads(OUT.read_text(encoding="utf-8"))
 
 
-def _rel_band(held: float, base: float) -> float:
-    return abs(held - base) / max(abs(base), 1e-12)
+def _rows_by_id(report: dict) -> dict:
+    return {row["scenario_id"]: row for row in report["rows"]}
 
 
-def _ceilings_commensurate(mig: dict[str, Any], reb: dict[str, Any], rel: float = 0.05) -> bool:
-    mig_draws = mig["draws"]
-    reb_draws = reb["draws"]
-    left = float(mig_draws[len(mig_draws) - 1]["ceiling"])
-    right = float(reb_draws[len(reb_draws) - 1]["ceiling"])
-    gap = abs(left - right)
-    limit = max(1e-6, rel * abs(right))
-    return gap <= limit
+def fold_facet_hex(step: int, family: int, prev: int) -> str:
+    lineage = prev & 0xffff if prev != 0 else family & 0xffff
+    bits = (step & 0xffff) | ((family & 0xffff) << 16) | (lineage << 32)
+    return f"{bits & ((1 << 64) - 1):016x}"
 
 
-def _final_era_matches_live(run: dict[str, Any], audit: dict[str, Any]) -> bool:
-    draws = run["draws"]
-    idx = len(draws) - 1
-    final_era = int(draws[idx]["era"])
-    live = int(audit["live_gen"])
-    return final_era == live
+def mix_steps_for_scene(scene_id: str) -> list[tuple[int, int, int]]:
+    text = MIX_TOML.read_text(encoding="utf-8")
+    section = f"[scenes.{scene_id}]"
+    if section not in text:
+        return []
+    chunk = text.split(section, 1)[1].split("\n[", 1)[0]
+    return [
+        (int(m[1]), int(m[2]), int(m[3]))
+        for m in re.finditer(r"\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)\)", chunk)
+    ]
 
 
-def _post_bump_ceilings_stable(draws: list[dict[str, Any]], rel: float = 0.05) -> bool:
-    post = [d for d in draws if int(d["ordinal"]) >= 6]
-    if len(post) < 3:
-        return False
-    final_ceil = float(draws[len(draws) - 1]["ceiling"])
-    for d in post[len(post) - 3 :]:
-        gap = abs(float(d["ceiling"]) - final_ceil)
-        if gap > max(1e-6, rel * abs(final_ceil)):
-            return False
-    return True
-
-
-def _last_step_ordinal(run: dict[str, Any]) -> int:
-    steps = run["steps"]
+def expected_facet_for_scene(scene_id: str) -> str:
+    steps = mix_steps_for_scene(scene_id)
     if not steps:
-        return -1
-    return int(steps[len(steps) - 1]["ordinal"])
+        raise AssertionError(f"missing mix steps for {scene_id}")
+    step, family, prev = steps[-1]
+    return fold_facet_hex(step, family, prev)
 
 
-def _inspect(state: Path) -> dict[str, Any]:
-    env = {**dict(os.environ), "LANE_STATE_ROOT": str(state)}
-    if AUDIT.exists():
-        AUDIT.unlink()
-    _run_cmd(
-        [
-            str(BIN),
-            "inspect",
-            "--config",
-            str(CONFIG),
-            "--pack",
-            str(PACK),
-            "--state",
-            str(state),
-            "--out",
-            str(AUDIT),
-        ],
-        env=env,
+def lane_digest_from_rows(rows: list[dict]) -> str:
+    parts = []
+    for row in rows:
+        parts.append(
+            f'{row["scenario_id"]}|{int(row["span_rc"])}|{int(row["hop_rc"])}|'
+            f'{int(row["mark_rc"])}|{row["drift_code"]}|{row["facet_hex"]}'
+        )
+    parts.sort()
+    payload = "\n".join(parts)
+    mask64 = (1 << 64) - 1
+    total = 0
+    for idx, ch in enumerate(payload):
+        addend = ((idx + 1) * ord(ch)) & mask64
+        total = (total + addend) & mask64
+    return f"{total & 0xFFFFFFFF:08x}"
+
+
+def _assert_not_fully_coherent(report: dict) -> None:
+    rows = _rows_by_id(report)
+    pairs = [
+        ("lowerdir", "lowerdir_echo"),
+        ("upper", "upper_echo"),
+        ("worker", "worker_echo"),
+    ]
+    mirror_ok = all(
+        rows[a]["facet_hex"] == rows[b]["facet_hex"]
+        and rows[a]["span_rc"] == rows[b]["span_rc"]
+        and rows[a]["hop_rc"] == rows[b]["hop_rc"]
+        and rows[a]["mark_rc"] == rows[b]["mark_rc"]
+        for a, b in pairs
+        if a in rows and b in rows
     )
-    return json.loads(AUDIT.read_text(encoding="utf-8"))
-
-
-def _replay(state: Path, scenario: str) -> dict[str, Any]:
-    env = {**dict(os.environ), "LANE_STATE_ROOT": str(state)}
-    if REPLAY.exists():
-        REPLAY.unlink()
-    _run_cmd(
-        [
-            str(BIN),
-            "replay",
-            "--config",
-            str(CONFIG),
-            "--pack",
-            str(PACK),
-            "--state",
-            str(state),
-            "--out",
-            str(REPLAY),
-            "--scenario",
-            scenario,
-        ],
-        env=env,
+    flags_ok = all(
+        r["drift_code"] == 0 and r["span_rc"] and r["hop_rc"] and r["mark_rc"]
+        for r in report["rows"]
     )
-    return json.loads(REPLAY.read_text(encoding="utf-8"))
+    sync_ok = report["summary"]["consensus_status"] == "settled"
+    if mirror_ok and flags_ok and sync_ok:
+        raise AssertionError("expected incoherent report after ablation")
 
 
-def test_migrate_rebuild_parity() -> None:
-    """Migrate-load held-out and ceilings stay commensurate with rebuild-from-corpus."""
-    with tempfile.TemporaryDirectory(prefix="lane_mig_") as tmp_a, tempfile.TemporaryDirectory(
-        prefix="lane_reb_"
-    ) as tmp_b:
-        mig = _run_matrix("migrate_load", Path(tmp_a))
-        reb = _run_matrix("rebuild_corpus", Path(tmp_b))
-    assert _rel_band(mig["scoring"]["heldout_score"], reb["scoring"]["heldout_score"]) <= EVAL_BAND
-    assert _ceilings_commensurate(mig, reb)
-    assert mig["scoring"]["payload_digest"] == reb["scoring"]["payload_digest"]
-    assert len(mig["scoring"]["payload_digest"]) == 64
-    assert len(mig["scoring"]["shadow_seal"]) == 64
-    assert int(mig["scoring"]["fence_gen"]) >= 1
+def _check_closure_and_zero_drift(report: dict) -> None:
+    for row in report["rows"]:
+        if row["drift_code"] != 0:
+            raise AssertionError("drift_code must be zero when coherent")
+        if not (row["span_rc"] and row["hop_rc"] and row["mark_rc"]):
+            raise AssertionError("closure fields must hold when coherent")
 
 
-def test_twin_ceiling_after_fence() -> None:
-    """After fence, duplicate upper-half ranks lift ceiling and histogram skew."""
-    with tempfile.TemporaryDirectory(prefix="lane_twin_") as tmp:
-        twin = _run_matrix("twin_mass", Path(tmp))
-    assert _rel_band(float(twin["scoring"]["heldout_score"]), float(twin["scoring"]["baseline_score"])) <= EVAL_BAND
-    ceiling = float(twin["draws"][0]["ceiling"])
-    span = float(twin["draws"][0]["span"])
-    assert span >= ceiling
-    assert ceiling >= TWIN_CEILING_MIN
-    hist = twin["steps"][-1]["rank_histogram"]
-    assert sum(hist) > 0
-    upper = sum(hist[len(hist) // 2 :])
-    lower = sum(hist[: len(hist) // 2])
-    skew = abs(upper - lower) / max(upper + lower, 1)
-    assert skew >= TWIN_SKEW_MAX
-    assert int(twin["scoring"]["fence_gen"]) >= 1
-    assert len(twin["scoring"]["shadow_seal"]) == 64
+def _check_consensus_settled(report: dict) -> None:
+    if report["summary"]["consensus_status"] != "settled":
+        raise AssertionError("consensus_status must read settled when coherent")
 
 
-def test_hybrid_halt_gen_seal() -> None:
-    """Halt/continue keeps gen_mark, draw era, and fence_gen aligned with live state."""
-    with tempfile.TemporaryDirectory(prefix="lane_halt_") as tmp:
-        state = Path(tmp)
-        run = _run_matrix("hybrid_halt", state)
-        audit = _inspect(state)
-    assert audit["gen_mark"] == audit["live_gen"]
-    assert audit["halt_step"] > 0
-    assert _final_era_matches_live(run, audit)
-    assert int(audit["fence_gen"]) == int(run["scoring"]["fence_gen"])
-    assert len(audit["shadow_seal"]) == 64
-    assert _rel_band(float(run["scoring"]["heldout_score"]), float(run["scoring"]["baseline_score"])) <= EVAL_BAND
+def _check_minimized_cover(report: dict) -> None:
+    _check_consensus_settled(report)
+    digest = lane_digest_from_rows(report["rows"])
+    if report["summary"]["lane_digest"] != digest:
+        raise AssertionError("lane_digest must match row reduction")
+    if report["summary"]["rule_count"] != 4:
+        raise AssertionError("minimized rule_count mismatch")
 
 
-def test_torn_journal_recovers_shadow() -> None:
-    """Torn trailing journal line recovers with replay_delta 0 and intact shadow seal."""
-    with tempfile.TemporaryDirectory(prefix="lane_torn_") as tmp:
-        state = Path(tmp)
-        run = _run_matrix("torn_resume", state)
-        replay = _replay(state, "torn_resume")
-    assert float(run["scoring"]["replay_delta"]) == 0.0
-    assert len(run["scoring"]["shadow_seal"]) == 64
-    assert len(run["scoring"]["payload_digest"]) == 64
-    assert int(replay["chain_gap"]) == 0
-    assert int(replay["journal_entries"]) > 0
-    assert len(replay["shadow_seal"]) == 64
-    assert len(replay["replay_stamp"]) == 64
+def _check_mirror_pairs(report: dict) -> None:
+    rows = _rows_by_id(report)
+    for a, b in [
+        ("lowerdir", "lowerdir_echo"),
+        ("upper", "upper_echo"),
+        ("worker", "worker_echo"),
+    ]:
+        if rows[a]["facet_hex"] != rows[b]["facet_hex"]:
+            raise AssertionError(f"facet_hex mismatch for {a}/{b}")
+        if rows[a]["span_rc"] != rows[b]["span_rc"]:
+            raise AssertionError(f"span_rc mismatch for {a}/{b}")
+        if rows[a]["hop_rc"] != rows[b]["hop_rc"]:
+            raise AssertionError(f"hop_rc mismatch for {a}/{b}")
+        if rows[a]["mark_rc"] != rows[b]["mark_rc"]:
+            raise AssertionError(f"mark_rc mismatch for {a}/{b}")
 
 
-def test_stale_ceiling_after_gen_bump() -> None:
-    """After a generation bump, draw eras track live gen and ceilings use full live mass."""
-    with tempfile.TemporaryDirectory(prefix="lane_bump_") as tmp:
-        run = _run_matrix("gen_bump_ceiling", Path(tmp))
-    draws = run["draws"]
-    assert len(draws) >= 6
-    # Gen advances after the draw at ordinal 5 is recorded; later draws carry era >= 2.
-    post = [d for d in draws if int(d["ordinal"]) >= 6]
-    assert post
-    assert all(int(d["era"]) >= 2 for d in post)
-    final_ceil = float(draws[len(draws) - 1]["ceiling"])
-    final_span = float(draws[len(draws) - 1]["span"])
-    assert final_span >= final_ceil > 0.0
-    # Later-biased pack: live-window ceiling must stay high (first-slot-only collapses).
-    assert final_ceil >= 0.85
-    assert _post_bump_ceilings_stable(draws)
+def test_t1_layout() -> None:
+    """Report lists every scene id from scene_ids.txt."""
+    report = _build_and_run()
+    if "rows" not in report or "summary" not in report:
+        raise AssertionError("missing rows/summary")
+    ids = {row["scenario_id"] for row in report["rows"]}
+    if ids != set(SCENE_IDS):
+        raise AssertionError("scenario_id set mismatch")
+    if report["summary"]["rows_total"] != len(SCENE_IDS):
+        raise AssertionError("rows_total mismatch")
 
 
-def test_assess_matches_final_scoring() -> None:
-    """Assess after migrate stays within eval band of the migrate train held-out."""
-    with tempfile.TemporaryDirectory(prefix="lane_assess_") as tmp_a, tempfile.TemporaryDirectory(
-        prefix="lane_mig_"
-    ) as tmp_b:
-        assessed = _run_matrix("assess_after_migrate", Path(tmp_a))
-        trained = _run_matrix("migrate_load", Path(tmp_b))
-    assert _rel_band(
-        float(assessed["scoring"]["heldout_score"]),
-        float(trained["scoring"]["heldout_score"]),
-    ) <= EVAL_BAND
-    assert len(assessed["scoring"]["payload_digest"]) == 64
-    assert int(assessed["scoring"]["fence_gen"]) >= 1
+def test_t2_pair_hex() -> None:
+    """Mirror pairs agree on facet_hex and closure fields."""
+    _check_mirror_pairs(_build_and_run())
 
 
-def test_double_migrate_shadow_idempotent() -> None:
-    """Second migrate/fence leaves shadow_seal, payload_digest, and replay_delta stable."""
-    with tempfile.TemporaryDirectory(prefix="lane_dbl_") as tmp:
-        run = _run_matrix("double_fence_migrate", Path(tmp))
-    scoring = run["scoring"]
-    assert len(scoring["shadow_seal"]) == 64
-    assert len(scoring["payload_digest"]) == 64
-    assert float(scoring["replay_delta"]) == 0.0
-    assert int(scoring["fence_gen"]) >= 1
-    assert int(scoring["journal_epoch"]) >= 1
-    assert _rel_band(float(scoring["heldout_score"]), float(scoring["baseline_score"])) <= EVAL_BAND
+def test_t3_band_field() -> None:
+    """Coherent rows keep drift_code 0 and all closure fields true."""
+    _check_closure_and_zero_drift(_build_and_run())
 
 
-def test_halt_twin_order_stable() -> None:
-    """Twin-mass setup then halt/continue keeps ceiling skew and gen seal together."""
-    with tempfile.TemporaryDirectory(prefix="lane_ht_") as tmp:
-        state = Path(tmp)
-        run = _run_matrix("halt_twin_order", state)
-        audit = _inspect(state)
-    ceiling = float(run["draws"][0]["ceiling"])
-    assert ceiling >= TWIN_CEILING_MIN
-    hist = run["steps"][-1]["rank_histogram"]
-    upper = sum(hist[len(hist) // 2 :])
-    lower = sum(hist[: len(hist) // 2])
-    skew = abs(upper - lower) / max(upper + lower, 1)
-    assert skew >= TWIN_SKEW_MAX
-    assert audit["gen_mark"] == audit["live_gen"]
-    assert _final_era_matches_live(run, audit)
-    assert len(audit["shadow_seal"]) == 64
-    assert int(audit["fence_gen"]) >= 1
+def test_t4_label_text() -> None:
+    """Summary consensus_status is settled when coherent."""
+    _check_consensus_settled(_build_and_run())
 
 
-def test_replay_chain_zero_delta() -> None:
-    """Replay rebuilds audit from durable bytes with chain_gap 0 and no train advance."""
-    with tempfile.TemporaryDirectory(prefix="lane_rep_") as tmp:
-        state = Path(tmp)
-        run = _run_matrix("migrate_load", state)
-        before_ord = _last_step_ordinal(run)
-        raw_before = OBS.read_text(encoding="utf-8")
-        audit1 = _replay(state, "migrate_load")
-        audit2 = _replay(state, "migrate_load")
-        raw_after = OBS.read_text(encoding="utf-8")
-        after = json.loads(raw_after)
-    assert int(audit1["chain_gap"]) == 0
-    assert int(audit1["journal_entries"]) > 0
-    assert len(audit1["shadow_seal"]) == 64
-    assert len(audit1["replay_stamp"]) == 64
-    assert audit1 == audit2
-    # Replay must not rewrite training observations or advance steps.
-    assert raw_before == raw_after
-    assert _last_step_ordinal(after["runs"][0]) == before_ord
+def test_t5_width_max() -> None:
+    """span_band equals max abs drift_code."""
+    report = _build_and_run()
+    span = max(abs(r["drift_code"]) for r in report["rows"])
+    if report["summary"]["span_band"] != span:
+        raise AssertionError("span_band mismatch")
 
 
-def test_inspect_bindstamp_stable() -> None:
-    """Two inspects agree on bindstamp; seal material is present in the audit."""
-    with tempfile.TemporaryDirectory(prefix="lane_ins_") as tmp:
-        state = Path(tmp)
-        run = _run_matrix("v2_idempotent", state)
-        a1 = _inspect(state)
-        a2 = _inspect(state)
-    assert a1["bindstamp"] == a2["bindstamp"]
-    assert len(a1["bindstamp"]) == 64
-    assert a1["gen_mark"] == a1["live_gen"]
-    assert len(a1["shadow_seal"]) == 64
-    assert a1["shadow_seal"] == run["scoring"]["shadow_seal"]
-    assert a1["meta_digest"] == a2["meta_digest"]
+def test_t6_reduce_hex() -> None:
+    """lane_digest matches the documented row reduction."""
+    report = _build_and_run()
+    assert report["summary"]["lane_digest"] == lane_digest_from_rows(report["rows"])
 
 
-def test_payload_survives_torn_and_fence() -> None:
-    """Payload digest after torn recover matches a clean migrate-load digest."""
-    with tempfile.TemporaryDirectory(prefix="lane_pay_a_") as tmp_a, tempfile.TemporaryDirectory(
-        prefix="lane_pay_b_"
-    ) as tmp_b:
-        torn = _run_matrix("torn_resume", Path(tmp_a))
-        clean = _run_matrix("migrate_load", Path(tmp_b))
-    assert torn["scoring"]["payload_digest"] == clean["scoring"]["payload_digest"]
-    assert len(torn["scoring"]["payload_digest"]) == 64
-    assert float(torn["scoring"]["replay_delta"]) == 0.0
+def test_t7_known_good() -> None:
+    """Settled report has minimized rule_count of 4."""
+    _check_minimized_cover(_build_and_run())
 
 
-def test_pipeline_regenerates_artifacts() -> None:
-    """Deleted observations regenerate with journal and shadow present (anti-static)."""
-    with tempfile.TemporaryDirectory(prefix="lane_pipe_") as tmp:
-        state = Path(tmp)
-        first = _run_matrix("migrate_load", state)
-        raw_first = OBS.read_text(encoding="utf-8")
-        OBS.unlink()
-        second = _run_matrix("migrate_load", state)
-        raw_second = OBS.read_text(encoding="utf-8")
-        audit = _inspect(state)
-        replay = _replay(state, "migrate_load")
-        assert (state / "snap.json").exists()
-        assert (state / "journal.ndjson").exists()
-        assert (state / "shadow.json").exists()
-        shadow = json.loads((state / "shadow.json").read_text(encoding="utf-8"))
-    assert raw_first == raw_second
-    assert first == second
-    assert len(audit["bindstamp"]) == 64
-    assert audit["gen_mark"] == audit["live_gen"]
-    assert len(shadow["payload_seal"]) == 64
-    assert int(shadow["fence_gen"]) >= 1
-    assert int(replay["chain_gap"]) == 0
-    assert len(replay["replay_stamp"]) == 64
+def test_t8_lower_fmt() -> None:
+    """facet_hex is sixteen lowercase hex digits and matches mix_table packing."""
+    report = _build_and_run()
+    rows = _rows_by_id(report)
+    for row in report["rows"]:
+        s = row["facet_hex"]
+        if len(s) != 16 or s != s.lower():
+            raise AssertionError("facet_hex format")
+        int(s, 16)
+    for scene_id in SCENE_IDS:
+        expected = expected_facet_for_scene(scene_id)
+        if rows[scene_id]["facet_hex"] != expected:
+            raise AssertionError(f"{scene_id} facet_hex packing mismatch")
+
+
+def test_t9_total_count() -> None:
+    """rows_total equals the number of rows."""
+    report = _build_and_run()
+    assert isinstance(report["summary"]["rows_total"], int)
+    assert report["summary"]["rows_total"] == len(report["rows"])
+
+
+def test_t10_fresh_pipe() -> None:
+    """Pipeline overwrite replaces hand-written JSON."""
+    OUT.write_text(json.dumps({"rows": [], "summary": {"rows_total": 0}}), encoding="utf-8")
+    report = _build_and_run()
+    if report["summary"]["rows_total"] != len(SCENE_IDS):
+        raise AssertionError("fresh pipe rows_total")
+    _check_consensus_settled(report)
+
+
+def test_t11_twice_same() -> None:
+    """Consecutive pipeline runs are identical."""
+    a = _build_and_run()
+    b = _build_and_run()
+    assert a == b
+
+
+def test_t12_sens_steps() -> None:
+    """Mutating mix_table steps changes facet or coherence."""
+    original = MIX_TOML.read_text(encoding="utf-8")
+    mutated = re.sub(
+        r"\[scenes\.lowerdir\]\nsteps = \[\(1, 1, 0\)\]",
+        "[scenes.lowerdir]\nsteps = [(2, 1, 0)]",
+        original,
+        count=1,
+    )
+    if mutated == original:
+        raise AssertionError("mutation did not apply")
+    try:
+        MIX_TOML.write_text(mutated, encoding="utf-8")
+        report = _build_and_run()
+        rows = _rows_by_id(report)
+        same_hex = rows["lowerdir"]["facet_hex"] == rows["lowerdir_echo"]["facet_hex"]
+        settled = report["summary"]["consensus_status"] == "settled"
+        if same_hex and settled:
+            raise AssertionError("expected facet or coherence change")
+    finally:
+        MIX_TOML.write_text(original, encoding="utf-8")
+
+
+def test_t13_flip_a() -> None:
+    """Reverting sticky lineage fold breaks mirror-pair coherence."""
+    with _patched_text(PRUNE_A, BROKEN_PRUNE):
+        report = _build_and_run()
+    _assert_not_fully_coherent(report)
+
+
+def test_t14_flip_b() -> None:
+    """Reverting durable mark merge with lineage fold breaks coherence."""
+    with _patched_text(TRACK_B, BROKEN_TRACK):
+        with _patched_text(PRUNE_A, BROKEN_PRUNE):
+            report = _build_and_run()
+    _assert_not_fully_coherent(report)
+
+
+def test_t15_flip_c() -> None:
+    """Reverting combine ordering breaks coherence."""
+    with _patched_text(MUX_G2, BROKEN_MUX):
+        with _patched_text(STRIDE_TS, STRIDE_TS.read_text(encoding="utf-8")):
+            report = _build_and_run()
+    _assert_not_fully_coherent(report)
+
+
+def test_t16_all_extras() -> None:
+    """Held-out extras survive with minimized rule_count."""
+    _check_minimized_cover(_build_and_run())
+
+
+def test_t17_flip_d() -> None:
+    """Reverting witness emitter path breaks coherence."""
+    with _patched_text(LINES_P7, BROKEN_LINES):
+        report = _build_and_run()
+    _assert_not_fully_coherent(report)
+
+
+def test_t18_dur_first() -> None:
+    """Durable marks win over health probes when coherent."""
+    report = _build_and_run()
+    _check_closure_and_zero_drift(report)
+    _check_consensus_settled(report)
+    health = subprocess.run(
+        [str(APP / "m3/k72/dist/fm"), "--health"],
+        cwd=APP,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if "green" not in health.stdout:
+        raise AssertionError("health probe expected green")
+
+
+def test_t19_premature() -> None:
+    """Wrong combine order yields premature drift."""
+    with _patched_text(MUX_G2, BROKEN_MUX):
+        report = _build_and_run()
+    settled = report["summary"]["consensus_status"] == "settled"
+    clean = all(r["drift_code"] == 0 for r in report["rows"])
+    if settled and clean:
+        raise AssertionError("expected premature drift")
+
+
+def test_t20_cmd_run() -> None:
+    """build_hints document npm build and fm driver argv."""
+    hints = (APP / "docs" / "build_hints.txt").read_text(encoding="utf-8")
+    if "npm run build" not in hints or "m3/k72/dist/fm" not in hints:
+        raise AssertionError("build_hints missing driver argv")
+    report = _build_and_run()
+    if report["summary"]["rows_total"] != len(SCENE_IDS):
+        raise AssertionError("rows_total after cmd run")
+
+
+def test_t21_gate_arg_probe() -> None:
+    """Compiled zone-hop combine helper must honor gateFirst for callback sequencing."""
+    subprocess.run(["npm", "run", "build"], cwd=APP, check=True)
+    probe = (
+        "const { mux_g2 } = require('/app/dist/m3/k72/src/mux_g2.js');"
+        "function run(gf){const s=[];mux_g2(gf,()=>s.push('side'),()=>s.push('gate'));"
+        "return s.join(',');}"
+        "if(run(false)!=='side,gate') process.exit(2);"
+        "if(run(true)!=='gate,side') process.exit(3);"
+    )
+    result = subprocess.run(["node", "-e", probe], cwd=APP, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise AssertionError("combine helper must honor gateFirst without caller compensation")
+
+
+def test_t22_prev_lineage_width() -> None:
+    """Baseline scenes with zero prev must retain full lane width in facet_hex."""
+    report = _build_and_run()
+    rows = _rows_by_id(report)
+    for scene_id in ("lowerdir", "upper", "worker"):
+        steps = mix_steps_for_scene(scene_id)
+        step, family, prev = steps[-1]
+        if prev != 0 or family == 0:
+            continue
+        packed = int(rows[scene_id]["facet_hex"], 16)
+        if packed >> 32 == 0:
+            raise AssertionError(f"{scene_id} lost high lineage bits in facet_hex")
+
+
+def test_t23_worker_pair() -> None:
+    """Worker mirror pair stays coherent when bind path preserves full lane width."""
+    report = _build_and_run()
+    rows = _rows_by_id(report)
+    for field in ("facet_hex", "span_rc", "hop_rc", "mark_rc"):
+        if rows["worker"][field] != rows["worker_echo"][field]:
+            raise AssertionError(f"worker mirror mismatch on {field}")
+    if rows["worker"]["facet_hex"] != expected_facet_for_scene("worker"):
+        raise AssertionError("worker facet_hex mismatch")
+
+
+def test_t26_flip_e() -> None:
+    """Truncating bind fold width breaks echo pairing even when reducer is fixed."""
+    with _patched_text(BIND_STEP, BROKEN_BIND):
+        report = _build_and_run()
+    _assert_not_fully_coherent(report)

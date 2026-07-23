@@ -1,0 +1,11 @@
+{
+  "rules": [
+    {"id": "r1", "family": 1, "sole_witness": true, "shadowed_by": null},
+    {"id": "r2", "family": 1, "sole_witness": false, "shadowed_by": "r1"},
+    {"id": "r3", "family": 2, "sole_witness": true, "shadowed_by": null},
+    {"id": "r4", "family": 2, "sole_witness": false, "shadowed_by": "r3"},
+    {"id": "r5", "family": 3, "sole_witness": true, "shadowed_by": null},
+    {"id": "r6", "family": 3, "sole_witness": false, "shadowed_by": "r5"},
+    {"id": "r7", "family": 4, "sole_witness": false, "shadowed_by": null}
+  ]
+}

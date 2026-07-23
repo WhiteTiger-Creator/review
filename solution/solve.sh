@@ -1,25 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+log() { printf '[solve] %s\n' "$1"; }
 
-cd /app/environment
-patch -p1 < "$ROOT_DIR/patches/01-k2.patch"
-patch -p1 < "$ROOT_DIR/patches/02-m4.patch"
-patch -p1 < "$ROOT_DIR/patches/03-w3.patch"
-patch -p1 < "$ROOT_DIR/patches/04-r7.patch"
-patch -p1 < "$ROOT_DIR/patches/05-n5.patch"
+cd /app
+mkdir -p /app/output
+rm -f /app/output/cover_min_report.json
 
-make -C /app/environment install
+log "apply source fixes"
+cd /solution
+if grep -q 'return prune_a(stepIx, familyIx, prevFamily);' /app/m3/n4/src/bind_step.ts \
+   && grep -q 'return order_c(gateFirst, side, gate)' /app/m3/k72/src/mux_g2.ts; then
+  log "baseline already patched"
+else
+  patch -d /app -p0 --batch < oracle.patch
+fi
+cd /app
+npm run build
+/app/m3/k72/dist/fm
 
-bash /app/environment/scripts/run_matrix.sh baseline_cold
-bash /app/environment/scripts/run_matrix.sh migrate_load
-bash /app/environment/scripts/run_matrix.sh rebuild_corpus
-bash /app/environment/scripts/run_matrix.sh v2_idempotent
-bash /app/environment/scripts/run_matrix.sh twin_mass
-bash /app/environment/scripts/run_matrix.sh hybrid_halt
-bash /app/environment/scripts/run_matrix.sh torn_resume
-bash /app/environment/scripts/run_matrix.sh gen_bump_ceiling
-bash /app/environment/scripts/run_matrix.sh assess_after_migrate
-bash /app/environment/scripts/run_matrix.sh double_fence_migrate
-bash /app/environment/scripts/run_matrix.sh halt_twin_order
+log "sanity-check output contract"
+python3 <<'PY'
+import json
+from pathlib import Path
+
+data = json.loads(Path("/app/output/cover_min_report.json").read_text(encoding="utf-8"))
+assert data["summary"]["consensus_status"] == "settled"
+for row in data["rows"]:
+    assert row["span_rc"] and row["hop_rc"] and row["mark_rc"]
+    assert row["drift_code"] == 0
+PY
+
+log "done"
