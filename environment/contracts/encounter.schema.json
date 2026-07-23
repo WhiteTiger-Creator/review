@@ -1,0 +1,66 @@
+{
+  "$defs": {
+    "version": {
+      "const": "1",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "room": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "trivia": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "question_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "question_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "question_sha256": {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            "row": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "row",
+            "question_sha256"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "version": {
+      "$ref": "#/$defs/version"
+    }
+  },
+  "required": [
+    "version",
+    "id",
+    "room",
+    "title",
+    "trivia"
+  ],
+  "type": "object"
+}

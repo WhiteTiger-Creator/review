@@ -1,369 +1,528 @@
-import hashlib
-import math
-import re
+"""Behavioral verifier for audit-java-duckdb-trivia-dungeon.
+
+Invokes /app/bin/trivia-dungeon and the bundled Makefile verify target.
+Compares issue tuples (artifact, pointer, code) rather than validator message text.
+"""
+
+from __future__ import annotations
+
+import json
+import os
 import shutil
-import sqlite3
-import subprocess
-from collections import Counter
+import stat
 from pathlib import Path
 
-import pandas as pd
+import pytest
 
-
-APP = Path("/app")
-BASE_DB = APP / "database" / "spam_lab.sqlite"
-MIGRATION = APP / "migrations" / "train_naive_bayes.php"
-LABELS = ("ham", "spam")
-TABLES = (
-    "model_metadata",
-    "token_vocabulary",
-    "class_token_stats",
-    "validation_scores",
+from helpers import case_factory
+from helpers.report_assertions import (
+    assert_audit_success,
+    assert_canonical_json_bytes,
+    assert_immutable_hashes,
+    assert_issue_sets_equal,
+    assert_no_completed_audit_on_operational_failure,
+    assert_playthrough_matches_schema_dir,
+    assert_posix_relative_artifacts,
+    assert_report_matches_schema_dir,
+    issue_tuples,
+    load_fixture_hashes,
+    load_json,
+)
+from helpers.expectation_model import (
+    canonical_rows,
+    dataset_digest,
+    question_fingerprint,
+)
+from helpers.subprocess_utils import (
+    APP_ROOT,
+    CONTRACTS,
+    DATASET,
+    DEFAULT_OUTPUT,
+    EXIT_CONTENT,
+    EXIT_OPERATIONAL,
+    EXIT_SUCCESS,
+    audit_report_path,
+    clear_directory,
+    playthrough_report_path,
+    run_trivia_dungeon,
 )
 
-
-def db_copy(tmp_path):
-    target = tmp_path / "spam_lab.sqlite"
-    shutil.copy2(BASE_DB, target)
-    return target
+FIXTURE_HASHES = Path(__file__).resolve().parent / "fixture_hashes.json"
+BUNDLED_CONFIG = APP_ROOT / "config" / "dungeon.toml"
+BUNDLED_ANSWERS = APP_ROOT / "config" / "verification-answers.toml"
 
 
-def run_migration(db_path):
-    result = subprocess.run(
-        ["php", str(MIGRATION), str(db_path)],
-        cwd=APP,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+@pytest.fixture(scope="session", autouse=True)
+def _ensure_app_built_once() -> None:
+    """Prebuild the shaded jar once; the image already ships a built artifact."""
+    from helpers.subprocess_utils import ensure_built
+
+    ensure_built()
+
+
+@pytest.fixture(scope="session")
+def fixture_hashes() -> dict[str, str]:
+    return load_fixture_hashes(FIXTURE_HASHES)
+
+
+def _read_report(path: Path) -> dict:
+    return load_json(path)
+
+
+def _run_audit(case: case_factory.DungeonCase, *, cwd: Path | None = None, env: dict | None = None):
+    case.output.mkdir(parents=True, exist_ok=True)
+    case.state.parent.mkdir(parents=True, exist_ok=True)
+    return run_trivia_dungeon(
+        "audit",
+        root=case.root,
+        config=case.config,
+        dataset=case.dataset,
+        contracts=case.contracts,
+        output=case.output,
+        state=case.state,
+        cwd=cwd or case.root,
+        env=env,
     )
-    assert result.returncode == 0, result.stdout
-    return result.stdout
 
 
-def tokenize(text):
-    return [token for token in re.findall(r"[a-z0-9]+", text.lower()) if len(token) >= 2]
+def _run_playthrough(case: case_factory.DungeonCase, *, cwd: Path | None = None, env: dict | None = None):
+    assert case.answers is not None
+    case.output.mkdir(parents=True, exist_ok=True)
+    return run_trivia_dungeon(
+        "playthrough",
+        root=case.root,
+        config=case.config,
+        dataset=case.dataset,
+        contracts=case.contracts,
+        answers=case.answers,
+        output=case.output,
+        state=case.state,
+        cwd=cwd or case.root,
+        env=env,
+    )
 
 
-def fixed12(value):
-    rounded = round(value, 12)
-    if rounded == 0:
-        rounded = 0.0
-    return f"{rounded:.12f}"
+def test_outputs_are_byte_reproducible_across_reruns_and_cwd(tmp_path: Path) -> None:
+    """Audit and playthrough outputs are byte-identical across cwd and warm state."""
+    bundled_state = APP_ROOT / ".state" / "audit-state.json"
+    if bundled_state.exists():
+        bundled_state.unlink()
+    if DEFAULT_OUTPUT.exists():
+        for child in DEFAULT_OUTPUT.iterdir():
+            if child.is_file():
+                child.unlink()
+            else:
+                shutil.rmtree(child)
+    out_a = tmp_path / "out-a"
+    out_b = tmp_path / "out-b"
+    state_a = tmp_path / "state-a.json"
+    state_b = tmp_path / "state-b.json"
+    clear_directory(out_a)
+    clear_directory(out_b)
+
+    cold_audit = run_trivia_dungeon(
+        "audit",
+        root=APP_ROOT,
+        config=BUNDLED_CONFIG,
+        dataset=DATASET,
+        contracts=CONTRACTS,
+        output=out_a,
+        state=state_a,
+        cwd=APP_ROOT,
+    )
+    assert cold_audit.returncode == EXIT_SUCCESS, cold_audit.stderr
+    cold_play = run_trivia_dungeon(
+        "playthrough",
+        root=APP_ROOT,
+        config=BUNDLED_CONFIG,
+        dataset=DATASET,
+        contracts=CONTRACTS,
+        answers=BUNDLED_ANSWERS,
+        output=out_a,
+        state=state_a,
+        cwd=APP_ROOT,
+    )
+    assert cold_play.returncode == EXIT_SUCCESS, cold_play.stderr
+    audit_bytes_cold = audit_report_path(out_a).read_bytes()
+    play_bytes_cold = playthrough_report_path(out_a).read_bytes()
+
+    warm_audit = run_trivia_dungeon(
+        "audit",
+        root=APP_ROOT,
+        config=BUNDLED_CONFIG,
+        dataset=DATASET,
+        contracts=CONTRACTS,
+        output=out_b,
+        state=state_b,
+        cwd=Path("/tmp"),
+    )
+    assert warm_audit.returncode == EXIT_SUCCESS, warm_audit.stderr
+    warm_play = run_trivia_dungeon(
+        "playthrough",
+        root=APP_ROOT,
+        config=BUNDLED_CONFIG,
+        dataset=DATASET,
+        contracts=CONTRACTS,
+        answers=BUNDLED_ANSWERS,
+        output=out_b,
+        state=state_b,
+        cwd=Path("/tmp"),
+    )
+    assert warm_play.returncode == EXIT_SUCCESS, warm_play.stderr
+
+    audit_bytes_warm = audit_report_path(out_b).read_bytes()
+    play_bytes_warm = playthrough_report_path(out_b).read_bytes()
+    assert audit_bytes_cold == audit_bytes_warm
+    assert play_bytes_cold == play_bytes_warm
+    for payload in (audit_bytes_cold, play_bytes_cold):
+        assert_canonical_json_bytes(payload)
 
 
-def load_training_rows(conn):
-    return conn.execute(
-        """
-        SELECT m.id, m.message_text, l.label, l.split
-        FROM messages AS m
-        JOIN labels AS l ON l.message_id = m.id
-        ORDER BY m.id
-        """
-    ).fetchall()
+def test_verify_target_succeeds_for_bundled_dungeon(tmp_path: Path) -> None:
+    """Complete user-facing workflow: audit and playthrough exit 0 with clean reports."""
+    state = APP_ROOT / ".state" / "test-bundled"
+    if state.exists():
+        state.unlink()
+    if DEFAULT_OUTPUT.exists():
+        for child in DEFAULT_OUTPUT.iterdir():
+            if child.is_file():
+                child.unlink()
+            else:
+                shutil.rmtree(child)
+
+    audit_run = run_trivia_dungeon(
+        "audit",
+        output=DEFAULT_OUTPUT,
+        state=state,
+        cwd=APP_ROOT,
+    )
+    assert audit_run.returncode == EXIT_SUCCESS, audit_run.stdout + audit_run.stderr
+    play_run = run_trivia_dungeon(
+        "playthrough",
+        output=DEFAULT_OUTPUT,
+        state=state,
+        answers=BUNDLED_ANSWERS,
+        cwd=APP_ROOT,
+    )
+    assert play_run.returncode == EXIT_SUCCESS, play_run.stdout + play_run.stderr
+
+    audit = _read_report(audit_report_path(DEFAULT_OUTPUT))
+    play = _read_report(playthrough_report_path(DEFAULT_OUTPUT))
+    assert_report_matches_schema_dir(audit, CONTRACTS)
+    assert_playthrough_matches_schema_dir(play, CONTRACTS)
+    assert_audit_success(audit)
+    assert play["reached_exit"] is True
+    assert audit["registry_digest"] == play["registry_digest"]
+    bundled_state = APP_ROOT / ".state" / "audit-state.json"
+    if bundled_state.exists():
+        bundled_state.unlink()
 
 
-def expected_tables(db_path):
-    conn = sqlite3.connect(db_path)
-    rows = load_training_rows(conn)
-    train = [row for row in rows if row[3] == "train"]
-    validation = [row for row in rows if row[3] == "validation"]
-
-    by_class = {label: [] for label in LABELS}
-    for _message_id, text, label, _split in train:
-        by_class[label].append(tokenize(text))
-
-    vocabulary = sorted({token for docs in by_class.values() for doc in docs for token in doc})
-    token_ids = {token: index + 1 for index, token in enumerate(vocabulary)}
-    vocab_size = len(vocabulary)
-
-    class_doc_counts = {label: len(by_class[label]) for label in LABELS}
-    total_train = sum(class_doc_counts.values())
-    class_token_counts = {label: Counter() for label in LABELS}
-    class_total_tokens = {}
-    document_counts = Counter()
-    total_counts = Counter()
-
-    for label in LABELS:
-        for doc_tokens in by_class[label]:
-            class_token_counts[label].update(doc_tokens)
-            document_counts.update(set(doc_tokens))
-            total_counts.update(doc_tokens)
-        class_total_tokens[label] = sum(class_token_counts[label].values())
-
-    metadata = {
-        "algorithm": "multinomial_naive_bayes",
-        "alpha": "1.000000000000",
-        "class_order": "ham,spam",
-        "tokenizer": "ascii_alnum_min2_lower",
-        "train_message_count": str(total_train),
-        "validation_message_count": str(len(validation)),
-        "vocabulary_size": str(vocab_size),
+def test_cli_environment_toml_precedence_and_relative_paths(tmp_path: Path) -> None:
+    """CLI overrides env over TOML; TOML-relative paths resolve from config parent."""
+    case = case_factory.build_precedence_case(tmp_path)
+    env = {
+        "TRIVIA_DATASET": str(case.notes["dataset_b"]),
+        "TRIVIA_CONTRACTS": str(case.notes["contracts_b"]),
     }
-    for label in LABELS:
-        metadata[f"log_prior.{label}"] = fixed12(math.log(class_doc_counts[label] / total_train))
+    result = _run_audit(
+        case,
+        cwd=Path("/tmp"),
+        env={
+            **env,
+            "TRIVIA_DATASET": str(case.dataset_a),
+            "TRIVIA_CONTRACTS": str(case.contracts),
+        },
+    )
+    assert result.returncode == EXIT_SUCCESS, result.stderr
+    report = _read_report(audit_report_path(case.output))
+    assert_audit_success(report)
+    assert_posix_relative_artifacts(report)
+    digest_a = dataset_digest(case.dataset_a)
+    assert digest_a in json.dumps(report)
 
-    token_vocabulary = [
-        {
-            "token_id": token_ids[token],
-            "token": token,
-            "document_count": document_counts[token],
-            "total_count": total_counts[token],
-        }
-        for token in vocabulary
-    ]
 
-    raw_likelihoods = {}
-    class_token_stats = []
-    for label in LABELS:
-        denominator = class_total_tokens[label] + vocab_size
-        for token in vocabulary:
-            count = class_token_counts[label][token]
-            raw_likelihood = math.log((count + 1.0) / denominator)
-            raw_likelihoods[(label, token)] = raw_likelihood
-            class_token_stats.append(
-                {
-                    "label": label,
-                    "token_id": token_ids[token],
-                    "token_count": count,
-                    "log_likelihood": fixed12(raw_likelihood),
-                }
-            )
+def test_yaml_12_json_scalar_semantics(tmp_path: Path) -> None:
+    """Unquoted on/off/yes/no remain strings under YAML 1.2 semantics."""
+    case = case_factory.build_yaml_scalar_case(tmp_path, seed=case_factory.SEED_YAML)
+    result = _run_audit(case)
+    assert result.returncode == EXIT_SUCCESS, result.stderr
+    report = _read_report(audit_report_path(case.output))
+    assert_audit_success(report)
+    ids = {path.stem for path in (case.root / "bundle" / "chambers").glob("*.yaml") if path.name != "aliases.yaml"}
+    assert "keywords" in ids or "on" in case.notes.get("keyword_room_ids", [])
 
-    priors = {label: math.log(class_doc_counts[label] / total_train) for label in LABELS}
-    validation_scores = []
-    for message_id, text, label, _split in validation:
-        present_tokens = [token for token in tokenize(text) if token in token_ids]
-        scores = {}
-        for class_label in LABELS:
-            score = priors[class_label]
-            for token in present_tokens:
-                score += raw_likelihoods[(class_label, token)]
-            scores[class_label] = score
-        predicted = "spam" if scores["spam"] > scores["ham"] else "ham"
-        validation_scores.append(
-            {
-                "message_id": message_id,
-                "true_label": label,
-                "predicted_label": predicted,
-                "log_prob_ham": fixed12(scores["ham"]),
-                "log_prob_spam": fixed12(scores["spam"]),
-                "margin": fixed12(scores["spam"] - scores["ham"]),
-                "correct": 1 if predicted == label else 0,
-            }
+
+def test_modern_question_id_requires_exactly_one_row(tmp_path: Path) -> None:
+    """Stable IDs require exactly one dataset row."""
+    case = case_factory.build_modern_id_case(tmp_path, seed=case_factory.SEED_SCHEMA)
+    result = _run_audit(case)
+    assert result.returncode == EXIT_CONTENT, result.stderr
+    report = _read_report(audit_report_path(case.output))
+    assert_issue_sets_equal(case.expected_issues, issue_tuples(report))
+
+
+def test_legacy_locator_is_stable_under_physical_reorder(tmp_path: Path) -> None:
+    """Legacy row locators use canonical order, not Parquet scan order."""
+    bundled_state = APP_ROOT / ".state" / "audit-state.json"
+    bundled_state.unlink(missing_ok=True)
+    case_a, case_b = case_factory.build_legacy_reorder_case(tmp_path, seed=case_factory.SEED_YAML)
+    res_a = _run_audit(case_a)
+    res_b = _run_audit(case_b)
+    assert res_a.returncode == EXIT_SUCCESS, res_a.stderr
+    assert res_b.returncode == EXIT_SUCCESS, res_b.stderr
+    report_a = _read_report(audit_report_path(case_a.output))
+    report_b = _read_report(audit_report_path(case_b.output))
+    assert report_a["registry_digest"] == report_b["registry_digest"]
+    assert case_a.notes["question_id"] == case_b.notes["question_id"]
+    assert case_a.notes["dataset_digest"] != case_b.notes["dataset_digest"]
+
+
+def test_stale_legacy_fingerprint_is_rejected(tmp_path: Path) -> None:
+    """Row index alone is insufficient; fingerprint must match canonical question text."""
+    case = case_factory.build_stale_fingerprint_case(tmp_path, seed=case_factory.SEED_SCHEMA)
+    result = _run_audit(case)
+    assert result.returncode == EXIT_CONTENT, result.stderr
+    report = _read_report(audit_report_path(case.output))
+    assert_issue_sets_equal(case.expected_issues, issue_tuples(report))
+
+
+def test_unicode_alias_normalization_uses_java_simple_lower(tmp_path: Path) -> None:
+    """İ / empty-alias answers match via Java Character.toLowerCase, not str.casefold()."""
+    from helpers.expectation_model import normalize_answer
+
+    case = case_factory.build_unicode_alias_case(tmp_path, seed=case_factory.SEED_UNICODE)
+    # Simple lowercase (Java): İ→i, ß stays ß. casefold() expands both differently.
+    assert normalize_answer("  İSTANBUL  ") == "istanbul"
+    assert normalize_answer(case.notes["nfc_question"]) == "istanbul"
+    assert normalize_answer("straße") == "straße"
+    assert "straße".casefold() == "strasse"
+    audit = _run_audit(case)
+    assert audit.returncode == EXIT_SUCCESS, audit.stderr
+    report = _read_report(audit_report_path(case.output))
+    assert_audit_success(report)
+    assert len(report) == 6
+    play = _run_playthrough(case)
+    assert play.returncode == EXIT_SUCCESS, play.stderr
+    play_report = _read_report(playthrough_report_path(case.output))
+    assert play_report["reached_exit"] is True
+
+
+def test_schema_variant_uses_copied_encounter_contract(tmp_path: Path) -> None:
+    """Copied encounter schema with required subtitle is enforced at audit time."""
+    case = case_factory.build_schema_variant_case(tmp_path, seed=case_factory.SEED_SCHEMA)
+    result = _run_audit(case)
+    assert result.returncode == EXIT_CONTENT, result.stderr
+    report = _read_report(audit_report_path(case.output))
+    assert_report_matches_schema_dir(report, case.contracts)
+    assert_issue_sets_equal(case.expected_issues, issue_tuples(report))
+
+
+@pytest.mark.parametrize(
+    ("builder", "expected_code"),
+    [
+        (case_factory.build_cycle_case, "graph.cycle"),
+        (case_factory.build_dead_end_case, "graph.dead-end"),
+    ],
+    ids=["cycle", "dead-end"],
+)
+def test_graph_cycle_and_dead_end_are_content_failures(
+    tmp_path: Path,
+    builder,
+    expected_code: str,
+) -> None:
+    """Graph cycle and dead-end rooms exit 2 with completed content-validation issues."""
+    case = builder(tmp_path)
+    result = _run_audit(case)
+    assert result.returncode == EXIT_CONTENT, result.stderr
+    report = _read_report(audit_report_path(case.output))
+    assert_report_matches_schema_dir(report, case.contracts)
+    assert report.get("success") is False
+    assert_issue_sets_equal(case.expected_issues, issue_tuples(report))
+    artifact, pointer, code = case.expected_issues[0]
+    assert code == expected_code
+    assert pointer == "/exits"
+    assert not Path(artifact).is_absolute()
+    assert any(
+        issue["code"] == expected_code
+        and issue["pointer"] == "/exits"
+        and issue["artifact"] == artifact
+        for issue in report.get("issues", [])
+    )
+
+
+def test_alias_playthrough_follows_generated_alias_route(tmp_path: Path) -> None:
+    """Alias-based route and legacy row locator succeed through a real playthrough."""
+    case = case_factory.build_alias_playthrough_case(tmp_path, seed=case_factory.SEED_UNICODE)
+    audit = _run_audit(case)
+    assert audit.returncode == EXIT_SUCCESS, audit.stderr
+    audit_report = _read_report(audit_report_path(case.output))
+    assert_report_matches_schema_dir(audit_report, case.contracts)
+    assert_audit_success(audit_report)
+    play = _run_playthrough(case)
+    assert play.returncode == EXIT_SUCCESS, play.stderr
+    play_report = _read_report(playthrough_report_path(case.output))
+    assert_playthrough_matches_schema_dir(play_report, case.contracts)
+    assert play_report["reached_exit"] is True
+    assert play_report["visited_rooms"] == case.expected_route
+    assert audit_report["registry_digest"] == play_report["registry_digest"]
+
+
+def test_score_boundary_uses_inclusive_streak_threshold(tmp_path: Path) -> None:
+    """Inclusive streak threshold and difficulty multiplier match generator expectation."""
+    case = case_factory.build_score_boundary_case(tmp_path, seed=case_factory.SEED_UNICODE)
+    audit = _run_audit(case)
+    assert audit.returncode == EXIT_SUCCESS, audit.stderr
+    audit_report = _read_report(audit_report_path(case.output))
+    assert_report_matches_schema_dir(audit_report, case.contracts)
+    assert_audit_success(audit_report)
+    play = _run_playthrough(case)
+    assert play.returncode == EXIT_SUCCESS, play.stderr
+    play_report = _read_report(playthrough_report_path(case.output))
+    assert_playthrough_matches_schema_dir(play_report, case.contracts)
+    assert play_report["reached_exit"] is True
+    assert play_report["total_score"] == case.expected_score
+
+
+def test_state_invalidates_on_manifest_contract_and_dataset_content(tmp_path: Path) -> None:
+    """Content-addressed state invalidates manifest, contract, and dataset mutations."""
+    case = case_factory.build_valid_dungeon(tmp_path, seed=case_factory.SEED_YAML)
+    warm = _run_audit(case)
+    assert warm.returncode == EXIT_SUCCESS, warm.stderr
+    warm_report = _read_report(audit_report_path(case.output))
+    warm_digest = warm_report["input_digest"]
+
+    room = next((case.root / "bundle" / "chambers").glob("*.yaml"))
+    original = room.read_bytes()
+    mutated = original.replace(b"title", b"titles", 1)
+    if mutated == original:
+        mutated = original + b"\n"
+    room.write_bytes(mutated)
+    os.utime(room, (1_600_000_000, 1_600_000_000))
+    after_manifest = _run_audit(case)
+    assert after_manifest.returncode in (EXIT_SUCCESS, EXIT_CONTENT)
+    after_report = _read_report(audit_report_path(case.output))
+    assert after_report["input_digest"] != warm_digest
+
+    room.write_bytes(original)
+    schema = case.contracts / "room.schema.json"
+    schema_orig = schema.read_bytes()
+    schema.write_bytes(schema_orig + b" ")
+    os.utime(schema, (1_600_000_000, 1_600_000_000))
+    _run_audit(case)
+    after_contract_report = _read_report(audit_report_path(case.output))
+    assert after_contract_report["input_digest"] != warm_digest
+    schema.write_bytes(schema_orig)
+
+    data_orig = case.dataset.read_bytes()
+    case.dataset.write_bytes(data_orig + b"\0")
+    os.utime(case.dataset, (1_600_000_000, 1_600_000_000))
+    _run_audit(case)
+    after_data_report = _read_report(audit_report_path(case.output))
+    assert after_data_report["input_digest"] != warm_digest
+    case.dataset.write_bytes(data_orig)
+
+
+def test_failed_or_truncated_state_is_never_reused(tmp_path: Path) -> None:
+    """Failed audits and truncated state files are not treated as reusable success."""
+    case = case_factory.build_aggregated_errors_case(tmp_path, seed=case_factory.SEED_SCHEMA)
+    first = _run_audit(case)
+    assert first.returncode == EXIT_CONTENT
+    if case.state.exists():
+        state = load_json(case.state)
+        assert state.get("success") is not True
+
+    case.state.parent.mkdir(parents=True, exist_ok=True)
+    case.state.write_text('{"format_version":"1","input_digest":"abc","success":true,"registry":', encoding="utf-8")
+    valid = case_factory.build_valid_dungeon(tmp_path / "repaired", seed=case_factory.SEED_SCHEMA)
+    repaired = _run_audit(valid)
+    assert repaired.returncode == EXIT_SUCCESS, repaired.stderr
+    state_doc = load_json(valid.state)
+    assert state_doc.get("success") is True
+    assert "registry" in state_doc
+
+
+@pytest.mark.parametrize("seed", [173, 811, 20260711])
+def test_generated_valid_case_changes_counts_and_paths(tmp_path: Path, seed: int) -> None:
+    """Seeded valid dungeons vary counts and paths; reports match reference expectations."""
+    case = case_factory.build_valid_dungeon(tmp_path, seed=seed)
+    audit = _run_audit(case)
+    assert audit.returncode == EXIT_SUCCESS, audit.stderr
+    play = _run_playthrough(case)
+    assert play.returncode == EXIT_SUCCESS, play.stderr
+    audit_report = _read_report(audit_report_path(case.output))
+    play_report = _read_report(playthrough_report_path(case.output))
+    assert len(audit_report.get("artifacts", [])) > 0
+    assert play_report["reached_exit"] is True
+    if case.expected_score is not None:
+        assert play_report["total_score"] == case.expected_score
+    if case.expected_route is not None:
+        assert play_report["visited_rooms"] == case.expected_route
+    for issue in audit_report.get("issues", []):
+        assert not Path(issue["artifact"]).is_absolute()
+
+
+def test_immutable_inputs_are_unchanged(fixture_hashes: dict[str, str]) -> None:
+    """Bundled dataset and contracts remain byte-identical and non-writable."""
+    assert_immutable_hashes(fixture_hashes)
+    _run_audit(
+        case_factory.DungeonCase(
+            root=APP_ROOT,
+            config=BUNDLED_CONFIG,
+            dataset=DATASET,
+            contracts=CONTRACTS,
+            answers=None,
+            state=APP_ROOT / ".state" / "hash-check.json",
+            output=DEFAULT_OUTPUT,
+            description="hash guard",
         )
-
-    conn.close()
-    return {
-        "model_metadata": [{"meta_key": key, "meta_value": value} for key, value in sorted(metadata.items())],
-        "token_vocabulary": token_vocabulary,
-        "class_token_stats": class_token_stats,
-        "validation_scores": sorted(validation_scores, key=lambda row: row["message_id"]),
-    }
+    )
+    assert_immutable_hashes(fixture_hashes)
+    data_path = Path("/data/trivia_qa_sample.parquet")
+    mode = data_path.stat().st_mode
+    assert not (mode & stat.S_IWOTH), "/data must not be world-writable"
 
 
-def table_frame(conn, table):
-    return pd.read_sql_query(f"SELECT * FROM {table}", conn)
+def test_invalid_operational_inputs_use_exit_one_without_fake_validation_report(tmp_path: Path) -> None:
+    """Operational failures exit 1 without claiming a completed content audit."""
+    out = tmp_path / "operational-out"
+    state = tmp_path / "operational-state.json"
 
+    missing_ds = run_trivia_dungeon(
+        "audit",
+        dataset=tmp_path / "missing.parquet",
+        output=out / "a",
+        state=state,
+    )
+    assert missing_ds.returncode == EXIT_OPERATIONAL
+    assert_no_completed_audit_on_operational_failure(out / "a", missing_ds.stderr)
 
-def sorted_checksum(frame):
-    ordered = frame.sort_values(list(frame.columns)).reset_index(drop=True)
-    csv = ordered.to_csv(index=False, lineterminator="\n")
-    return hashlib.sha256(csv.encode()).hexdigest()
-
-
-def expected_frame(rows):
-    return pd.DataFrame(rows)
-
-
-def assert_artifacts_match(db_path):
-    expected = expected_tables(db_path)
-    conn = sqlite3.connect(db_path)
+    blocked_parent = tmp_path / "blocked"
+    blocked_parent.mkdir()
+    blocked_parent.chmod(0o500)
     try:
-        for table in TABLES:
-            actual = table_frame(conn, table)
-            want = expected_frame(expected[table])
-            assert list(actual.columns) == list(want.columns), table
-            assert sorted_checksum(actual) == sorted_checksum(want), table
+        bad_out = run_trivia_dungeon(
+            "audit",
+            output=blocked_parent / "child" / "nested",
+            state=tmp_path / "state-b.json",
+        )
+        assert bad_out.returncode == EXIT_OPERATIONAL
     finally:
-        conn.close()
+        blocked_parent.chmod(0o700)
 
-
-def fetch_all(db_path, sql, params=()):
-    conn = sqlite3.connect(db_path)
-    try:
-        return conn.execute(sql, params).fetchall()
-    finally:
-        conn.close()
-
-
-def execute_sql(db_path, statements):
-    conn = sqlite3.connect(db_path)
-    try:
-        conn.executescript(statements)
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def checksums(db_path):
-    conn = sqlite3.connect(db_path)
-    try:
-        return {table: sorted_checksum(table_frame(conn, table)) for table in TABLES}
-    finally:
-        conn.close()
-
-
-def test_baseline_training_artifacts_match_independent_reference(tmp_path):
-    """The seeded database produces exact Naive Bayes artifacts recomputed from messages and labels."""
-    db_path = db_copy(tmp_path)
-    run_migration(db_path)
-    assert_artifacts_match(db_path)
-
-
-def test_tokenization_counts_repeated_tokens_and_excludes_validation_only_terms(tmp_path):
-    """Vocabulary statistics use repeated training tokens and ignore words that appear only in validation rows."""
-    db_path = db_copy(tmp_path)
-    run_migration(db_path)
-    rows = fetch_all(
-        db_path,
-        """
-        SELECT token, document_count, total_count
-        FROM token_vocabulary
-        WHERE token IN ('bonus', 'today', 'notebook')
-        ORDER BY token
-        """,
+    bad_state = tmp_path / "not-a-dir" / "state.json"
+    bad_state.parent.write_text("file", encoding="utf-8")
+    bad_state_run = run_trivia_dungeon(
+        "audit",
+        output=tmp_path / "out-c",
+        state=bad_state,
     )
-    assert rows == [("bonus", 4, 6), ("today", 1, 1)]
+    assert bad_state_run.returncode == EXIT_OPERATIONAL
 
 
-def test_smoothed_class_likelihoods_are_complete_for_both_classes(tmp_path):
-    """Every vocabulary token has ham and spam smoothed likelihood rows with the documented class order."""
-    db_path = db_copy(tmp_path)
-    run_migration(db_path)
-    vocab_count = fetch_all(db_path, "SELECT COUNT(*) FROM token_vocabulary")[0][0]
-    rows = fetch_all(
-        db_path,
-        """
-        SELECT label, COUNT(*), MIN(log_likelihood), MAX(log_likelihood)
-        FROM class_token_stats
-        GROUP BY label
-        ORDER BY label
-        """,
-    )
-    assert rows[0][0] == "ham"
-    assert rows[1][0] == "spam"
-    assert rows[0][1] == vocab_count
-    assert rows[1][1] == vocab_count
-    assert_artifacts_match(db_path)
-
-
-def test_validation_scores_apply_model_scores_and_ham_tie_break(tmp_path):
-    """Validation scoring uses model log scores and chooses ham when a no-token example ties."""
-    db_path = db_copy(tmp_path)
-    execute_sql(
-        db_path,
-        """
-        INSERT INTO messages (id, message_text) VALUES (50, 'x I a!');
-        INSERT INTO labels (message_id, label, split) VALUES (50, 'spam', 'validation');
-        """,
-    )
-    run_migration(db_path)
-    assert_artifacts_match(db_path)
-    tied = fetch_all(
-        db_path,
-        """
-        SELECT predicted_label, log_prob_ham, log_prob_spam, margin, correct
-        FROM validation_scores
-        WHERE message_id = 50
-        """,
-    )
-    assert tied == [("ham", "-0.693147180560", "-0.693147180560", "0.000000000000", 0)]
-
-
-def test_rerun_replaces_stale_artifact_rows_without_changing_seed_tables(tmp_path):
-    """A second run removes old model rows and leaves the source message and label tables intact."""
-    db_path = db_copy(tmp_path)
-    before_sources = checksums_for_sources(db_path)
-    run_migration(db_path)
-    first = checksums(db_path)
-    execute_sql(
-        db_path,
-        """
-        INSERT OR REPLACE INTO model_metadata (meta_key, meta_value) VALUES ('stale', 'row');
-        INSERT OR REPLACE INTO token_vocabulary (token_id, token, document_count, total_count)
-            VALUES (9999, 'staletoken', 9, 9);
-        INSERT OR REPLACE INTO validation_scores
-            (message_id, true_label, predicted_label, log_prob_ham, log_prob_spam, margin, correct)
-            VALUES (9999, 'spam', 'spam', '0.000000000000', '0.000000000000', '0.000000000000', 1);
-        """,
-    )
-    run_migration(db_path)
-    assert checksums(db_path) == first
-    assert checksums_for_sources(db_path) == before_sources
-
-
-def checksums_for_sources(db_path):
-    conn = sqlite3.connect(db_path)
-    try:
-        return {
-            "messages": sorted_checksum(pd.read_sql_query("SELECT * FROM messages", conn)),
-            "labels": sorted_checksum(pd.read_sql_query("SELECT * FROM labels", conn)),
-        }
-    finally:
-        conn.close()
-
-
-def test_dynamic_training_mutation_retrains_counts_likelihoods_and_scores(tmp_path):
-    """Verifier-side message changes force the migration to retrain instead of replaying fixed artifacts."""
-    db_path = db_copy(tmp_path)
-    execute_sql(
-        db_path,
-        """
-        INSERT INTO messages (id, message_text) VALUES
-            (60, 'Orbit orbit ORBIT launch bonus 99 99'),
-            (61, 'Orbit meeting agenda 99 notes'),
-            (62, 'Launch bonus orbit now'),
-            (63, 'quasaronly validation token never trained');
-        INSERT INTO labels (message_id, label, split) VALUES
-            (60, 'spam', 'train'),
-            (61, 'ham', 'train'),
-            (62, 'spam', 'validation'),
-            (63, 'ham', 'validation');
-        """,
-    )
-    run_migration(db_path)
-    assert_artifacts_match(db_path)
-    rows = fetch_all(
-        db_path,
-        """
-        SELECT token, document_count, total_count
-        FROM token_vocabulary
-        WHERE token IN ('orbit', '99', 'quasaronly')
-        ORDER BY token
-        """,
-    )
-    assert rows == [("99", 2, 3), ("orbit", 2, 4)]
-
-
-def test_metadata_tracks_current_training_shape_after_later_successful_rerun(tmp_path):
-    """Metadata counts and priors refresh when additional labeled training rows appear later."""
-    db_path = db_copy(tmp_path)
-    run_migration(db_path)
-    execute_sql(
-        db_path,
-        """
-        INSERT INTO messages (id, message_text) VALUES
-            (70, 'Calendar notes agenda review'),
-            (71, 'Prize refund bonus urgent');
-        INSERT INTO labels (message_id, label, split) VALUES
-            (70, 'ham', 'train'),
-            (71, 'spam', 'train');
-        """,
-    )
-    run_migration(db_path)
-    assert_artifacts_match(db_path)
-    rows = dict(fetch_all(db_path, "SELECT meta_key, meta_value FROM model_metadata"))
-    assert rows["train_message_count"] == "22"
-    assert rows["validation_message_count"] == "4"
-    assert rows["log_prior.ham"] == "-0.693147180560"
-    assert rows["log_prior.spam"] == "-0.693147180560"
+def test_fingerprint_matches_domain_contract() -> None:
+    """Sanity: verifier fingerprint matches domain-contract formula."""
+    rows = canonical_rows(DATASET)
+    assert rows, "bundled dataset must contain rows"
+    sample = rows[0]
+    assert question_fingerprint(sample["question"]) == sample["question_sha256"]

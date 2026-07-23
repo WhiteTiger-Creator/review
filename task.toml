@@ -4,14 +4,21 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "machine-learning"
+category = "games"
 subcategories = ["db_interaction"]
 number_of_milestones = 0
-codebase_size = "minimal"
-languages = ["php", "sql"]
-tags = ["php", "sqlite", "naive-bayes", "spam-classification", "model-training"]
-expert_time_estimate_min = 120
-junior_time_estimate_min = 260
+codebase_size = "small"
+languages = ["java", "bash", "sql"]
+tags = [
+  "terminal-game",
+  "trivia",
+  "dungeon",
+  "playthrough",
+  "scoring",
+  "rooms",
+]
+expert_time_estimate_min = 300
+junior_time_estimate_min = 720
 
 [verifier]
 timeout_sec = 900
@@ -20,9 +27,9 @@ timeout_sec = 900
 timeout_sec = 1800
 
 [environment]
-build_timeout_sec = 900
-cpus = 2
-memory_mb = 4096
-storage_mb = 10240
+build_timeout_sec = 1200
+cpus = 4
+memory_mb = 8192
+storage_mb = 12288
 workdir = "/app"
 allow_internet = false
