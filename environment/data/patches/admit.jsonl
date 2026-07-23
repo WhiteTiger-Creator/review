@@ -1,3 +1,0 @@
-{"package_id_or_prefix": "apk-01", "allowed": ["musl-compat", "fix-cve"]}
-{"package_id_or_prefix": "apk-05", "allowed": ["safe-opt"]}
-{"package_id_or_prefix": "apk-", "allowed": ["fix-cve", "musl-compat", "safe-opt", "tls-hardening"]}
