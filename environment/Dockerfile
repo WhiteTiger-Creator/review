@@ -1,67 +1,68 @@
-FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
+FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36 AS toolchain
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential=12.9 \
-    ca-certificates=20230311+deb12u1 \
-    cmake=3.25.1-1 \
-    && rm -rf /var/lib/apt/lists/*
+FROM public.ecr.aws/docker/library/ubuntu:24.04@sha256:0d39fcc8335d6d74d5502f6df2d30119ff4790ebbb60b364818d5112d9e3e932
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TERM=xterm
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+ENV TMUX_TMPDIR=/var/tmp/tmux
+ENV CARGO_HOME=/usr/local/cargo
+ENV RUSTUP_HOME=/usr/local/rustup
+ENV PATH="/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 WORKDIR /app
 
-COPY CMakeLists.txt /app/CMakeLists.txt
-COPY src /app/src
-COPY etc /app/etc
-COPY usr /app/usr
-COPY opt /app/opt
-COPY tools /app/tools
-COPY docs /app/docs
-COPY fixtures /app/fixtures
-
-RUN cmake -S /app -B /tmp/site-build -DCMAKE_BUILD_TYPE=Release \
-    && cmake --build /tmp/site-build --parallel 2 \
-    && cmake --install /tmp/site-build --prefix /app \
-    && rm -rf /tmp/site-build \
-    && chmod 0755 \
-        /app/usr/sbin/site-admin \
-        /app/usr/sbin/site-activate \
-        /app/usr/libexec/a1/q1.sh \
-        /app/usr/lib/b2/q2.sh \
-        /app/opt/c3/exec/q3.sh \
-        /app/usr/libexec/a1/r1.sh \
-        /app/opt/c3/exec/r3.sh \
-        /app/tools/make-lab.sh
-
-
-# Offline verifier (task.toml: allow_internet=false): bake pytest at image build.
-# terminus-2 drives the agent through an interactive tmux bash. Agents sometimes
-# append `exit $rc` after builds; that tears down the session and yields
-# verifier_did_not_run. Keep the shell alive under TMUX (harness teardown still
-# uses tmux kill-session).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3=3.11.2-1+b1 \
-    python3-venv=3.11.2-1+b1 \
-    python-is-python3=3.11.2-1+deb12u1 \
-    tmux=3.3a-3 asciinema=2.2.0-1 \
-    && rm -rf /var/lib/apt/lists/* \
-    && command -v tmux && command -v asciinema \
-    && tmux -V \
-    && asciinema --version \
-    && printf '%s\n' \
-         '' \
-         'if [ -n "${TMUX:-}" ]; then' \
-         '  exit() { true; }' \
-         'fi' >> /etc/bash.bashrc \
-    && mkdir -p /root \
-    && touch /root/.bashrc \
-    && printf '%s\n' \
-         '' \
-         'if [ -n "${TMUX:-}" ]; then' \
-         '  exit() { true; }' \
-         'fi' >> /root/.bashrc \
-    && python -m venv /opt/verifier-venv \
+    python3=3.12.3-0ubuntu2.1 \
+    make=4.3-4.1build2 \
+    ncurses-term=6.4+20240113-1ubuntu2.1 \
+    bash=5.2.21-2ubuntu4 \
+    ca-certificates=20260601~24.04.1 \
+    tmux=3.4-1ubuntu0.1 \
+    asciinema=2.4.0-1 \
+    python3-venv=3.12.3-0ubuntu2.1 \
+    patch=2.7.6-7build3 \
+    build-essential=12.10ubuntu1 \
+&& mkdir -p /var/tmp/tmux \
+    && chmod 1777 /var/tmp/tmux \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN --mount=type=bind,from=toolchain,source=/usr/local/cargo,target=/mnt/cargo,ro \
+    --mount=type=bind,from=toolchain,source=/usr/local/rustup,target=/mnt/rustup,ro \
+    cp -a /mnt/cargo /usr/local/cargo \
+    && cp -a /mnt/rustup /usr/local/rustup
+
+COPY runtime/tmux.conf /etc/tmux.conf
+
+RUN python3 -m venv /opt/verifier-venv \
     && /opt/verifier-venv/bin/pip install --no-cache-dir \
-        pytest==8.4.1 pytest-json-ctrf==0.3.5 \
-    && /opt/verifier-venv/bin/pytest --version \
-    && ln -sf /opt/verifier-venv/bin/pytest /usr/local/bin/pytest
-ENV PATH="/opt/verifier-venv/bin:${PATH}"
+    pytest==8.4.1 \
+    pytest-json-ctrf==0.3.5
+
+COPY Cargo.toml Cargo.lock Makefile /app/environment/
+COPY err.rs /app/environment/
+COPY src /app/environment/src
+COPY k2 /app/environment/k2
+COPY m4 /app/environment/m4
+COPY w3 /app/environment/w3
+COPY r7 /app/environment/r7
+COPY n5 /app/environment/n5
+COPY p1 /app/environment/p1
+COPY j0 /app/environment/j0
+COPY support /app/environment/support
+COPY configs /app/environment/configs
+COPY data /app/environment/data
+COPY docs /app/environment/docs
+COPY scripts /app/environment/scripts
+COPY entrypoint.sh /entrypoint.sh
+
+WORKDIR /app/environment
+RUN /usr/local/cargo/bin/cargo generate-lockfile \
+    && make install \
+    && mkdir -p /app/output /logs/verifier /logs/agent \
+    && chmod +x /app/environment/scripts/run_matrix.sh /entrypoint.sh
+
+WORKDIR /app
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["sleep", "infinity"]

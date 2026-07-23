@@ -1,6 +1,7 @@
 #!/bin/bash
 
-# Verifier Python/pytest are baked in the image (see environment/Dockerfile).
+# Verifier dependencies are installed in environment/Dockerfile.
+# Add task-specific verifier-only Python packages there, not here.
 
 mkdir -p /logs/verifier
 echo 0 > /logs/verifier/reward.txt
@@ -10,10 +11,11 @@ if [ "$PWD" = "/" ]; then
     exit 1
 fi
 
-pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
+/opt/verifier-venv/bin/python -m pytest -o cache_dir=/tmp/pytest_cache \
+    --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
 
-verify_rc=$?
-if [ "$verify_rc" -eq 0 ]; then
+# Produce reward file (REQUIRED)
+if [ $? -eq 0 ]; then
   echo 1 > /logs/verifier/reward.txt
 else
   echo 0 > /logs/verifier/reward.txt

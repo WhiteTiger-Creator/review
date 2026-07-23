@@ -1,9 +1,0 @@
-#!/bin/bash
-set -euo pipefail
-
-if [ "$#" -ne 1 ]; then
-    echo "usage: site-activate VOLUME_STATE_DIRECTORY" >&2
-    exit 64
-fi
-
-exec /app/opt/c3/exec/q3.sh "$1"
