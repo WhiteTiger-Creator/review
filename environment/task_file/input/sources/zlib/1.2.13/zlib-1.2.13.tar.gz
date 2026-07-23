@@ -1,4 +1,0 @@
-archive for zlib@1.2.13
-compat=1
-license=MIT
-min_bazel=6.0.0

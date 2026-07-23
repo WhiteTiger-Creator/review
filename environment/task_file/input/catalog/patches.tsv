@@ -1,4 +1,0 @@
-module	version	patch_path	sha256	size	apply
-com_acme_app	1.0.0	patches/com_acme_app/1.0.0/com_acme_app-1.0.0.patch	476e356550b77d6998f5f03d032155437987599977c516675d80682268cec28f	29	true
-rules_java	7.4.0	patches/rules_java/7.4.0/rules_java-7.4.0.patch	751f1ff3f31c500b37149841e2e929ef3a7af29ebf9a61fad4527cbac6208174	32	false
-zlib	1.3.1	patches/zlib/1.3.1/zlib-1.3.1.patch	ef35cc5fd4d52434ce00baece52e8af9dbb05ab14bb0c4c9bf570732765f8b4b	21	true
