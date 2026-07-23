@@ -1,0 +1,10 @@
+[package]
+name = "w7x"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+wide = []
+
+[dependencies]

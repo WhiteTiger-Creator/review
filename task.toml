@@ -4,27 +4,24 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "system-administration"
-subcategories = ["long_context", "tool_specific", "api_integration", "db_interaction"]
-number_of_milestones = 0
+category = "build-and-dependency-management"
+subcategories = ["tool_specific"]
 codebase_size = "small"
-languages = ["SQL", "Bash"]
-tags = ["sqlite", "strace", "lsof", "unix-sockets", "service-recovery"]
-expert_time_estimate_min = 180
+number_of_milestones = 0
+languages = ["rust", "c", "bash"]
+tags = ["rust", "cargo-features", "build-rs", "cdylib", "lto", "layout-abi"]
+expert_time_estimate_min = 120
 junior_time_estimate_min = 360
 
-[verifier]
-timeout_sec = 600.0
-
 [agent]
-timeout_sec = 1800.0
+timeout_sec = 1800
+
+[verifier]
+timeout_sec = 1800
 
 [environment]
-build_timeout_sec = 900.0
-docker_flags = []
-cpus = 2
-memory_mb = 4096
-storage_mb = 10240
-gpus = 0
-gpu_types = []
 allow_internet = false
+build_timeout_sec = 900
+cpus = 2
+memory_mb = 8192
+storage_mb = 20480

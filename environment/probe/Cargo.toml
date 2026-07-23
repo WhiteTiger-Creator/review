@@ -1,0 +1,15 @@
+[package]
+name = "probe"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+bx = ["dep:p3n", "p3n/bx"]
+by = ["dep:v4q", "v4q/by"]
+
+[dependencies]
+w7x = { path = "../w7x" }
+k9m = { path = "../k9m" }
+p3n = { path = "../p3n", optional = true }
+v4q = { path = "../v4q", optional = true }
