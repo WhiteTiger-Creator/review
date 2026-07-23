@@ -1,11 +1,10 @@
-#!/bin/bash
+#!/usr/bin/env bash
+
 mkdir -p /logs/verifier
-echo 0 > /logs/verifier/reward.txt
-cd /app || true
-python3 -m pytest -rA /tests/test_outputs.py
+pytest -q -rA -p no:cacheprovider /tests/test_outputs.py
 rc=$?
 if [ "$rc" -eq 0 ]; then
-  echo 1 > /logs/verifier/reward.txt
+    echo 1 > /logs/verifier/reward.txt
 else
-  echo 0 > /logs/verifier/reward.txt
+    echo 0 > /logs/verifier/reward.txt
 fi

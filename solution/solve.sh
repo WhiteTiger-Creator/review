@@ -1,87 +1,86 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
-cd /app || exit 1
 
-cat > src/order.rs <<'EOF'
-use crate::model::Version;
-use std::cmp::Ordering;
-use std::collections::HashMap;
+cd /app
 
-fn is_numeric(id: &str) -> bool {
-    !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())
-}
+sed -i 's/rust-version = "1.85"/rust-version = "1.88"/' Cargo.toml
+sed -i 's/crossbeam-channel = "=0.5.14"/crossbeam-channel = "=0.5.15"/' Cargo.toml
+sed -i 's/serde = { version = "=1.0.219"/serde = { version = "=1.0.220"/' Cargo.toml
+sed -i 's/serde-json-wasm = "=1.0.0"/serde-json-wasm = "=1.0.1"/' Cargo.toml
+sed -i 's/time = { version = "=0.3.36"/time = { version = "=0.3.47"/' Cargo.toml
 
-fn cmp_ident(a: &str, b: &str) -> Ordering {
-    match (is_numeric(a), is_numeric(b)) {
-        (true, true) => a
-            .parse::<u64>()
-            .unwrap_or(0)
-            .cmp(&b.parse::<u64>().unwrap_or(0)),
-        (true, false) => Ordering::Less,
-        (false, true) => Ordering::Greater,
-        (false, false) => a.cmp(b),
-    }
-}
+mv .cargo/config.toml /tmp/cargo-reconcile-initial-config.toml
+cargo update -p serde --precise 1.0.220
+cargo update -p serde-json-wasm --precise 1.0.1
+cargo update -p crossbeam-channel --precise 0.5.15
+cargo update -p time --precise 0.3.47
 
-// Maturity (install preference): Greater means `a` is nearer to final release.
-fn mat(a: &[String], b: &[String]) -> Ordering {
-    let n = a.len().min(b.len());
-    for i in 0..n {
-        let o = cmp_ident(&a[i], &b[i]);
-        if o != Ordering::Equal {
-            return o;
-        }
-    }
-    // Shared prefix equal: the shorter tag is nearer release (more mature),
-    // the reverse of standard semver precedence.
-    b.len().cmp(&a.len())
-}
+mv vendor "/tmp/cargo-reconcile-initial-vendor-$$"
+cargo vendor --locked vendor >/tmp/cargo-vendor-config.txt
+install -m 0644 /solution/final-config.toml .cargo/config.toml
+install -m 0644 /solution/deny.toml deny.toml
 
-pub struct Resolver {
-    floors: HashMap<(u64, u64, u64), Vec<String>>,
-}
+cargo metadata --locked --offline --format-version 1 >/tmp/cargo-reconcile-metadata.json
+cargo test --workspace --all-targets --locked --offline
+cargo audit --json >/tmp/cargo-reconcile-audit.json
+cargo deny --all-features check advisories bans licenses sources
 
-impl Resolver {
-    pub fn new() -> Self {
-        Resolver {
-            floors: HashMap::new(),
-        }
-    }
+rustsec_commit="$(git ls-remote https://github.com/RustSec/advisory-db HEAD | awk 'NR == 1 {print $1}')"
+test "${#rustsec_commit}" -eq 40
 
-    // Accumulate the strictest (most mature) required minimum per core.
-    pub fn require(&mut self, v: &Version) {
-        let keep = match self.floors.get(&v.core) {
-            None => true,
-            Some(cur) => mat(&v.pre, cur) == Ordering::Greater,
-        };
-        if keep {
-            self.floors.insert(v.core, v.pre.clone());
-        }
-    }
+lock_hash="$(sha256sum Cargo.lock | awk '{print $1}')"
+run_id="${lock_hash:0:20}"
+resolved_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+rust_version="$(rustc --version | head -n 1)"
+cargo_version="$(cargo --version | head -n 1)"
+audit_version="$(cargo audit --version | head -n 1)"
+deny_version="$(cargo deny --version | head -n 1)"
 
-    pub fn install(&mut self, a: &Version, b: &Version) -> String {
-        if a.core != b.core {
-            return String::from("INCOMPARABLE");
-        }
-        let clears = |v: &Version| match self.floors.get(&a.core) {
-            None => true,
-            Some(fp) => mat(&v.pre, fp) != Ordering::Less,
-        };
-        match (clears(a), clears(b)) {
-            (false, false) => String::from("NONE"),
-            (true, false) => a.raw.clone(),
-            (false, true) => b.raw.clone(),
-            (true, true) => match mat(&a.pre, &b.pre) {
-                // Minimal selection: install the least-mature build.
-                Ordering::Less => a.raw.clone(),
-                Ordering::Greater => b.raw.clone(),
-                Ordering::Equal => a.raw.clone(),
-            },
-        }
-    }
-}
-EOF
+mkdir -p release
+ledger="release/dependency-ledger.sqlite"
+if [ -e "$ledger" ]; then
+    mv "$ledger" "/tmp/dependency-ledger.$$.sqlite"
+fi
+sqlite3 "$ledger" < docs/release-ledger.sql
+sqlite3 "$ledger" <<SQL
+BEGIN IMMEDIATE;
+INSERT INTO release_run VALUES(
+  '$run_id', '$resolved_at', '$rust_version', '$cargo_version',
+  '$audit_version', '$deny_version', '$lock_hash', '$rustsec_commit', 1, 1
+);
+INSERT INTO dependency_change VALUES(
+  '$run_id', 'crossbeam-channel', '0.5.14', '0.5.15',
+  'RUSTSEC-2025-0024', 1, '1.60'
+);
+INSERT INTO dependency_change VALUES(
+  '$run_id', 'serde-json-wasm', '1.0.0', '1.0.1',
+  'RUSTSEC-2024-0012', 0, ''
+);
+INSERT INTO dependency_change VALUES(
+  '$run_id', 'time', '0.3.36', '0.3.47',
+  'RUSTSEC-2026-0009', 0, '1.88.0'
+);
+INSERT INTO policy_check VALUES(
+  '$run_id', 'cargo-metadata', 'cargo metadata --locked --offline --format-version 1', 'pass'
+);
+INSERT INTO policy_check VALUES(
+  '$run_id', 'cargo-test', 'cargo test --workspace --all-targets --locked --offline', 'pass'
+);
+INSERT INTO policy_check VALUES(
+  '$run_id', 'cargo-audit', 'cargo audit --json', 'pass'
+);
+INSERT INTO policy_check VALUES(
+  '$run_id', 'cargo-deny', 'cargo deny --all-features check advisories bans licenses sources', 'pass'
+);
+COMMIT;
+SQL
 
-make clean >/dev/null 2>&1 || true
-make || exit 1
-./preorder < data/examples/ex01.in || exit 1
+sed \
+  -e "s|@@RESOLVED_AT@@|$resolved_at|g" \
+  -e "s|@@RUSTSEC_COMMIT@@|$rustsec_commit|g" \
+  -e "s|@@LOCK_HASH@@|$lock_hash|g" \
+  -e "s|@@RUST_VERSION@@|$rust_version|g" \
+  -e "s|@@CARGO_VERSION@@|$cargo_version|g" \
+  -e "s|@@AUDIT_VERSION@@|$audit_version|g" \
+  -e "s|@@DENY_VERSION@@|$deny_version|g" \
+  /solution/reconciliation.template.md > release/reconciliation.md
