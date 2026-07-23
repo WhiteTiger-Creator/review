@@ -1,0 +1,7 @@
+# relay recovery corpus HRH-2026.07-R11
+# order<TAB>document<TAB>authority
+01	relay-operations-handbook.md	request-set authority, alias adjudication, catalog snapshot, deterministic planning, relocation
+02	socket-evidence-review.md	exact-path chronology, errno meaning, sealed lsof snapshot, socket eligibility
+03	route-governance-record.md	family precedence, cohort selection, directives, dependency closure, route provenance
+04	capacity-and-payload-notes.md	descriptor budget, connection and backlog arithmetic, body adjustments, tier selection
+05	publication-and-audit-minutes.md	locking, staging, rollback, canonical publication, audit reconciliation
