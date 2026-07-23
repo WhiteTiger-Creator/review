@@ -1,0 +1,29 @@
+[[settings]]
+setting_id = "sys_preload_prod"
+cluster_id = "prod-app-01"
+scope = "system"
+setting_name = "shared_preload_libraries"
+value = ["pg_stat_statements"]
+
+[[settings]]
+setting_id = "sys_maxconn_prod"
+cluster_id = "prod-app-01"
+scope = "system"
+setting_name = "max_connections"
+value = 100
+
+[[settings]]
+setting_id = "db_timeout_prod"
+cluster_id = "prod-app-01"
+scope = "database"
+database_id_or_null = "app_primary"
+setting_name = "statement_timeout"
+value = 30000
+
+[[settings]]
+setting_id = "role_idle_stg"
+cluster_id = "staging-api-01"
+scope = "role"
+role_id_or_null = "staging_svc"
+setting_name = "idle_in_transaction_session_timeout"
+value = 60000

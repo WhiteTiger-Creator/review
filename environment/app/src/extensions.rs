@@ -1,0 +1,1 @@
+//! Extension closure (starter stub).
