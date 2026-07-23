@@ -10,7 +10,8 @@
 **/dist/
 **/build/
 **/.venv/
-**/venv/
+.venv/
+venv/
 .env
 *.log
 solution/

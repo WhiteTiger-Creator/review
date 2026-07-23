@@ -1,0 +1,2 @@
+phases,eccentricity,ocean_pressure,temperature,cubic,memory,ridge,tv,tv_eps,edge_threshold,source_total,design_noise,signal_rho,portfolio_size,portfolio_dose,phase_gap
+24,0.0047,7.6,268.4,0.018,0.32,0.04,0.08,0.02,0.46,1.0,0.035,0.25,3,0.20,4

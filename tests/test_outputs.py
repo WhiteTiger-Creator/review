@@ -1,357 +1,901 @@
-"""Behavioral verification for the recovered local relay generation."""
+"""tests for the periodic plume inversion and flyby portfolio program."""
+
 from __future__ import annotations
 
-import hashlib
-import json
-from pathlib import Path
-import socket
+import csv
+import itertools
+import math
+import shutil
 import sqlite3
-import stat
 import subprocess
-import time
+from pathlib import Path
 
-APP = Path("/app")
-CONFIG_DIR = APP / "etc/harbor-relay"
-AUDIT = APP / "var/repair-audit.db"
-MANIFEST = APP / "var/repair-manifest.json"
-LOCK = APP / "var/harbor-repair.lock"
-ZERO = "0" * 64
+import numpy as np
+import pytest
 
-PROTECTED = {
-    "docs/audit-database-contract.md": "617be0a34dc31d21ec2c4243d83b75eacd486293e1fc73aa1b90f5580872317a",
-    "docs/capacity-and-payload-notes.md": "d5e7d5cb61f98ca0c34c51d15a7f128524e0b3ecf111eb271d3124283112ee65",
-    "docs/catalog-field-notes.md": "1cfe0a8a61bfe73ad5d81685661bfca1ce8113e7ff3821e1edbb87b887ad98de",
-    "docs/oncall-shift-notes.md": "f8a73de870b62b585c1556d7bc44418323bcf49c39a9286f0cbb6570ec8f269d",
-    "docs/operator-recovery-contract.md": "6d6b39d27b8aa2163ad0bab90e72197227cca14a31e1731176e23013ecd133a9",
-    "docs/publication-and-audit-minutes.md": "f77abc3f1f2be1838751008624faee5327cf76d76847213b36883262dc4c4b33",
-    "docs/publication-state-machine.md": "1feb0f995961c4691c2f409ffc24aab3239aab2ba40beae676d38a45f0343930",
-    "docs/recovery-corpus.manifest": "ca71c742a8b713a307f56ff614bffb067978622205664f085147a9ea4088eccc",
-    "docs/relay-config-format.md": "379a52dcc094b133f583c67afd3b7eb48b35d6417b66fed7e6a081f1df57b000",
-    "docs/relay-operations-handbook.md": "97757d257094cdfa3d99df6ac1f5c6be8b42fb5536477d3dbee177d76fb43f5b",
-    "docs/route-governance-record.md": "9121072fe7fcbcb2dd84016d8ee322538ad6e9151bd7474f49aea8e809411fd0",
-    "docs/socket-evidence-review.md": "c2142197926955cf518a42142514bba59787b7f6e966dde55fb0e3b8470b09b5",
-    "etc/harbor-relay/environment": "37a348b1f87129d1798bf70fbc27a7b3ac19f86d1fed568760b4527d5e4b2ac8",
-    "etc/harbor-relay/service.account": "347b74cca9e03f1d208e1b5c7026830abd046a38d16411a14dfb8b46d6e361bf",
-    "evidence/capture.meta": "56334ed560725dc8a3bc8e7c621b7b0da08d6f36a4cff774069481e61d7140ae",
-    "evidence/relay.lsof": "c011e2763c5a4b16333358e337d217bbaaa9b195bda4a00df3ae3a33bb6b89f1",
-    "evidence/relay.strace": "9221acfe033c3079863ef635eb772a67f5fc8f4852ad285ebb42078699681a11",
-    "fixtures/README.txt": "1821b6e899e21ea0b345e686b684927dc742e34401a96ecd2d565e745c239592",
-    "fixtures/broken-config/limits.conf": "f28a35039bff7cae9ceb372296939043a89fd08072baa8bf5ff71e8725d60af1",
-    "fixtures/broken-config/relay.conf": "1aafa548b85f221e911ee4a6df4388e24d980ec1f07f60e47fa63793d2ec5169",
-    "fixtures/broken-config/routes.map": "65dad79e3b2217a5c34e9fbac418bd720514526bdebe154e7a5397fa35a63381",
-    "fixtures/requests/arrival-replay.http": "4c9841e467bc1842aa5beb3992543e9f6c7114168fc4196692911980abd69237",
-    "fixtures/requests/manifest-replay.http": "ad3a76dd6c30f1127181a3d119d0d5456b21d3db71100d62e448373e1d88aec9",
-    "fixtures/requests/replay-set.manifest": "68bbcc614bb582f239338cd0bb11d2f7e0c3bb02f02bcf2d5f3c7ab229101a66",
-    "fixtures/requests/status-replay.http": "96f0bdf0e942f7ed65512d8762ca7610c3ee2cf09ab964af576b7e1aab0acef9",
-    "scripts/reset-broken-state": "71697076f4338958c2fb9b5cdc204c87848dd634247457770990c1eebf42f208",
-    "scripts/send-sample-request": "6b55e5deba6ed58ee8b9d71dbd3b019bede64a62c2ce9f3fc70daa8698c48f9b",
-    "share/repair-catalog.batch": "4fc9b616e2541e785b7172367fff16aa31d8d18cbb5583b3689e1636405c4b59",
-}
 
-EXPECTED_RELAY = {
-    "site_key": "st-042",
-    "socket_path": "/app/run/harbor-relay/recovery.sock",
-    "socket_mode": "0660",
-    "socket_owner": "relayops",
-    "socket_group": "relay",
-    "listen_backlog": "128",
-    "route_map": "/app/etc/harbor-relay/routes.map",
-    "limits_file": "/app/etc/harbor-relay/limits.conf",
-    "audit_db": "/app/var/repair-audit.db",
-    "catalog_generation": "29",
-}
-EXPECTED_LIMITS = {
-    "open_files_soft": "640",
-    "reserved_files": "64",
-    "max_connections": "108",
-    "request_body_limit": "65536",
-}
-EXPECTED_ROUTES = [
-    ("GET", "/v1/berth/capabilities", "http://127.0.0.1:5902/capabilities", "preserve", "1200", "rt-203"),
-    ("GET", "/v1/berth/status", "http://127.0.0.1:5902/status", "preserve", "725", "rt-200"),
-    ("POST", "/v1/berth/arrivals", "http://127.0.0.1:5901/intake/arrivals-v2", "custody-token", "1850", "rt-201"),
-    ("POST", "/v1/berth/manifest", "http://127.0.0.1:5901/intake/manifest-v2", "dual-proof", "4100", "rt-204"),
+JANET = "/usr/local/bin/janet"
+MAIN = "/app/src/main.janet"
+BASE_ROOT = Path("/tmp/plume_verifier_input")
+BASE_OUTPUT = Path("/app/output")
+BASE_DB = BASE_OUTPUT / "plume.db"
+CANDIDATE_CWD = "/app"
+CANDIDATE_PREFIX = [
+    "/usr/bin/setpriv",
+    "--reuid=65534",
+    "--regid=65534",
+    "--clear-groups",
+    "--no-new-privs",
 ]
 
+CONTROL_HEADER = (
+    "phases,eccentricity,ocean_pressure,temperature,cubic,memory,ridge,tv,"
+    "tv_eps,edge_threshold,source_total,design_noise,signal_rho,portfolio_size,"
+    "portfolio_dose,phase_gap"
+)
+CONTROL_ROW = (
+    "24,0.0047,7.6,268.4,0.018,0.32,0.04,0.08,0.02,0.46,1.0,0.035,"
+    "0.25,3,0.20,4"
+)
+FRACTURE_HEADER = (
+    "id,shell_km,depth_km,viscosity,base_mm,coupling,phase_offset,"
+    "salinity_ppt,gas_ppm"
+)
+FRACTURE_ROWS = [
+    "baghdad,24.0,6.2,1.15,0.42,0.18,0.0,18.0,900.0",
+    "cairo,31.0,5.5,1.80,0.28,0.12,0.65,35.0,1500.0",
+    "damascus,19.0,6.8,0.85,0.58,0.20,1.30,12.0,600.0",
+    "alexandria,27.0,4.9,1.35,0.36,0.16,2.05,42.0,2200.0",
+    "camphor,22.0,6.0,1.05,0.50,0.14,2.70,25.0,1100.0",
+]
+CANDIDATE_HEADER = "candidate,phase,altitude_km,speed_kms,dose_limit"
+CANDIDATE_ROWS = [
+    "orbiter-a,2,42,7.5,0.060",
+    "orbiter-b,6,65,6.2,0.030",
+    "orbiter-c,10,90,5.5,0.050",
+    "orbiter-d,14,35,8.1,0.080",
+    "orbiter-e,18,120,4.8,0.100",
+    "orbiter-f,22,55,6.8,0.090",
+]
+OBS_HEADER = "phase,m18,m44,brightness,sigma_m18,sigma_m44,sigma_brightness"
+OBS_ROWS = [
+    "0,0.00350515231936326,0.004927833775649793,0.06766572402233269,0.025,0.018,0.03",
+    "1,0.008746300361401272,0.0034028012290895464,0.060809576038850115,0.025,0.018,0.03",
+    "2,0.0007781312666701914,0.0005896515492778869,0.05709817419551737,0.025,0.018,0.03",
+    "3,-0.003530175493383213,-0.001598624495730434,0.049254292865274794,0.025,0.018,0.03",
+    "4,0.0048784766142330694,-0.0016376871699316595,0.04152283506856471,0.025,0.018,0.03",
+    "5,0.006759151525680967,0.0004501384691746751,0.03443079848539287,0.025,0.018,0.03",
+    "7,-0.00159128553492676,0.0033384580526768758,0.030888554014433085,0.025,0.018,0.03",
+    "8,-0.0004704865970671804,0.004780660751145506,0.03254523652243421,0.025,0.018,0.03",
+    "9,0.009784850333215757,0.004371487637838994,0.03920274759926891,0.025,0.018,0.03",
+    "10,0.0082124217621332,0.0024769556166348624,0.048769116175654596,0.025,0.018,0.03",
+    "11,0.0010829651336885255,0.0010348517610771954,0.060053189400222765,0.025,0.018,0.03",
+    "12,0.007432551864832641,0.0019120268529687254,0.07377373599399337,0.025,0.018,0.03",
+    "13,0.015791122615551892,0.004802811148716729,0.08716989958137725,0.025,0.018,0.03",
+    "14,0.01042955193976638,0.008037543347732592,0.09858038744962751,0.025,0.018,0.03",
+    "15,0.006193263871461803,0.009611533756761756,0.10679234126006883,0.025,0.018,0.03",
+    "16,0.014639563271892732,0.008651629221197521,0.111267814999576,0.025,0.018,0.03",
+    "18,0.016744349689399994,0.005528339157081339,0.10782283883195243,0.025,0.018,0.03",
+    "19,0.006962234143090221,0.0030080396593719244,0.10319287334442168,0.025,0.018,0.03",
+    "20,0.004818964506686612,0.0024099035414351993,0.09691875111532593,0.025,0.018,0.03",
+    "21,0.01241116885873505,0.0037407336233664023,0.08993058340562235,0.025,0.018,0.03",
+    "23,0.008505192451936237,0.004912833109101092,0.07564355031299201,0.025,0.018,0.03",
+]
 
-def sha256(path: Path) -> str:
-    """Return the lowercase SHA-256 digest of one file."""
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+EXPECTED_SCHEMA = {
+    "state": [
+        (0, "phase", "INTEGER", 1, None, 1),
+        (1, "fracture", "TEXT", 1, None, 2),
+        (2, "opening_mm", "REAL", 1, None, 0),
+        (3, "water_flux", "REAL", 1, None, 0),
+        (4, "m18", "REAL", 1, None, 0),
+        (5, "m44", "REAL", 1, None, 0),
+        (6, "brightness", "REAL", 1, None, 0),
+    ],
+    "reconstruction": [
+        (0, "fracture", "TEXT", 0, None, 1),
+        (1, "weight", "REAL", 1, None, 0),
+    ],
+    "flyby": [
+        (0, "candidate", "TEXT", 0, None, 1),
+        (1, "score", "REAL", 1, None, 0),
+        (2, "dose", "REAL", 1, None, 0),
+        (3, "feasible", "INTEGER", 1, None, 0),
+        (4, "selected", "INTEGER", 1, None, 0),
+    ],
+    "portfolio": [
+        (0, "score", "REAL", 1, None, 0),
+        (1, "total_dose", "REAL", 1, None, 0),
+    ],
+}
 
 
-def digest_lines(values: list[str]) -> str:
-    """Hash newline-terminated digest lines using the publication contract."""
-    return hashlib.sha256(("\n".join(values) + "\n").encode()).hexdigest()
+def _records(header: str, rows: list[str]) -> list[dict[str, str]]:
+    return list(csv.DictReader([header, *rows]))
 
 
-def read_key_values(path: Path) -> dict[str, str]:
-    """Read an ordered key/value configuration into a dictionary."""
-    return dict(line.split("=", 1) for line in path.read_text(encoding="utf-8").splitlines())
-
-
-def catalog_output() -> bytes:
-    """Obtain the sealed catalog through the same public batch interface available to operators."""
-    result = subprocess.run(
-        [str(APP / "bin/catalog-query"), "--batch-file", str(APP / "share/repair-catalog.batch")],
-        check=True,
-        capture_output=True,
+def _write_case(
+    root: Path,
+    control_row: str = CONTROL_ROW,
+    fracture_rows: list[str] | None = None,
+    observation_rows: list[str] | None = None,
+    candidate_rows: list[str] | None = None,
+) -> None:
+    shutil.rmtree(root, ignore_errors=True)
+    observations = root / "observations"
+    observations.mkdir(parents=True)
+    (root / "control.csv").write_text(
+        f"{CONTROL_HEADER}\n{control_row}\n", encoding="utf-8"
     )
-    return result.stdout
-
-
-def send_unix(socket_path: Path, request: bytes) -> tuple[bytes, bytes]:
-    """Send one HTTP message to the relay over its Unix socket."""
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.connect(str(socket_path))
-        client.sendall(request)
-        client.shutdown(socket.SHUT_WR)
-        response = bytearray()
-        while True:
-            chunk = client.recv(65536)
-            if not chunk:
-                break
-            response.extend(chunk)
-    head, body = bytes(response).split(b"\r\n\r\n", 1)
-    return head, body
-
-
-def test_authoritative_operator_inputs_are_unchanged() -> None:
-    """Verify the long-context corpus, evidence, fixtures, interface, and reset assets remain immutable."""
-    for relative, expected in PROTECTED.items():
-        path = APP / relative
-        assert path.is_file(), relative
-        assert sha256(path) == expected, relative
-    manifest = (APP / "docs/recovery-corpus.manifest").read_text(encoding="utf-8").splitlines()
-    listed = [line.split("\t")[1] for line in manifest if line and not line.startswith("#")]
-    assert listed == [
-        "relay-operations-handbook.md",
-        "socket-evidence-review.md",
-        "route-governance-record.md",
-        "capacity-and-payload-notes.md",
-        "publication-and-audit-minutes.md",
-    ]
-
-
-def test_catalog_storage_and_existing_binaries_remain_valid() -> None:
-    """Verify the sealed catalog generation and existing relay binaries remain usable without source rebuilding."""
-    with sqlite3.connect("file:/opt/harbor/operations.db?mode=ro", uri=True) as db:
-        tables = [
-            row[0]
-            for row in db.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-            )
-        ]
-        logical = {}
-        for table in tables:
-            columns = [row[1] for row in db.execute(f"PRAGMA table_info({table})")]
-            order = ",".join(str(index + 1) for index in range(len(columns)))
-            rows = [list(row) for row in db.execute(f"SELECT * FROM {table} ORDER BY {order}")]
-            logical[table] = {"columns": columns, "rows": rows}
-        encoded = json.dumps(logical, separators=(",", ":"), sort_keys=True).encode()
-        assert hashlib.sha256(encoded).hexdigest() == "66259a98e52ec8f7329bc24c975dc78896543b04ba8115317d6d09dbb20ceaa9"
-    output = catalog_output().decode("utf-8")
-    assert output.startswith("@result catalog_meta\n")
-    assert output.rstrip().endswith("@end")
-    check = subprocess.run(
-        [str(APP / "bin/harbor-relay"), "--check-config", str(CONFIG_DIR / "relay.conf")],
-        capture_output=True,
-        text=True,
+    fractures = FRACTURE_ROWS if fracture_rows is None else fracture_rows
+    (root / "fractures.csv").write_text(
+        f"{FRACTURE_HEADER}\n" + "\n".join(fractures) + "\n", encoding="utf-8"
     )
-    assert check.returncode == 0, check.stderr
-    for forbidden in [APP / "src", APP / "include", APP / "Makefile", APP / "build"]:
-        assert not forbidden.exists()
-
-
-def test_repaired_configuration_matches_reconciled_socket_routes_and_limits() -> None:
-    """Verify the published text configuration contains the chronology-safe socket, closed routes, and calculated limits."""
-    relay_path = CONFIG_DIR / "relay.conf"
-    limits_path = CONFIG_DIR / "limits.conf"
-    routes_path = CONFIG_DIR / "routes.map"
-    assert read_key_values(relay_path) == EXPECTED_RELAY
-    assert read_key_values(limits_path) == EXPECTED_LIMITS
-    route_lines = routes_path.read_text(encoding="utf-8").splitlines()
-    assert route_lines[0] == "method\texternal_path\tupstream\tauth_mode\ttimeout_ms\tsource_route_id"
-    assert [tuple(line.split("\t")) for line in route_lines[1:]] == EXPECTED_ROUTES
-    assert relay_path.read_bytes().endswith(b"\n")
-    assert limits_path.read_bytes().endswith(b"\n")
-    assert routes_path.read_bytes().endswith(b"\n")
-    assert "data-plane.sock\"" in (APP / "evidence/relay.strace").read_text() and "EACCES" in (APP / "evidence/relay.strace").read_text()
-    after = (APP / "evidence/relay.lsof").read_text().split("# snapshot=after", 1)[1]
-    assert EXPECTED_RELAY["socket_path"] not in after
-
-
-def test_publication_permissions_and_clean_state_are_correct() -> None:
-    """Verify only the documented generation files remain, with required modes and no staging or compiler residue."""
-    expected_modes = {
-        CONFIG_DIR / "relay.conf": 0o640,
-        CONFIG_DIR / "limits.conf": 0o640,
-        CONFIG_DIR / "routes.map": 0o640,
-        AUDIT: 0o600,
-        MANIFEST: 0o640,
-        LOCK: 0o600,
-    }
-    for path, mode in expected_modes.items():
-        assert path.is_file(), path
-        assert stat.S_IMODE(path.stat().st_mode) == mode
-    residue = []
-    for directory in [CONFIG_DIR, APP / "var"]:
-        residue.extend(
-            path
-            for path in directory.iterdir()
-            if any(token in path.name for token in (".tmp", ".bak", "-journal", "-wal", "-shm"))
+    candidates = CANDIDATE_ROWS if candidate_rows is None else candidate_rows
+    (root / "candidates.csv").write_text(
+        f"{CANDIDATE_HEADER}\n" + "\n".join(candidates) + "\n",
+        encoding="utf-8",
+    )
+    rows = OBS_ROWS if observation_rows is None else observation_rows
+    for index, row in enumerate(rows):
+        (observations / f"obs_{index:02d}.csv").write_text(
+            f"{OBS_HEADER}\n{row}\n", encoding="utf-8"
         )
-    assert residue == []
 
 
-def test_publication_manifest_has_deterministic_identity_and_exact_provenance() -> None:
-    """Verify the compact JSON manifest identity, ordering, provenance hashes, and publication metadata independently."""
-    raw = MANIFEST.read_text(encoding="utf-8")
-    manifest = json.loads(raw)
-    assert raw == json.dumps(manifest, separators=(",", ":")) + "\n"
-    assert list(manifest) == [
-        "run_id",
-        "site_key",
-        "handbook_revision",
-        "catalog_generation",
-        "configuration",
-        "routes",
-        "assertions",
-        "inputs",
-        "publication",
-    ]
-    assert manifest["site_key"] == "st-042"
-    assert manifest["handbook_revision"] == "HRH-2026.07-R11"
-    assert manifest["catalog_generation"] == 29
-    expected_configuration = {**EXPECTED_RELAY, **EXPECTED_LIMITS}
-    assert manifest["configuration"] == expected_configuration
-    assert [tuple(str(item[key]) for key in ("method", "external_path", "upstream", "auth_mode", "timeout_ms", "source_route_id")) for item in manifest["routes"]] == EXPECTED_ROUTES
-    assert [item["decision_code"] for item in manifest["routes"]] == ["required", "selected", "selected", "replaced"]
-    assert len(manifest["assertions"]) == 10 and all(item["passed"] == 1 for item in manifest["assertions"])
-    assert [item["kind"] for item in manifest["inputs"]] == sorted(item["kind"] for item in manifest["inputs"])
-
-    request_paths = [APP / "fixtures/requests/replay-set.manifest"]
-    for line in request_paths[0].read_text(encoding="utf-8").splitlines():
-        if line and not line.startswith("#"):
-            request_paths.append(Path(line.split("\t", 1)[1]))
-    request_set = digest_lines([sha256(path) for path in request_paths])
-    evidence_set = digest_lines([sha256(APP / "evidence/capture.meta"), sha256(APP / "evidence/relay.strace"), sha256(APP / "evidence/relay.lsof")])
-    catalog_sha = hashlib.sha256(catalog_output()).hexdigest()
-    seed = "|".join(
-        [
-            "st-042",
-            "HRH-2026.07-R11",
-            "29",
-            request_set,
-            evidence_set,
-            catalog_sha,
-            sha256(CONFIG_DIR / "relay.conf"),
-            sha256(CONFIG_DIR / "limits.conf"),
-            sha256(CONFIG_DIR / "routes.map"),
-        ]
-    )
-    assert manifest["run_id"] == hashlib.sha256(seed.encode()).hexdigest()[:24]
-
-    input_rows = {(item["kind"], item["path"]): item for item in manifest["inputs"]}
-    catalog_item = input_rows[("catalog-batch-result", "/app/share/repair-catalog.batch")]
-    assert catalog_item["sha256"] == catalog_sha
-    assert catalog_item["bytes"] == len(catalog_output())
-    for (kind, path_text), item in input_rows.items():
-        if kind == "catalog-batch-result":
-            continue
-        path = Path(path_text)
-        assert item["sha256"] == sha256(path)
-        assert item["bytes"] == path.stat().st_size
-
-    expected_publication = [
-        (CONFIG_DIR / "relay.conf", "0640"),
-        (CONFIG_DIR / "limits.conf", "0640"),
-        (CONFIG_DIR / "routes.map", "0640"),
-        (AUDIT, "0600"),
-        (MANIFEST, "0640"),
-    ]
-    assert [item["path"] for item in manifest["publication"]] == [str(path) for path, _ in expected_publication]
-    for item, (path, mode) in zip(manifest["publication"], expected_publication, strict=True):
-        assert item["mode"] == mode
-        if path in {AUDIT, MANIFEST}:
-            assert (item["sha256"], item["bytes"]) == (ZERO, 0)
-        else:
-            assert (item["sha256"], item["bytes"]) == (sha256(path), path.stat().st_size)
-
-
-def test_audit_database_schema_constraints_and_reconciliation_are_complete() -> None:
-    """Verify the seven-table audit is constrained, complete, and reconciled with all publication bytes and decisions."""
-    with sqlite3.connect(AUDIT) as db:
-        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
-        tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY rowid")]
-        assert tables == ["repair_run", "input_artifact", "configuration", "route", "decision", "assertion", "publication_file"]
-        run = db.execute(
-            "SELECT run_id,site_key,handbook_revision,catalog_generation,status FROM repair_run"
-        ).fetchone()
-        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-        assert run == (manifest["run_id"], "st-042", "HRH-2026.07-R11", 29, "applied")
-        assert db.execute("SELECT COUNT(*) FROM assertion WHERE passed=1").fetchone() == (10,)
-        assert db.execute("SELECT COUNT(*) FROM decision").fetchone() == (14,)
-        assert [row[0] for row in db.execute("SELECT sequence FROM decision ORDER BY sequence")] == list(range(1, 15))
-        assert db.execute("SELECT COUNT(*) FROM input_artifact").fetchone() == (8,)
-        file_configuration = {**EXPECTED_RELAY, **EXPECTED_LIMITS}
-        assert dict(db.execute("SELECT key,value FROM configuration")) == file_configuration
-        audit_routes = db.execute(
-            "SELECT method,external_path,upstream,auth_mode,timeout_ms,source_route_id FROM route ORDER BY method,external_path"
-        ).fetchall()
-        assert audit_routes == [row[:4] + (int(row[4]), row[5]) for row in EXPECTED_ROUTES]
-        publication = {row[0]: row[1:] for row in db.execute("SELECT path,sha256,bytes,mode_text FROM publication_file")}
-        assert publication[str(AUDIT)] == (ZERO, 0, "0600")
-        assert publication[str(MANIFEST)] == (ZERO, 0, "0640")
-        assert publication[str(CONFIG_DIR / "relay.conf")] == (sha256(CONFIG_DIR / "relay.conf"), (CONFIG_DIR / "relay.conf").stat().st_size, "0640")
-    with sqlite3.connect(AUDIT) as db:
-        for statement in (Path("/tests/repair_assertions.sql").read_text(encoding="utf-8").split(";")):
-            if statement.strip():
-                assert db.execute(statement).fetchone() == (1,)
-
-
-def test_existing_relay_serves_replay_dependency_missing_and_oversized_requests() -> None:
-    """Verify the existing C++ relay binds the recovered socket and serves all required HTTP outcomes."""
-    socket_path = Path(EXPECTED_RELAY["socket_path"])
-    socket_path.unlink(missing_ok=True)
-    process = subprocess.Popen(
-        [str(APP / "bin/harbor-relay")],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
+def _run(root: Path, output: Path) -> subprocess.CompletedProcess[str]:
+    if output.exists():
+        output.chmod(0o777)
+    else:
+        parent_existed = output.parent.exists()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        if not parent_existed:
+            output.parent.chmod(0o777)
+    return subprocess.run(
+        [*CANDIDATE_PREFIX, JANET, MAIN, str(root), str(output)],
+        check=False,
+        capture_output=True,
         text=True,
+        timeout=120,
+        cwd=CANDIDATE_CWD,
+        env={
+            "HOME": "/tmp",
+            "LANG": "C.UTF-8",
+            "PATH": "/usr/local/bin:/usr/bin:/bin",
+        },
     )
-    try:
-        deadline = time.time() + 5
-        while time.time() < deadline and not socket_path.exists() and process.poll() is None:
-            time.sleep(0.05)
-        assert socket_path.exists(), process.stderr.read() if process.stderr else "relay exited"
-        expected = {
-            "arrival": ("/v1/berth/arrivals", "rt-201"),
-            "manifest": ("/v1/berth/manifest", "rt-204"),
-            "status": ("/v1/berth/status", "rt-200"),
-        }
-        for line in (APP / "fixtures/requests/replay-set.manifest").read_text(encoding="utf-8").splitlines():
-            if not line or line.startswith("#"):
-                continue
-            role, request_path = line.split("\t", 1)
-            head, body = send_unix(socket_path, Path(request_path).read_bytes())
-            payload = json.loads(body)
-            assert b"200 OK" in head
-            assert (payload["path"], payload["source_route_id"]) == expected[role]
-        head, body = send_unix(socket_path, b"GET /v1/berth/capabilities?full=1 HTTP/1.1\r\nHost: x\r\n\r\n")
-        assert b"200 OK" in head and json.loads(body)["source_route_id"] == "rt-203"
-        head, _ = send_unix(socket_path, b"GET /not-present HTTP/1.1\r\nHost: x\r\n\r\n")
-        assert b"404 Not Found" in head
-        oversized = b"x" * 65537
-        request = b"POST /v1/berth/arrivals HTTP/1.1\r\nHost: x\r\nContent-Length: 65537\r\n\r\n" + oversized
-        head, _ = send_unix(socket_path, request)
-        assert b"413 Payload Too Large" in head
-        unix_rows = Path("/proc/net/unix").read_text(encoding="utf-8")
-        assert str(socket_path) in unix_rows
-    finally:
-        process.terminate()
-        try:
-            process.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=3)
-        socket_path.unlink(missing_ok=True)
+
+
+def _float_row(row: dict[str, str], text: set[str]) -> dict[str, float | str]:
+    return {key: value if key in text else float(value) for key, value in row.items()}
+
+
+def _inputs(
+    control_row: str = CONTROL_ROW,
+    fracture_rows: list[str] | None = None,
+    observation_rows: list[str] | None = None,
+    candidate_rows: list[str] | None = None,
+) -> tuple[
+    dict[str, float],
+    list[dict[str, float | str]],
+    list[dict[str, float]],
+    list[dict[str, float | str]],
+]:
+    control = _float_row(_records(CONTROL_HEADER, [control_row])[0], set())
+    fractures = [
+        _float_row(row, {"id"})
+        for row in _records(
+            FRACTURE_HEADER,
+            FRACTURE_ROWS if fracture_rows is None else fracture_rows,
+        )
+    ]
+    observations = [
+        _float_row(row, set())
+        for row in _records(
+            OBS_HEADER, OBS_ROWS if observation_rows is None else observation_rows
+        )
+    ]
+    candidates = [
+        _float_row(row, {"candidate"})
+        for row in _records(
+            CANDIDATE_HEADER,
+            CANDIDATE_ROWS if candidate_rows is None else candidate_rows,
+        )
+    ]
+    return control, fractures, observations, candidates
+
+
+def _solve_states(
+    control: dict[str, float], fractures: list[dict[str, float | str]]
+) -> tuple[list[list[dict[str, float | str]]], np.ndarray, np.ndarray]:
+    phases = int(control["phases"])
+    count = len(fractures)
+    drives = np.zeros((phases, count))
+    edges = np.zeros((phases, count))
+    for phase in range(phases):
+        theta = 2.0 * math.pi * phase / phases
+        for index, fracture in enumerate(fractures):
+            drives[phase, index] = (
+                fracture["base_mm"]
+                + 900.0
+                * control["eccentricity"]
+                * math.cos(theta + fracture["phase_offset"])
+                / fracture["shell_km"]
+                + 0.025 * (control["ocean_pressure"] - fracture["depth_km"])
+                + 0.00005 * fracture["gas_ppm"]
+                + 0.003
+                * (
+                    control["temperature"]
+                    - 273.15
+                    + 0.055 * fracture["salinity_ppt"]
+                )
+            )
+        for index, fracture in enumerate(fractures):
+            if (
+                drives[phase, index] > control["edge_threshold"]
+                and drives[phase, (index + 1) % count] > control["edge_threshold"]
+            ):
+                edges[phase, index] = fracture["coupling"]
+
+    opening = np.maximum(drives, 0.0)
+    for _ in range(30):
+        residual = np.zeros(phases * count)
+        jacobian = np.zeros((phases * count, phases * count))
+        for phase in range(phases):
+            before = (phase - 1) % phases
+            after = (phase + 1) % phases
+            for index, fracture in enumerate(fractures):
+                previous = (index - 1) % count
+                following = (index + 1) % count
+                left = edges[phase, previous]
+                right = edges[phase, index]
+                row = phase * count + index
+                value = opening[phase, index]
+                residual[row] = (
+                    value
+                    + control["cubic"] * fracture["viscosity"] * value**3
+                    + control["memory"]
+                    * (
+                        2.0 * value
+                        - opening[before, index]
+                        - opening[after, index]
+                    )
+                    + left * (value - opening[phase, previous])
+                    + right * (value - opening[phase, following])
+                    - max(0.0, drives[phase, index])
+                )
+                jacobian[row, row] = (
+                    1.0
+                    + 3.0
+                    * control["cubic"]
+                    * fracture["viscosity"]
+                    * value**2
+                    + 2.0 * control["memory"]
+                    + left
+                    + right
+                )
+                jacobian[row, before * count + index] -= control["memory"]
+                jacobian[row, after * count + index] -= control["memory"]
+                jacobian[row, phase * count + previous] -= left
+                jacobian[row, phase * count + following] -= right
+        if np.max(np.abs(residual)) < 1e-13:
+            break
+        opening += np.linalg.solve(jacobian, -residual).reshape(phases, count)
+    else:
+        raise AssertionError("reference periodic solve did not converge")
+
+    states: list[list[dict[str, float | str]]] = []
+    for phase in range(phases):
+        phase_states = []
+        for index, fracture in enumerate(fractures):
+            value = opening[phase, index]
+            salinity = fracture["salinity_ppt"]
+            gas = fracture["gas_ppm"]
+            water = (
+                value**3
+                * math.sqrt(max(0.0, control["ocean_pressure"] - fracture["depth_km"]))
+                / (fracture["viscosity"] * (1.0 + salinity / 100.0))
+            )
+            vapor = min(
+                0.95,
+                max(
+                    0.0,
+                    (control["temperature"] - 273.15 + 0.055 * salinity) / 18.0
+                    + gas / 8000.0,
+                ),
+            )
+            m18 = water * vapor
+            m44 = m18 * gas / 4000.0
+            brightness = (
+                water
+                * (1.0 - vapor)
+                * (1.0 + salinity / 50.0)
+                * (120.0 + 280.0 * vapor + 0.01 * gas)
+                / math.sqrt(226000.0)
+            )
+            phase_states.append(
+                {
+                    "phase": float(phase),
+                    "fracture": fracture["id"],
+                    "opening_mm": value,
+                    "water_flux": water,
+                    "m18": m18,
+                    "m44": m44,
+                    "brightness": brightness,
+                }
+            )
+        states.append(phase_states)
+    return states, drives, edges
+
+
+def _inverse_terms(
+    states: list[list[dict[str, float | str]]],
+    observations: list[dict[str, float]],
+    control: dict[str, float],
+) -> tuple[np.ndarray, np.ndarray]:
+    count = len(states[0])
+    normal = np.eye(count) * control["ridge"]
+    projected = np.zeros(count)
+    for observation in observations:
+        phase = int(observation["phase"])
+        design = np.array(
+            [
+                [row[signal] for row in states[phase]]
+                for signal in ("m18", "m44", "brightness")
+            ],
+            dtype=float,
+        )
+        measured = np.array(
+            [observation[signal] for signal in ("m18", "m44", "brightness")]
+        )
+        sigmas = np.array(
+            [
+                observation[sigma]
+                for sigma in ("sigma_m18", "sigma_m44", "sigma_brightness")
+            ]
+        )
+        covariance = np.outer(sigmas, sigmas) * control["signal_rho"]
+        np.fill_diagonal(covariance, sigmas**2)
+        precision = np.linalg.inv(covariance)
+        normal += design.T @ precision @ design
+        projected += design.T @ precision @ measured
+    return normal, projected
+
+
+def _objective(
+    weights: np.ndarray,
+    normal: np.ndarray,
+    projected: np.ndarray,
+    control: dict[str, float],
+) -> float:
+    differences = weights - np.roll(weights, -1)
+    return float(
+        weights @ normal @ weights
+        - 2.0 * projected @ weights
+        + control["tv"]
+        * np.sum(np.sqrt(differences**2 + control["tv_eps"] ** 2))
+    )
+
+
+def _gradient(
+    weights: np.ndarray,
+    normal: np.ndarray,
+    projected: np.ndarray,
+    control: dict[str, float],
+) -> np.ndarray:
+    gradient = 2.0 * normal @ weights - 2.0 * projected
+    for index in range(len(weights)):
+        following = (index + 1) % len(weights)
+        difference = weights[index] - weights[following]
+        value = (
+            control["tv"]
+            * difference
+            / math.sqrt(difference**2 + control["tv_eps"] ** 2)
+        )
+        gradient[index] += value
+        gradient[following] -= value
+    return gradient
+
+
+def _hessian(
+    weights: np.ndarray, normal: np.ndarray, control: dict[str, float]
+) -> np.ndarray:
+    hessian = 2.0 * normal.copy()
+    for index in range(len(weights)):
+        following = (index + 1) % len(weights)
+        difference = weights[index] - weights[following]
+        curvature = (
+            control["tv"]
+            * control["tv_eps"] ** 2
+            / (difference**2 + control["tv_eps"] ** 2) ** 1.5
+        )
+        hessian[index, index] += curvature
+        hessian[following, following] += curvature
+        hessian[index, following] -= curvature
+        hessian[following, index] -= curvature
+    return hessian
+
+
+def _solve_weights(
+    states: list[list[dict[str, float | str]]],
+    observations: list[dict[str, float]],
+    control: dict[str, float],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    normal, projected = _inverse_terms(states, observations, control)
+    count = normal.shape[0]
+    best_value = math.inf
+    best_weights: np.ndarray | None = None
+    for mask in range(1, 1 << count):
+        active = np.array([index for index in range(count) if mask & (1 << index)])
+        weights = np.zeros(count)
+        weights[active] = control["source_total"] / len(active)
+        multiplier = 0.0
+        for _ in range(100):
+            residual = np.append(
+                _gradient(weights, normal, projected, control)[active] + multiplier,
+                np.sum(weights) - control["source_total"],
+            )
+            if np.max(np.abs(residual)) < 1e-11:
+                break
+            hessian = _hessian(weights, normal, control)
+            size = len(active)
+            kkt = np.block(
+                [
+                    [hessian[np.ix_(active, active)], np.ones((size, 1))],
+                    [np.ones((1, size)), np.zeros((1, 1))],
+                ]
+            )
+            delta = np.linalg.solve(kkt, -residual)
+            step = 1.0
+            for position, index in enumerate(active):
+                if delta[position] < 0.0:
+                    step = min(step, -0.99 * weights[index] / delta[position])
+            weights[active] += step * delta[:-1]
+            multiplier += step * delta[-1]
+        else:
+            continue
+        if np.min(weights[active]) < -1e-10:
+            continue
+        value = _objective(weights, normal, projected, control)
+        if value < best_value:
+            best_value = value
+            best_weights = weights.copy()
+    if best_weights is None:
+        raise AssertionError("reference inverse solve failed")
+    return best_weights, normal, projected
+
+
+def _design_portfolio(
+    states: list[list[dict[str, float | str]]],
+    candidates: list[dict[str, float | str]],
+    control: dict[str, float],
+) -> tuple[list[dict[str, float | str]], dict[str, float]]:
+    count = len(states[0])
+    rows = []
+    contributions = []
+    for candidate in candidates:
+        phase = int(candidate["phase"])
+        attenuation = (
+            math.exp(-candidate["altitude_km"] / 180.0) / candidate["speed_kms"]
+        )
+        basis = (
+            np.array(
+                [
+                    [row[signal] for row in states[phase]]
+                    for signal in ("m18", "m44", "brightness")
+                ],
+                dtype=float,
+            )
+            * attenuation
+        )
+        contribution = basis.T @ basis / control["design_noise"] ** 2
+        contributions.append(contribution)
+        dose = (
+            sum(row["water_flux"] for row in states[phase])
+            * math.exp(-candidate["altitude_km"] / 120.0)
+            / candidate["speed_kms"]
+        )
+        rows.append(
+            {
+                "candidate": candidate["candidate"],
+                "score": float(np.linalg.slogdet(np.eye(count) + contribution)[1]),
+                "dose": dose,
+                "feasible": float(dose <= candidate["dose_limit"]),
+                "selected": 0.0,
+            }
+        )
+
+    best_score = -math.inf
+    best_combo: tuple[int, ...] | None = None
+    best_dose = 0.0
+    for combo in itertools.combinations(
+        range(len(candidates)), int(control["portfolio_size"])
+    ):
+        if not all(rows[index]["feasible"] for index in combo):
+            continue
+        total_dose = sum(float(rows[index]["dose"]) for index in combo)
+        if total_dose > control["portfolio_dose"]:
+            continue
+        separated = True
+        for first, second in itertools.combinations(combo, 2):
+            difference = abs(candidates[first]["phase"] - candidates[second]["phase"])
+            circular = min(difference, control["phases"] - difference)
+            separated &= circular >= control["phase_gap"]
+        if not separated:
+            continue
+        information = np.eye(count) + sum(
+            (contributions[index] for index in combo), np.zeros((count, count))
+        )
+        score = float(np.linalg.slogdet(information)[1])
+        if score > best_score:
+            best_score = score
+            best_combo = combo
+            best_dose = total_dose
+    if best_combo is None:
+        raise AssertionError("reference portfolio has no feasible combination")
+    for index in best_combo:
+        rows[index]["selected"] = 1.0
+    return rows, {"score": best_score, "total_dose": best_dose}
+
+
+def _reference(
+    control_row: str = CONTROL_ROW,
+    fracture_rows: list[str] | None = None,
+    observation_rows: list[str] | None = None,
+    candidate_rows: list[str] | None = None,
+) -> tuple[
+    list[list[dict[str, float | str]]],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    list[dict[str, float | str]],
+    dict[str, float],
+]:
+    control, fractures, observations, candidates = _inputs(
+        control_row, fracture_rows, observation_rows, candidate_rows
+    )
+    states, drives, edges = _solve_states(control, fractures)
+    weights, _, _ = _solve_weights(states, observations, control)
+    flybys, portfolio = _design_portfolio(states, candidates, control)
+    return states, drives, edges, weights, flybys, portfolio
+
+
+def _table(database: Path, query: str) -> list[sqlite3.Row]:
+    with sqlite3.connect(database) as connection:
+        connection.row_factory = sqlite3.Row
+        return connection.execute(query).fetchall()
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _prepare_baseline() -> None:
+    """prepare verifier owned inputs and regenerate the documented database."""
+    _write_case(BASE_ROOT)
+    BASE_OUTPUT.mkdir(parents=True, exist_ok=True)
+    BASE_DB.unlink(missing_ok=True)
+    result = _run(BASE_ROOT, BASE_OUTPUT)
+    assert result.returncode == 0, result.stderr
+    assert BASE_DB.is_file()
+
+
+def test_entrypoint_writes_database_inside_the_output_directory() -> None:
+    """the janet command writes exactly the documented sqlite schemas."""
+    objects = {
+        (row["type"], row["name"], row["tbl_name"])
+        for row in _table(
+            BASE_DB,
+            "SELECT type, name, tbl_name FROM sqlite_master "
+            "WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+    }
+    assert objects == {("table", table, table) for table in EXPECTED_SCHEMA}
+    for table, expected in EXPECTED_SCHEMA.items():
+        actual = _table(BASE_DB, f"PRAGMA table_info({table})")
+        assert len(actual) == len(expected)
+        for column, specification in zip(actual, expected, strict=True):
+            cid, name, data_type, not_null, default, primary_key = specification
+            assert column["cid"] == cid
+            assert column["name"] == name
+            assert column["type"].upper() == data_type
+            if not_null:
+                assert column["notnull"] == 1
+            assert column["dflt_value"] == default
+            assert column["pk"] == primary_key
+    assert _table(BASE_DB, "SELECT count(*) AS n FROM state")[0]["n"] == 120
+    assert _table(BASE_DB, "SELECT count(*) AS n FROM reconstruction")[0]["n"] == 5
+    assert _table(BASE_DB, "SELECT count(*) AS n FROM flyby")[0]["n"] == 6
+    assert _table(BASE_DB, "SELECT count(*) AS n FROM portfolio")[0]["n"] == 1
+
+
+def test_periodic_space_time_openings_match_reference_and_residual() -> None:
+    """openings solve the coupled cyclic fracture and cyclic phase equations."""
+    expected, drives, edges, _, _, _ = _reference()
+    control, fractures, _, _ = _inputs()
+    actual = _table(
+        BASE_DB,
+        "SELECT phase, fracture, opening_mm FROM state ORDER BY phase, fracture",
+    )
+    lookup = {(int(row["phase"]), row["fracture"]): row["opening_mm"] for row in actual}
+    for phase_states in expected:
+        for row in phase_states:
+            value = lookup[(int(row["phase"]), row["fracture"])]
+            assert value == pytest.approx(row["opening_mm"], rel=2e-10, abs=1e-12)
+
+    residuals = []
+    phases = int(control["phases"])
+    count = len(fractures)
+    for phase in range(phases):
+        for index, fracture in enumerate(fractures):
+            previous = (index - 1) % count
+            following = (index + 1) % count
+            value = lookup[(phase, fracture["id"])]
+            residuals.append(
+                value
+                + control["cubic"] * fracture["viscosity"] * value**3
+                + control["memory"]
+                * (
+                    2.0 * value
+                    - lookup[((phase - 1) % phases, fracture["id"])]
+                    - lookup[((phase + 1) % phases, fracture["id"])]
+                )
+                + edges[phase, previous]
+                * (value - lookup[(phase, fractures[previous]["id"])])
+                + edges[phase, index]
+                * (value - lookup[(phase, fractures[following]["id"])])
+                - max(0.0, drives[phase, index])
+            )
+    assert max(abs(value) for value in residuals) < 1e-11
+
+
+def test_plume_observables_match_reference() -> None:
+    """water and all three plume signals use the documented physical laws."""
+    expected, _, _, _, _, _ = _reference()
+    actual = _table(BASE_DB, "SELECT * FROM state ORDER BY phase, fracture")
+    lookup = {(int(row["phase"]), row["fracture"]): row for row in actual}
+    for phase_states in expected:
+        for expected_row in phase_states:
+            row = lookup[(int(expected_row["phase"]), expected_row["fracture"])]
+            for column in ("water_flux", "m18", "m44", "brightness"):
+                assert row[column] == pytest.approx(
+                    expected_row[column], rel=2e-10, abs=1e-12
+                )
+
+
+def test_reconstruction_is_correlated_tv_global_simplex_optimum() -> None:
+    """weights attain the unique correlated total variation simplex optimum."""
+    states, _, _, expected_weights, _, _ = _reference()
+    control, _, observations, _ = _inputs()
+    normal, projected = _inverse_terms(states, observations, control)
+    actual = _table(BASE_DB, "SELECT fracture, weight FROM reconstruction")
+    by_name = {row["fracture"]: row["weight"] for row in actual}
+    weights = np.array([by_name[row.split(",", 1)[0]] for row in FRACTURE_ROWS])
+    assert weights == pytest.approx(expected_weights, rel=2e-8, abs=2e-10)
+    assert np.min(weights) >= 0.0
+    assert np.sum(weights) == pytest.approx(control["source_total"], abs=1e-10)
+    gradient = _gradient(weights, normal, projected, control)
+    active = weights > 1e-9
+    multiplier = -float(np.mean(gradient[active]))
+    assert np.max(np.abs(gradient[active] + multiplier)) < 2e-7
+    assert np.min(gradient[~active] + multiplier) >= -2e-7
+
+
+def test_flyby_portfolio_is_global_feasible_optimum() -> None:
+    """candidate metrics and the selected portfolio match the constrained optimum."""
+    _, _, _, _, expected_rows, expected_portfolio = _reference()
+    actual = _table(BASE_DB, "SELECT * FROM flyby ORDER BY candidate")
+    expected = {row["candidate"]: row for row in expected_rows}
+    assert sum(row["selected"] for row in actual) == 3
+    assert {row["feasible"] for row in actual} == {0, 1}
+    for row in actual:
+        reference = expected[row["candidate"]]
+        assert row["score"] == pytest.approx(reference["score"], rel=2e-9)
+        assert row["dose"] == pytest.approx(reference["dose"], rel=2e-9)
+        assert row["feasible"] == reference["feasible"]
+        assert row["selected"] == reference["selected"]
+    portfolio = _table(BASE_DB, "SELECT * FROM portfolio")[0]
+    assert portfolio["score"] == pytest.approx(expected_portfolio["score"], rel=2e-9)
+    assert portfolio["total_dose"] == pytest.approx(
+        expected_portfolio["total_dose"], rel=2e-9
+    )
+
+
+def test_identical_inputs_replace_database_deterministically() -> None:
+    """identical reruns replace the database with identical bytes and values."""
+    before = BASE_DB.read_bytes()
+    rows_before = [
+        tuple(row) for row in _table(BASE_DB, "SELECT * FROM state ORDER BY phase, fracture")
+    ]
+    result = _run(BASE_ROOT, BASE_OUTPUT)
+    assert result.returncode == 0, result.stderr
+    rows_after = [
+        tuple(row) for row in _table(BASE_DB, "SELECT * FROM state ORDER BY phase, fracture")
+    ]
+    assert rows_after == rows_before
+    assert BASE_DB.read_bytes() == before
+
+
+def test_changed_inputs_recompute_every_optimization_stage() -> None:
+    """changed physics regularization covariance and mission limits are recomputed."""
+    mutated_control = (
+        "18,0.0061,8.1,270.2,0.024,0.55,0.07,0.11,0.03,0.50,1.15,0.042,"
+        "-0.15,2,0.25,5"
+    )
+    mutated_fractures = [
+        "baghdad,20.5,6.6,1.42,0.39,0.21,0.22,29.0,1750.0",
+        *FRACTURE_ROWS[1:],
+    ]
+    mutated_observations = []
+    for index, row in enumerate(OBS_ROWS[:15]):
+        cells = row.split(",")
+        cells[0] = str(index % 18)
+        cells[1] = str(float(cells[1]) + 0.0007 * (1 + index % 3))
+        cells[2] = str(float(cells[2]) - 0.0004 * (1 + index % 2))
+        cells[3] = str(float(cells[3]) * 1.06)
+        cells[4:] = ["0.027", "0.021", "0.034"]
+        mutated_observations.append(",".join(cells))
+    mutated_candidates = [
+        "orbiter-a,1,48,7.2,0.20",
+        "orbiter-b,4,72,5.9,0.20",
+        "orbiter-c,7,84,5.2,0.20",
+        "orbiter-d,10,38,7.7,0.20",
+        "orbiter-e,13,108,4.5,0.20",
+        "orbiter-f,16,61,6.4,0.20",
+    ]
+    root = Path("/tmp/plume_mutated_input")
+    output = Path("/tmp/plume_mutated/nested/output")
+    shutil.rmtree(Path("/tmp/plume_mutated"), ignore_errors=True)
+    _write_case(
+        root,
+        mutated_control,
+        mutated_fractures,
+        mutated_observations,
+        mutated_candidates,
+    )
+    result = _run(root, output)
+    assert result.returncode == 0, result.stderr
+    database = output / "plume.db"
+    expected_states, _, _, expected_weights, expected_flybys, expected_portfolio = (
+        _reference(
+            mutated_control,
+            mutated_fractures,
+            mutated_observations,
+            mutated_candidates,
+        )
+    )
+    state = _table(database, "SELECT * FROM state")
+    state_map = {(row["phase"], row["fracture"]): row for row in state}
+    for phase_states in expected_states:
+        for expected in phase_states:
+            row = state_map[(expected["phase"], expected["fracture"])]
+            for column in ("opening_mm", "water_flux", "m18", "m44", "brightness"):
+                assert row[column] == pytest.approx(expected[column], rel=2e-9)
+    weights = _table(database, "SELECT fracture, weight FROM reconstruction")
+    weight_map = {row["fracture"]: row["weight"] for row in weights}
+    for index, fracture in enumerate(mutated_fractures):
+        assert weight_map[fracture.split(",", 1)[0]] == pytest.approx(
+            expected_weights[index], rel=2e-8, abs=2e-10
+        )
+    flyby_map = {
+        row["candidate"]: row for row in _table(database, "SELECT * FROM flyby")
+    }
+    for expected in expected_flybys:
+        row = flyby_map[expected["candidate"]]
+        assert row["score"] == pytest.approx(expected["score"], rel=2e-9)
+        assert row["dose"] == pytest.approx(expected["dose"], rel=2e-9)
+        assert row["feasible"] == expected["feasible"]
+        assert row["selected"] == expected["selected"]
+    portfolio = _table(database, "SELECT * FROM portfolio")[0]
+    assert portfolio["score"] == pytest.approx(expected_portfolio["score"], rel=2e-9)
+    assert portfolio["total_dose"] == pytest.approx(
+        expected_portfolio["total_dose"], rel=2e-9
+    )
+
+
+def test_invalid_control_csv_inputs_fail() -> None:
+    """control csv rejects incomplete nonnumeric repeated and invalid rho values."""
+    root = Path("/tmp/plume_invalid_input")
+    output = Path("/tmp/plume_invalid_output")
+    _write_case(root)
+    (root / "control.csv").write_text(
+        "phases,eccentricity\n24,0.0047\n", encoding="utf-8"
+    )
+    assert _run(root, output).returncode != 0
+
+    _write_case(root, control_row=CONTROL_ROW.replace("24,", "not-a-number,", 1))
+    assert _run(root, output).returncode != 0
+
+    _write_case(root)
+    (root / "control.csv").write_text(CONTROL_HEADER + "\n", encoding="utf-8")
+    assert _run(root, output).returncode != 0
+
+    for invalid_control in (
+        CONTROL_ROW.replace("24,", "24.5,", 1),
+        CONTROL_ROW.replace("0.25,3,0.20", "0.25,2.5,0.20", 1),
+    ):
+        _write_case(root, control_row=invalid_control)
+        assert _run(root, output).returncode != 0
+
+    _write_case(root)
+    with (root / "control.csv").open("a", encoding="utf-8") as stream:
+        stream.write(CONTROL_ROW + "\n")
+    assert _run(root, output).returncode != 0
+
+    for rho in ("1.0", "-0.5"):
+        invalid_rho = CONTROL_ROW.replace("0.25,3,", f"{rho},3,", 1)
+        _write_case(root, control_row=invalid_rho)
+        assert _run(root, output).returncode != 0
+
+
+def test_invalid_fracture_csv_inputs_fail() -> None:
+    """fracture csv rejects incomplete nonnumeric and duplicate id values."""
+    root = Path("/tmp/plume_invalid_input")
+    output = Path("/tmp/plume_invalid_output")
+    _write_case(root)
+    (root / "fractures.csv").write_text("id,shell_km\nbaghdad,24\n", encoding="utf-8")
+    assert _run(root, output).returncode != 0
+
+    nonnumeric = [
+        FRACTURE_ROWS[0].replace("24.0", "not-a-number", 1),
+        *FRACTURE_ROWS[1:],
+    ]
+    _write_case(root, fracture_rows=nonnumeric)
+    assert _run(root, output).returncode != 0
+
+    duplicates = [FRACTURE_ROWS[0], FRACTURE_ROWS[0], *FRACTURE_ROWS[1:]]
+    _write_case(root, fracture_rows=duplicates)
+    assert _run(root, output).returncode != 0
+
+
+def test_invalid_observation_csv_inputs_fail() -> None:
+    """observation csv rejects incomplete nonnumeric and out of grid values."""
+    root = Path("/tmp/plume_invalid_input")
+    output = Path("/tmp/plume_invalid_output")
+    _write_case(root)
+    observation = root / "observations" / "obs_00.csv"
+    observation.write_text("phase,m18\n0,0.2\n", encoding="utf-8")
+    assert _run(root, output).returncode != 0
+
+    _write_case(root)
+    observation = root / "observations" / "obs_00.csv"
+    observation.write_text(
+        f"{OBS_HEADER}\n{OBS_ROWS[0].replace('0.00350515231936326', 'bad', 1)}\n",
+        encoding="utf-8",
+    )
+    assert _run(root, output).returncode != 0
+
+    _write_case(root, observation_rows=[OBS_ROWS[0].replace("0,", "24,", 1)])
+    assert _run(root, output).returncode != 0
+
+    _write_case(root, observation_rows=[OBS_ROWS[0].replace("0,", "0.5,", 1)])
+    assert _run(root, output).returncode != 0
+
+
+def test_invalid_candidate_csv_inputs_fail() -> None:
+    """candidate csv rejects incomplete nonnumeric and out of grid values."""
+    root = Path("/tmp/plume_invalid_input")
+    output = Path("/tmp/plume_invalid_output")
+    _write_case(root)
+    (root / "candidates.csv").write_text(
+        "candidate,phase\norbiter-a,2\n", encoding="utf-8"
+    )
+    assert _run(root, output).returncode != 0
+
+    nonnumeric = [
+        CANDIDATE_ROWS[0].replace(",42,", ",bad,", 1),
+        *CANDIDATE_ROWS[1:],
+    ]
+    _write_case(root, candidate_rows=nonnumeric)
+    assert _run(root, output).returncode != 0
+
+    outside_candidate = [
+        CANDIDATE_ROWS[0].replace(",2,", ",24,", 1),
+        *CANDIDATE_ROWS[1:],
+    ]
+    _write_case(root, candidate_rows=outside_candidate)
+    assert _run(root, output).returncode != 0
+
+    fractional_candidate = [
+        CANDIDATE_ROWS[0].replace(",2,", ",2.5,", 1),
+        *CANDIDATE_ROWS[1:],
+    ]
+    _write_case(root, candidate_rows=fractional_candidate)
+    assert _run(root, output).returncode != 0

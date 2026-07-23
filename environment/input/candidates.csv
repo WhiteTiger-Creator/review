@@ -1,0 +1,7 @@
+candidate,phase,altitude_km,speed_kms,dose_limit
+orbiter-a,2,42,7.5,0.060
+orbiter-b,6,65,6.2,0.030
+orbiter-c,10,90,5.5,0.050
+orbiter-d,14,35,8.1,0.080
+orbiter-e,18,120,4.8,0.100
+orbiter-f,22,55,6.8,0.090
