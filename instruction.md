@@ -1,27 +1,5 @@
-We're blocked on the Postgres cutover. The checked-in cluster manifests under
-`/app/data` disagree with the organization policy snapshot, so bootstraps keep
-shipping wrong identities, privileges, HBA first-match order, and extension
-prerequisites.
+The release-security attestation gate at `POST /api/v1/attestations` in `/app` accepts a deployment archive (multipart `archive` field, uncompressed tar) and an optional `release_ref`. Harden the supply-chain control so every request establishes a verified trust boundary before credential-policy evaluation: load the scanner baseline only from the configured Git remote after GPG-validating an allowed annotated tag named in `/app/config/corpus.yml`, hydrate all Git LFS objects required by that signed release, and never reuse a cache entry that was only partially verified or verified under different remote or signer inputs. Branches, commits, lightweight tags, unsigned tags, untrusted signers, missing LFS objects, and malformed release references must be refused fail-closed. Corpus remotes may be read-only and owned by a different local account than the Puma process; verification must work in that deployment topology without weakening the trust boundary.
 
-Finish the unfinished planner already living in `/app`. The binary is named
-`pg-bootstrap`. Its `plan` entrypoint must fetch and digest-check the policy
-snapshot from the localhost base URL it already takes, merge that snapshot with
-the local YAML/TOML plus the extension and setting catalogs, reject forbidden
-capabilities, place every operation after its dependencies in a legal phase, and
-emit `/app/output/bootstrap.sql` together with `/app/output/bootstrap_plan.json`.
+Hostile archives must be parsed and rejected immediately after upload, before release-reference validation, corpus cache lookup, remote access, LFS hydration, or scanning. Absolute paths, parent traversal, duplicate normalized paths, symlinks, hardlinks, non-normalized names, and non-regular tar entries are unsafe and must not reach the policy scanner.
 
-Do real HTTP against the supplied policy service. Do not replace that fixture,
-edit verifier files, or dump precomputed SQL/plan tables from Python or shell.
-
-Whole-run fatals exit nonzero, print a stderr line that starts with
-`<reason_token>:`, and delete both requested outputs. A rejected cluster only
-gets a rejection row; later clusters still get planned, and the process still
-exits zero if nothing whole-run fatal happened.
-
-The rules are in `/app/docs/incident_summary.md`,
-`/app/docs/bootstrap_policy_profile.md`, `/app/docs/input_schema.md`,
-`/app/docs/policy_fragment_schema.md`, `/app/docs/rejection_precedence.md`,
-`/app/docs/extension_resolution.md`, `/app/docs/phase_contract.md`,
-`/app/docs/api_contract.md`, `/app/docs/plan_schema.md`, and
-`/app/docs/sql_serialization.md`. The supported argument surface is already
-declared in `/app/src/cli.rs`.
+For a verified baseline and safe archive, return HTTP 200 with the RS256-signed attestation report described in `/app/docs/corpus-bundle-format.md`. Findings must be deterministically ordered and must not echo matched secret or private-key bytes. `verdict` is `pass` only when findings are empty; any policy hit uses `verdict` `reject`. Apply the hydrated corpus rules to Compose YAML, env files, PEM keys, and JWT samples. The response body must be byte-identical for the same archive, release, and configuration. Use HTTP 422 with `{"error":{"code":...,"message":...}}` for invalid refs or unsafe archives, and HTTP 424 with the same error shape for release verification, hydration, or policy availability failures. Preserve `/up` and the default release behavior. Runtime may honor `CORPUS_ALLOWED_SIGNER` to override the allowed signer fingerprint from `/app/config/corpus.yml`. The HTTP and response contract is in `/app/docs/verifier-contract.md`. Harden the attestation pipeline under `/app` (including the tree mirrored at `/app/environment/source`).

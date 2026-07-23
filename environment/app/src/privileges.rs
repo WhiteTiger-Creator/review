@@ -1,1 +1,0 @@
-//! Privilege authorization (starter stub).
