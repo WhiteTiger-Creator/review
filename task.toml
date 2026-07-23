@@ -5,20 +5,25 @@ author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
 category = "scientific-computing"
-tags = [
-  "thermal-simulation",
-  "probabilistic-model-checking",
-  "heat-balance",
-  "pathogen-kill",
-  "composting",
-  "floating-point",
-]
-languages = ["go", "bash"]
+tags = ["scientific-computing", "formal-reasoning", "importance-sampling", "barrier-certificate", "numerical-analysis", "java"]
+languages = ["java"]
 codebase_size = "small"
 number_of_milestones = 0
 subcategories = ["tool_specific"]
-expert_time_estimate_min = 90
-junior_time_estimate_min = 240
+expert_time_estimate_min = 120
+junior_time_estimate_min = 360
+
+[category_profile]
+challenge_family = "ccs barrier witness"
+profile_name = "file_format_serialization"
+allowed_instruction_disclosures = "CCS obligation O1, numerical barrier feasibility target, diff_run CLI, dossier schema fields, binding profile overrides"
+forbidden_instruction_leaks = "fix module names, lattice join hook, barrier row index, oracle patch order, training-only shortcut"
+category_specific_hardness_bar = "Lattice narrowing, numerical margin assembly, importance weighting, and witness serialization must interact across annex versions and held-out arms"
+category_specific_verifier_risks = "spec transcription leak, golden dossier only, one decoder helper bypass"
+coverage_role = "Adds scientific-computing formal witness task with Java makefile substrate distinct from Python numeric repair specs"
+
+[reference_pattern]
+justification_if_none = "No promoted reference in docs/reference_tasks/index.json matches Java CCS barrier witness formal_reasoning; construction is net-new under scientific-computing."
 
 [agent]
 timeout_sec = 1800

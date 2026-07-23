@@ -6,5 +6,7 @@
 **/.mypy_cache/
 **/.ruff_cache/
 **/node_modules/
-**/*.bin.bak
-tools/hv7.bin
+.env
+solution/
+tests/
+build/
