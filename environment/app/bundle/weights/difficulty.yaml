@@ -1,7 +1,0 @@
-version: '1'
-difficulty:
-  tiers:
-  - min: 2
-    multiplier: 1.2
-  - min: 3
-    multiplier: 1.5

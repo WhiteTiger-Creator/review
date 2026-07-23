@@ -1,452 +1,237 @@
-"""Behavioral verifier for audit-java-duckdb-trivia-dungeon.
-
-Invokes /app/bin/trivia-dungeon and the bundled Makefile verify target.
-Compares issue tuples (artifact, pointer, code) rather than validator message text.
-"""
-
-from __future__ import annotations
-
 import json
 import os
+import random
 import shutil
-import stat
-from pathlib import Path
+import subprocess
+import tempfile
 
 import pytest
 
-from helpers import case_factory
-from helpers.report_assertions import (
-    assert_audit_success,
-    assert_canonical_json_bytes,
-    assert_immutable_hashes,
-    assert_issue_sets_equal,
-    assert_no_completed_audit_on_operational_failure,
-    assert_playthrough_matches_schema_dir,
-    assert_posix_relative_artifacts,
-    assert_report_matches_schema_dir,
-    issue_tuples,
-    load_fixture_hashes,
-    load_json,
-)
-from helpers.expectation_model import (
-    canonical_rows,
-    dataset_digest,
-    question_fingerprint,
-)
-from helpers.subprocess_utils import (
-    APP_ROOT,
-    CONTRACTS,
-    DATASET,
-    DEFAULT_OUTPUT,
-    EXIT_CONTENT,
-    EXIT_OPERATIONAL,
-    EXIT_SUCCESS,
-    audit_report_path,
-    clear_directory,
-    playthrough_report_path,
-    run_trivia_dungeon,
-)
-
-FIXTURE_HASHES = Path(__file__).resolve().parent / "fixture_hashes.json"
-BUNDLED_CONFIG = APP_ROOT / "config" / "dungeon.toml"
-BUNDLED_ANSWERS = APP_ROOT / "config" / "verification-answers.toml"
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _ensure_app_built_once() -> None:
-    """Prebuild the shaded jar once; the image already ships a built artifact."""
-    from helpers.subprocess_utils import ensure_built
-
-    ensure_built()
+APP_DIR = "/app"
+DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, -1), (-1, 1)]
 
 
 @pytest.fixture(scope="session")
-def fixture_hashes() -> dict[str, str]:
-    return load_fixture_hashes(FIXTURE_HASHES)
-
-
-def _read_report(path: Path) -> dict:
-    return load_json(path)
-
-
-def _run_audit(case: case_factory.DungeonCase, *, cwd: Path | None = None, env: dict | None = None):
-    case.output.mkdir(parents=True, exist_ok=True)
-    case.state.parent.mkdir(parents=True, exist_ok=True)
-    return run_trivia_dungeon(
-        "audit",
-        root=case.root,
-        config=case.config,
-        dataset=case.dataset,
-        contracts=case.contracts,
-        output=case.output,
-        state=case.state,
-        cwd=cwd or case.root,
-        env=env,
+def judge_bin():
+    """Compile the Fortran judge from a copy of /app so /app is never written to."""
+    tmp = tempfile.mkdtemp(prefix="hexverdict_build_")
+    src = os.path.join(tmp, "src_tree")
+    shutil.copytree(APP_DIR, src, symlinks=True, ignore=shutil.ignore_patterns(".git"))
+    binp = os.path.join(tmp, "hexverdict")
+    proc = subprocess.run(
+        ["make", "--no-print-directory", "BIN=" + binp],
+        cwd=src,
+        capture_output=True,
+        text=True,
     )
+    assert proc.returncode == 0, f"build failed:\n{proc.stdout}\n{proc.stderr}"
+    assert os.path.isfile(binp), f"build produced no binary:\n{proc.stdout}\n{proc.stderr}"
+    return binp
 
 
-def _run_playthrough(case: case_factory.DungeonCase, *, cwd: Path | None = None, env: dict | None = None):
-    assert case.answers is not None
-    case.output.mkdir(parents=True, exist_ok=True)
-    return run_trivia_dungeon(
-        "playthrough",
-        root=case.root,
-        config=case.config,
-        dataset=case.dataset,
-        contracts=case.contracts,
-        answers=case.answers,
-        output=case.output,
-        state=case.state,
-        cwd=cwd or case.root,
-        env=env,
-    )
+# ---- independent reference judge ----
+def _on(q, r, n):
+    return max(abs(q), abs(r), abs(-q - r)) <= n - 1
 
 
-def test_outputs_are_byte_reproducible_across_reruns_and_cwd(tmp_path: Path) -> None:
-    """Audit and playthrough outputs are byte-identical across cwd and warm state."""
-    bundled_state = APP_ROOT / ".state" / "audit-state.json"
-    if bundled_state.exists():
-        bundled_state.unlink()
-    if DEFAULT_OUTPUT.exists():
-        for child in DEFAULT_OUTPUT.iterdir():
-            if child.is_file():
-                child.unlink()
-            else:
-                shutil.rmtree(child)
-    out_a = tmp_path / "out-a"
-    out_b = tmp_path / "out-b"
-    state_a = tmp_path / "state-a.json"
-    state_b = tmp_path / "state-b.json"
-    clear_directory(out_a)
-    clear_directory(out_b)
-
-    cold_audit = run_trivia_dungeon(
-        "audit",
-        root=APP_ROOT,
-        config=BUNDLED_CONFIG,
-        dataset=DATASET,
-        contracts=CONTRACTS,
-        output=out_a,
-        state=state_a,
-        cwd=APP_ROOT,
-    )
-    assert cold_audit.returncode == EXIT_SUCCESS, cold_audit.stderr
-    cold_play = run_trivia_dungeon(
-        "playthrough",
-        root=APP_ROOT,
-        config=BUNDLED_CONFIG,
-        dataset=DATASET,
-        contracts=CONTRACTS,
-        answers=BUNDLED_ANSWERS,
-        output=out_a,
-        state=state_a,
-        cwd=APP_ROOT,
-    )
-    assert cold_play.returncode == EXIT_SUCCESS, cold_play.stderr
-    audit_bytes_cold = audit_report_path(out_a).read_bytes()
-    play_bytes_cold = playthrough_report_path(out_a).read_bytes()
-
-    warm_audit = run_trivia_dungeon(
-        "audit",
-        root=APP_ROOT,
-        config=BUNDLED_CONFIG,
-        dataset=DATASET,
-        contracts=CONTRACTS,
-        output=out_b,
-        state=state_b,
-        cwd=Path("/tmp"),
-    )
-    assert warm_audit.returncode == EXIT_SUCCESS, warm_audit.stderr
-    warm_play = run_trivia_dungeon(
-        "playthrough",
-        root=APP_ROOT,
-        config=BUNDLED_CONFIG,
-        dataset=DATASET,
-        contracts=CONTRACTS,
-        answers=BUNDLED_ANSWERS,
-        output=out_b,
-        state=state_b,
-        cwd=Path("/tmp"),
-    )
-    assert warm_play.returncode == EXIT_SUCCESS, warm_play.stderr
-
-    audit_bytes_warm = audit_report_path(out_b).read_bytes()
-    play_bytes_warm = playthrough_report_path(out_b).read_bytes()
-    assert audit_bytes_cold == audit_bytes_warm
-    assert play_bytes_cold == play_bytes_warm
-    for payload in (audit_bytes_cold, play_bytes_cold):
-        assert_canonical_json_bytes(payload)
+def _all(n):
+    return [(q, r) for q in range(-(n - 1), n) for r in range(-(n - 1), n) if _on(q, r, n)]
 
 
-def test_verify_target_succeeds_for_bundled_dungeon(tmp_path: Path) -> None:
-    """Complete user-facing workflow: audit and playthrough exit 0 with clean reports."""
-    state = APP_ROOT / ".state" / "test-bundled"
-    if state.exists():
-        state.unlink()
-    if DEFAULT_OUTPUT.exists():
-        for child in DEFAULT_OUTPUT.iterdir():
-            if child.is_file():
-                child.unlink()
-            else:
-                shutil.rmtree(child)
-
-    audit_run = run_trivia_dungeon(
-        "audit",
-        output=DEFAULT_OUTPUT,
-        state=state,
-        cwd=APP_ROOT,
-    )
-    assert audit_run.returncode == EXIT_SUCCESS, audit_run.stdout + audit_run.stderr
-    play_run = run_trivia_dungeon(
-        "playthrough",
-        output=DEFAULT_OUTPUT,
-        state=state,
-        answers=BUNDLED_ANSWERS,
-        cwd=APP_ROOT,
-    )
-    assert play_run.returncode == EXIT_SUCCESS, play_run.stdout + play_run.stderr
-
-    audit = _read_report(audit_report_path(DEFAULT_OUTPUT))
-    play = _read_report(playthrough_report_path(DEFAULT_OUTPUT))
-    assert_report_matches_schema_dir(audit, CONTRACTS)
-    assert_playthrough_matches_schema_dir(play, CONTRACTS)
-    assert_audit_success(audit)
-    assert play["reached_exit"] is True
-    assert audit["registry_digest"] == play["registry_digest"]
-    bundled_state = APP_ROOT / ".state" / "audit-state.json"
-    if bundled_state.exists():
-        bundled_state.unlink()
+def _corners(n):
+    m = n - 1
+    return {(m, 0), (m, -m), (0, m), (0, -m), (-m, 0), (-m, m)}
 
 
-def test_cli_environment_toml_precedence_and_relative_paths(tmp_path: Path) -> None:
-    """CLI overrides env over TOML; TOML-relative paths resolve from config parent."""
-    case = case_factory.build_precedence_case(tmp_path)
-    env = {
-        "TRIVIA_DATASET": str(case.notes["dataset_b"]),
-        "TRIVIA_CONTRACTS": str(case.notes["contracts_b"]),
-    }
-    result = _run_audit(
-        case,
-        cwd=Path("/tmp"),
-        env={
-            **env,
-            "TRIVIA_DATASET": str(case.dataset_a),
-            "TRIVIA_CONTRACTS": str(case.contracts),
-        },
-    )
-    assert result.returncode == EXIT_SUCCESS, result.stderr
-    report = _read_report(audit_report_path(case.output))
-    assert_audit_success(report)
-    assert_posix_relative_artifacts(report)
-    digest_a = dataset_digest(case.dataset_a)
-    assert digest_a in json.dumps(report)
+def _sides(q, r, n):
+    m = n - 1
+    s = -q - r
+    out = set()
+    for coord, hi, lo in ((q, 0, 1), (r, 2, 3), (s, 4, 5)):
+        if coord == m:
+            out.add(hi)
+        elif coord == -m:
+            out.add(lo)
+    return out
 
 
-def test_yaml_12_json_scalar_semantics(tmp_path: Path) -> None:
-    """Unquoted on/off/yes/no remain strings under YAML 1.2 semantics."""
-    case = case_factory.build_yaml_scalar_case(tmp_path, seed=case_factory.SEED_YAML)
-    result = _run_audit(case)
-    assert result.returncode == EXIT_SUCCESS, result.stderr
-    report = _read_report(audit_report_path(case.output))
-    assert_audit_success(report)
-    ids = {path.stem for path in (case.root / "bundle" / "chambers").glob("*.yaml") if path.name != "aliases.yaml"}
-    assert "keywords" in ids or "on" in case.notes.get("keyword_room_ids", [])
+def ref_judge(n, cells, player):
+    own = {c for c, p in cells.items() if p == player}
+    if not own:
+        return {"win": False, "type": None}
+    cor = _corners(n)
+    seen = set()
+    comps = []
+    for st in own:
+        if st in seen:
+            continue
+        stack = [st]
+        seen.add(st)
+        comp = []
+        while stack:
+            c = stack.pop()
+            comp.append(c)
+            for dq, dr in DIRS:
+                nb = (c[0] + dq, c[1] + dr)
+                if nb in own and nb not in seen:
+                    seen.add(nb)
+                    stack.append(nb)
+        comps.append(comp)
+
+    def has_ring(comp):
+        cs = set(comp)
+        allc = set(_all(n))
+        non = allc - cs
+        out = set()
+        stack = [c for c in non if _sides(c[0], c[1], n)]
+        for c in stack:
+            out.add(c)
+        while stack:
+            c = stack.pop()
+            for dq, dr in DIRS:
+                nb = (c[0] + dq, c[1] + dr)
+                if nb in non and nb not in out:
+                    out.add(nb)
+                    stack.append(nb)
+        return len(non - out) > 0
+
+    found = set()
+    for comp in comps:
+        if sum(1 for c in comp if c in cor) >= 2:
+            found.add("bridge")
+        sd = set()
+        for c in comp:
+            if c not in cor:
+                sd |= _sides(c[0], c[1], n)
+        if len(sd) >= 3:
+            found.add("fork")
+        if has_ring(comp):
+            found.add("ring")
+    for t in ("bridge", "fork", "ring"):
+        if t in found:
+            return {"win": True, "type": t}
+    return {"win": False, "type": None}
 
 
-def test_modern_question_id_requires_exactly_one_row(tmp_path: Path) -> None:
-    """Stable IDs require exactly one dataset row."""
-    case = case_factory.build_modern_id_case(tmp_path, seed=case_factory.SEED_SCHEMA)
-    result = _run_audit(case)
-    assert result.returncode == EXIT_CONTENT, result.stderr
-    report = _read_report(audit_report_path(case.output))
-    assert_issue_sets_equal(case.expected_issues, issue_tuples(report))
-
-
-def test_legacy_locator_is_stable_under_physical_reorder(tmp_path: Path) -> None:
-    """Legacy row locators use canonical order, not Parquet scan order."""
-    bundled_state = APP_ROOT / ".state" / "audit-state.json"
-    bundled_state.unlink(missing_ok=True)
-    case_a, case_b = case_factory.build_legacy_reorder_case(tmp_path, seed=case_factory.SEED_YAML)
-    res_a = _run_audit(case_a)
-    res_b = _run_audit(case_b)
-    assert res_a.returncode == EXIT_SUCCESS, res_a.stderr
-    assert res_b.returncode == EXIT_SUCCESS, res_b.stderr
-    report_a = _read_report(audit_report_path(case_a.output))
-    report_b = _read_report(audit_report_path(case_b.output))
-    assert report_a["registry_digest"] == report_b["registry_digest"]
-    assert case_a.notes["question_id"] == case_b.notes["question_id"]
-    assert case_a.notes["dataset_digest"] != case_b.notes["dataset_digest"]
-
-
-def test_stale_legacy_fingerprint_is_rejected(tmp_path: Path) -> None:
-    """Row index alone is insufficient; fingerprint must match canonical question text."""
-    case = case_factory.build_stale_fingerprint_case(tmp_path, seed=case_factory.SEED_SCHEMA)
-    result = _run_audit(case)
-    assert result.returncode == EXIT_CONTENT, result.stderr
-    report = _read_report(audit_report_path(case.output))
-    assert_issue_sets_equal(case.expected_issues, issue_tuples(report))
-
-
-def test_unicode_alias_normalization_uses_java_simple_lower(tmp_path: Path) -> None:
-    """İ / empty-alias answers match via Java Character.toLowerCase, not str.casefold()."""
-    from helpers.expectation_model import normalize_answer
-
-    case = case_factory.build_unicode_alias_case(tmp_path, seed=case_factory.SEED_UNICODE)
-    # Simple lowercase (Java): İ→i, ß stays ß. casefold() expands both differently.
-    assert normalize_answer("  İSTANBUL  ") == "istanbul"
-    assert normalize_answer(case.notes["nfc_question"]) == "istanbul"
-    assert normalize_answer("straße") == "straße"
-    assert "straße".casefold() == "strasse"
-    audit = _run_audit(case)
-    assert audit.returncode == EXIT_SUCCESS, audit.stderr
-    report = _read_report(audit_report_path(case.output))
-    assert_audit_success(report)
-    assert len(report) == 6
-    play = _run_playthrough(case)
-    assert play.returncode == EXIT_SUCCESS, play.stderr
-    play_report = _read_report(playthrough_report_path(case.output))
-    assert play_report["reached_exit"] is True
-
-
-def test_state_invalidates_on_manifest_contract_and_dataset_content(tmp_path: Path) -> None:
-    """Content-addressed state invalidates manifest, contract, and dataset mutations."""
-    case = case_factory.build_valid_dungeon(tmp_path, seed=case_factory.SEED_YAML)
-    warm = _run_audit(case)
-    assert warm.returncode == EXIT_SUCCESS, warm.stderr
-    warm_report = _read_report(audit_report_path(case.output))
-    warm_digest = warm_report["input_digest"]
-
-    room = next((case.root / "bundle" / "chambers").glob("*.yaml"))
-    original = room.read_bytes()
-    mutated = original.replace(b"title", b"titles", 1)
-    if mutated == original:
-        mutated = original + b"\n"
-    room.write_bytes(mutated)
-    os.utime(room, (1_600_000_000, 1_600_000_000))
-    after_manifest = _run_audit(case)
-    assert after_manifest.returncode in (EXIT_SUCCESS, EXIT_CONTENT)
-    after_report = _read_report(audit_report_path(case.output))
-    assert after_report["input_digest"] != warm_digest
-
-    room.write_bytes(original)
-    schema = case.contracts / "room.schema.json"
-    schema_orig = schema.read_bytes()
-    schema.write_bytes(schema_orig + b" ")
-    os.utime(schema, (1_600_000_000, 1_600_000_000))
-    _run_audit(case)
-    after_contract_report = _read_report(audit_report_path(case.output))
-    assert after_contract_report["input_digest"] != warm_digest
-    schema.write_bytes(schema_orig)
-
-    data_orig = case.dataset.read_bytes()
-    case.dataset.write_bytes(data_orig + b"\0")
-    os.utime(case.dataset, (1_600_000_000, 1_600_000_000))
-    _run_audit(case)
-    after_data_report = _read_report(audit_report_path(case.output))
-    assert after_data_report["input_digest"] != warm_digest
-    case.dataset.write_bytes(data_orig)
-
-
-def test_failed_or_truncated_state_is_never_reused(tmp_path: Path) -> None:
-    """Failed audits and truncated state files are not treated as reusable success."""
-    case = case_factory.build_aggregated_errors_case(tmp_path, seed=case_factory.SEED_SCHEMA)
-    first = _run_audit(case)
-    assert first.returncode == EXIT_CONTENT
-    if case.state.exists():
-        state = load_json(case.state)
-        assert state.get("success") is not True
-
-    case.state.parent.mkdir(parents=True, exist_ok=True)
-    case.state.write_text('{"format_version":"1","input_digest":"abc","success":true,"registry":', encoding="utf-8")
-    valid = case_factory.build_valid_dungeon(tmp_path / "repaired", seed=case_factory.SEED_SCHEMA)
-    repaired = _run_audit(valid)
-    assert repaired.returncode == EXIT_SUCCESS, repaired.stderr
-    state_doc = load_json(valid.state)
-    assert state_doc.get("success") is True
-    assert "registry" in state_doc
-
-
-@pytest.mark.parametrize("seed", [173, 811, 20260711])
-def test_generated_valid_case_changes_counts_and_paths(tmp_path: Path, seed: int) -> None:
-    """Seeded valid dungeons vary counts and paths; reports match reference expectations."""
-    case = case_factory.build_valid_dungeon(tmp_path, seed=seed)
-    audit = _run_audit(case)
-    assert audit.returncode == EXIT_SUCCESS, audit.stderr
-    play = _run_playthrough(case)
-    assert play.returncode == EXIT_SUCCESS, play.stderr
-    audit_report = _read_report(audit_report_path(case.output))
-    play_report = _read_report(playthrough_report_path(case.output))
-    assert len(audit_report.get("artifacts", [])) > 0
-    assert play_report["reached_exit"] is True
-    if case.expected_score is not None:
-        assert play_report["total_score"] == case.expected_score
-    if case.expected_route is not None:
-        assert play_report["visited_rooms"] == case.expected_route
-    for issue in audit_report.get("issues", []):
-        assert not Path(issue["artifact"]).is_absolute()
-
-
-def test_immutable_inputs_are_unchanged(fixture_hashes: dict[str, str]) -> None:
-    """Bundled dataset and contracts remain byte-identical and non-writable."""
-    assert_immutable_hashes(fixture_hashes)
-    _run_audit(
-        case_factory.DungeonCase(
-            root=APP_ROOT,
-            config=BUNDLED_CONFIG,
-            dataset=DATASET,
-            contracts=CONTRACTS,
-            answers=None,
-            state=APP_ROOT / ".state" / "hash-check.json",
-            output=DEFAULT_OUTPUT,
-            description="hash guard",
-        )
-    )
-    assert_immutable_hashes(fixture_hashes)
-    data_path = Path("/data/trivia_qa_sample.parquet")
-    mode = data_path.stat().st_mode
-    assert not (mode & stat.S_IWOTH), "/data must not be world-writable"
-
-
-def test_invalid_operational_inputs_use_exit_one_without_fake_validation_report(tmp_path: Path) -> None:
-    """Operational failures exit 1 without claiming a completed content audit."""
-    out = tmp_path / "operational-out"
-    state = tmp_path / "operational-state.json"
-
-    missing_ds = run_trivia_dungeon(
-        "audit",
-        dataset=tmp_path / "missing.parquet",
-        output=out / "a",
-        state=state,
-    )
-    assert missing_ds.returncode == EXIT_OPERATIONAL
-    assert_no_completed_audit_on_operational_failure(out / "a", missing_ds.stderr)
-
-    blocked_parent = tmp_path / "blocked"
-    blocked_parent.mkdir()
-    blocked_parent.chmod(0o500)
+def run_bin(binp, inst):
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+        cells = {f"{q},{r}": v for (q, r), v in inst["cells"].items()}
+        json.dump({"size": inst["size"], "player": inst["player"], "cells": cells}, fh)
+        path = fh.name
     try:
-        bad_out = run_trivia_dungeon(
-            "audit",
-            output=blocked_parent / "child" / "nested",
-            state=tmp_path / "state-b.json",
-        )
-        assert bad_out.returncode == EXIT_OPERATIONAL
+        proc = subprocess.run([binp, path], capture_output=True, text=True)
+        assert proc.returncode == 0, f"binary error: {proc.stderr}"
+        return json.loads(proc.stdout)
     finally:
-        blocked_parent.chmod(0o700)
-
-    bad_state = tmp_path / "not-a-dir" / "state.json"
-    bad_state.parent.write_text("file", encoding="utf-8")
-    bad_state_run = run_trivia_dungeon(
-        "audit",
-        output=tmp_path / "out-c",
-        state=bad_state,
-    )
-    assert bad_state_run.returncode == EXIT_OPERATIONAL
+        os.unlink(path)
 
 
-def test_fingerprint_matches_domain_contract() -> None:
-    """Sanity: verifier fingerprint matches domain-contract formula."""
-    rows = canonical_rows(DATASET)
-    assert rows, "bundled dataset must contain rows"
-    sample = rows[0]
-    assert question_fingerprint(sample["question"]) == sample["question_sha256"]
+def check(binp, inst):
+    exp = ref_judge(inst["size"], inst["cells"], inst["player"])
+    got = run_bin(binp, inst)
+    assert got.get("win") == exp["win"] and got.get("type") == exp["type"], (
+        f"mismatch on {inst}: expected {exp}, got {got}")
+
+
+# ---- hand fixtures ----
+def test_ring_around_empty(judge_bin):
+    """A six-stone loop around an empty central cell is a ring."""
+    check(judge_bin, {"size": 4, "player": "A", "cells": {
+        (1, 0): "A", (0, 1): "A", (-1, 1): "A", (-1, 0): "A", (0, -1): "A", (1, -1): "A"}})
+
+
+def test_ring_around_enemy(judge_bin):
+    """A loop that encloses an opponent stone still counts as a ring."""
+    check(judge_bin, {"size": 4, "player": "A", "cells": {
+        (1, 0): "A", (0, 1): "A", (-1, 1): "A", (-1, 0): "A", (0, -1): "A", (1, -1): "A", (0, 0): "B"}})
+
+
+def test_broken_ring_is_no_win(judge_bin):
+    """Five of the six loop stones leave the centre reachable from outside, so it is not a ring."""
+    check(judge_bin, {"size": 4, "player": "A", "cells": {
+        (1, 0): "A", (0, 1): "A", (-1, 1): "A", (-1, 0): "A", (0, -1): "A"}})
+
+
+def test_bridge_two_corners(judge_bin):
+    """A group linking two corners wins by a bridge."""
+    check(judge_bin, {"size": 4, "player": "A", "cells": {
+        (3, 0): "A", (3, -1): "A", (3, -2): "A", (3, -3): "A"}})
+
+
+def test_fork_three_sides(judge_bin):
+    """A group reaching three different sides wins by a fork."""
+    check(judge_bin, {"size": 4, "player": "A", "cells": {
+        (0, 0): "A", (1, 0): "A", (2, 0): "A", (3, -1): "A", (0, 1): "A", (0, 2): "A",
+        (-1, 3): "A", (-1, 0): "A", (-2, 0): "A", (-2, -1): "A"}})
+
+
+def test_two_sides_is_not_fork(judge_bin):
+    """A group touching only two sides is not a fork."""
+    check(judge_bin, {"size": 4, "player": "A", "cells": {
+        (3, -1): "A", (2, 0): "A", (1, 0): "A", (0, 0): "A", (0, 1): "A", (0, 2): "A", (-1, 3): "A"}})
+
+
+def test_corner_not_counted_as_side(judge_bin):
+    """Corner cells must not contribute a side, so a corner plus one side is not a fork."""
+    # a single corner plus a border cell on a second side: only 1 side (corner excluded) -> no fork
+    check(judge_bin, {"size": 4, "player": "A", "cells": {(3, 0): "A", (2, 1): "A", (1, 2): "A", (0, 3): "A"}})
+
+
+def test_empty_board_no_win(judge_bin):
+    """An empty board is not a win for anyone."""
+    check(judge_bin, {"size": 5, "player": "A", "cells": {}})
+
+
+# ---- randomized differential ----
+def _random_instance(rng):
+    n = rng.choice([4, 5, 6, 6, 7])
+    board = _all(n)
+    inst = {"size": n, "player": rng.choice(["A", "B"]), "cells": {}}
+    mode = rng.random()
+    if mode < 0.55:
+        # dense random fill: stresses ring flood-fill on boards with many
+        # near-enclosed regions, thin walls, and interior enemy/empty cells.
+        pa = rng.uniform(0.35, 0.55)
+        pb = rng.uniform(0.05, 0.20)
+        for c in board:
+            v = rng.random()
+            if v < pa:
+                inst["cells"][c] = "A"
+            elif v < pa + pb:
+                inst["cells"][c] = "B"
+    elif mode < 0.75:
+        # ring-biased: draw a small loop then perturb
+        cx = rng.choice(board)
+        loop = [(cx[0] + dq, cx[1] + dr) for dq, dr in DIRS]
+        for c in loop:
+            if _on(c[0], c[1], n) and rng.random() < 0.85:
+                inst["cells"][c] = inst["player"]
+        for _ in range(rng.randint(0, 6)):
+            c = rng.choice(board)
+            inst["cells"][c] = rng.choice(["A", "B"])
+    else:
+        # edge/corner-biased: place along borders
+        border = [c for c in board if _sides(c[0], c[1], n)]
+        for _ in range(rng.randint(3, 12)):
+            c = rng.choice(border)
+            inst["cells"][c] = inst["player"] if rng.random() < 0.8 else rng.choice(["A", "B"])
+        for _ in range(rng.randint(0, 8)):
+            c = rng.choice(board)
+            inst["cells"][c] = rng.choice(["A", "B"])
+    return inst
+
+
+CASES = []
+_rng = random.Random(20260713)
+for _ in range(600):
+    CASES.append(_random_instance(_rng))
+
+
+@pytest.mark.parametrize("inst", CASES)
+def test_differential(judge_bin, inst):
+    """Generated positions must match the independent reference judge on verdict and structure."""
+    check(judge_bin, inst)
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-rA"]))

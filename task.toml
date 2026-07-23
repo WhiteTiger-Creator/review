@@ -5,31 +5,23 @@ author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
 category = "games"
-subcategories = ["db_interaction"]
+subcategories = []
 number_of_milestones = 0
-codebase_size = "small"
-languages = ["java", "bash", "sql"]
-tags = [
-  "terminal-game",
-  "trivia",
-  "dungeon",
-  "playthrough",
-  "scoring",
-  "rooms",
-]
-expert_time_estimate_min = 300
-junior_time_estimate_min = 720
+codebase_size = "minimal"
+languages = ["fortran"]
+tags = ["havannah", "hex-board", "win-detection", "connectivity", "board-game"]
+expert_time_estimate_min = 120
+junior_time_estimate_min = 300
 
 [verifier]
-timeout_sec = 900
+timeout_sec = 600.0
 
 [agent]
-timeout_sec = 1800
+timeout_sec = 1800.0
 
 [environment]
-build_timeout_sec = 1200
-cpus = 4
-memory_mb = 8192
-storage_mb = 12288
-workdir = "/app"
 allow_internet = false
+build_timeout_sec = 1800.0
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240
