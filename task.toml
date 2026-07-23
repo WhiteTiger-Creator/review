@@ -2,29 +2,26 @@ version = "2.0"
 
 [metadata]
 author_name = "anonymous"
-author_email = "anonymous"
+author_email = "anonymous@example.com"
 difficulty = "hard"
 category = "build-and-dependency-management"
-subcategories = ["tool_specific", "api_integration"]
-codebase_size = "large"
-languages = ["rust", "sql"]
-tags = ["rustsec", "cargo-audit", "cargo-deny", "lockfile-reconciliation", "release-ledger"]
-expert_time_estimate_min = 240
-junior_time_estimate_min = 660
+subcategories = []
+tags = ["bash", "bazel", "bzlmod", "offline-build", "dependency-resolution"]
+languages = ["bash"]
+expert_time_estimate_min = 180.0
+junior_time_estimate_min = 1320.0
+codebase_size = "Small"
 number_of_milestones = 0
 
-[agent]
-timeout_sec = 900
-
 [verifier]
-timeout_sec = 420
+timeout_sec = 900.0
+
+[agent]
+timeout_sec = 1200.0
 
 [environment]
-build_timeout_sec = 600
-docker_flags = []
-cpus = 2
-memory_mb = 4096
+allow_internet = false
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
 storage_mb = 10240
-gpus = 0
-gpu_types = []
-allow_internet = true

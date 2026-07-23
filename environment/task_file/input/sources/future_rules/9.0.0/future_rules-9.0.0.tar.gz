@@ -1,0 +1,4 @@
+archive for future_rules@9.0.0
+compat=1
+license=Apache-2.0
+min_bazel=8.0.0

@@ -1,0 +1,4 @@
+archive for linux_sandbox@1.2.0
+compat=1
+license=Apache-2.0
+min_bazel=7.0.0

@@ -1,0 +1,4 @@
+archive for legacy_crypto@0.9.1
+compat=1
+license=BSD-3-Clause
+min_bazel=6.0.0
