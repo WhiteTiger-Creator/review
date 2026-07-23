@@ -1,574 +1,361 @@
-import copy
+"""Behavioral verification for the recovered local relay generation."""
+from __future__ import annotations
+
 import hashlib
 import json
-import subprocess
 from pathlib import Path
-
+import socket
+import sqlite3
+import stat
+import subprocess
+import time
 
 APP = Path("/app")
-REQ = APP / "task_file" / "request.json"
-REG = APP / "task_file" / "registry.json"
-OUT = APP / "task_file" / "lock.json"
-GO = Path("/usr/local/go/bin/go")
+CONFIG_DIR = APP / "etc/harbor-relay"
+AUDIT = APP / "var/repair-audit.db"
+MANIFEST = APP / "var/repair-manifest.json"
+LOCK = APP / "var/harbor-repair.lock"
+ZERO = "0" * 64
 
+# The arrival replay fixture is intentionally restored to the canonical bytes used by
+# the sealed request corpus. Keep this explicit pin synchronized with the packaged file.
+ARRIVAL_REPLAY_SHA256 = "4c9841e467bc1842aa5beb3992543e9f6c7114168fc4196692911980abd69237"
 
-def req(name, min_v=None, min_i=True, max_v=None, max_i=False, features=None, allow_yanked=False):
-    return {
-        "name": name,
-        "min": min_v,
-        "min_inclusive": min_i,
-        "max": max_v,
-        "max_inclusive": max_i,
-        "features": list(features or []),
-        "allow_yanked": allow_yanked,
-    }
-
-
-def seal(name, version):
-    return hashlib.sha256(f"{name}@{version}".encode()).hexdigest()
-
-
-def provide(name, version):
-    return {"name": name, "version": version}
-
-
-def pkg(
-    name,
-    version,
-    platforms=None,
-    yanked=False,
-    features=None,
-    deps=None,
-    provides=None,
-    conflicts=None,
-    bad=False,
-):
-    value = seal(name, version)
-    if bad:
-        value = "0" * 64
-    return {
-        "name": name,
-        "version": version,
-        "platforms": list(platforms or ["any"]),
-        "hash": value,
-        "yanked": yanked,
-        "features": list(features or []),
-        "deps": copy.deepcopy(list(deps or [])),
-        "provides": copy.deepcopy(list(provides or [])),
-        "conflicts": copy.deepcopy(list(conflicts or [])),
-    }
-
-
-PUBLIC_REQUEST = {
-    "platform": "linux-x64",
-    "roots": [
-        req("atlas", "1.0.0", True, "3.0.0", False, ["seal"], False),
-        req("beacon", "1.0.0", True, None, False, [], False),
-    ],
+PROTECTED = {
+    "docs/audit-database-contract.md": "617be0a34dc31d21ec2c4243d83b75eacd486293e1fc73aa1b90f5580872317a",
+    "docs/capacity-and-payload-notes.md": "d5e7d5cb61f98ca0c34c51d15a7f128524e0b3ecf111eb271d3124283112ee65",
+    "docs/catalog-field-notes.md": "1cfe0a8a61bfe73ad5d81685661bfca1ce8113e7ff3821e1edbb87b887ad98de",
+    "docs/oncall-shift-notes.md": "f8a73de870b62b585c1556d7bc44418323bcf49c39a9286f0cbb6570ec8f269d",
+    "docs/operator-recovery-contract.md": "6d6b39d27b8aa2163ad0bab90e72197227cca14a31e1731176e23013ecd133a9",
+    "docs/publication-and-audit-minutes.md": "f77abc3f1f2be1838751008624faee5327cf76d76847213b36883262dc4c4b33",
+    "docs/publication-state-machine.md": "1feb0f995961c4691c2f409ffc24aab3239aab2ba40beae676d38a45f0343930",
+    "docs/recovery-corpus.manifest": "ca71c742a8b713a307f56ff614bffb067978622205664f085147a9ea4088eccc",
+    "docs/relay-config-format.md": "379a52dcc094b133f583c67afd3b7eb48b35d6417b66fed7e6a081f1df57b000",
+    "docs/relay-operations-handbook.md": "97757d257094cdfa3d99df6ac1f5c6be8b42fb5536477d3dbee177d76fb43f5b",
+    "docs/route-governance-record.md": "9121072fe7fcbcb2dd84016d8ee322538ad6e9151bd7474f49aea8e809411fd0",
+    "docs/socket-evidence-review.md": "c2142197926955cf518a42142514bba59787b7f6e966dde55fb0e3b8470b09b5",
+    "etc/harbor-relay/environment": "37a348b1f87129d1798bf70fbc27a7b3ac19f86d1fed568760b4527d5e4b2ac8",
+    "etc/harbor-relay/service.account": "347b74cca9e03f1d208e1b5c7026830abd046a38d16411a14dfb8b46d6e361bf",
+    "evidence/capture.meta": "56334ed560725dc8a3bc8e7c621b7b0da08d6f36a4cff774069481e61d7140ae",
+    "evidence/relay.lsof": "c011e2763c5a4b16333358e337d217bbaaa9b195bda4a00df3ae3a33bb6b89f1",
+    "evidence/relay.strace": "9221acfe033c3079863ef635eb772a67f5fc8f4852ad285ebb42078699681a11",
+    "fixtures/README.txt": "1821b6e899e21ea0b345e686b684927dc742e34401a96ecd2d565e745c239592",
+    "fixtures/broken-config/limits.conf": "f28a35039bff7cae9ceb372296939043a89fd08072baa8bf5ff71e8725d60af1",
+    "fixtures/broken-config/relay.conf": "1aafa548b85f221e911ee4a6df4388e24d980ec1f07f60e47fa63793d2ec5169",
+    "fixtures/broken-config/routes.map": "65dad79e3b2217a5c34e9fbac418bd720514526bdebe154e7a5397fa35a63381",
+    "fixtures/requests/arrival-replay.http": ARRIVAL_REPLAY_SHA256,
+    "fixtures/requests/manifest-replay.http": "ad3a76dd6c30f1127181a3d119d0d5456b21d3db71100d62e448373e1d88aec9",
+    "fixtures/requests/replay-set.manifest": "68bbcc614bb582f239338cd0bb11d2f7e0c3bb02f02bcf2d5f3c7ab229101a66",
+    "fixtures/requests/status-replay.http": "96f0bdf0e942f7ed65512d8762ca7610c3ee2cf09ab964af576b7e1aab0acef9",
+    "scripts/reset-broken-state": "71697076f4338958c2fb9b5cdc204c87848dd634247457770990c1eebf42f208",
+    "scripts/send-sample-request": "6b55e5deba6ed58ee8b9d71dbd3b019bede64a62c2ce9f3fc70daa8698c48f9b",
+    "share/repair-catalog.batch": "4fc9b616e2541e785b7172367fff16aa31d8d18cbb5583b3689e1636405c4b59",
 }
 
-PUBLIC_REGISTRY = {
-    "packages": [
-        pkg("atlas", "2.2.0", ["linux-x64"], False, ["seal"], [
-            req("core", "2.0.0", True, "3.0.0", False, ["tls"], False),
-            req("scribe", "1.0.0", True, "2.0.0", False, [], False),
-        ]),
-        pkg("atlas", "2.4.0", ["linux-x64"], False, ["seal"], [
-            req("core", "2.2.0", True, "3.0.0", False, ["tls"], False),
-            req("rune", "1.0.0", True, "2.0.0", False, [], False),
-        ]),
-        pkg("beacon", "1.3.0", ["any"], False, [], [
-            req("core", "2.1.0", True, "2.4.0", False, [], False),
-        ]),
-        pkg("core", "2.1.0", ["linux-x64", "linux-arm64"], False, ["tls"], []),
-        pkg("core", "2.3.0", ["linux-x64"], True, ["tls"], []),
-        pkg("scribe", "1.7.0", ["any"], False, [], []),
-        pkg("rune", "1.6.0", ["linux-x64"], False, [], [], bad=True),
-    ],
+EXPECTED_RELAY = {
+    "site_key": "st-042",
+    "socket_path": "/app/run/harbor-relay/recovery.sock",
+    "socket_mode": "0660",
+    "socket_owner": "relayops",
+    "socket_group": "relay",
+    "listen_backlog": "128",
+    "route_map": "/app/etc/harbor-relay/routes.map",
+    "limits_file": "/app/etc/harbor-relay/limits.conf",
+    "audit_db": "/app/var/repair-audit.db",
+    "catalog_generation": "29",
 }
+EXPECTED_LIMITS = {
+    "open_files_soft": "640",
+    "reserved_files": "64",
+    "max_connections": "108",
+    "request_body_limit": "65536",
+}
+EXPECTED_ROUTES = [
+    ("GET", "/v1/berth/capabilities", "http://127.0.0.1:5902/capabilities", "preserve", "1200", "rt-203"),
+    ("GET", "/v1/berth/status", "http://127.0.0.1:5902/status", "preserve", "725", "rt-200"),
+    ("POST", "/v1/berth/arrivals", "http://127.0.0.1:5901/intake/arrivals-v2", "custody-token", "1850", "rt-201"),
+    ("POST", "/v1/berth/manifest", "http://127.0.0.1:5901/intake/manifest-v2", "dual-proof", "4100", "rt-204"),
+]
 
 
-def version_tuple(value):
-    return tuple(int(part) for part in value.split("."))
+def sha256(path: Path) -> str:
+    """Return the lowercase SHA-256 digest of one file."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def in_range(version, item):
-    current = version_tuple(version)
-    if item["min"] is not None:
-        low = version_tuple(item["min"])
-        if current < low or (current == low and not item["min_inclusive"]):
-            return False
-    if item["max"] is not None:
-        high = version_tuple(item["max"])
-        if current > high or (current == high and not item["max_inclusive"]):
-            return False
-    return True
+def digest_lines(values: list[str]) -> str:
+    """Hash newline-terminated digest lines using the publication contract."""
+    return hashlib.sha256(("\n".join(values) + "\n").encode()).hexdigest()
 
 
-def provided_pairs(candidate):
-    pairs = [provide(candidate["name"], candidate["version"])]
-    pairs.extend(candidate.get("provides", []))
-    return pairs
+def read_key_values(path: Path) -> dict[str, str]:
+    """Read an ordered key/value configuration into a dictionary."""
+    return dict(line.split("=", 1) for line in path.read_text(encoding="utf-8").splitlines())
 
 
-def matching_pair(candidate, name):
-    for item in provided_pairs(candidate):
-        if item["name"] == name:
-            return item
-    return None
-
-
-def matches_requirement(candidate, item):
-    for pair in provided_pairs(candidate):
-        if pair["name"] == item["name"] and in_range(pair["version"], item):
-            return True
-    return False
-
-
-def usable_for_group(candidate, items, platform):
-    if not items:
-        return False
-    if platform not in candidate["platforms"] and "any" not in candidate["platforms"]:
-        return False
-    if candidate["hash"] != seal(candidate["name"], candidate["version"]):
-        return False
-    if not all(matches_requirement(candidate, item) for item in items):
-        return False
-    wanted = set()
-    for item in items:
-        wanted.update(item["features"])
-    if not wanted.issubset(set(candidate["features"])):
-        return False
-    if candidate["yanked"] and not all(item["allow_yanked"] for item in items):
-            return False
-    return True
-
-
-def selected_covers(chosen, name, items, platform):
-    for candidate in chosen.values():
-        if matching_pair(candidate, name) is not None and usable_for_group(candidate, items, platform):
-            return True
-    return False
-
-
-def conflicts_ok(chosen):
-    rows = list(chosen.values())
-    for left in rows:
-        for right in rows:
-            if left is right:
-                continue
-            for item in left.get("conflicts", []):
-                if matches_requirement(right, item):
-                    return False
-    return True
-
-
-def add_item(groups, item):
-    groups.setdefault(item["name"], []).append(copy.deepcopy(item))
-
-
-def expected_lock(request, registry):
-    by_cover = {}
-    for candidate in registry["packages"]:
-        for pair in provided_pairs(candidate):
-            by_cover.setdefault(pair["name"], []).append(candidate)
-    groups = {}
-    for item in request["roots"]:
-        add_item(groups, item)
-    locks = []
-
-    def walk(current, chosen):
-        for name, items in current.items():
-            if name in chosen and not usable_for_group(chosen[name], items, request["platform"]):
-                return
-        if not conflicts_ok(chosen):
-            return
-        pending = sorted(
-            name for name, items in current.items()
-            if not selected_covers(chosen, name, items, request["platform"])
-        )
-        if not pending:
-            locks.append(copy.deepcopy(chosen))
-            return
-        name = pending[0]
-        for candidate in by_cover.get(name, []):
-            if candidate["name"] in chosen:
-                continue
-            if not usable_for_group(candidate, current[name], request["platform"]):
-                continue
-            next_groups = copy.deepcopy(current)
-            next_chosen = copy.deepcopy(chosen)
-            next_chosen[candidate["name"]] = candidate
-            for item in candidate["deps"]:
-                add_item(next_groups, item)
-            walk(next_groups, next_chosen)
-
-    walk(groups, {})
-    if not locks:
-        return {
-            "status": "blocked",
-            "packages": [],
-            "rejected": [{"name": item["name"], "reason": "no_lock"} for item in request["roots"]],
-        }
-
-    def rows(lock):
-        return [lock[name] for name in sorted(lock)]
-
-    def better(left, right):
-        left_rows = rows(left)
-        right_rows = rows(right)
-        if len(left_rows) != len(right_rows):
-            return len(left_rows) < len(right_rows)
-        left_versions = [f"{item['name']}@{item['version']}" for item in left_rows]
-        right_versions = [f"{item['name']}@{item['version']}" for item in right_rows]
-        if left_versions != right_versions:
-            return left_versions > right_versions
-        return [item["hash"] for item in left_rows] < [item["hash"] for item in right_rows]
-
-    best = locks[0]
-    for lock in locks[1:]:
-        if better(lock, best):
-            best = lock
-    return {
-        "status": "ok",
-        "packages": [
-            {"name": item["name"], "version": item["version"], "hash": item["hash"]}
-            for item in rows(best)
-        ],
-        "rejected": [],
-    }
-
-
-def write_case(request, registry):
-    REQ.write_text(json.dumps(request, indent=2) + "\n")
-    REG.write_text(json.dumps(registry, indent=2) + "\n")
-    if OUT.exists():
-        OUT.unlink()
-
-
-def run_case(request, registry):
-    write_case(request, registry)
-    build = subprocess.run(
-        [str(GO), "build", "./..."],
-        cwd=APP,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=20,
-    )
-    assert build.returncode == 0, build.stderr
+def catalog_output() -> bytes:
+    """Obtain the sealed catalog through the same public batch interface available to operators."""
     result = subprocess.run(
-        [str(GO), "run", ".", str(REQ), str(REG), str(OUT)],
-        cwd=APP,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=20,
+        [str(APP / "bin/catalog-query"), "--batch-file", str(APP / "share/repair-catalog.batch")],
+        check=True,
+        capture_output=True,
     )
-    assert result.returncode == 0, result.stderr
-    assert OUT.exists()
-    return json.loads(OUT.read_text())
+    return result.stdout
 
 
-def assert_exact(actual, expected):
-    assert set(actual) == {"status", "packages", "rejected"}
-    assert isinstance(actual["packages"], list)
-    assert isinstance(actual["rejected"], list)
-    assert actual == expected
+def send_unix(socket_path: Path, request: bytes) -> tuple[bytes, bytes]:
+    """Send one HTTP message to the relay over its Unix socket."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.connect(str(socket_path))
+        client.sendall(request)
+        client.shutdown(socket.SHUT_WR)
+        response = bytearray()
+        while True:
+            chunk = client.recv(65536)
+            if not chunk:
+                break
+            response.extend(chunk)
+    head, body = bytes(response).split(b"\r\n\r\n", 1)
+    return head, body
 
 
-def test_public_fixture_has_expected_lock():
-    """The public request requires platform, hash, feature, yanked, and transitive bounds together."""
-    actual = run_case(copy.deepcopy(PUBLIC_REQUEST), copy.deepcopy(PUBLIC_REGISTRY))
-    assert_exact(actual, expected_lock(PUBLIC_REQUEST, PUBLIC_REGISTRY))
+def test_authoritative_operator_inputs_are_unchanged() -> None:
+    """Verify the long-context corpus, evidence, fixtures, interface, and reset assets remain immutable."""
+    for relative, expected in PROTECTED.items():
+        path = APP / relative
+        assert path.is_file(), relative
+        assert sha256(path) == expected, relative
+    manifest = (APP / "docs/recovery-corpus.manifest").read_text(encoding="utf-8").splitlines()
+    listed = [line.split("\t")[1] for line in manifest if line and not line.startswith("#")]
+    assert listed == [
+        "relay-operations-handbook.md",
+        "socket-evidence-review.md",
+        "route-governance-record.md",
+        "capacity-and-payload-notes.md",
+        "publication-and-audit-minutes.md",
+    ]
 
 
-def test_empty_roots_emit_empty_arrays():
-    """An empty root list still writes ok status with packages and rejected as empty arrays."""
-    request = {"platform": "linux-x64", "roots": []}
-    registry = {"packages": [pkg("solo", "1.0.0")]}
-    assert_exact(run_case(request, registry), expected_lock(request, registry))
+def test_catalog_storage_and_existing_binaries_remain_valid() -> None:
+    """Verify the sealed catalog generation and existing relay binaries remain usable without source rebuilding."""
+    with sqlite3.connect("file:/opt/harbor/operations.db?mode=ro", uri=True) as db:
+        tables = [
+            row[0]
+            for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+        ]
+        logical = {}
+        for table in tables:
+            columns = [row[1] for row in db.execute(f"PRAGMA table_info({table})")]
+            order = ",".join(str(index + 1) for index in range(len(columns)))
+            rows = [list(row) for row in db.execute(f"SELECT * FROM {table} ORDER BY {order}")]
+            logical[table] = {"columns": columns, "rows": rows}
+        encoded = json.dumps(logical, separators=(",", ":"), sort_keys=True).encode()
+        assert hashlib.sha256(encoded).hexdigest() == "66259a98e52ec8f7329bc24c975dc78896543b04ba8115317d6d09dbb20ceaa9"
+    output = catalog_output().decode("utf-8")
+    assert output.startswith("@result catalog_meta\n")
+    assert output.rstrip().endswith("@end")
+    check = subprocess.run(
+        [str(APP / "bin/harbor-relay"), "--check-config", str(CONFIG_DIR / "relay.conf")],
+        capture_output=True,
+        text=True,
+    )
+    assert check.returncode == 0, check.stderr
+    for forbidden in [APP / "src", APP / "include", APP / "Makefile", APP / "build"]:
+        assert not forbidden.exists()
 
 
-def test_bad_hash_removes_highest_candidate():
-    """A version with an invalid hash is not usable even when its version is attractive."""
-    request = {"platform": "linux-x64", "roots": [req("anchor", "1.0.0", True, None, False)]}
-    registry = {"packages": [pkg("anchor", "2.0.0", bad=True), pkg("anchor", "1.5.0")]}
-    assert_exact(run_case(request, registry), expected_lock(request, registry))
+def test_repaired_configuration_matches_reconciled_socket_routes_and_limits() -> None:
+    """Verify the published text configuration contains the chronology-safe socket, closed routes, and calculated limits."""
+    relay_path = CONFIG_DIR / "relay.conf"
+    limits_path = CONFIG_DIR / "limits.conf"
+    routes_path = CONFIG_DIR / "routes.map"
+    assert read_key_values(relay_path) == EXPECTED_RELAY
+    assert read_key_values(limits_path) == EXPECTED_LIMITS
+    route_lines = routes_path.read_text(encoding="utf-8").splitlines()
+    assert route_lines[0] == "method\texternal_path\tupstream\tauth_mode\ttimeout_ms\tsource_route_id"
+    assert [tuple(line.split("\t")) for line in route_lines[1:]] == EXPECTED_ROUTES
+    assert relay_path.read_bytes().endswith(b"\n")
+    assert limits_path.read_bytes().endswith(b"\n")
+    assert routes_path.read_bytes().endswith(b"\n")
+    assert "data-plane.sock\"" in (APP / "evidence/relay.strace").read_text() and "EACCES" in (APP / "evidence/relay.strace").read_text()
+    after = (APP / "evidence/relay.lsof").read_text().split("# snapshot=after", 1)[1]
+    assert EXPECTED_RELAY["socket_path"] not in after
 
 
-def test_yanked_requires_every_accumulated_requirement_to_allow_it():
-    """A yanked package is usable only when all requirements for that name allow it."""
-    request = {"platform": "linux-x64", "roots": [req("kit", "1.0.0", True, None, False, [], True)]}
-    registry = {"packages": [
-        pkg("kit", "2.0.0", deps=[req("shared", "3.0.0", True, None, False, [], False)]),
-        pkg("kit", "1.0.0", deps=[req("shared", "1.0.0", True, None, False, [], True)]),
-        pkg("shared", "3.0.0", yanked=True),
-        pkg("shared", "1.0.0"),
-    ]}
-    assert_exact(run_case(request, registry), expected_lock(request, registry))
-
-
-def test_feature_union_controls_candidate_selection():
-    """Feature requirements gathered from different edges are accumulated per package name."""
-    request = {"platform": "linux-x64", "roots": [
-        req("left", "1.0.0", True, None, False),
-        req("right", "1.0.0", True, None, False),
-    ]}
-    registry = {"packages": [
-        pkg("left", "1.0.0", deps=[req("shared", "1.0.0", True, None, False, ["a"])]),
-        pkg("right", "1.0.0", deps=[req("shared", "1.0.0", True, None, False, ["b"])]),
-        pkg("shared", "2.0.0", features=["a"]),
-        pkg("shared", "1.8.0", features=["a", "b"]),
-    ]}
-    assert_exact(run_case(request, registry), expected_lock(request, registry))
-
-
-def test_fewest_packages_beats_higher_version_list():
-    """The first tie-break is complete lock size, before any version choice."""
-    request = {"platform": "linux-x64", "roots": [req("gate", "1.0.0", True, None, False)]}
-    registry = {"packages": [
-        pkg("gate", "3.0.0", deps=[req("addon", "1.0.0", True, None, False)]),
-        pkg("gate", "2.5.0"),
-        pkg("addon", "1.0.0"),
-    ]}
-    assert_exact(run_case(request, registry), expected_lock(request, registry))
-
-
-def test_full_plan_version_list_sets_the_next_tie_break():
-    """The lexicographic version-list comparison is made on the complete selected lock."""
-    request = {"platform": "linux-x64", "roots": [req("alpha", "1.0.0", True, None, False)]}
-    registry = {"packages": [
-        pkg("alpha", "2.0.0", deps=[req("beta", "1.0.0", True, "2.0.0", False)]),
-        pkg("alpha", "1.9.0", deps=[req("beta", "3.0.0", True, None, False)]),
-        pkg("beta", "1.5.0"),
-        pkg("beta", "3.4.0"),
-    ]}
-    assert_exact(run_case(request, registry), expected_lock(request, registry))
-
-
-def test_blocked_output_uses_root_order():
-    """When no complete lock exists, all requested root names are rejected in request order."""
-    request = {"platform": "linux-x64", "roots": [
-        req("north", "2.0.0", True, None, False),
-        req("south", "1.0.0", True, None, False),
-    ]}
-    registry = {"packages": [pkg("north", "1.0.0"), pkg("south", "1.0.0", bad=True)]}
-    assert_exact(run_case(request, registry), expected_lock(request, registry))
-
-
-def test_later_dependency_can_invalidate_earlier_selection():
-    """Requirements added after a package is selected still constrain that selected package."""
-    request = {"platform": "linux-x64", "roots": [
-        req("core", "1.0.0", True, None, False, ["tls"]),
-        req("gate", "1.0.0", True, None, False),
-    ]}
-    registry = {"packages": [
-        pkg("core", "3.2.0", ["linux-x64"], False, ["tls", "audit"]),
-        pkg("core", "2.4.0", ["linux-x64"], False, ["tls", "audit"]),
-        pkg("core", "1.8.0", ["linux-x64"], False, ["tls", "audit", "seal"]),
-        pkg("gate", "2.0.0", ["linux-x64"], False, [], [
-            req("core", "1.5.0", True, "2.0.0", False, ["seal"], False),
-            req("leaf", "1.0.0", True, None, False),
-        ]),
-        pkg("gate", "1.5.0", ["linux-x64"], False, [], [
-            req("core", "2.0.0", True, "3.0.0", False, ["audit"], False),
-        ]),
-        pkg("leaf", "1.0.0"),
-    ]}
-    assert_exact(run_case(request, registry), expected_lock(request, registry))
-
-
-def test_repeated_roots_accumulate_ranges_features_and_yanked_policy():
-    """Repeated root requirements for the same name are all accumulated before selection."""
-    request = {"platform": "linux-x64", "roots": [
-        req("vault", "1.0.0", True, "4.0.0", False, ["seal"], True),
-        req("vault", "2.0.0", False, "3.0.0", True, ["audit"], False),
-    ]}
-    registry = {"packages": [
-        pkg("vault", "3.0.0", yanked=True, features=["seal", "audit"]),
-        pkg("vault", "2.5.0", features=["seal"]),
-        pkg("vault", "2.4.0", features=["seal", "audit"]),
-    ]}
-    assert_exact(run_case(request, registry), expected_lock(request, registry))
-
-
-def test_complete_lock_tie_break_ignores_candidate_order():
-    """Equal-size locks use the sorted complete name@version list, not registry order."""
-    request = {"platform": "linux-x64", "roots": [
-        req("alpha", "1.0.0", True, None, False),
-        req("gamma", "1.0.0", True, None, False),
-    ]}
-    registry = {"packages": [
-        pkg("alpha", "2.0.0", deps=[req("beta", "1.0.0", True, "2.0.0", False)]),
-        pkg("gamma", "2.0.0", deps=[req("beta", "1.0.0", True, "2.0.0", False)]),
-        pkg("alpha", "1.9.0", deps=[req("beta", "3.0.0", True, None, False)]),
-        pkg("gamma", "1.9.0", deps=[req("beta", "3.0.0", True, None, False)]),
-        pkg("beta", "1.8.0"),
-        pkg("beta", "3.4.0"),
-    ]}
-    assert_exact(run_case(request, registry), expected_lock(request, registry))
-
-
-def test_provider_package_can_satisfy_root_and_dependency_names():
-    """A provided name can cover a root or dependency while output still uses the package's real name."""
-    request = {"platform": "linux-x64", "roots": [
-        req("client", "1.0.0", True, None, False),
-        req("engine", "2.0.0", True, None, False, ["jit"]),
-    ]}
-    registry = {"packages": [
-        pkg("client", "2.0.0", deps=[req("engine", "2.5.0", True, "4.0.0", False, ["jit"])]),
-        pkg("engine", "3.0.0", features=["jit"], deps=[req("addon", "1.0.0", True, None, False)]),
-        pkg("engine", "2.7.0", features=["jit"], deps=[req("addon", "1.0.0", True, None, False)]),
-        pkg("shim", "1.4.0", features=["jit"], provides=[provide("engine", "3.2.0")]),
-        pkg("addon", "1.0.0"),
-    ]}
-    assert_exact(run_case(request, registry), expected_lock(request, registry))
-
-
-def test_conflict_can_reject_a_locally_attractive_provider():
-    """Directed conflicts are checked against another selected package's real or provided names."""
-    request = {"platform": "linux-x64", "roots": [
-        req("app", "1.0.0", True, None, False),
-        req("runtime", "2.0.0", True, None, False),
-    ]}
-    registry = {"packages": [
-        pkg("app", "3.0.0", deps=[req("guard", "1.0.0", True, None, False)]),
-        pkg("guard", "1.0.0", provides=[provide("hazard", "1.0.0")]),
-        pkg("fast", "9.0.0", features=["vm"], provides=[provide("runtime", "4.0.0")],
-            conflicts=[req("hazard", "1.0.0", True, "2.0.0", False)]),
-        pkg("steady", "2.5.0", features=["vm"], provides=[provide("runtime", "2.5.0")]),
-    ]}
-    assert_exact(run_case(request, registry), expected_lock(request, registry))
-
-
-def test_provided_requirement_names_accumulate_features_and_yanked_policy():
-    """Feature and yanked checks accumulate by the requirement name satisfied through provides."""
-    request = {"platform": "linux-x64", "roots": [
-        req("api", "1.0.0", True, None, False, ["seal"], True),
-        req("api", "1.0.0", True, None, False, ["audit"], False),
-    ]}
-    registry = {"packages": [
-        pkg("adapter", "5.0.0", yanked=True, features=["seal", "audit"], provides=[provide("api", "3.0.0")]),
-        pkg("adapter", "4.0.0", features=["seal"], provides=[provide("api", "2.8.0")]),
-        pkg("adapter", "3.0.0", features=["seal", "audit"], provides=[provide("api", "2.4.0")]),
-        pkg("api", "2.0.0", features=["seal"]),
-    ]}
-    assert_exact(run_case(request, registry), expected_lock(request, registry))
-
-
-def test_conflict_entries_ignore_features_and_allow_yanked_fields():
-    """Conflict entries use the requirement name and range even when feature and yanked fields are populated."""
-    request = {"platform": "linux-x64", "roots": [
-        req("suite", "1.0.0", True, None, False),
-        req("codec", "1.0.0", True, None, False),
-    ]}
-    registry = {"packages": [
-        pkg("suite", "2.0.0", deps=[req("filter", "1.0.0", True, None, False)]),
-        pkg("filter", "3.0.0", conflicts=[req("codec", "3.0.0", True, None, False, ["ignored"], True)]),
-        pkg("codec", "3.2.0"),
-        pkg("codec", "2.4.0"),
-    ]}
-    assert_exact(run_case(request, registry), expected_lock(request, registry))
-
-
-def generated_case(index):
-    platform = ["linux-x64", "linux-arm64", "darwin-arm64"][index % 3]
-    upper = "4.0.0" if index % 4 else "3.0.0"
-    allow = index % 5 == 0
-    feature = "f" + str(index % 4)
-    peer_feature = "p" + str(index % 3)
-    shared_platform = [platform] if index % 6 else ["any"]
-    request = {"platform": platform, "roots": [
-        req("root", "1.0.0", True, upper, False, [feature], allow),
-        req("peer", "1.0.0", True, None, False, [peer_feature]),
-    ]}
-    registry = {"packages": [
-        pkg("root", "3.5.0", [platform], False, [feature], [
-            req("shared", "2.0.0", True, "4.0.0", False, [feature], allow),
-            req("bridge", "1.0.0", True, None, False),
-        ]),
-        pkg("root", "2.8.0", [platform], False, [feature], [
-            req("shared", "1.0.0", True, "3.0.0", False, [], allow),
-        ]),
-        pkg("root", "2.4.0", ["linux-x64", "any"][index % 2:index % 2 + 1], False, [feature], []),
-        pkg("peer", "2.0.0", ["any"], False, [peer_feature], [
-            req("shared", "1.5.0", True, "3.5.0", False, [peer_feature if index % 2 else feature], allow),
-        ]),
-        pkg("peer", "1.7.0", [platform], False, [peer_feature], [
-            req("shared", "2.2.0", True, "4.0.0", False, [], True),
-        ]),
-        pkg("bridge", "1.6.0", ["any"], False, [], [
-            req("shared", "2.4.0", True, "3.0.0", False, [feature], allow),
-        ]),
-        pkg("shared", "3.2.0", shared_platform, index % 5 == 0, [feature, peer_feature]),
-        pkg("shared", "2.8.0", [platform], False, [feature, peer_feature]),
-        pkg("shared", "2.6.0", [platform], False, [feature]),
-        pkg("shared", "2.2.0", [platform], False, [], bad=index % 7 == 0),
-    ]}
-    return request, registry
-
-
-def test_generated_compatible_variants():
-    """Generated variants combine documented platform, range, yanked, feature, hash, and tie-break rules."""
-    for index in range(24):
-        request, registry = generated_case(index)
-        assert_exact(run_case(request, registry), expected_lock(request, registry))
-
-
-def generated_provider_conflict_case(index):
-    platform = ["linux-x64", "linux-arm64", "darwin-arm64"][index % 3]
-    feature = "f" + str(index % 4)
-    meter_feature = "m" + str(index % 3)
-    allow_meter_yanked = index % 5 == 0
-    upper = "4.0.0" if index % 4 else "3.3.0"
-    request = {"platform": platform, "roots": [
-        req("app", "2.0.0", True, None, False),
-        req("meter", "1.0.0", True, None, False),
-        req("engine", "2.0.0", True, upper, False, [feature], True),
-    ]}
-    registry = {"packages": [
-        pkg("app", "3.0.0", [platform], False, [], [
-            req("engine", "3.0.0", True, "4.0.0", False, [feature]),
-            req("guard", "1.0.0", True, None, False),
-        ]),
-        pkg("app", "2.7.0", [platform], False, [], [
-            req("engine", "2.4.0", True, "4.0.0", False, [feature]),
-            req("bridge", "1.0.0", True, None, False),
-        ]),
-        pkg("meter", "2.0.0", ["any"], False, [meter_feature], [
-            req("engine", "2.0.0", True, "3.6.0", False, [meter_feature], allow_meter_yanked),
-        ]),
-        pkg("meter", "1.6.0", [platform], False, [meter_feature], [
-            req("engine", "3.0.0", True, "4.0.0", False, [], True),
-        ]),
-        pkg("guard", "1.0.0", ["any"], False, [], [], [provide("hazard", "1.0.0")]),
-        pkg("bridge", "1.0.0", ["any"], False, [], []),
-        pkg("native", "9.0.0", [platform], False, [feature, meter_feature],
-            [], [provide("engine", "3.4.0")], [req("hazard", "1.0.0", True, None, False)]),
-        pkg("shim", "5.0.0", [platform], index % 6 == 0, [feature, meter_feature],
-            [], [provide("engine", "3.2.0")]),
-        pkg("engine", "3.5.0", [platform], False, [feature],
-            [], [], [req("meter", "2.0.0", True, None, False)]),
-        pkg("engine", "3.1.0", [platform], False, [feature, meter_feature], [], [], [], index % 7 == 0),
-        pkg("engine", "2.8.0", [platform], False, [feature, meter_feature]),
-    ]}
-    if index % 2:
-        registry["packages"].append(
-            pkg("meter", "2.4.0", [platform], False, [meter_feature], [
-                req("engine", "2.5.0", True, "3.3.0", True, [feature, meter_feature], False),
-            ])
+def test_publication_permissions_and_clean_state_are_correct() -> None:
+    """Verify only the documented generation files remain, with required modes and no staging or compiler residue."""
+    expected_modes = {
+        CONFIG_DIR / "relay.conf": 0o640,
+        CONFIG_DIR / "limits.conf": 0o640,
+        CONFIG_DIR / "routes.map": 0o640,
+        AUDIT: 0o600,
+        MANIFEST: 0o640,
+        LOCK: 0o600,
+    }
+    for path, mode in expected_modes.items():
+        assert path.is_file(), path
+        assert stat.S_IMODE(path.stat().st_mode) == mode
+    residue = []
+    for directory in [CONFIG_DIR, APP / "var"]:
+        residue.extend(
+            path
+            for path in directory.iterdir()
+            if any(token in path.name for token in (".tmp", ".bak", "-journal", "-wal", "-shm"))
         )
-    if index % 3 == 0:
-        registry["packages"].append(
-            pkg("compat", "7.0.0", [platform], False, [feature, meter_feature],
-                [], [provide("engine", "2.9.0")])
-        )
-    return request, registry
+    assert residue == []
 
 
-def test_generated_provider_and_conflict_variants():
-    """Generated variants combine providers, conflicts, accumulated features, yanked policy, and tie-breaks."""
-    for index in range(30):
-        request, registry = generated_provider_conflict_case(index)
-        assert_exact(run_case(request, registry), expected_lock(request, registry))
+def test_publication_manifest_has_deterministic_identity_and_exact_provenance() -> None:
+    """Verify the compact JSON manifest identity, ordering, provenance hashes, and publication metadata independently."""
+    raw = MANIFEST.read_text(encoding="utf-8")
+    manifest = json.loads(raw)
+    assert raw == json.dumps(manifest, separators=(",", ":")) + "\n"
+    assert list(manifest) == [
+        "run_id",
+        "site_key",
+        "handbook_revision",
+        "catalog_generation",
+        "configuration",
+        "routes",
+        "assertions",
+        "inputs",
+        "publication",
+    ]
+    assert manifest["site_key"] == "st-042"
+    assert manifest["handbook_revision"] == "HRH-2026.07-R11"
+    assert manifest["catalog_generation"] == 29
+    expected_configuration = {**EXPECTED_RELAY, **EXPECTED_LIMITS}
+    assert manifest["configuration"] == expected_configuration
+    assert [tuple(str(item[key]) for key in ("method", "external_path", "upstream", "auth_mode", "timeout_ms", "source_route_id")) for item in manifest["routes"]] == EXPECTED_ROUTES
+    assert [item["decision_code"] for item in manifest["routes"]] == ["required", "selected", "selected", "replaced"]
+    assert len(manifest["assertions"]) == 10 and all(item["passed"] == 1 for item in manifest["assertions"])
+    assert [item["kind"] for item in manifest["inputs"]] == sorted(item["kind"] for item in manifest["inputs"])
+
+    request_paths = [APP / "fixtures/requests/replay-set.manifest"]
+    for line in request_paths[0].read_text(encoding="utf-8").splitlines():
+        if line and not line.startswith("#"):
+            request_paths.append(Path(line.split("\t", 1)[1]))
+    request_set = digest_lines([sha256(path) for path in request_paths])
+    evidence_set = digest_lines([sha256(APP / "evidence/capture.meta"), sha256(APP / "evidence/relay.strace"), sha256(APP / "evidence/relay.lsof")])
+    catalog_sha = hashlib.sha256(catalog_output()).hexdigest()
+    seed = "|".join(
+        [
+            "st-042",
+            "HRH-2026.07-R11",
+            "29",
+            request_set,
+            evidence_set,
+            catalog_sha,
+            sha256(CONFIG_DIR / "relay.conf"),
+            sha256(CONFIG_DIR / "limits.conf"),
+            sha256(CONFIG_DIR / "routes.map"),
+        ]
+    )
+    assert manifest["run_id"] == hashlib.sha256(seed.encode()).hexdigest()[:24]
+
+    input_rows = {(item["kind"], item["path"]): item for item in manifest["inputs"]}
+    catalog_item = input_rows[("catalog-batch-result", "/app/share/repair-catalog.batch")]
+    assert catalog_item["sha256"] == catalog_sha
+    assert catalog_item["bytes"] == len(catalog_output())
+    for (kind, path_text), item in input_rows.items():
+        if kind == "catalog-batch-result":
+            continue
+        path = Path(path_text)
+        assert item["sha256"] == sha256(path)
+        assert item["bytes"] == path.stat().st_size
+
+    expected_publication = [
+        (CONFIG_DIR / "relay.conf", "0640"),
+        (CONFIG_DIR / "limits.conf", "0640"),
+        (CONFIG_DIR / "routes.map", "0640"),
+        (AUDIT, "0600"),
+        (MANIFEST, "0640"),
+    ]
+    assert [item["path"] for item in manifest["publication"]] == [str(path) for path, _ in expected_publication]
+    for item, (path, mode) in zip(manifest["publication"], expected_publication, strict=True):
+        assert item["mode"] == mode
+        if path in {AUDIT, MANIFEST}:
+            assert (item["sha256"], item["bytes"]) == (ZERO, 0)
+        else:
+            assert (item["sha256"], item["bytes"]) == (sha256(path), path.stat().st_size)
+
+
+def test_audit_database_schema_constraints_and_reconciliation_are_complete() -> None:
+    """Verify the seven-table audit is constrained, complete, and reconciled with all publication bytes and decisions."""
+    with sqlite3.connect(AUDIT) as db:
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY rowid")]
+        assert tables == ["repair_run", "input_artifact", "configuration", "route", "decision", "assertion", "publication_file"]
+        run = db.execute(
+            "SELECT run_id,site_key,handbook_revision,catalog_generation,status FROM repair_run"
+        ).fetchone()
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        assert run == (manifest["run_id"], "st-042", "HRH-2026.07-R11", 29, "applied")
+        assert db.execute("SELECT COUNT(*) FROM assertion WHERE passed=1").fetchone() == (10,)
+        assert db.execute("SELECT COUNT(*) FROM decision").fetchone() == (14,)
+        assert [row[0] for row in db.execute("SELECT sequence FROM decision ORDER BY sequence")] == list(range(1, 15))
+        assert db.execute("SELECT COUNT(*) FROM input_artifact").fetchone() == (8,)
+        file_configuration = {**EXPECTED_RELAY, **EXPECTED_LIMITS}
+        assert dict(db.execute("SELECT key,value FROM configuration")) == file_configuration
+        audit_routes = db.execute(
+            "SELECT method,external_path,upstream,auth_mode,timeout_ms,source_route_id FROM route ORDER BY method,external_path"
+        ).fetchall()
+        assert audit_routes == [row[:4] + (int(row[4]), row[5]) for row in EXPECTED_ROUTES]
+        publication = {row[0]: row[1:] for row in db.execute("SELECT path,sha256,bytes,mode_text FROM publication_file")}
+        assert publication[str(AUDIT)] == (ZERO, 0, "0600")
+        assert publication[str(MANIFEST)] == (ZERO, 0, "0640")
+        assert publication[str(CONFIG_DIR / "relay.conf")] == (sha256(CONFIG_DIR / "relay.conf"), (CONFIG_DIR / "relay.conf").stat().st_size, "0640")
+    with sqlite3.connect(AUDIT) as db:
+        for statement in (Path("/tests/repair_assertions.sql").read_text(encoding="utf-8").split(";")):
+            if statement.strip():
+                assert db.execute(statement).fetchone() == (1,)
+
+
+def test_existing_relay_serves_replay_dependency_missing_and_oversized_requests() -> None:
+    """Verify the existing C++ relay binds the recovered socket and serves all required HTTP outcomes."""
+    socket_path = Path(EXPECTED_RELAY["socket_path"])
+    socket_path.unlink(missing_ok=True)
+    process = subprocess.Popen(
+        [str(APP / "bin/harbor-relay")],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.time() + 5
+        while time.time() < deadline and not socket_path.exists() and process.poll() is None:
+            time.sleep(0.05)
+        assert socket_path.exists(), process.stderr.read() if process.stderr else "relay exited"
+        expected = {
+            "arrival": ("/v1/berth/arrivals", "rt-201"),
+            "manifest": ("/v1/berth/manifest", "rt-204"),
+            "status": ("/v1/berth/status", "rt-200"),
+        }
+        for line in (APP / "fixtures/requests/replay-set.manifest").read_text(encoding="utf-8").splitlines():
+            if not line or line.startswith("#"):
+                continue
+            role, request_path = line.split("\t", 1)
+            head, body = send_unix(socket_path, Path(request_path).read_bytes())
+            payload = json.loads(body)
+            assert b"200 OK" in head
+            assert (payload["path"], payload["source_route_id"]) == expected[role]
+        head, body = send_unix(socket_path, b"GET /v1/berth/capabilities?full=1 HTTP/1.1\r\nHost: x\r\n\r\n")
+        assert b"200 OK" in head and json.loads(body)["source_route_id"] == "rt-203"
+        head, _ = send_unix(socket_path, b"GET /not-present HTTP/1.1\r\nHost: x\r\n\r\n")
+        assert b"404 Not Found" in head
+        oversized = b"x" * 65537
+        request = b"POST /v1/berth/arrivals HTTP/1.1\r\nHost: x\r\nContent-Length: 65537\r\n\r\n" + oversized
+        head, _ = send_unix(socket_path, request)
+        assert b"413 Payload Too Large" in head
+        unix_rows = Path("/proc/net/unix").read_text(encoding="utf-8")
+        assert str(socket_path) in unix_rows
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=3)
+        socket_path.unlink(missing_ok=True)

@@ -1,0 +1,4 @@
+#!/bin/bash
+set -euo pipefail
+socket="${1:-/app/run/harbor-relay/data-plane.sock}"
+curl --silent --show-error --unix-socket "$socket" --data-binary @/app/fixtures/requests/arrival-replay.http http://localhost/ 2>/dev/null || true
