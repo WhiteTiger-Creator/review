@@ -1,0 +1,1 @@
+{"case_id":"bad-gap","api_origin":"https://beacon.nist.gov","chain_index":1,"first_pulse":220398,"last_pulse":220394,"policy":"/app/policies/nist-v2-strict.json","trust":"/app/trust/nist-chain1.json"}

@@ -1,0 +1,1 @@
+{"case_id":"bad-origin","api_origin":"http://beacon.nist.gov","chain_index":1,"first_pulse":1,"last_pulse":2,"policy":"/app/policies/nist-v2-strict.json","trust":"/app/trust/nist-chain1.json"}

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["case_id", "api_origin", "chain_index", "first_pulse", "last_pulse", "certificate_id", "certificate_sha512", "policy_profile", "trust_profile", "pulses", "continuity", "audited_at", "result"],
+  "properties": {
+    "case_id": {"type": "string"},
+    "api_origin": {"const": "https://beacon.nist.gov"},
+    "chain_index": {"type": "integer", "minimum": 1},
+    "first_pulse": {"type": "integer", "minimum": 1},
+    "last_pulse": {"type": "integer", "minimum": 1},
+    "certificate_id": {"pattern": "^[0-9A-F]{128}$"},
+    "certificate_sha512": {"pattern": "^[0-9A-F]{128}$"},
+    "policy_profile": {"type": "string"},
+    "trust_profile": {"type": "string"},
+    "pulses": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "required": ["index", "timestamp", "source_uri", "evidence_file", "evidence_sha512", "output_value", "signature_verified", "output_hash_verified", "certificate_valid_at_pulse"],
+        "properties": {
+          "index": {"type": "integer", "minimum": 1},
+          "timestamp": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.000Z$"},
+          "source_uri": {"type": "string", "pattern": "^https://beacon\\.nist\\.gov/beacon/2\\.0/chain/[0-9]+/pulse/[0-9]+$"},
+          "evidence_file": {"type": "string", "pattern": "^pulse-[0-9]+\\.json$"},
+          "evidence_sha512": {"type": "string", "pattern": "^[0-9A-F]{128}$"},
+          "output_value": {"type": "string", "pattern": "^[0-9A-F]{128}$"},
+          "signature_verified": {"const": true},
+          "output_hash_verified": {"const": true},
+          "certificate_valid_at_pulse": {"const": true}
+        },
+        "additionalProperties": false
+      }
+    },
+    "continuity": {
+      "type": "object",
+      "required": ["indexes_consecutive", "timestamps_consecutive", "previous_links_verified", "precommitments_verified"],
+      "properties": {
+        "indexes_consecutive": {"const": true},
+        "timestamps_consecutive": {"const": true},
+        "previous_links_verified": {"const": true},
+        "precommitments_verified": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "audited_at": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.000Z$"},
+    "result": {"const": "PASS"}
+  },
+  "additionalProperties": false
+}
