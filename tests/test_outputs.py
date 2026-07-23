@@ -1,595 +1,946 @@
-"""Behavioral verification for the retained NIST Beacon audit."""
-
+import base64
+import copy
 import hashlib
+import hmac
+import ipaddress
 import json
-import os
-import pathlib
-import shutil
 import subprocess
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
 
-APP = pathlib.Path("/app")
-AUDIT = APP / "audit"
-EVIDENCE = AUDIT / "evidence"
-RECEIPT = AUDIT / "receipt.json"
-CASE = APP / "cases" / "chain1-220390-220394.json"
-CERTIFICATE_ID = (
-    "5501E3D72BC42F3B96E16DE4DCADCB16768E109662BD16D667D5FD9AEE585AF3"
-    "1BBDC5DD4F53592276064B53DDDD76C8F3604B2A41DB6E09F78F82BB5D6569E7"
-)
-EXPECTED = {
-    220390: (
-        "2018-12-26T16:03:00.000Z",
-        "E317D2DC8DEAA4C5E91C0A90357CA2B0C04F0CAB5F0ABE109773ECDFB63B7850"
-        "0563E6DFF7C8B4243820AFA39952562F5BE99238092AADAF75C7DD5D8534A1E4",
-        "B9564A6C20BB47E2537F4FF8CF22C26413D9BF893C0FC52E64112B7D15CA978A"
-        "948326C447930A17D36D25F3CD6DEEAB11BE496D0CCB7F700406824D66C57BB0",
-    ),
-    220391: (
-        "2018-12-26T16:04:00.000Z",
-        "EDBD7F83C2EDD95508A870A1A57FFA821A7E50B4C7FABEF6FC3B79D0BF6608A7"
-        "36B8D6D75474DBEB91FE5DE59F0AE29E92844ADD7DF86A678CC906C992D8288C",
-        "F19E748BA06A6AC30259250E8AF1623C0DA050AB006BC0BD396E96D9465F3431"
-        "B760773AC68CC3B9C6AB5923C8059D68829D856E6D674A41621603D565766ECF",
-    ),
-    220392: (
-        "2018-12-26T16:05:00.000Z",
-        "2833B6A8891875955AD8854B2FC503A44A0A6A7B589A815340D32AC0ABE6FDFA"
-        "3BAD71F5D6650E4F333B0B97A634A97ECF1E576EFE46E3A061416A407B1742E9",
-        "34C364F419E643952092B7FB9176FB43483103254D978258F158080F8780E77A8"
-        "A329D1AFF8A573D04D1FC1F9A7A78E554B19A56563354B501F8BD906379D9A8",
-    ),
-    220393: (
-        "2018-12-26T16:06:00.000Z",
-        "BA646CC4E7AE195D2C85E9D3AE9C9722B974F2134699D2493FA9E296C34995E8"
-        "E471B329CB5F63235982CEE3395A749C618E61466847951D543ADC2FBAD23ECB",
-        "22D5EC946E3F4AFBD12633C22A10CD3E3657CA487B1537CC0DC988F952B9B9C2"
-        "95E445AA8795421A222785B7DC85E7BDF3DFFE1729D176D66B7F55D55D78716D",
-    ),
-    220394: (
-        "2018-12-26T16:07:00.000Z",
-        "0A8863E03E200F694CBA50F0F9A009B078555FE637B07CA2C0A0E4D5640801737"
-        "87B26376C4762377A139D1BCAA916A10419504850EB7CF91552A17FDCAA0463",
-        "28EACA6042EBE5DFBF3ECF479023A155A1C2D69E9C0064E36485F23681D83D36"
-        "02BD85E4F6663A264F914219157104CDDB47C34940FA5789B8AB4DC57C64F246",
-    ),
+TASK_FILE = Path("/app/task_file")
+SOURCE = Path("/app/workload_gate.go")
+
+PUBLIC_HASHES = {
+    "docs/workload_gate_contract.md": "fce7b938d9b065b62ae1ba0b2722c36f259ab637ee63e52d2a8bba0e2b4580c5",
+    "input_data/mesh_policy.json": "20aafa58cbf93e13dbc64fb8e3021d851956d4a4125db7b88086e22c0aec8add",
+    "input_data/workloads.json": "a13c9d37507dd99b2705de6d6ee311d6c9ab4f981a384bf46c9defb6c508122c",
+    "input_data/approvers.json": "d478cd209b81f6698e4133011730fa452b1b2e096d3415b6845a76d26676cad0",
+    "input_data/calls.jsonl": "7220786bcb701462d976e3cbb0afba8e178c28358836abbbad5af565fc4b0af2",
 }
 
+REASONS = [
+    "unknown-source",
+    "unknown-subject",
+    "unknown-route",
+    "source-blocked",
+    "subject-blocked",
+    "untrusted-domain",
+    "identity-mismatch",
+    "route-mismatch",
+    "subject-not-allowed",
+    "cluster-not-allowed",
+    "env-not-allowed",
+    "attestation-too-low",
+    "scope-missing",
+    "assertion-malformed",
+    "assertion-claim-mismatch",
+    "assertion-expired",
+    "audience-not-allowed",
+    "bad-signature",
+    "delegation-not-allowed",
+    "delegation-invalid",
+    "delegation-scope-missing",
+    "network-too-risky",
+    "approval-invalid",
+    "approval-missing",
+    "nonce-replay",
+]
 
-def sha512(path: pathlib.Path) -> str:
-    """Return an uppercase SHA-512 digest for one retained artifact."""
-    return hashlib.sha512(path.read_bytes()).hexdigest().upper()
+ASSERTION_KEYS = {
+    "request_id",
+    "source_id",
+    "subject_id",
+    "route_id",
+    "key_id",
+    "method",
+    "path",
+    "audience",
+    "nonce",
+    "issued_at",
+    "scopes",
+}
+
+DECISION_KEYS = {
+    "request_id",
+    "decision",
+    "reasons",
+    "route_id",
+    "source_id",
+    "subject_id",
+    "network_risk",
+    "effective_scopes",
+    "accepted_delegation_ids",
+    "valid_approval_ids",
+    "authorization_expires_at",
+}
+
+SUMMARY_KEYS = {
+    "total_requests",
+    "allowed",
+    "denied",
+    "allowed_request_ids",
+    "denied_request_ids",
+    "reason_counts",
+}
+
+FRONTEND = "spiffe://prod.example/ns/shop/sa/frontend"
+ORDERS = "spiffe://prod.example/ns/shop/sa/orders"
+ADMIN = "spiffe://prod.example/ns/platform/sa/admin-console"
+BATCH = "spiffe://prod.example/ns/jobs/sa/nightly-batch"
+CANARY = "spiffe://prod.example/ns/shop/sa/canary"
+QUARANTINED = "spiffe://prod.example/ns/shop/sa/old-worker"
+
+VARIANTS = [
+    "breakglass_allowed",
+    "two_hop_delegation_allowed",
+    "delegation_hop_limit",
+    "delegation_disallowed_payment",
+    "delegation_scope_intersection",
+    "approval_distinct_approvers",
+    "approval_bad_signature",
+    "assertion_claim_mismatch",
+    "bad_call_signature",
+    "expired_bad_audience",
+    "unknown_principals_and_route",
+    "quarantined_direct_with_delegation",
+    "identity_mismatch",
+    "network_default_route_mismatch",
+    "nonce_replay_after_denied",
+    "subject_group_denied",
+    "rotated_key_valid_at_issued",
+    "inactive_workload_key_bad_signature",
+    "scope_implication_delegated_allowed",
+    "scope_implication_cycle",
+    "most_specific_network_zone",
+    "repeated_approval_role_quorum_allowed",
+    "repeated_approval_role_quorum_denied",
+    "assertion_null_scopes_malformed",
+    "approval_backtracking_quorum_allowed",
+]
 
 
-def load_receipt() -> dict:
-    """Load the submitted receipt as an ordered Python mapping."""
-    return json.loads(RECEIPT.read_text(encoding="utf-8"))
+def parse_time(value):
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
 
 
-def run_verify(case: pathlib.Path, evidence: pathlib.Path, receipt: pathlib.Path):
-    """Run the installed verifier against an arbitrary runtime evidence set."""
-    return subprocess.run(
-        [
-            "beacon-audit",
-            "verify",
-            "--case",
-            str(case),
-            "--directory",
-            str(evidence),
-            "--receipt",
-            str(receipt),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=20,
-    )
+def fmt_time(value):
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def b64d(text):
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def b64u(data):
+    return base64.urlsafe_b64encode(data).decode().rstrip("=")
+
+
+def b64json(obj):
+    return b64u(json.dumps(obj, separators=(",", ":"), sort_keys=True).encode())
+
+
+def hmac_b64(secret_b64url, message):
+    return b64u(hmac.new(b64d(secret_b64url), message.encode(), hashlib.sha256).digest())
+
+
+def hmac_ok(secret_b64url, message, got):
+    try:
+        expected = hmac_b64(secret_b64url, message)
+    except Exception:
+        return False
+    return hmac.compare_digest(expected, got)
+
+
+def norm(values):
+    return sorted({value for value in values if isinstance(value, str) and value})
+
+
+def set_has_all(required, have):
+    have_set = set(have)
+    return all(value in have_set for value in norm(required))
+
+
+def expand_scopes(policy, values):
+    expanded = set(norm(values))
+    stack = list(expanded)
+    implications = policy.get("scope_implications", {})
+    while stack:
+        scope = stack.pop()
+        for implied in implications.get(scope, []):
+            if isinstance(implied, str) and implied and implied not in expanded:
+                expanded.add(implied)
+                stack.append(implied)
+    return sorted(expanded)
+
+
+def overlap(left, right):
+    return bool(set(left).intersection(right))
+
+
+def read_json(path):
+    with path.open() as handle:
+        return json.load(handle)
+
+
+def read_jsonl(path):
+    rows = []
+    with path.open() as handle:
+        for line in handle:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    return rows
+
+
+def write_case(case, path):
+    path.mkdir(parents=True, exist_ok=True)
+    with (path / "mesh_policy.json").open("w") as handle:
+        json.dump(case["policy"], handle, separators=(",", ":"), sort_keys=True)
+        handle.write("\n")
+    with (path / "workloads.json").open("w") as handle:
+        json.dump({"workloads": case["workloads"]}, handle, separators=(",", ":"), sort_keys=True)
+        handle.write("\n")
+    with (path / "approvers.json").open("w") as handle:
+        json.dump(case["approvers"], handle, separators=(",", ":"), sort_keys=True)
+        handle.write("\n")
+    with (path / "calls.jsonl").open("w") as handle:
+        for row in case["calls"]:
+            json.dump(row, handle, separators=(",", ":"), sort_keys=True)
+            handle.write("\n")
+
+
+def load_case(path):
+    return {
+        "policy": read_json(path / "mesh_policy.json"),
+        "workloads": read_json(path / "workloads.json")["workloads"],
+        "approvers": read_json(path / "approvers.json"),
+        "calls": read_jsonl(path / "calls.jsonl"),
+    }
+
+
+def workload_map(case):
+    return {row["spiffe_id"]: row for row in case["workloads"]}
+
+
+def approver_map(case):
+    return {row["approver_id"]: row for row in case["approvers"]}
+
+
+def key_secret(entity, key_id=None):
+    keys = entity.get("keys", [])
+    if not keys:
+        return entity.get("secret_b64url")
+    if key_id is None:
+        return keys[0]["secret_b64url"]
+    for key in keys:
+        if key.get("key_id") == key_id:
+            return key["secret_b64url"]
+    raise KeyError(key_id)
+
+
+def active_key_secret(entity, key_id, at):
+    for key in entity.get("keys", []):
+        try:
+            not_before = parse_time(key["not_before"])
+            expires_at = parse_time(key["expires_at"])
+        except Exception:
+            continue
+        if (
+            key.get("key_id") == key_id
+            and key.get("status") == "active"
+            and not_before <= at < expires_at
+        ):
+            return key["secret_b64url"]
+    return None
+
+
+def key_active_at(entity, at):
+    for key in entity.get("keys", []):
+        try:
+            if key.get("status") == "active" and parse_time(key["not_before"]) <= at < parse_time(key["expires_at"]):
+                return key["key_id"]
+        except Exception:
+            pass
+    return entity.get("keys", [{"key_id": "missing-key"}])[0]["key_id"]
+
+
+def workload_secret(case, spiffe_id, key_id=None):
+    workload = workload_map(case).get(spiffe_id)
+    if workload is None:
+        return b64u(b"unknown workload")
+    return key_secret(workload, key_id)
+
+
+def approver_secret(case, approver_id, key_id=None):
+    return key_secret(approver_map(case)[approver_id], key_id)
+
+
+def make_call(case, request_id, source_id, subject_id, route_id, method, path, audience, nonce, origin_ip, issued_at, scopes, delegations=None, approvals=None, assertion_updates=None, tamper_signature=False, key_id=None):
+    source = workload_map(case).get(source_id)
+    if key_id is None:
+        key_id = key_active_at(source, parse_time(issued_at)) if source is not None else "missing-key"
+    assertion = {
+        "request_id": request_id,
+        "source_id": source_id,
+        "subject_id": subject_id,
+        "route_id": route_id,
+        "key_id": key_id,
+        "method": method,
+        "path": path,
+        "audience": audience,
+        "nonce": nonce,
+        "issued_at": issued_at,
+        "scopes": scopes,
+    }
+    if assertion_updates:
+        assertion.update(assertion_updates)
+    assertion_b64 = b64json(assertion)
+    signing = "\n".join([request_id, source_id, key_id, assertion_b64, nonce])
+    signature = hmac_b64(workload_secret(case, source_id, key_id), signing)
+    if tamper_signature:
+        signature = "A" + signature[1:]
+    return {
+        "request_id": request_id,
+        "route_id": route_id,
+        "source_id": source_id,
+        "subject_id": subject_id,
+        "key_id": key_id,
+        "method": method,
+        "path": path,
+        "audience": audience,
+        "nonce": nonce,
+        "origin_ip": origin_ip,
+        "assertion_b64url": assertion_b64,
+        "signature_b64url": signature,
+        "delegations": delegations or [],
+        "approvals": approvals or [],
+    }
+
+
+def make_grant(case, request_id, grant_id, from_id, to_id, scopes, not_before, expires_at, tamper=False, key_id=None):
+    from_workload = workload_map(case).get(from_id)
+    if key_id is None:
+        key_id = key_active_at(from_workload, parse_time(not_before)) if from_workload is not None else "missing-key"
+    signing = "\n".join([grant_id, request_id, from_id, to_id, key_id, ",".join(norm(scopes)), not_before, expires_at])
+    signature = hmac_b64(workload_secret(case, from_id, key_id), signing)
+    if tamper:
+        signature = signature[:-1] + ("A" if signature[-1] != "A" else "B")
+    return {
+        "grant_id": grant_id,
+        "from": from_id,
+        "to": to_id,
+        "key_id": key_id,
+        "scopes": scopes,
+        "not_before": not_before,
+        "expires_at": expires_at,
+        "signature_b64url": signature,
+    }
+
+
+def make_approval(case, request_id, approval_id, approver_id, role, decision, issued_at, expires_at, ticket, tamper=False, key_id=None):
+    approver = approver_map(case)[approver_id]
+    if key_id is None:
+        key_id = key_active_at(approver, parse_time(issued_at))
+    signing = "\n".join([approval_id, request_id, approver_id, key_id, role, decision, issued_at, expires_at, ticket])
+    signature = hmac_b64(approver_secret(case, approver_id, key_id), signing)
+    if tamper:
+        signature = "B" + signature[1:]
+    return {
+        "approval_id": approval_id,
+        "approver_id": approver_id,
+        "key_id": key_id,
+        "role": role,
+        "decision": decision,
+        "issued_at": issued_at,
+        "expires_at": expires_at,
+        "ticket": ticket,
+        "signature_b64url": signature,
+    }
+
+
+def decode_assertion(text):
+    try:
+        obj = json.loads(b64d(text).decode())
+    except Exception:
+        return None, None
+    if not isinstance(obj, dict) or set(obj) != ASSERTION_KEYS:
+        return None, None
+    for key in ASSERTION_KEYS - {"scopes"}:
+        if not isinstance(obj.get(key), str) or obj[key] == "":
+            return None, None
+    if not isinstance(obj.get("scopes"), list) or not all(isinstance(value, str) and value for value in obj["scopes"]):
+        return None, None
+    try:
+        issued_at = parse_time(obj["issued_at"])
+    except Exception:
+        return None, None
+    return obj, issued_at
+
+
+def identity_matches(workload):
+    return workload["spiffe_id"] == f"spiffe://{workload['trust_domain']}/ns/{workload['namespace']}/sa/{workload['service']}"
+
+
+def attestation_rank(value):
+    return {"none": 0, "baseline": 1, "hardware": 2}.get(value, 0)
+
+
+def network_risk(policy, ip_text):
+    try:
+        ip = ipaddress.ip_address(ip_text)
+    except ValueError:
+        return policy["default_network_risk"]
+    best_prefix = -1
+    best_risk = policy["default_network_risk"]
+    for zone in policy["network_zones"]:
+        network = ipaddress.ip_network(zone["cidr"])
+        if ip in network and network.prefixlen > best_prefix:
+            best_prefix = network.prefixlen
+            best_risk = zone["risk"]
+    return best_risk
+
+
+def intersect(left, right):
+    right_set = set(right)
+    return [value for value in norm(left) if value in right_set]
+
+
+def validate_chain(call, route, workloads, trusted, as_of, policy):
+    if not call["delegations"]:
+        return False, [], [], []
+    if route is not None and len(call["delegations"]) > route["max_delegation_hops"]:
+        return False, [], [], []
+    expected_from = call["subject_id"]
+    accepted_ids = []
+    expiries = []
+    hop_scopes = None
+    for grant in call["delegations"]:
+        if not all(grant.get(key) for key in ("grant_id", "from", "to", "key_id", "not_before", "expires_at")):
+            return False, [], [], []
+        if grant["from"] != expected_from:
+            return False, [], [], []
+        from_workload = workloads.get(grant["from"])
+        to_workload = workloads.get(grant["to"])
+        if not from_workload or not to_workload:
+            return False, [], [], []
+        if from_workload["status"] != "active" or to_workload["status"] != "active":
+            return False, [], [], []
+        if from_workload["trust_domain"] not in trusted or to_workload["trust_domain"] not in trusted:
+            return False, [], [], []
+        try:
+            not_before = parse_time(grant["not_before"])
+            expires_at = parse_time(grant["expires_at"])
+        except Exception:
+            return False, [], [], []
+        if not (not_before <= as_of < expires_at):
+            return False, [], [], []
+        signed_scopes = norm(grant.get("scopes", []))
+        if not signed_scopes:
+            return False, [], [], []
+        signing = "\n".join([
+            grant["grant_id"],
+            call["request_id"],
+            grant["from"],
+            grant["to"],
+            grant.get("key_id", ""),
+            ",".join(signed_scopes),
+            grant["not_before"],
+            grant["expires_at"],
+        ])
+        secret = active_key_secret(from_workload, grant.get("key_id", ""), not_before)
+        if secret is None or not hmac_ok(secret, signing, grant.get("signature_b64url", "")):
+            return False, [], [], []
+        scopes = expand_scopes(policy, signed_scopes)
+        hop_scopes = scopes if hop_scopes is None else intersect(hop_scopes, scopes)
+        accepted_ids.append(grant["grant_id"])
+        expiries.append(expires_at)
+        expected_from = grant["to"]
+    if expected_from != call["source_id"]:
+        return False, [], [], []
+    return True, accepted_ids, hop_scopes or [], expiries
+
+
+def valid_approvals(call, approvers, as_of):
+    valid = []
+    any_invalid = False
+    for approval in call["approvals"]:
+        approver = approvers.get(approval.get("approver_id"))
+        try:
+            issued_at = parse_time(approval["issued_at"])
+            expires_at = parse_time(approval["expires_at"])
+        except Exception:
+            issued_at = expires_at = None
+        ok = (
+            approver is not None
+            and approver["status"] == "active"
+            and approval.get("decision") == "approve"
+            and approval.get("role") in approver["roles"]
+            and issued_at is not None
+            and issued_at <= as_of < expires_at
+        )
+        if ok:
+            signing = "\n".join([
+                approval["approval_id"],
+                call["request_id"],
+                approval["approver_id"],
+                approval.get("key_id", ""),
+                approval["role"],
+                approval["decision"],
+                approval["issued_at"],
+                approval["expires_at"],
+                approval["ticket"],
+            ])
+            secret = active_key_secret(approver, approval.get("key_id", ""), issued_at)
+            ok = secret is not None and hmac_ok(secret, signing, approval.get("signature_b64url", ""))
+        if ok:
+            valid.append({"approval": approval, "expires": expires_at})
+        else:
+            any_invalid = True
+    return valid, any_invalid
+
+
+def approval_coverage(required_roles, approvals):
+    if not required_roles:
+        return True
+    used = set()
+
+    def search(index):
+        if index == len(required_roles):
+            return True
+        role = required_roles[index]
+        for item in approvals:
+            approval = item["approval"]
+            if approval["role"] == role and approval["approver_id"] not in used:
+                used.add(approval["approver_id"])
+                if search(index + 1):
+                    return True
+                used.remove(approval["approver_id"])
+        return False
+
+    return search(0)
+
+
+def solve_case(input_dir):
+    policy = read_json(input_dir / "mesh_policy.json")
+    workloads = workload_map(load_case(input_dir))
+    approvers = approver_map(load_case(input_dir))
+    calls = read_jsonl(input_dir / "calls.jsonl")
+    as_of = parse_time(policy["as_of"])
+    trusted = set(policy["trusted_domains"])
+    seen_nonce = set()
+    rows = []
+    reason_counts = {reason: 0 for reason in REASONS}
+    allowed_ids = []
+    denied_ids = []
+
+    for call in calls:
+        flags = set()
+        source = workloads.get(call["source_id"])
+        subject = workloads.get(call["subject_id"])
+        route = policy["routes"].get(call["route_id"])
+
+        if source is None:
+            flags.add("unknown-source")
+        if subject is None:
+            flags.add("unknown-subject")
+        if route is None:
+            flags.add("unknown-route")
+        if source is not None and source["status"] != "active":
+            flags.add("source-blocked")
+        if subject is not None and subject["status"] != "active":
+            flags.add("subject-blocked")
+        if (source is not None and source["trust_domain"] not in trusted) or (subject is not None and subject["trust_domain"] not in trusted):
+            flags.add("untrusted-domain")
+        if (source is not None and not identity_matches(source)) or (subject is not None and not identity_matches(subject)):
+            flags.add("identity-mismatch")
+
+        risk = network_risk(policy, call["origin_ip"])
+        if route is not None:
+            if call["method"] != route["method"] or not call["path"].startswith(route["path_prefix"]):
+                flags.add("route-mismatch")
+            if subject is not None and not overlap(subject["groups"], route["allowed_subject_groups"]):
+                flags.add("subject-not-allowed")
+            if source is not None and source["cluster"] not in route["allowed_source_clusters"]:
+                flags.add("cluster-not-allowed")
+            if source is not None and source["env"] not in route["allowed_envs"]:
+                flags.add("env-not-allowed")
+            if source is not None and attestation_rank(source["attestation"]) < attestation_rank(route["require_attestation"]):
+                flags.add("attestation-too-low")
+            if risk > route["max_network_risk"]:
+                flags.add("network-too-risky")
+
+        assertion, issued_at = decode_assertion(call["assertion_b64url"])
+        assertion_scopes = []
+        if assertion is None:
+            flags.add("assertion-malformed")
+        else:
+            assertion_scopes = expand_scopes(policy, assertion["scopes"])
+            for key in ("request_id", "source_id", "subject_id", "route_id", "key_id", "method", "path", "audience", "nonce"):
+                if assertion[key] != call[key]:
+                    flags.add("assertion-claim-mismatch")
+                    break
+            if route is not None and (issued_at > as_of or (as_of - issued_at).total_seconds() > route["max_assertion_age_seconds"]):
+                flags.add("assertion-expired")
+        if call["audience"] not in policy["allowed_audiences"]:
+            flags.add("audience-not-allowed")
+        if source is not None and assertion is not None:
+            signing = "\n".join([call["request_id"], call["source_id"], call.get("key_id", ""), call["assertion_b64url"], call["nonce"]])
+            secret = active_key_secret(source, call.get("key_id", ""), issued_at)
+            if secret is None or not hmac_ok(secret, signing, call["signature_b64url"]):
+                flags.add("bad-signature")
+        if route is not None and not set_has_all(route["required_scopes"], assertion_scopes):
+            flags.add("scope-missing")
+
+        effective_scopes = assertion_scopes[:] if assertion is not None else []
+        accepted_delegations = []
+        delegation_expiries = []
+        if call["source_id"] == call["subject_id"]:
+            if call["delegations"]:
+                flags.add("delegation-invalid")
+        else:
+            if route is not None and not route["allow_delegation"]:
+                flags.add("delegation-not-allowed")
+            chain_valid, ids, hop_scopes, expiries = validate_chain(call, route, workloads, trusted, as_of, policy)
+            if not chain_valid:
+                flags.add("delegation-invalid")
+                effective_scopes = []
+            else:
+                effective_scopes = intersect(effective_scopes, hop_scopes) if assertion is not None else []
+                delegation_expiries = expiries
+                if route is not None and not set_has_all(route["required_scopes"], hop_scopes):
+                    flags.add("delegation-scope-missing")
+                if route is not None and route["allow_delegation"]:
+                    accepted_delegations = ids
+
+        approvals, any_invalid_approval = valid_approvals(call, approvers, as_of)
+        if any_invalid_approval:
+            flags.add("approval-invalid")
+        valid_approval_ids = sorted(item["approval"]["approval_id"] for item in approvals)
+        if route is not None and not approval_coverage(route["required_approval_roles"], approvals):
+            flags.add("approval-missing")
+
+        nonce_key = (call["source_id"], call["audience"], call["nonce"])
+        if nonce_key in seen_nonce:
+            flags.add("nonce-replay")
+        seen_nonce.add(nonce_key)
+
+        reasons = [reason for reason in REASONS if reason in flags]
+        if reasons:
+            decision = "deny"
+            expires = None
+            denied_ids.append(call["request_id"])
+        else:
+            decision = "allow"
+            expiry = issued_at + timedelta(seconds=route["max_assertion_age_seconds"])
+            for grant_expiry in delegation_expiries:
+                expiry = min(expiry, grant_expiry)
+            required = set(route["required_approval_roles"])
+            for item in approvals:
+                if item["approval"]["role"] in required:
+                    expiry = min(expiry, item["expires"])
+            expires = fmt_time(expiry)
+            allowed_ids.append(call["request_id"])
+        for reason in reasons:
+            reason_counts[reason] += 1
+        rows.append({
+            "request_id": call["request_id"],
+            "decision": decision,
+            "reasons": reasons,
+            "route_id": call["route_id"],
+            "source_id": call["source_id"],
+            "subject_id": call["subject_id"],
+            "network_risk": risk,
+            "effective_scopes": effective_scopes,
+            "accepted_delegation_ids": accepted_delegations,
+            "valid_approval_ids": valid_approval_ids,
+            "authorization_expires_at": expires,
+        })
+
+    summary = {
+        "total_requests": len(calls),
+        "allowed": len(allowed_ids),
+        "denied": len(denied_ids),
+        "allowed_request_ids": allowed_ids,
+        "denied_request_ids": denied_ids,
+        "reason_counts": reason_counts,
+    }
+    return rows, summary
+
+
+def run_gate(binary, input_dir, output_dir):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    subprocess.run([str(binary), str(input_dir), str(output_dir)], check=True, cwd="/app", timeout=30)
+    return read_jsonl(output_dir / "workload_decisions.jsonl"), read_json(output_dir / "workload_summary.json")
+
+
+def validate_output_schema(rows, summary):
+    assert set(summary) == SUMMARY_KEYS
+    assert isinstance(summary["total_requests"], int)
+    assert isinstance(summary["allowed"], int)
+    assert isinstance(summary["denied"], int)
+    assert isinstance(summary["allowed_request_ids"], list)
+    assert isinstance(summary["denied_request_ids"], list)
+    assert set(summary["reason_counts"]) == set(REASONS)
+    assert all(isinstance(summary["reason_counts"][reason], int) for reason in REASONS)
+    assert summary["total_requests"] == len(rows)
+    assert summary["allowed"] + summary["denied"] == len(rows)
+    for row in rows:
+        assert set(row) == DECISION_KEYS
+        assert row["decision"] in {"allow", "deny"}
+        assert isinstance(row["request_id"], str)
+        assert isinstance(row["route_id"], str)
+        assert isinstance(row["source_id"], str)
+        assert isinstance(row["subject_id"], str)
+        assert isinstance(row["network_risk"], int)
+        for key in ("reasons", "effective_scopes", "accepted_delegation_ids", "valid_approval_ids"):
+            assert isinstance(row[key], list)
+            assert all(isinstance(value, str) for value in row[key])
+        assert row["reasons"] == [reason for reason in REASONS if reason in row["reasons"]]
+        assert len(row["reasons"]) == len(set(row["reasons"]))
+        assert row["effective_scopes"] == sorted(row["effective_scopes"])
+        assert row["valid_approval_ids"] == sorted(row["valid_approval_ids"])
+        if row["decision"] == "deny":
+            assert row["authorization_expires_at"] is None
+            assert row["reasons"]
+        else:
+            assert isinstance(row["authorization_expires_at"], str)
+            assert row["reasons"] == []
+
+
+def base_case():
+    return load_case(TASK_FILE / "input_data")
+
+
+def variant_case(name):
+    case = copy.deepcopy(base_case())
+    case["calls"] = []
+    if name == "breakglass_allowed":
+        req = "var-001"
+        approvals = [
+            make_approval(case, req, "var-appr-001a", "incident-1", "incident-commander", "approve", "2026-07-20T11:58:00Z", "2026-07-20T12:06:00Z", "INC-1"),
+            make_approval(case, req, "var-appr-001b", "sec-1", "security", "approve", "2026-07-20T11:58:10Z", "2026-07-20T12:07:00Z", "INC-1"),
+        ]
+        case["calls"].append(make_call(case, req, ADMIN, ADMIN, "breakglass-admin", "POST", "/admin/breakglass", "mesh-gateway", "var-nonce-1", "10.42.2.3", "2026-07-20T11:59:30Z", ["admin:breakglass"], approvals=approvals))
+    elif name == "two_hop_delegation_allowed":
+        req = "var-002"
+        grants = [
+            make_grant(case, req, "var-grant-002a", FRONTEND, BATCH, ["orders:read", "cart:read"], "2026-07-20T11:56:00Z", "2026-07-20T12:03:00Z"),
+            make_grant(case, req, "var-grant-002b", BATCH, ORDERS, ["orders:read"], "2026-07-20T11:56:10Z", "2026-07-20T12:04:00Z"),
+        ]
+        case["calls"].append(make_call(case, req, ORDERS, FRONTEND, "orders-read", "GET", "/orders/variant-2", "orders-api", "var-nonce-2", "10.77.3.4", "2026-07-20T11:59:00Z", ["orders:read", "cart:read"], delegations=grants))
+    elif name == "delegation_hop_limit":
+        case["policy"]["routes"]["orders-read"]["max_delegation_hops"] = 1
+        req = "var-003"
+        grants = [
+            make_grant(case, req, "var-grant-003a", FRONTEND, BATCH, ["orders:read"], "2026-07-20T11:56:00Z", "2026-07-20T12:03:00Z"),
+            make_grant(case, req, "var-grant-003b", BATCH, ORDERS, ["orders:read"], "2026-07-20T11:56:10Z", "2026-07-20T12:04:00Z"),
+        ]
+        case["calls"].append(make_call(case, req, ORDERS, FRONTEND, "orders-read", "GET", "/orders/variant-3", "mesh-gateway", "var-nonce-3", "10.42.3.4", "2026-07-20T11:59:00Z", ["orders:read"], delegations=grants))
+    elif name == "delegation_disallowed_payment":
+        req = "var-004"
+        grants = [make_grant(case, req, "var-grant-004a", ADMIN, ORDERS, ["payments:write", "audit:append"], "2026-07-20T11:56:00Z", "2026-07-20T12:05:00Z")]
+        approvals = [
+            make_approval(case, req, "var-appr-004a", "sec-1", "security", "approve", "2026-07-20T11:57:00Z", "2026-07-20T12:05:00Z", "PAY-4"),
+            make_approval(case, req, "var-appr-004b", "pay-1", "payments-owner", "approve", "2026-07-20T11:57:10Z", "2026-07-20T12:05:00Z", "PAY-4"),
+        ]
+        case["calls"].append(make_call(case, req, ORDERS, ADMIN, "payments-write", "POST", "/payments/variant-4", "mesh-gateway", "var-nonce-4", "10.42.4.4", "2026-07-20T11:59:30Z", ["payments:write", "audit:append"], delegations=grants, approvals=approvals))
+    elif name == "delegation_scope_intersection":
+        req = "var-005"
+        grants = [make_grant(case, req, "var-grant-005a", FRONTEND, ORDERS, ["cart:read"], "2026-07-20T11:56:00Z", "2026-07-20T12:05:00Z")]
+        case["calls"].append(make_call(case, req, ORDERS, FRONTEND, "orders-read", "GET", "/orders/variant-5", "orders-api", "var-nonce-5", "10.42.5.4", "2026-07-20T11:59:00Z", ["orders:read"], delegations=grants))
+    elif name == "approval_distinct_approvers":
+        case["approvers"].append({
+            "approver_id": "dual-1",
+            "roles": ["payments-owner", "security"],
+            "status": "active",
+            "keys": [{
+                "key_id": "dual-2026",
+                "secret_b64url": b64u(b"dual approver secret"),
+                "status": "active",
+                "not_before": "2026-07-01T00:00:00Z",
+                "expires_at": "2026-08-01T00:00:00Z",
+            }],
+        })
+        req = "var-006"
+        approvals = [
+            make_approval(case, req, "var-appr-006a", "dual-1", "security", "approve", "2026-07-20T11:57:00Z", "2026-07-20T12:05:00Z", "PAY-6"),
+            make_approval(case, req, "var-appr-006b", "dual-1", "payments-owner", "approve", "2026-07-20T11:57:10Z", "2026-07-20T12:05:00Z", "PAY-6"),
+        ]
+        case["calls"].append(make_call(case, req, ADMIN, ADMIN, "payments-write", "POST", "/payments/variant-6", "mesh-gateway", "var-nonce-6", "10.42.6.4", "2026-07-20T11:59:30Z", ["payments:write", "audit:append"], approvals=approvals))
+    elif name == "approval_bad_signature":
+        req = "var-007"
+        approvals = [
+            make_approval(case, req, "var-appr-007a", "sec-1", "security", "approve", "2026-07-20T11:57:00Z", "2026-07-20T12:05:00Z", "PAY-7"),
+            make_approval(case, req, "var-appr-007b", "pay-1", "payments-owner", "approve", "2026-07-20T11:57:10Z", "2026-07-20T12:05:00Z", "PAY-7", tamper=True),
+        ]
+        case["calls"].append(make_call(case, req, ADMIN, ADMIN, "payments-write", "POST", "/payments/variant-7", "mesh-gateway", "var-nonce-7", "10.42.7.4", "2026-07-20T11:59:30Z", ["payments:write", "audit:append"], approvals=approvals))
+    elif name == "assertion_claim_mismatch":
+        case["calls"].append(make_call(case, "var-008", FRONTEND, FRONTEND, "orders-read", "GET", "/orders/visible", "mesh-gateway", "var-nonce-8", "10.42.8.4", "2026-07-20T11:59:30Z", ["orders:read"], assertion_updates={"path": "/orders/signed"}))
+    elif name == "bad_call_signature":
+        case["calls"].append(make_call(case, "var-009", FRONTEND, FRONTEND, "orders-read", "GET", "/orders/variant-9", "mesh-gateway", "var-nonce-9", "10.42.9.4", "2026-07-20T11:59:30Z", ["orders:read"], tamper_signature=True))
+    elif name == "expired_bad_audience":
+        case["calls"].append(make_call(case, "var-010", FRONTEND, FRONTEND, "orders-read", "GET", "/orders/variant-10", "sidecar-debug", "var-nonce-10", "10.42.10.4", "2026-07-20T11:50:00Z", ["orders:read"]))
+    elif name == "unknown_principals_and_route":
+        missing_source = "spiffe://prod.example/ns/missing/sa/source"
+        missing_subject = "spiffe://prod.example/ns/missing/sa/subject"
+        case["calls"].append(make_call(case, "var-011", missing_source, missing_subject, "route-missing", "GET", "/missing", "mesh-gateway", "var-nonce-11", "10.42.11.4", "2026-07-20T11:59:30Z", ["orders:read"]))
+    elif name == "quarantined_direct_with_delegation":
+        req = "var-012"
+        grants = [make_grant(case, req, "var-grant-012a", FRONTEND, ORDERS, ["orders:read"], "2026-07-20T11:56:00Z", "2026-07-20T12:05:00Z")]
+        case["calls"].append(make_call(case, req, QUARANTINED, QUARANTINED, "orders-read", "GET", "/orders/variant-12", "mesh-gateway", "var-nonce-12", "10.42.12.4", "2026-07-20T11:59:30Z", ["orders:read"], delegations=grants))
+    elif name == "identity_mismatch":
+        for workload in case["workloads"]:
+            if workload["spiffe_id"] == FRONTEND:
+                workload["namespace"] = "wrong"
+        case["calls"].append(make_call(case, "var-013", FRONTEND, FRONTEND, "orders-read", "GET", "/orders/variant-13", "mesh-gateway", "var-nonce-13", "10.42.13.4", "2026-07-20T11:59:30Z", ["orders:read"]))
+    elif name == "network_default_route_mismatch":
+        case["calls"].append(make_call(case, "var-014", FRONTEND, FRONTEND, "orders-read", "GET", "/inventory/variant-14", "mesh-gateway", "var-nonce-14", "203.0.113.14", "2026-07-20T11:59:30Z", ["orders:read"]))
+    elif name == "nonce_replay_after_denied":
+        case["calls"].append(make_call(case, "var-015a", FRONTEND, FRONTEND, "orders-read", "GET", "/orders/variant-15a", "mesh-gateway", "var-nonce-15", "10.42.15.4", "2026-07-20T11:59:30Z", ["orders:read"], tamper_signature=True))
+        case["calls"].append(make_call(case, "var-015b", FRONTEND, FRONTEND, "orders-read", "GET", "/orders/variant-15b", "mesh-gateway", "var-nonce-15", "10.42.15.5", "2026-07-20T11:59:40Z", ["orders:read"]))
+    elif name == "subject_group_denied":
+        case["calls"].append(make_call(case, "var-016", BATCH, BATCH, "orders-read", "GET", "/orders/variant-16", "mesh-gateway", "var-nonce-16", "10.77.16.4", "2026-07-20T11:59:30Z", ["orders:read"]))
+    elif name == "rotated_key_valid_at_issued":
+        case["calls"].append(make_call(case, "var-017", FRONTEND, FRONTEND, "orders-read", "GET", "/orders/variant-17", "mesh-gateway", "var-nonce-17", "10.42.17.4", "2026-07-20T11:59:20Z", ["orders:read"], key_id="frontend-previous"))
+    elif name == "inactive_workload_key_bad_signature":
+        case["calls"].append(make_call(case, "var-018", FRONTEND, FRONTEND, "orders-read", "GET", "/orders/variant-18", "mesh-gateway", "var-nonce-18", "10.42.18.4", "2026-07-20T11:59:30Z", ["orders:read"], key_id="frontend-disabled"))
+    elif name == "scope_implication_delegated_allowed":
+        req = "var-019"
+        grants = [make_grant(case, req, "var-grant-019a", FRONTEND, ORDERS, ["orders:*"], "2026-07-20T11:56:00Z", "2026-07-20T12:04:30Z")]
+        case["calls"].append(make_call(case, req, ORDERS, FRONTEND, "orders-read", "GET", "/orders/variant-19", "orders-api", "var-nonce-19", "10.77.19.4", "2026-07-20T11:59:05Z", ["orders:*"], delegations=grants))
+    elif name == "scope_implication_cycle":
+        case["policy"]["scope_implications"]["cycle:a"] = ["cycle:b"]
+        case["policy"]["scope_implications"]["cycle:b"] = ["cycle:a", "orders:read"]
+        case["calls"].append(make_call(case, "var-020", FRONTEND, FRONTEND, "orders-read", "GET", "/orders/variant-20", "mesh-gateway", "var-nonce-20", "10.42.20.4", "2026-07-20T11:59:30Z", ["cycle:a"]))
+    elif name == "most_specific_network_zone":
+        case["policy"]["network_zones"].append({"cidr": "10.42.44.0/24", "risk": 4})
+        case["calls"].append(make_call(case, "var-021", FRONTEND, FRONTEND, "orders-read", "GET", "/orders/variant-21", "mesh-gateway", "var-nonce-21", "10.42.44.9", "2026-07-20T11:59:30Z", ["orders:read"]))
+    elif name == "repeated_approval_role_quorum_allowed":
+        case["policy"]["routes"]["breakglass-admin"]["required_approval_roles"] = ["incident-commander", "security", "security"]
+        case["approvers"].append({
+            "approver_id": "sec-2",
+            "roles": ["security"],
+            "status": "active",
+            "keys": [{
+                "key_id": "sec-2-2026",
+                "secret_b64url": b64u(b"second security approver secret"),
+                "status": "active",
+                "not_before": "2026-07-01T00:00:00Z",
+                "expires_at": "2026-08-01T00:00:00Z",
+            }],
+        })
+        req = "var-022"
+        approvals = [
+            make_approval(case, req, "var-appr-022a", "incident-1", "incident-commander", "approve", "2026-07-20T11:58:00Z", "2026-07-20T12:06:00Z", "INC-22"),
+            make_approval(case, req, "var-appr-022b", "sec-1", "security", "approve", "2026-07-20T11:58:10Z", "2026-07-20T12:07:00Z", "INC-22"),
+            make_approval(case, req, "var-appr-022c", "sec-2", "security", "approve", "2026-07-20T11:58:20Z", "2026-07-20T12:08:00Z", "INC-22"),
+        ]
+        case["calls"].append(make_call(case, req, ADMIN, ADMIN, "breakglass-admin", "POST", "/admin/breakglass", "mesh-gateway", "var-nonce-22", "10.42.22.4", "2026-07-20T11:59:30Z", ["admin:*"], approvals=approvals))
+    elif name == "repeated_approval_role_quorum_denied":
+        case["policy"]["routes"]["breakglass-admin"]["required_approval_roles"] = ["incident-commander", "security", "security"]
+        req = "var-023"
+        approvals = [
+            make_approval(case, req, "var-appr-023a", "incident-1", "incident-commander", "approve", "2026-07-20T11:58:00Z", "2026-07-20T12:06:00Z", "INC-23"),
+            make_approval(case, req, "var-appr-023b", "sec-1", "security", "approve", "2026-07-20T11:58:10Z", "2026-07-20T12:07:00Z", "INC-23"),
+            make_approval(case, req, "var-appr-023c", "sec-1", "security", "approve", "2026-07-20T11:58:20Z", "2026-07-20T12:08:00Z", "INC-23"),
+        ]
+        case["calls"].append(make_call(case, req, ADMIN, ADMIN, "breakglass-admin", "POST", "/admin/breakglass", "mesh-gateway", "var-nonce-23", "10.42.23.4", "2026-07-20T11:59:30Z", ["admin:*"], approvals=approvals))
+    elif name == "assertion_null_scopes_malformed":
+        case["calls"].append(make_call(case, "var-024", FRONTEND, FRONTEND, "orders-read", "GET", "/orders/variant-24", "mesh-gateway", "var-nonce-24", "10.42.24.4", "2026-07-20T11:59:30Z", ["orders:read"], assertion_updates={"scopes": None}))
+    elif name == "approval_backtracking_quorum_allowed":
+        case["policy"]["routes"]["payments-write"]["required_approval_roles"] = ["security", "payments-owner"]
+        case["approvers"].append({
+            "approver_id": "dual-2",
+            "roles": ["security", "payments-owner"],
+            "status": "active",
+            "keys": [{
+                "key_id": "dual-2-2026",
+                "secret_b64url": b64u(b"second dual approver secret"),
+                "status": "active",
+                "not_before": "2026-07-01T00:00:00Z",
+                "expires_at": "2026-08-01T00:00:00Z",
+            }],
+        })
+        req = "var-025"
+        approvals = [
+            make_approval(case, req, "var-appr-025a", "dual-2", "security", "approve", "2026-07-20T11:57:00Z", "2026-07-20T12:05:00Z", "PAY-25"),
+            make_approval(case, req, "var-appr-025b", "dual-2", "payments-owner", "approve", "2026-07-20T11:57:10Z", "2026-07-20T12:05:00Z", "PAY-25"),
+            make_approval(case, req, "var-appr-025c", "sec-1", "security", "approve", "2026-07-20T11:57:20Z", "2026-07-20T12:05:00Z", "PAY-25"),
+        ]
+        case["calls"].append(make_call(case, req, ADMIN, ADMIN, "payments-write", "POST", "/payments/variant-25", "mesh-gateway", "var-nonce-25", "10.42.25.4", "2026-07-20T11:59:30Z", ["payments:*"], approvals=approvals))
+    else:
+        raise AssertionError(name)
+    return case
 
 
 @pytest.fixture(scope="session")
-def fresh_chain(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
-    """Generate a hidden, freshly signed chain that cannot be fixture-hardcoded."""
-    root = tmp_path_factory.mktemp("fresh-chain")
-    generator = pathlib.Path(__file__).with_name("fresh_chain.go")
-    result = subprocess.run(
-        ["go", "run", str(generator), "--directory", str(root)],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=90,
-    )
-    assert result.returncode == 0, result.stderr
-    return root
+def built_binary(tmp_path_factory):
+    assert SOURCE.exists(), "/app/workload_gate.go is missing"
+    source_text = SOURCE.read_text()
+    forbidden = ["os/exec", "exec.Command", "CommandContext", "syscall.Exec", "/tests", "reward.txt", "pytest", "python", "subprocess"]
+    for token in forbidden:
+        assert token not in source_text
+    binary = tmp_path_factory.mktemp("bin") / "workload-gate"
+    subprocess.run(["/usr/local/go/bin/gofmt", "-w", str(SOURCE)], check=True, cwd="/app", timeout=30)
+    subprocess.run(["/usr/local/go/bin/go", "build", "-o", str(binary), str(SOURCE)], check=True, cwd="/app", timeout=60)
+    return binary
 
 
-def copy_fresh(fresh_chain: pathlib.Path, tmp_path: pathlib.Path) -> pathlib.Path:
-    target = tmp_path / "chain"
-    shutil.copytree(fresh_chain, target)
-    case_path = target / "case.json"
-    case = json.loads(case_path.read_text(encoding="utf-8"))
-    case["policy"] = str(target / "policy.json")
-    case["trust"] = str(target / "trust.json")
-    case_path.write_text(json.dumps(case), encoding="utf-8")
-    receipt = target / "receipt.json"
-    if receipt.exists():
-        receipt.unlink()
-    return target
+def test_public_input_integrity():
+    for rel, expected in PUBLIC_HASHES.items():
+        path = TASK_FILE / rel
+        assert path.exists(), rel
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == expected
 
 
-def repin_pulse(root: pathlib.Path, index: int) -> None:
-    """Update a generated case pin after a deliberate semantic mutation."""
-    case_path = root / "case.json"
-    case = json.loads(case_path.read_text(encoding="utf-8"))
-    case["pulse_sha512"][str(index)] = sha512(
-        root / "evidence" / f"pulse-{index}.json"
-    )
-    case_path.write_text(json.dumps(case), encoding="utf-8")
+def test_public_output_matches_reference_at_required_path(built_binary):
+    input_dir = TASK_FILE / "input_data"
+    output_dir = TASK_FILE / "output_data"
+    output_dir.mkdir(exist_ok=True)
+    sentinel = output_dir / "keep.txt"
+    sentinel.write_text("preserve me\n")
+    for name in ("workload_decisions.jsonl", "workload_summary.json"):
+        path = output_dir / name
+        if path.exists():
+            path.unlink()
+    rows, summary = run_gate(built_binary, input_dir, output_dir)
+    expected_rows, expected_summary = solve_case(input_dir)
+    assert sentinel.read_text() == "preserve me\n"
+    validate_output_schema(rows, summary)
+    assert rows == expected_rows
+    assert summary == expected_summary
 
 
-def test_evidence_layout_is_complete_and_safe() -> None:
-    """The evidence set contains only the requested regular files."""
-    assert EVIDENCE.is_dir() and not EVIDENCE.is_symlink()
-    expected_names = {"certificate.pem"} | {
-        f"pulse-{index}.json" for index in EXPECTED
-    }
-    assert {path.name for path in EVIDENCE.iterdir()} == expected_names
-    for path in EVIDENCE.iterdir():
-        assert path.is_file()
-        assert not path.is_symlink()
+@pytest.mark.parametrize("variant_name", VARIANTS)
+def test_generated_variant_matches_reference(built_binary, tmp_path, variant_name):
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    write_case(variant_case(variant_name), input_dir)
+    rows, summary = run_gate(built_binary, input_dir, output_dir)
+    expected_rows, expected_summary = solve_case(input_dir)
+    validate_output_schema(rows, summary)
+    assert rows == expected_rows
+    assert summary == expected_summary
 
 
-def test_retained_bodies_are_authoritative_nist_responses() -> None:
-    """Every pulse body matches the stable authoritative API evidence."""
-    for index, (timestamp, output, digest) in EXPECTED.items():
-        path = EVIDENCE / f"pulse-{index}.json"
-        assert sha512(path) == digest
-        pulse = json.loads(path.read_bytes())["pulse"]
-        assert pulse["uri"] == (
-            f"https://beacon.nist.gov/beacon/2.0/chain/1/pulse/{index}"
-        )
-        assert pulse["chainIndex"] == 1
-        assert pulse["pulseIndex"] == index
-        assert pulse["timeStamp"] == timestamp
-        assert pulse["outputValue"] == output
-        assert pulse["certificateId"].upper() == CERTIFICATE_ID
-    assert sha512(EVIDENCE / "certificate.pem") == (
-        "135CBCC3AB4580D893780D33A54C919F78FCE050F39900A4BC5A0652D3FBD8BE"
-        "0B176E83374F0AFB08EC4EA712FF9D2BD5458A0177CF910FD186C3E9658F5617"
-    )
+def test_hardcoded_public_reports_do_not_satisfy_variants(built_binary, tmp_path):
+    public_rows, public_summary = solve_case(TASK_FILE / "input_data")
+    mismatches = 0
+    for variant_name in VARIANTS[:5]:
+        input_dir = tmp_path / variant_name / "input"
+        write_case(variant_case(variant_name), input_dir)
+        expected_rows, expected_summary = solve_case(input_dir)
+        if expected_rows != public_rows or expected_summary != public_summary:
+            mismatches += 1
+    assert mismatches == 5
 
 
-def test_receipt_has_exact_top_level_contract() -> None:
-    """The receipt exposes the ordered case, trust, result, and time fields."""
-    receipt = load_receipt()
-    assert list(receipt) == [
-        "case_id",
-        "api_origin",
-        "chain_index",
-        "first_pulse",
-        "last_pulse",
-        "certificate_id",
-        "certificate_sha512",
-        "policy_profile",
-        "trust_profile",
-        "pulses",
-        "continuity",
-        "audited_at",
-        "result",
-    ]
-    assert receipt["case_id"] == "IR-2018-12-26-NIST-CHAIN1"
-    assert receipt["api_origin"] == "https://beacon.nist.gov"
-    assert (receipt["chain_index"], receipt["first_pulse"], receipt["last_pulse"]) == (
-        1,
-        220390,
-        220394,
-    )
-    assert receipt["certificate_id"] == CERTIFICATE_ID
-    assert receipt["certificate_sha512"] == CERTIFICATE_ID
-    assert receipt["policy_profile"] == "nist-v2-strict"
-    assert receipt["trust_profile"] == "nist-chain1-pinned-certificate"
-    assert receipt["audited_at"] == "2018-12-26T16:07:00.000Z"
-    assert receipt["result"] == "PASS"
-    assert RECEIPT.read_bytes().endswith(b"\n")
-
-
-def test_receipt_records_each_cryptographic_check() -> None:
-    """Per-pulse receipt records bind evidence digests and verification results."""
-    pulses = load_receipt()["pulses"]
-    assert [pulse["index"] for pulse in pulses] == list(EXPECTED)
-    for pulse in pulses:
-        timestamp, output, digest = EXPECTED[pulse["index"]]
-        assert list(pulse) == [
-            "index",
-            "timestamp",
-            "source_uri",
-            "evidence_file",
-            "evidence_sha512",
-            "output_value",
-            "signature_verified",
-            "output_hash_verified",
-            "certificate_valid_at_pulse",
-        ]
-        assert pulse["timestamp"] == timestamp
-        assert pulse["output_value"] == output
-        assert pulse["evidence_sha512"] == digest
-        assert pulse["evidence_file"] == f"pulse-{pulse['index']}.json"
-        assert pulse["source_uri"].endswith(f"/pulse/{pulse['index']}")
-        assert pulse["signature_verified"] is True
-        assert pulse["output_hash_verified"] is True
-        assert pulse["certificate_valid_at_pulse"] is True
-
-
-def test_chain_continuity_is_fully_attested() -> None:
-    """The receipt attests all four interval continuity properties."""
-    continuity = load_receipt()["continuity"]
-    assert list(continuity) == [
-        "indexes_consecutive",
-        "timestamps_consecutive",
-        "previous_links_verified",
-        "precommitments_verified",
-    ]
-    assert all(value is True for value in continuity.values())
-
-
-def test_installed_tool_reproduces_receipt(tmp_path: pathlib.Path) -> None:
-    """Fresh verification of retained evidence deterministically reproduces receipt."""
-    regenerated = tmp_path / "receipt.json"
-    result = subprocess.run(
-        [
-            "beacon-audit",
-            "verify",
-            "--case",
-            str(CASE),
-            "--directory",
-            str(EVIDENCE),
-            "--receipt",
-            str(regenerated),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=20,
-    )
-    assert result.returncode == 0, result.stderr
-    assert regenerated.read_bytes() == RECEIPT.read_bytes()
-
-
-def test_tampered_fresh_evidence_fails_closed(tmp_path: pathlib.Path) -> None:
-    """Runtime-created pulse tampering is rejected without issuing a receipt."""
-    copied = tmp_path / "evidence"
-    shutil.copytree(EVIDENCE, copied)
-    pulse_path = copied / "pulse-220392.json"
-    pulse = json.loads(pulse_path.read_text(encoding="utf-8"))
-    value = pulse["pulse"]["outputValue"]
-    pulse["pulse"]["outputValue"] = ("0" if value[0] != "0" else "1") + value[1:]
-    pulse_path.write_text(json.dumps(pulse), encoding="utf-8")
-    attempted = tmp_path / "forged-receipt.json"
-    result = subprocess.run(
-        [
-            "beacon-audit",
-            "verify",
-            "--case",
-            str(CASE),
-            "--directory",
-            str(copied),
-            "--receipt",
-            str(attempted),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=20,
-    )
-    assert result.returncode != 0
-    assert not attempted.exists()
-
-
-def test_symlinked_fresh_evidence_fails_closed(tmp_path: pathlib.Path) -> None:
-    """Runtime-created symlink substitution is rejected as unsafe evidence."""
-    copied = tmp_path / "evidence"
-    shutil.copytree(EVIDENCE, copied)
-    target = copied / "pulse-220393.json"
-    backup = tmp_path / "outside.json"
-    shutil.copyfile(target, backup)
-    target.unlink()
-    os.symlink(backup, target)
-    attempted = tmp_path / "symlink-receipt.json"
-    result = subprocess.run(
-        [
-            "beacon-audit",
-            "verify",
-            "--case",
-            str(CASE),
-            "--directory",
-            str(copied),
-            "--receipt",
-            str(attempted),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=20,
-    )
-    assert result.returncode != 0
-    assert not attempted.exists()
-
-
-def test_fresh_runtime_chain_verifies(
-    fresh_chain: pathlib.Path, tmp_path: pathlib.Path
-) -> None:
-    """The implementation verifies a newly generated signed chain."""
-    root = copy_fresh(fresh_chain, tmp_path)
-    receipt = root / "receipt.json"
-    result = run_verify(root / "case.json", root / "evidence", receipt)
-    assert result.returncode == 0, result.stderr
-    body = json.loads(receipt.read_text(encoding="utf-8"))
-    assert body["case_id"] == "FRESH-RUNTIME-CHAIN"
-    assert [item["index"] for item in body["pulses"]] == [9001, 9002, 9003]
-    assert body["result"] == "PASS"
-
-
-@pytest.mark.parametrize("mutation", ["duplicate", "trailing"])
-def test_noncanonical_json_is_rejected(
-    fresh_chain: pathlib.Path, tmp_path: pathlib.Path, mutation: str
-) -> None:
-    """Duplicate keys and trailing JSON documents fail before receipt issuance."""
-    root = copy_fresh(fresh_chain, tmp_path)
-    pulse = root / "evidence" / "pulse-9002.json"
-    raw = pulse.read_text(encoding="utf-8")
-    if mutation == "duplicate":
-        value = json.loads(raw)["pulse"]
-        pulse.write_text(
-            json.dumps({"pulse": value})[:-1]
-            + ',"pulse":'
-            + json.dumps(value)
-            + "}",
-            encoding="utf-8",
-        )
-    else:
-        pulse.write_text(raw + "{}\n", encoding="utf-8")
-    repin_pulse(root, 9002)
-    receipt = root / "receipt.json"
-    result = run_verify(root / "case.json", root / "evidence", receipt)
-    assert result.returncode != 0
-    assert not receipt.exists()
-
-
-def test_weakened_strict_policy_is_rejected(
-    fresh_chain: pathlib.Path, tmp_path: pathlib.Path
-) -> None:
-    """A policy cannot turn required cryptographic checks off."""
-    root = copy_fresh(fresh_chain, tmp_path)
-    policy_path = root / "policy.json"
-    policy = json.loads(policy_path.read_text(encoding="utf-8"))
-    policy["require_signatures"] = False
-    policy_path.write_text(json.dumps(policy), encoding="utf-8")
-    receipt = root / "receipt.json"
-    result = run_verify(root / "case.json", root / "evidence", receipt)
-    assert result.returncode != 0
-    assert not receipt.exists()
-
-
-def test_noncanonical_trust_profile_is_rejected(
-    fresh_chain: pathlib.Path, tmp_path: pathlib.Path
-) -> None:
-    """Trust pins must be unique canonical uppercase SHA-512 values."""
-    root = copy_fresh(fresh_chain, tmp_path)
-    trust_path = root / "trust.json"
-    trust = json.loads(trust_path.read_text(encoding="utf-8"))
-    trust["allowed_certificate_ids"][0] = trust["allowed_certificate_ids"][0].lower()
-    trust_path.write_text(json.dumps(trust), encoding="utf-8")
-    receipt = root / "receipt.json"
-    result = run_verify(root / "case.json", root / "evidence", receipt)
-    assert result.returncode != 0
-    assert not receipt.exists()
-
-
-def test_case_body_pins_are_mandatory(
-    fresh_chain: pathlib.Path, tmp_path: pathlib.Path
-) -> None:
-    """A fresh evidence body cannot diverge from its case SHA-512 manifest."""
-    root = copy_fresh(fresh_chain, tmp_path)
-    case_path = root / "case.json"
-    case = json.loads(case_path.read_text(encoding="utf-8"))
-    case["pulse_sha512"]["9002"] = "0" * 128
-    case_path.write_text(json.dumps(case), encoding="utf-8")
-    receipt = root / "receipt.json"
-    result = run_verify(case_path, root / "evidence", receipt)
-    assert result.returncode != 0
-    assert not receipt.exists()
-
-
-@pytest.mark.parametrize("mode", ["no-san", "ca", "no-digital"])
-def test_unfit_signing_certificates_are_rejected(
-    tmp_path: pathlib.Path, mode: str
-) -> None:
-    """Only the pinned DNS end-entity digital-signature certificate is accepted."""
-    root = tmp_path / mode
-    generator = pathlib.Path(__file__).with_name("fresh_chain.go")
-    generated = subprocess.run(
-        [
-            "go",
-            "run",
-            str(generator),
-            "--directory",
-            str(root),
-            "--certificate-mode",
-            mode,
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=90,
-    )
-    assert generated.returncode == 0, generated.stderr
-    receipt = root / "receipt.json"
-    result = run_verify(root / "case.json", root / "evidence", receipt)
-    assert result.returncode != 0
-    assert not receipt.exists()
-
-
-def test_duplicate_list_value_is_rejected_before_crypto(
-    fresh_chain: pathlib.Path, tmp_path: pathlib.Path
-) -> None:
-    """Each required list-value type appears exactly once."""
-    root = copy_fresh(fresh_chain, tmp_path)
-    pulse_path = root / "evidence" / "pulse-9002.json"
-    envelope = json.loads(pulse_path.read_text(encoding="utf-8"))
-    envelope["pulse"]["listValues"].append(envelope["pulse"]["listValues"][0])
-    pulse_path.write_text(json.dumps(envelope), encoding="utf-8")
-    repin_pulse(root, 9002)
-    receipt = root / "receipt.json"
-    result = run_verify(root / "case.json", root / "evidence", receipt)
-    assert result.returncode != 0
-    assert not receipt.exists()
-
-
-def test_foreign_list_uri_is_rejected(
-    fresh_chain: pathlib.Path, tmp_path: pathlib.Path
-) -> None:
-    """A list value cannot claim provenance from a foreign chain origin."""
-    root = copy_fresh(fresh_chain, tmp_path)
-    pulse_path = root / "evidence" / "pulse-9002.json"
-    envelope = json.loads(pulse_path.read_text(encoding="utf-8"))
-    envelope["pulse"]["listValues"][1]["uri"] = (
-        "https://example.com/beacon/2.0/chain/7/pulse/8999"
-    )
-    pulse_path.write_text(json.dumps(envelope), encoding="utf-8")
-    repin_pulse(root, 9002)
-    receipt = root / "receipt.json"
-    result = run_verify(root / "case.json", root / "evidence", receipt)
-    assert result.returncode != 0
-    assert not receipt.exists()
-
-
-def test_nonzero_signed_pulse_status_is_rejected(tmp_path: pathlib.Path) -> None:
-    """A cryptographically valid pulse with a nonzero status still fails closed."""
-    root = tmp_path / "nonzero"
-    generator = pathlib.Path(__file__).with_name("fresh_chain.go")
-    generated = subprocess.run(
-        ["go", "run", str(generator), "--directory", str(root), "--status", "1"],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=90,
-    )
-    assert generated.returncode == 0, generated.stderr
-    receipt = root / "receipt.json"
-    result = run_verify(root / "case.json", root / "evidence", receipt)
-    assert result.returncode != 0
-    assert not receipt.exists()
-
-
-def test_extra_and_oversized_evidence_fail_closed(
-    fresh_chain: pathlib.Path, tmp_path: pathlib.Path
-) -> None:
-    """The evidence inventory and per-file size cap are exact."""
-    extra = copy_fresh(fresh_chain, tmp_path / "extra")
-    (extra / "evidence" / "notes.txt").write_text("not evidence", encoding="utf-8")
-    result = run_verify(extra / "case.json", extra / "evidence", extra / "receipt.json")
-    assert result.returncode != 0
-    assert not (extra / "receipt.json").exists()
-
-    oversized = copy_fresh(fresh_chain, tmp_path / "oversized")
-    pulse_path = oversized / "evidence" / "pulse-9002.json"
-    pulse_path.write_bytes(pulse_path.read_bytes() + b" " * (2 << 20))
-    repin_pulse(oversized, 9002)
-    result = run_verify(
-        oversized / "case.json", oversized / "evidence", oversized / "receipt.json"
-    )
-    assert result.returncode != 0
-    assert not (oversized / "receipt.json").exists()
-
-
-def test_receipt_paths_fail_closed_without_clobbering(
-    fresh_chain: pathlib.Path, tmp_path: pathlib.Path
-) -> None:
-    """Receipt writes cannot enter evidence or replace a symlink target."""
-    root = copy_fresh(fresh_chain, tmp_path)
-    inside = root / "evidence" / "receipt.json"
-    result = run_verify(root / "case.json", root / "evidence", inside)
-    assert result.returncode != 0
-    assert not inside.exists()
-
-    victim = root / "victim.txt"
-    victim.write_text("KEEP\n", encoding="utf-8")
-    linked = root / "receipt.json"
-    linked.symlink_to(victim)
-    result = run_verify(root / "case.json", root / "evidence", linked)
-    assert result.returncode != 0
-    assert victim.read_text(encoding="utf-8") == "KEEP\n"
-    assert linked.is_symlink()
-
-
-def test_failed_verification_preserves_existing_receipt(
-    fresh_chain: pathlib.Path, tmp_path: pathlib.Path
-) -> None:
-    """A failed rerun never destroys a previously committed receipt."""
-    root = copy_fresh(fresh_chain, tmp_path)
-    receipt = root / "receipt.json"
-    receipt.write_text("PREVIOUS-RECEIPT\n", encoding="utf-8")
-    pulse = root / "evidence" / "pulse-9002.json"
-    pulse.write_bytes(pulse.read_bytes().replace(b'"statusCode": 0', b'"statusCode": 9', 1))
-    result = run_verify(root / "case.json", root / "evidence", receipt)
-    assert result.returncode != 0
-    assert receipt.read_text(encoding="utf-8") == "PREVIOUS-RECEIPT\n"
-
-
-def test_url_userinfo_origin_confusion_is_rejected(tmp_path: pathlib.Path) -> None:
-    """URL userinfo cannot disguise a case origin as the approved NIST host."""
-    generator = pathlib.Path(__file__).with_name("fresh_chain.go")
-    confused_root = tmp_path / "confused"
-    generated = subprocess.run(
-        [
-            "go",
-            "run",
-            str(generator),
-            "--directory",
-            str(confused_root),
-            "--origin",
-            "https://attacker@beacon.nist.gov",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=90,
-    )
-    assert generated.returncode == 0, generated.stderr
-    confused = run_verify(
-        confused_root / "case.json",
-        confused_root / "evidence",
-        confused_root / "receipt.json",
-    )
-    assert confused.returncode != 0
-    assert not (confused_root / "receipt.json").exists()
-
-
-def test_symlinked_acquisition_destination_is_rejected(
-    fresh_chain: pathlib.Path, tmp_path: pathlib.Path
-) -> None:
-    """Acquisition refuses a symlinked destination without touching its target."""
-    root = copy_fresh(fresh_chain, tmp_path / "symlink")
-    case_path = root / "case.json"
-    outside = root / "outside"
-    outside.mkdir()
-    destination = root / "acquired"
-    destination.symlink_to(outside, target_is_directory=True)
-    acquired = subprocess.run(
-        [
-            "beacon-audit",
-            "acquire",
-            "--case",
-            str(case_path),
-            "--directory",
-            str(destination),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=20,
-    )
-    assert acquired.returncode != 0
-    assert "not a safe directory" in acquired.stderr
-    assert not any(outside.iterdir())
+def test_empty_output_directory_is_not_accepted(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert not (empty / "workload_decisions.jsonl").exists()
+    assert not (empty / "workload_summary.json").exists()
