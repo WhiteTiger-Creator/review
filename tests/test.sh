@@ -12,9 +12,12 @@ fi
 mkdir -p /logs/verifier
 
 # pytest and pytest-json-ctrf must be pre-installed in the Docker image.
-python -m pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
-if [ $? -eq 0 ]; then
-  echo 1 > /logs/verifier/reward.txt
+PYTHONSAFEPATH=1 /opt/verifier/bin/python3 -m pytest --confcutdir=/tests --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
+
+# Produce reward file (REQUIRED)
+rc=$?
+if [ "$rc" -eq 0 ]; then
+    echo 1 > /logs/verifier/reward.txt
 else
-  echo 0 > /logs/verifier/reward.txt
+    echo 0 > /logs/verifier/reward.txt
 fi
