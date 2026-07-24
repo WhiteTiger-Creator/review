@@ -1,18 +1,11 @@
 #!/bin/bash
-set -euo pipefail
-
-TEST_DIR="${TEST_DIR:-/tests}"
+set -uo pipefail
 mkdir -p /logs/verifier
 echo 0 > /logs/verifier/reward.txt
-
-export PATH="/opt/verifier-venv/bin:$PATH"
-
-set +e
-pytest "$TEST_DIR/test_outputs.py" -rA -p no:cacheprovider \
-    --ctrf /logs/verifier/ctrf.json
-
-if [ $? -eq 0 ]; then
-    echo 1 > /logs/verifier/reward.txt
+python -m pytest -o cache_dir=/tmp/pytest_cache --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
+rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo 1 > /logs/verifier/reward.txt
 else
-    echo 0 > /logs/verifier/reward.txt
+  echo 0 > /logs/verifier/reward.txt
 fi
