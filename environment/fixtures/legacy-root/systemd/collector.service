@@ -1,0 +1,8 @@
+[Unit]
+Description=Legacy Telemetry Collector
+
+[Service]
+Type=simple
+Environment=COLLECTOR_SOCKET_MODE=config
+ExecStart=/app/bin/collectorctl serve --config /app/environment/fixtures/legacy-root/etc/collector/collector.yaml --socket-mode=config
+Restart=on-failure

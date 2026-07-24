@@ -1,34 +1,43 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/bash
+set -u
+mkdir -p /app/environment/systemd /app/environment/etc/collector /app/environment/etc/tmpfiles.d /app/environment/generated /app/output
+cat > /app/environment/systemd/collector.socket <<'UNIT'
+[Unit]
+Description=Telemetry Collector socket
 
-log() { printf '[solve] %s\n' "$1"; }
+[Socket]
+ListenStream=/run/telemetry/collector.sock
+SocketUser=collector-sink
+SocketGroup=collector-sink
+SocketMode=0660
 
-cd /app
-mkdir -p /app/output
-rm -f /app/output/cover_min_report.json
+[Install]
+WantedBy=sockets.target
+UNIT
+cat > /app/environment/systemd/collector.service <<'UNIT'
+[Unit]
+Description=Telemetry Collector
+Requires=network.target
+Requires=collector.socket
+After=collector.socket
 
-log "apply source fixes"
-cd /solution
-if grep -q 'return prune_a(stepIx, familyIx, prevFamily);' /app/m3/n4/src/bind_step.ts \
-   && grep -q 'return order_c(gateFirst, side, gate)' /app/m3/k72/src/mux_g2.ts; then
-  log "baseline already patched"
-else
-  patch -d /app -p0 --batch < oracle.patch
-fi
-cd /app
-npm run build
-/app/m3/k72/dist/fm
-
-log "sanity-check output contract"
-python3 <<'PY'
-import json
-from pathlib import Path
-
-data = json.loads(Path("/app/output/cover_min_report.json").read_text(encoding="utf-8"))
-assert data["summary"]["consensus_status"] == "settled"
-for row in data["rows"]:
-    assert row["span_rc"] and row["hop_rc"] and row["mark_rc"]
-    assert row["drift_code"] == 0
-PY
-
-log "done"
+[Service]
+Type=simple
+Sockets=collector.socket
+Environment=COLLECTOR_SOCKET_MODE=systemd
+ExecStart=/app/bin/collectorctl serve --config /app/environment/etc/collector/collector.yaml --socket-mode=systemd
+Restart=on-failure
+UNIT
+cat > /app/environment/etc/collector/collector.yaml <<'YAML'
+bind_path: /run/collector-fallback.sock
+run_user: collector-sink
+sink_owner: collector-sink
+sink_path: /var/lib/telemetry/collector.ndjson
+report_label: main-telemetry-collector
+YAML
+cat > /app/environment/etc/tmpfiles.d/collector.conf <<'CONF'
+d /run/telemetry 0750 collector-sink collector-sink -
+z /run/telemetry/collector.sock 0660 collector-sink collector-sink -
+CONF
+/app/bin/collectorctl manifest --root /app/environment --out /app/environment/generated/exporter.manifest
+/app/bin/collectorctl lifecycle --root /app/environment --report /app/output/collector-compliance-report.json --trace /app/output/collector-runtime-trace.json >/dev/null

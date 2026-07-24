@@ -1,40 +1,21 @@
-# Canonical Terminal-Bench Node.js base image (exact platform-sanctioned
-# reference, digest-pinned). Node 22 provides the TypeScript toolchain the
-# task builds with at image build time and rebuilds at runtime.
-FROM public.ecr.aws/docker/library/node:22-bookworm-slim@sha256:f3a68cf41a855d227d1b0ab832bed9749469ef38cf4f58182fb8c893bc462383
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
 
-ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update     && apt-get install -y --no-install-recommends         tmux         asciinema         ca-certificates         python3         python3-venv     && rm -rf /var/lib/apt/lists/*
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        python3=3.11.2-1+b1 \
-        python3-pip=23.0.1+dfsg-1 \
-        python3-venv=3.11.2-1+b1 \
-        tmux=3.3a-3 \
-        asciinema=2.2.0-1 \
-        ca-certificates=20230311+deb12u1 \
-        patch=2.7.6-7 \
-    && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/verifier-venv     && /opt/verifier-venv/bin/pip install --no-cache-dir pytest==8.4.1 pytest-json-ctrf==0.3.5
 
-RUN python3 -m venv /opt/verifier-venv \
-    && /opt/verifier-venv/bin/pip install --no-cache-dir \
-        pytest==8.4.1 \
-        pytest-json-ctrf==0.3.5
+WORKDIR /app/environment
 
-ENV PATH="/opt/verifier-venv/bin:${PATH}"
+COPY go.mod ./go.mod
+COPY cmd ./cmd
+COPY internal ./internal
+COPY systemd ./systemd
+COPY etc ./etc
+COPY generated ./generated
+COPY docs ./docs
+COPY fixtures ./fixtures
+COPY runtime ./runtime
+
+RUN mkdir -p /app/bin /app/output /app/environment/var/lib     && go build -trimpath -ldflags="-s -w" -o /app/bin/collectorctl ./cmd/collectorctl     && sha256sum /app/bin/collectorctl > /app/environment/var/lib/collectorctl.sha256
 
 WORKDIR /app
-
-COPY package.json package-lock.json tsconfig.json ./
-COPY scripts ./scripts
-COPY m3 ./m3
-COPY p8 ./p8
-COPY data ./data
-COPY docs ./docs
-
-RUN npm config set fetch-retries 5 \
-    && npm config set fetch-retry-mintimeout 20000 \
-    && npm config set fetch-retry-maxtimeout 120000 \
-    && npm ci --no-audit --no-fund \
-    && npm run build \
-    && rm -rf /root/.npm /tmp/*

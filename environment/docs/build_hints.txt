@@ -1,7 +1,0 @@
-# build and run from /app
-#   npm run build
-#   /app/m3/k72/dist/fm
-# optional no-op before build (path contract anchor)
-#   /bin/true /app/environment/p8
-# health probe only (not sufficient for cover report)
-#   /app/m3/k72/dist/fm --health

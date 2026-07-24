@@ -1,0 +1,9 @@
+[Unit]
+Description=Telemetry Collector
+Requires=network.target
+
+[Service]
+Type=simple
+Environment=COLLECTOR_SOCKET_MODE=config
+ExecStart=/app/bin/collectorctl serve --config /app/environment/etc/collector/collector.yaml --socket-mode=config
+Restart=on-failure

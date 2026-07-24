@@ -4,28 +4,61 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "security"
-category_profile = "security_authority_split"
-tags = ["security", "firewall", "shadow-rules", "conntrack", "zone-policy", "optimization"]
-languages = ["typescript", "bash"]
+category = "system-administration"
+tags = ["go", "systemd", "socket-activation", "tmpfiles", "manifest", "lifecycle"]
+subcategories = []
+languages = ["go", "bash"]
 codebase_size = "small"
 number_of_milestones = 0
-subcategories = []
-expert_time_estimate_min = 90
-junior_time_estimate_min = 240
+expert_time_estimate_min = 240
+junior_time_estimate_min = 600
 
-[reference_pattern]
-justification_if_none = "No promoted reference in docs/reference_tasks/index.json for firewall shadow rule minimize; construction follows overlay mold verifier shape reframed to security + optimization_under_constraints + TypeScript orchestrator/worker split."
+[metadata.category_semantics]
+primary_objective = "Reconcile a managed telemetry collector service state across systemd unit authority, yaml fallback authority, tmpfiles ownership, generated manifest provenance, and lifecycle replay."
+domain_inputs = [
+  "systemd collector.socket and collector.service unit metadata",
+  "collector.yaml fallback configuration",
+  "tmpfiles.d ownership rules",
+  "generated exporter manifest",
+  "legacy root without a socket unit"
+]
+domain_outputs = [
+  "/app/environment/generated/exporter.manifest",
+  "/app/output/collector-compliance-report.json",
+  "/app/output/collector-runtime-trace.json"
+]
+public_invariants = [
+  "main runtime socket authority is systemd when collector.socket exists",
+  "socket path and sink ownership remain stable across daemon-reload, activation, restart, rotation, and report regeneration",
+  "legacy root uses collector.yaml bind_path only when no socket unit exists",
+  "generated manifest provenance matches visible operational authorities"
+]
+verifier_observations = [
+  "compare regenerated manifest against current operational authorities",
+  "replay lifecycle phases and observe runtime socket owner and authority",
+  "remove generated artifacts and validate deterministic regeneration",
+  "replay legacy root and verify yaml fallback authority"
+]
+primary_success_condition = "The managed collector state exposes systemd as the runtime authority for the main root, preserves collector-sink socket ownership across lifecycle replay, and keeps yaml fallback behavior for the legacy root."
+
+[metadata.category_semantics.domain_contract]
+managed_system_state = "Telemetry collector socket, service, tmpfiles, manifest, and report state"
+service_or_resource = "socket-activated telemetry collector"
+lifecycle_or_configuration_invariant = "daemon-reload, first activation, restart, sink rotation, and report regeneration preserve one visible socket authority"
+
+[environment]
+cpus = 2
+memory_mb = 2048
+storage_mb = 4096
+allow_internet = false
+build_timeout_sec = 900
 
 [agent]
-timeout_sec = 1800
+timeout_sec = 1200
 
 [verifier]
 timeout_sec = 900
 
-[environment]
-allow_internet = false
-build_timeout_sec = 900
-cpus = 2
-memory_mb = 4096
-storage_mb = 10240
+[timeouts]
+agent_seconds = 1200
+verifier_seconds = 900

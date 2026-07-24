@@ -1,0 +1,5 @@
+bind_path: /run/legacy-collector.sock
+run_user: collector-sink
+sink_owner: collector-sink
+sink_path: /var/lib/telemetry/legacy-collector.ndjson
+report_label: legacy-telemetry-collector
