@@ -1,362 +1,1484 @@
-"""Behavioral verification for the commissioned local relay generation."""
+"""Verify Vaultwatch audit CLI and repaired signal workflow."""
+
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
-import socket
-import sqlite3
-import stat
+import os
+import shutil
 import subprocess
-import time
+import tempfile
 from pathlib import Path
 
-APP = Path("/app")
-CONFIG_DIR = APP / "etc/harbor-relay"
-AUDIT = APP / "var/deployment-audit.db"
-MANIFEST = APP / "var/deployment-manifest.json"
-LOCK = APP / "var/harbor-deployment.lock"
-ZERO = "0" * 64
+import pytest
 
-# The arrival replay fixture is intentionally pinned to the canonical bytes used by
-# the sealed request corpus. Keep this explicit pin synchronized with the packaged file.
-ARRIVAL_REPLAY_SHA256 = "4c9841e467bc1842aa5beb3992543e9f6c7114168fc4196692911980abd69237"
-
-PROTECTED = {
-    "docs/audit-database-contract.md": "6a69e8976bc4d1d4c69b53f61ddf1c90d46e236709f518bb000c176d7d9a2f5a",
-    "docs/capacity-and-payload-notes.md": "78fea40500906017363413cc407b158f9639f5bced544b031e678133a07f00e1",
-    "docs/catalog-field-notes.md": "1cfe0a8a61bfe73ad5d81685661bfca1ce8113e7ff3821e1edbb87b887ad98de",
-    "docs/oncall-shift-notes.md": "b9759f083a19489997c3957cead3d3fb0b8187626599c6a31ce8f02e3693827f",
-    "docs/operator-commissioning-contract.md": "cb33d8e9c528417de1ab54d92bb25ab87457d7f8c1d4bf662f3a4e3d99d565da",
-    "docs/publication-and-audit-minutes.md": "f224593ec58eeaa72b3f2e06f0af455df3672eab703c65b7946fa3e063146c7a",
-    "docs/publication-state-machine.md": "7caa0a2f94669e5adb1313cde280bda1dd349105e8436ea5d63d5f1143c41ae9",
-    "docs/service-commissioning-corpus.manifest": "30a934ec236544a1eb02e92569b8839e773317fd35faa917ff0651191f67ada0",
-    "docs/relay-config-format.md": "379a52dcc094b133f583c67afd3b7eb48b35d6417b66fed7e6a081f1df57b000",
-    "docs/relay-operations-handbook.md": "68ec339d7842c525ecd52caaa27b6ffbc342e10cdc9fa29573fc564135323113",
-    "docs/route-governance-record.md": "fd7f57e4f6f3cba632d52099300042aa293d4efc20b264ca4d085ccdb754c4f7",
-    "docs/socket-evidence-review.md": "dce8576d9f1949c7bf4a3b580ac1a7ee0074c68ba30b3a27d336c782bca26f10",
-    "etc/harbor-relay/environment": "37a348b1f87129d1798bf70fbc27a7b3ac19f86d1fed568760b4527d5e4b2ac8",
-    "etc/harbor-relay/service.account": "347b74cca9e03f1d208e1b5c7026830abd046a38d16411a14dfb8b46d6e361bf",
-    "evidence/capture.meta": "56334ed560725dc8a3bc8e7c621b7b0da08d6f36a4cff774069481e61d7140ae",
-    "evidence/relay.lsof": "c011e2763c5a4b16333358e337d217bbaaa9b195bda4a00df3ae3a33bb6b89f1",
-    "evidence/relay.strace": "9221acfe033c3079863ef635eb772a67f5fc8f4852ad285ebb42078699681a11",
-    "fixtures/README.txt": "da120e89b13e5b27b3519860c0cfd59e178ebff7709411aab430c56f5dbdce2f",
-    "fixtures/bootstrap-config/limits.conf": "f28a35039bff7cae9ceb372296939043a89fd08072baa8bf5ff71e8725d60af1",
-    "fixtures/bootstrap-config/relay.conf": "1aafa548b85f221e911ee4a6df4388e24d980ec1f07f60e47fa63793d2ec5169",
-    "fixtures/bootstrap-config/routes.map": "65dad79e3b2217a5c34e9fbac418bd720514526bdebe154e7a5397fa35a63381",
-    "fixtures/requests/arrival-replay.http": ARRIVAL_REPLAY_SHA256,
-    "fixtures/requests/manifest-replay.http": "ad3a76dd6c30f1127181a3d119d0d5456b21d3db71100d62e448373e1d88aec9",
-    "fixtures/requests/replay-set.manifest": "68bbcc614bb582f239338cd0bb11d2f7e0c3bb02f02bcf2d5f3c7ab229101a66",
-    "fixtures/requests/status-replay.http": "96f0bdf0e942f7ed65512d8762ca7610c3ee2cf09ab964af576b7e1aab0acef9",
-    "scripts/initialize-service-state": "194aa338b81efd7ab956ec6c5fba19d6a2225ab82ba35bd505b85a956d57e5a6",
-    "scripts/send-sample-request": "6b55e5deba6ed58ee8b9d71dbd3b019bede64a62c2ce9f3fc70daa8698c48f9b",
-    "share/deployment-catalog.batch": "4fc9b616e2541e785b7172367fff16aa31d8d18cbb5583b3689e1636405c4b59",
-}
-
-EXPECTED_RELAY = {
-    "site_key": "st-042",
-    "socket_path": "/app/run/harbor-relay/recovery.sock",
-    "socket_mode": "0660",
-    "socket_owner": "relayops",
-    "socket_group": "relay",
-    "listen_backlog": "128",
-    "route_map": "/app/etc/harbor-relay/routes.map",
-    "limits_file": "/app/etc/harbor-relay/limits.conf",
-    "audit_db": "/app/var/deployment-audit.db",
-    "catalog_generation": "29",
-}
-EXPECTED_LIMITS = {
-    "open_files_soft": "640",
-    "reserved_files": "64",
-    "max_connections": "108",
-    "request_body_limit": "65536",
-}
-EXPECTED_ROUTES = [
-    ("GET", "/v1/berth/capabilities", "http://127.0.0.1:5902/capabilities", "preserve", "1200", "rt-203"),
-    ("GET", "/v1/berth/status", "http://127.0.0.1:5902/status", "preserve", "725", "rt-200"),
-    ("POST", "/v1/berth/arrivals", "http://127.0.0.1:5901/intake/arrivals-v2", "custody-token", "1850", "rt-201"),
-    ("POST", "/v1/berth/manifest", "http://127.0.0.1:5901/intake/manifest-v2", "dual-proof", "4100", "rt-204"),
+OUTPUT_DIR = Path("/app/output")
+DIAGNOSIS_PATH = OUTPUT_DIR / "diagnosis.json"
+SUMMARY_PATH = OUTPUT_DIR / "summary.json"
+MATRIX_PATH = OUTPUT_DIR / "datastore_matrix.json"
+FLAGGED_PATH = OUTPUT_DIR / "escalated.jsonl"
+REPAIR_AUDIT_PATH = OUTPUT_DIR / "repair_audit.json"
+CLI = Path("/app/query_audit.py")
+PIPELINE = Path("/app/workflow/export_report.py")
+ORIGINAL_PIPELINE = Path("/app/workflow/.export_report.original")
+DOSSIER_PATH = Path("/app/incident/export_dossier.md")
+INPUT_PATH = Path("/app/data/events.json")
+OVERRIDES_PATH = Path("/app/data/dismissal_overrides.json")
+REPORT_SPEC_PATH = Path("/app/docs/report_spec.json")
+ALT_INPUT = Path("/tests/fixtures/alt_events.json")
+BROKEN_PIPELINE_SHA256 = "f3c0a1552a78b1556610a16bff746b98cfbaf93866a6d06381dac84841c5cfc7"
+SPEC_DATA = json.loads(REPORT_SPEC_PATH.read_text())
+ISSUE_EVIDENCE_TERMS = SPEC_DATA["diagnosis_report"]["issues_found_item"]["evidence"][
+    "required_terms_by_issue"
 ]
+REQUIRED_ISSUE_IDS = SPEC_DATA["diagnosis_report"]["issues_found_item"]["allowed_ids"]
+FORBIDDEN_TOKENS = ('event["occurred_at"]', 'severity == "critical"')
+ANOMALY_SEVERITIES = {"high", "critical"}
+SEVERITY_ORDER = ("critical", "high", "medium", "low")
+SEVERITY_RANK = {"low": 1, "medium": 2, "high": 3, "critical": 4}
 
 
-def sha256(path: Path) -> str:
-    """Return the lowercase SHA-256 digest of one file."""
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def _normalize_ws(text: str) -> str:
+    return " ".join(text.split())
 
 
-def digest_lines(values: list[str]) -> str:
-    """Hash newline-terminated digest lines using the publication contract."""
-    return hashlib.sha256(("\n".join(values) + "\n").encode()).hexdigest()
-
-
-def read_key_values(path: Path) -> dict[str, str]:
-    """Read an ordered key/value configuration into a dictionary."""
-    return dict(line.split("=", 1) for line in path.read_text(encoding="utf-8").splitlines())
-
-
-def catalog_output() -> bytes:
-    """Obtain the sealed catalog through the same public batch interface available to operators."""
-    result = subprocess.run(
-        [str(APP / "bin/catalog-query"), "--batch-file", str(APP / "share/deployment-catalog.batch")],
-        check=True,
-        capture_output=True,
-    )
-    return result.stdout
-
-
-def send_unix(socket_path: Path, request: bytes) -> tuple[bytes, bytes]:
-    """Send one HTTP message to the relay over its Unix socket."""
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.connect(str(socket_path))
-        client.sendall(request)
-        client.shutdown(socket.SHUT_WR)
-        response = bytearray()
-        while True:
-            chunk = client.recv(65536)
-            if not chunk:
-                break
-            response.extend(chunk)
-    head, body = bytes(response).split(b"\r\n\r\n", 1)
-    return head, body
-
-
-def test_authoritative_commissioning_inputs_are_unchanged() -> None:
-    """Verify the policy corpus, operating records, fixtures, interface, and initialization assets remain immutable."""
-    for relative, expected in PROTECTED.items():
-        path = APP / relative
-        assert path.is_file(), relative
-        assert sha256(path) == expected, relative
-    manifest = (APP / "docs/service-commissioning-corpus.manifest").read_text(encoding="utf-8").splitlines()
-    listed = [line.split("\t")[1] for line in manifest if line and not line.startswith("#")]
-    assert listed == [
-        "relay-operations-handbook.md",
-        "socket-evidence-review.md",
-        "route-governance-record.md",
-        "capacity-and-payload-notes.md",
-        "publication-and-audit-minutes.md",
-    ]
-
-
-def test_catalog_interface_and_platform_binaries_remain_valid() -> None:
-    """Verify the sealed catalog generation and existing relay binaries remain usable without source rebuilding."""
-    with sqlite3.connect("file:/opt/harbor/operations.db?mode=ro", uri=True) as db:
-        tables = [
-            row[0]
-            for row in db.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-            )
-        ]
-        logical = {}
-        for table in tables:
-            columns = [row[1] for row in db.execute(f"PRAGMA table_info({table})")]
-            order = ",".join(str(index + 1) for index in range(len(columns)))
-            rows = [list(row) for row in db.execute(f"SELECT * FROM {table} ORDER BY {order}")]
-            logical[table] = {"columns": columns, "rows": rows}
-        encoded = json.dumps(logical, separators=(",", ":"), sort_keys=True).encode()
-        assert hashlib.sha256(encoded).hexdigest() == "257aeb2867adb97ba5ad8d47ae3fbfe678ba965236d5998616314db99a9e3780"
-    output = catalog_output().decode("utf-8")
-    assert output.startswith("@result catalog_meta\n")
-    assert output.rstrip().endswith("@end")
-    check = subprocess.run(
-        [str(APP / "bin/harbor-relay"), "--check-config", str(CONFIG_DIR / "relay.conf")],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert check.returncode == 0, check.stderr
-    for forbidden in [APP / "src", APP / "include", APP / "Makefile", APP / "build"]:
-        assert not forbidden.exists()
-
-
-def test_commissioned_configuration_matches_authorized_socket_routes_and_limits() -> None:
-    """Verify the installed text configuration contains the chronology-safe socket, closed routes, and calculated limits."""
-    relay_path = CONFIG_DIR / "relay.conf"
-    limits_path = CONFIG_DIR / "limits.conf"
-    routes_path = CONFIG_DIR / "routes.map"
-    assert read_key_values(relay_path) == EXPECTED_RELAY
-    assert read_key_values(limits_path) == EXPECTED_LIMITS
-    route_lines = routes_path.read_text(encoding="utf-8").splitlines()
-    assert route_lines[0] == "method\texternal_path\tupstream\tauth_mode\ttimeout_ms\tsource_route_id"
-    assert [tuple(line.split("\t")) for line in route_lines[1:]] == EXPECTED_ROUTES
-    assert relay_path.read_bytes().endswith(b"\n")
-    assert limits_path.read_bytes().endswith(b"\n")
-    assert routes_path.read_bytes().endswith(b"\n")
-    assert "data-plane.sock\"" in (APP / "evidence/relay.strace").read_text() and "EACCES" in (APP / "evidence/relay.strace").read_text()
-    after = (APP / "evidence/relay.lsof").read_text().split("# snapshot=after", 1)[1]
-    assert EXPECTED_RELAY["socket_path"] not in after
-
-
-def test_service_generation_permissions_and_clean_state_are_correct() -> None:
-    """Verify only the documented service-generation files remain, with required modes and no staging or compiler residue."""
-    expected_modes = {
-        CONFIG_DIR / "relay.conf": 0o640,
-        CONFIG_DIR / "limits.conf": 0o640,
-        CONFIG_DIR / "routes.map": 0o640,
-        AUDIT: 0o600,
-        MANIFEST: 0o640,
-        LOCK: 0o600,
-    }
-    for path, mode in expected_modes.items():
-        assert path.is_file(), path
-        assert stat.S_IMODE(path.stat().st_mode) == mode
-    residue = []
-    for directory in [CONFIG_DIR, APP / "var"]:
-        residue.extend(
-            path
-            for path in directory.iterdir()
-            if any(token in path.name for token in (".tmp", ".bak", "-journal", "-wal", "-shm"))
-        )
-    assert residue == []
-
-
-def test_deployment_manifest_has_deterministic_identity_and_exact_provenance() -> None:
-    """Verify the compact JSON manifest identity, ordering, provenance hashes, and publication metadata independently."""
-    raw = MANIFEST.read_text(encoding="utf-8")
-    manifest = json.loads(raw)
-    assert raw == json.dumps(manifest, separators=(",", ":")) + "\n"
-    assert list(manifest) == [
-        "run_id",
-        "site_key",
-        "handbook_revision",
-        "catalog_generation",
-        "configuration",
-        "routes",
-        "assertions",
-        "inputs",
-        "publication",
-    ]
-    assert manifest["site_key"] == "st-042"
-    assert manifest["handbook_revision"] == "HRH-2026.07-R11"
-    assert manifest["catalog_generation"] == 29
-    expected_configuration = {**EXPECTED_RELAY, **EXPECTED_LIMITS}
-    assert manifest["configuration"] == expected_configuration
-    assert [tuple(str(item[key]) for key in ("method", "external_path", "upstream", "auth_mode", "timeout_ms", "source_route_id")) for item in manifest["routes"]] == EXPECTED_ROUTES
-    assert [item["decision_code"] for item in manifest["routes"]] == ["required", "selected", "selected", "replaced"]
-    assert len(manifest["assertions"]) == 10 and all(item["passed"] == 1 for item in manifest["assertions"])
-    assert [item["kind"] for item in manifest["inputs"]] == sorted(item["kind"] for item in manifest["inputs"])
-
-    request_paths = [APP / "fixtures/requests/replay-set.manifest"]
-    for line in request_paths[0].read_text(encoding="utf-8").splitlines():
-        if line and not line.startswith("#"):
-            request_paths.append(Path(line.split("\t", 1)[1]))
-    request_set = digest_lines([sha256(path) for path in request_paths])
-    evidence_set = digest_lines([sha256(APP / "evidence/capture.meta"), sha256(APP / "evidence/relay.strace"), sha256(APP / "evidence/relay.lsof")])
-    catalog_sha = hashlib.sha256(catalog_output()).hexdigest()
-    seed = "|".join(
-        [
-            "st-042",
-            "HRH-2026.07-R11",
-            "29",
-            request_set,
-            evidence_set,
-            catalog_sha,
-            sha256(CONFIG_DIR / "relay.conf"),
-            sha256(CONFIG_DIR / "limits.conf"),
-            sha256(CONFIG_DIR / "routes.map"),
-        ]
-    )
-    assert manifest["run_id"] == hashlib.sha256(seed.encode()).hexdigest()[:24]
-
-    input_rows = {(item["kind"], item["path"]): item for item in manifest["inputs"]}
-    catalog_item = input_rows[("catalog-batch-result", "/app/share/deployment-catalog.batch")]
-    assert catalog_item["sha256"] == catalog_sha
-    assert catalog_item["bytes"] == len(catalog_output())
-    for (kind, path_text), item in input_rows.items():
-        if kind == "catalog-batch-result":
+def _executable_text(src: str) -> str:
+    docstring_lines: set[int] = set()
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef)):
             continue
-        path = Path(path_text)
-        assert item["sha256"] == sha256(path)
-        assert item["bytes"] == path.stat().st_size
+        if not node.body:
+            continue
+        first = node.body[0]
+        if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+            if isinstance(first.value.value, str):
+                end = getattr(first, "end_lineno", first.lineno)
+                docstring_lines.update(range(first.lineno, end + 1))
 
-    expected_publication = [
-        (CONFIG_DIR / "relay.conf", "0640"),
-        (CONFIG_DIR / "limits.conf", "0640"),
-        (CONFIG_DIR / "routes.map", "0640"),
-        (AUDIT, "0600"),
-        (MANIFEST, "0640"),
-    ]
-    assert [item["path"] for item in manifest["publication"]] == [str(path) for path, _ in expected_publication]
-    for item, (path, mode) in zip(manifest["publication"], expected_publication, strict=True):
-        assert item["mode"] == mode
-        if path in {AUDIT, MANIFEST}:
-            assert (item["sha256"], item["bytes"]) == (ZERO, 0)
-        else:
-            assert (item["sha256"], item["bytes"]) == (sha256(path), path.stat().st_size)
-
-
-def test_deployment_audit_schema_constraints_and_reconciliation_are_complete() -> None:
-    """Verify the seven-table deployment audit is constrained, complete, and reconciled with all publication bytes and decisions."""
-    with sqlite3.connect(AUDIT) as db:
-        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
-        tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY rowid")]
-        assert tables == ["deployment_run", "input_artifact", "configuration", "route", "decision", "assertion", "publication_file"]
-        run = db.execute(
-            "SELECT run_id,site_key,handbook_revision,catalog_generation,status FROM deployment_run"
-        ).fetchone()
-        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-        assert run == (manifest["run_id"], "st-042", "HRH-2026.07-R11", 29, "commissioned")
-        assert db.execute("SELECT COUNT(*) FROM assertion WHERE passed=1").fetchone() == (10,)
-        assert db.execute("SELECT COUNT(*) FROM decision").fetchone() == (14,)
-        assert [row[0] for row in db.execute("SELECT sequence FROM decision ORDER BY sequence")] == list(range(1, 15))
-        assert db.execute("SELECT COUNT(*) FROM input_artifact").fetchone() == (8,)
-        file_configuration = {**EXPECTED_RELAY, **EXPECTED_LIMITS}
-        assert dict(db.execute("SELECT key,value FROM configuration")) == file_configuration
-        audit_routes = db.execute(
-            "SELECT method,external_path,upstream,auth_mode,timeout_ms,source_route_id FROM route ORDER BY method,external_path"
-        ).fetchall()
-        assert audit_routes == [row[:4] + (int(row[4]), row[5]) for row in EXPECTED_ROUTES]
-        publication = {row[0]: row[1:] for row in db.execute("SELECT path,sha256,bytes,mode_text FROM publication_file")}
-        assert publication[str(AUDIT)] == (ZERO, 0, "0600")
-        assert publication[str(MANIFEST)] == (ZERO, 0, "0640")
-        assert publication[str(CONFIG_DIR / "relay.conf")] == (sha256(CONFIG_DIR / "relay.conf"), (CONFIG_DIR / "relay.conf").stat().st_size, "0640")
-    with sqlite3.connect(AUDIT) as db:
-        for statement in (Path("/tests/deployment_assertions.sql").read_text(encoding="utf-8").split(";")):
-            if statement.strip():
-                assert db.execute(statement).fetchone() == (1,)
+    lines: list[str] = []
+    for line_number, line in enumerate(src.splitlines(), start=1):
+        if line_number in docstring_lines:
+            continue
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if "#" in line:
+            line = line.split("#", 1)[0]
+        lines.append(line)
+    return "\n".join(lines)
 
 
-def test_commissioned_relay_serves_required_missing_and_oversized_requests() -> None:
-    """Verify the existing relay binds the commissioned socket and serves all required HTTP outcomes."""
-    socket_path = Path(EXPECTED_RELAY["socket_path"])
-    socket_path.unlink(missing_ok=True)
-    process = subprocess.Popen(
-        [str(APP / "bin/harbor-relay")],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    try:
-        deadline = time.time() + 5
-        while time.time() < deadline and not socket_path.exists() and process.poll() is None:
-            time.sleep(0.05)
-        assert socket_path.exists(), process.stderr.read() if process.stderr else "relay exited"
-        expected = {
-            "arrival": ("/v1/berth/arrivals", "rt-201"),
-            "manifest": ("/v1/berth/manifest", "rt-204"),
-            "status": ("/v1/berth/status", "rt-200"),
-        }
-        for line in (APP / "fixtures/requests/replay-set.manifest").read_text(encoding="utf-8").splitlines():
-            if not line or line.startswith("#"):
-                continue
-            role, request_path = line.split("\t", 1)
-            head, body = send_unix(socket_path, Path(request_path).read_bytes())
-            payload = json.loads(body)
-            assert b"200 OK" in head
-            assert (payload["path"], payload["source_route_id"]) == expected[role]
-        head, body = send_unix(socket_path, b"GET /v1/berth/capabilities?full=1 HTTP/1.1\r\nHost: x\r\n\r\n")
-        assert b"200 OK" in head and json.loads(body)["source_route_id"] == "rt-203"
-        head, _ = send_unix(socket_path, b"GET /not-present HTTP/1.1\r\nHost: x\r\n\r\n")
-        assert b"404 Not Found" in head
-        oversized = b"x" * 65537
-        request = b"POST /v1/berth/arrivals HTTP/1.1\r\nHost: x\r\nContent-Length: 65537\r\n\r\n" + oversized
-        head, _ = send_unix(socket_path, request)
-        assert b"413 Payload Too Large" in head
-        unix_rows = Path("/proc/net/unix").read_text(encoding="utf-8")
-        assert str(socket_path) in unix_rows
-    finally:
-        process.terminate()
+def _load_events(path: Path) -> list[dict]:
+    return json.loads(path.read_text())
+
+
+def _normalize_severity(value: object) -> str:
+    return str(value if value is not None else "").strip().lower()
+
+
+def _normalize_datastore(value: object) -> str:
+    return str(value if value is not None else "").strip().lower()
+
+
+def _normalize_occurred_ms(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
         try:
-            process.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=3)
-        socket_path.unlink(missing_ok=True)
+            return int(text)
+        except ValueError:
+            return 0
+    return 0
+
+
+def _normalize_detector(value: object) -> str:
+    return " ".join(str(value if value is not None else "").split())
+
+
+def _normalize_override_scope(value: object) -> str:
+    normalized = str(value if value is not None else "").strip().lower()
+    return normalized if normalized in {"all", "high", "critical"} else ""
+
+
+def _normalize_dismissed(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes"}
+    return bool(value)
+
+
+def _severity_rank(severity: str) -> int:
+    return SEVERITY_RANK.get(severity, 0)
+
+
+def _canonicalize_events(events: list[dict]) -> list[dict]:
+    deduped: dict[str, dict] = {}
+    for event in events:
+        normalized = dict(event)
+        normalized["occurred_ms"] = _normalize_occurred_ms(normalized.get("occurred_ms", 0))
+        normalized["severity"] = _normalize_severity(normalized.get("severity", ""))
+        normalized["datastore"] = _normalize_datastore(normalized.get("datastore", ""))
+        normalized["dismissed"] = _normalize_dismissed(normalized.get("dismissed", False))
+        normalized["detector"] = _normalize_detector(normalized.get("detector", ""))
+        query_id = str(normalized["query_id"])
+        current = deduped.get(query_id)
+        if current is None:
+            deduped[query_id] = normalized
+            continue
+        replace = False
+        if normalized["occurred_ms"] > current["occurred_ms"]:
+            replace = True
+        elif normalized["occurred_ms"] == current["occurred_ms"]:
+            if _severity_rank(normalized["severity"]) > _severity_rank(current["severity"]):
+                replace = True
+            elif _severity_rank(normalized["severity"]) == _severity_rank(current["severity"]):
+                if int(_normalize_dismissed(normalized.get("dismissed", False))) < int(
+                    _normalize_dismissed(current.get("dismissed", False))
+                ):
+                    replace = True
+                elif int(_normalize_dismissed(normalized.get("dismissed", False))) == int(
+                    _normalize_dismissed(current.get("dismissed", False))
+                ):
+                    if _normalize_detector(normalized.get("detector", "")) > _normalize_detector(
+                        current.get("detector", "")
+                    ):
+                        replace = True
+                    elif _normalize_detector(normalized.get("detector", "")) == _normalize_detector(
+                        current.get("detector", "")
+                    ):
+                        if _normalize_datastore(
+                            normalized.get("datastore", "")
+                        ) > _normalize_datastore(current.get("datastore", "")):
+                            replace = True
+        if replace:
+            deduped[query_id] = normalized
+    return sorted(deduped.values(), key=lambda row: row["occurred_ms"])
+
+
+def _is_signal(event: dict) -> bool:
+    if _normalize_dismissed(event.get("dismissed", False)):
+        return False
+    return _normalize_severity(event.get("severity", "")) in ANOMALY_SEVERITIES
+
+
+def _build_datastore_matrix(events: list[dict]) -> dict[str, dict[str, int]]:
+    matrix: dict[str, dict[str, int]] = {}
+    for event in events:
+        datastore = _normalize_datastore(event.get("datastore", ""))
+        severity = _normalize_severity(event.get("severity", ""))
+        matrix.setdefault(datastore, {name: 0 for name in SEVERITY_ORDER})
+        if severity in matrix[datastore]:
+            matrix[datastore][severity] += 1
+    return {datastore: matrix[datastore] for datastore in sorted(matrix)}
+
+
+def _compact_overrides(
+    rows: list[dict],
+) -> dict[tuple[str, str], list[tuple[int, int]]]:
+    by_key: dict[tuple[str, str], list[tuple[int, int]]] = {}
+    for row in rows:
+        datastore = _normalize_datastore(row.get("datastore", ""))
+        scope = _normalize_override_scope(row.get("severity_scope", ""))
+        if not scope:
+            continue
+        start = _normalize_occurred_ms(row.get("start_ms", 0))
+        end = _normalize_occurred_ms(row.get("end_ms", 0))
+        if end <= start:
+            continue
+        by_key.setdefault((datastore, scope), []).append((start, end))
+
+    compacted: dict[tuple[str, str], list[tuple[int, int]]] = {}
+    for key, intervals in by_key.items():
+        merged: list[list[int]] = []
+        for start, end in sorted(intervals):
+            if not merged or start > merged[-1][1]:
+                merged.append([start, end])
+            else:
+                merged[-1][1] = max(merged[-1][1], end)
+        compacted[key] = [(start, end) for start, end in merged]
+    return compacted
+
+
+def _is_override_suppressed(
+    event: dict,
+    compacted_overrides: dict[tuple[str, str], list[tuple[int, int]]],
+) -> bool:
+    datastore = _normalize_datastore(event.get("datastore", ""))
+    severity = _normalize_severity(event.get("severity", ""))
+    occurred_ms = _normalize_occurred_ms(event.get("occurred_ms", 0))
+    for scope in ("all", severity):
+        for start, end in compacted_overrides.get((datastore, scope), []):
+            if start <= occurred_ms < end:
+                return True
+    return False
+
+
+def _override_compaction_checksum(
+    compacted_overrides: dict[tuple[str, str], list[tuple[int, int]]]
+) -> str:
+    return hashlib.sha256(
+        "\n".join(
+            f"{datastore}|{scope}|{start}|{end}"
+            for datastore, scope in sorted(compacted_overrides)
+            for start, end in compacted_overrides[(datastore, scope)]
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _probe_overlap_ms(occurred_ms: int, spans: list[tuple[int, int]], lookback_ms: int = 120) -> int:
+    probe_start = occurred_ms - lookback_ms
+    probe_end = occurred_ms + 1
+    total = 0
+    for start, end in spans:
+        overlap_start = max(probe_start, start)
+        overlap_end = min(probe_end, end)
+        if overlap_end > overlap_start:
+            total += overlap_end - overlap_start
+    return total
+
+
+def _annotate_chains(rows: list[dict]) -> None:
+    parent = list(range(len(rows)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[max(left_root, right_root)] = min(left_root, right_root)
+
+    tokens = [set(str(row["detector"]).lower().split()) for row in rows]
+    for left in range(len(rows)):
+        for right in range(left + 1, len(rows)):
+            if abs(rows[left]["occurred_ms"] - rows[right]["occurred_ms"]) > 600:
+                continue
+            if (
+                rows[left]["datastore"] == rows[right]["datastore"]
+                or len(tokens[left] & tokens[right]) >= 2
+            ):
+                union(left, right)
+
+    components: dict[int, list[int]] = {}
+    for index in range(len(rows)):
+        components.setdefault(find(index), []).append(index)
+    for indexes in components.values():
+        query_ids = sorted(str(rows[index]["query_id"]) for index in indexes)
+        observed = [rows[index]["occurred_ms"] for index in indexes]
+        assets = {rows[index]["datastore"] for index in indexes}
+        span_ms = max(observed) - min(observed)
+        risk_score = (
+            sum(_severity_rank(rows[index]["severity"]) for index in indexes)
+            + (len(assets) * 2)
+            + (span_ms // 60)
+        )
+        chain_id = hashlib.sha1(",".join(query_ids).encode("utf-8")).hexdigest()[:10]
+        chain_digest = hashlib.sha256(
+            (
+                f"{chain_id}|{len(indexes)}|{span_ms}|{risk_score}|"
+                f"{','.join(query_ids)}"
+            ).encode("utf-8")
+        ).hexdigest()[:12]
+        for index in indexes:
+            rows[index]["chain_id"] = chain_id
+            rows[index]["chain_size"] = len(indexes)
+            rows[index]["chain_span_ms"] = span_ms
+            rows[index]["chain_risk_score"] = risk_score
+            rows[index]["chain_digest"] = chain_digest
+
+
+def _annotate_chain_reach(rows: list[dict]) -> None:
+    chains: dict[str, dict] = {}
+    for index, row in enumerate(rows):
+        chain = chains.setdefault(
+            row["chain_id"],
+            {
+                "indexes": [],
+                "start_ms": row["occurred_ms"],
+                "end_ms": row["occurred_ms"],
+                "assets": set(),
+                "tokens": set(),
+                "risk_score": row["chain_risk_score"],
+            },
+        )
+        chain["indexes"].append(index)
+        chain["start_ms"] = min(chain["start_ms"], row["occurred_ms"])
+        chain["end_ms"] = max(chain["end_ms"], row["occurred_ms"])
+        chain["assets"].add(row["datastore"])
+        chain["tokens"].update(str(row["detector"]).lower().split())
+
+    finalized: list[tuple[str, dict]] = []
+    for chain_id, chain in sorted(
+        chains.items(),
+        key=lambda item: (item[1]["start_ms"], item[1]["end_ms"], item[0]),
+    ):
+        best_score = chain["risk_score"]
+        best_path = (chain_id,)
+        for predecessor_id, predecessor in finalized:
+            gap_ms = chain["start_ms"] - predecessor["end_ms"]
+            if gap_ms <= 0 or gap_ms > 3000:
+                continue
+            shared_assets = len(chain["assets"] & predecessor["assets"])
+            shared_tokens = len(chain["tokens"] & predecessor["tokens"])
+            if shared_assets == 0 and shared_tokens == 0:
+                continue
+            edge_weight = (
+                1
+                + (2 * shared_assets)
+                + shared_tokens
+                + max(0, 3 - (gap_ms // 1000))
+            )
+            candidate_score = (
+                predecessor["reach_score"] + edge_weight + chain["risk_score"]
+            )
+            candidate_path = predecessor["reach_path"] + (chain_id,)
+            if candidate_score > best_score or (
+                candidate_score == best_score and candidate_path < best_path
+            ):
+                best_score = candidate_score
+                best_path = candidate_path
+        chain["reach_score"] = best_score
+        chain["reach_path"] = best_path
+        chain["reach_depth"] = len(best_path) - 1
+        chain["reach_digest"] = hashlib.sha256(
+            (
+                f"{chain_id}|{best_score}|{chain['reach_depth']}|"
+                f"{','.join(best_path)}"
+            ).encode("utf-8")
+        ).hexdigest()[:12]
+        finalized.append((chain_id, chain))
+
+    for _, chain in finalized:
+        for index in chain["indexes"]:
+            rows[index]["chain_reach_score"] = chain["reach_score"]
+            rows[index]["chain_reach_depth"] = chain["reach_depth"]
+            rows[index]["chain_reach_path"] = list(chain["reach_path"])
+            rows[index]["chain_reach_digest"] = chain["reach_digest"]
+
+
+def _compute_summary(events: list[dict], override_rows: list[dict] | None = None) -> dict:
+    canonical = _canonicalize_events(events)
+    severity_counts = {severity: 0 for severity in SEVERITY_ORDER}
+    datastores: set[str] = set()
+    override_rows = (
+        json.loads(OVERRIDES_PATH.read_text()) if override_rows is None else override_rows
+    )
+    compacted_overrides = _compact_overrides(override_rows)
+    signals = _compute_escalated(events, override_rows=override_rows)
+    for event in canonical:
+        severity = _normalize_severity(event.get("severity", ""))
+        if severity in severity_counts:
+            severity_counts[severity] += 1
+        datastores.add(_normalize_datastore(event.get("datastore", "")))
+    return {
+        "schema_version": "identity-triage-v2",
+        "raw_query_count": len(events),
+        "unique_query_ids": len({str(event["query_id"]) for event in events}),
+        "total_queries": len(canonical),
+        "severity_counts": severity_counts,
+        "datastores": sorted(datastores),
+        "escalated_count": len(signals),
+        "dismissed_excluded_count": sum(
+            1
+            for event in canonical
+            if _normalize_dismissed(event.get("dismissed", False))
+            and _normalize_severity(event.get("severity", "")) in ANOMALY_SEVERITIES
+        ),
+        "override_excluded_count": sum(
+            1
+            for event in canonical
+            if _normalize_severity(event.get("severity", "")) in ANOMALY_SEVERITIES
+            and not _normalize_dismissed(event.get("dismissed", False))
+            and _is_override_suppressed(event, compacted_overrides)
+        ),
+        "override_compaction_checksum": _override_compaction_checksum(compacted_overrides),
+        "max_wide_pressure_score": max(
+            (row["wide_pressure_score"] for row in signals),
+            default=0,
+        ),
+        "max_pressure_index": max(
+            (row["pressure_index"] for row in signals),
+            default=0,
+        ),
+        "max_override_pressure_score": max(
+            (row["override_pressure_score"] for row in signals),
+            default=0,
+        ),
+        "chain_count": len({row["chain_id"] for row in signals}),
+        "max_chain_risk_score": max(
+            (row["chain_risk_score"] for row in signals),
+            default=0,
+        ),
+        "chain_digest_checksum": hashlib.sha256(
+            "|".join(row["chain_digest"] for row in signals).encode("utf-8")
+        ).hexdigest(),
+        "max_chain_reach_score": max(
+            (row["chain_reach_score"] for row in signals),
+            default=0,
+        ),
+        "chain_reach_digest_checksum": hashlib.sha256(
+            "|".join(
+                row["chain_reach_digest"] for row in signals
+            ).encode("utf-8")
+        ).hexdigest(),
+        "signal_digest_checksum": hashlib.sha256(
+            "|".join(row["signal_digest"] for row in signals).encode("utf-8")
+        ).hexdigest(),
+        **_escalation_ledger(signals),
+    }
+
+
+def _escalation_ledger(signals: list[dict]) -> dict:
+    """Sequential escalation-pressure ledger per #DQ-5122/5123.
+
+    Carry propagates between consecutive rows in export order; the carry credit
+    is ceilinged while the gap decay and chain-size debit are floored.
+    """
+    previous_occurred_ms = None
+    previous_carry_out = 0
+    critical_ids: list[str] = []
+    max_pressure = 0
+    rows: list[str] = []
+    for signal in signals:
+        gap_ms = (
+            0
+            if previous_occurred_ms is None
+            else max(previous_occurred_ms - signal["occurred_ms"], 0)
+        )
+        carry_in = max(previous_carry_out - (gap_ms // 150), 0)
+        pressure = signal["chain_risk_score"] + (-(-carry_in // 3))
+        carry_out = min(
+            carry_in + signal["chain_risk_score"] - (signal["chain_size"] // 2), 65
+        )
+        flag = 1 if pressure >= 15 else 0
+        if flag:
+            critical_ids.append(str(signal["query_id"]))
+        max_pressure = max(max_pressure, pressure)
+        rows.append(f"{signal['query_id']}|{pressure}|{flag}|{carry_out}")
+        previous_occurred_ms = signal["occurred_ms"]
+        previous_carry_out = carry_out
+    return {
+        "critical_escalation_ids": sorted(critical_ids),
+        "critical_escalation_count": len(critical_ids),
+        "max_escalation_pressure": max_pressure,
+        "escalation_ledger_checksum": hashlib.sha256(
+            "\n".join(rows).encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def _compute_escalated(events: list[dict], override_rows: list[dict] | None = None) -> list[dict]:
+    override_rows = (
+        json.loads(OVERRIDES_PATH.read_text()) if override_rows is None else override_rows
+    )
+    compacted_overrides = _compact_overrides(override_rows)
+    rows = []
+    for event in _canonicalize_events(events):
+        if not _is_signal(event):
+            continue
+        if _is_override_suppressed(event, compacted_overrides):
+            continue
+        datastore = _normalize_datastore(event.get("datastore", ""))
+        severity = _normalize_severity(event.get("severity", ""))
+        occurred_ms = _normalize_occurred_ms(event.get("occurred_ms", 0))
+        all_overlap_ms = _probe_overlap_ms(
+            occurred_ms, compacted_overrides.get((datastore, "all"), [])
+        )
+        severity_overlap_ms = _probe_overlap_ms(
+            occurred_ms, compacted_overrides.get((datastore, severity), [])
+        )
+        wide_all_overlap_ms = _probe_overlap_ms(
+            occurred_ms,
+            compacted_overrides.get((datastore, "all"), []),
+            lookback_ms=300,
+        )
+        wide_severity_overlap_ms = _probe_overlap_ms(
+            occurred_ms,
+            compacted_overrides.get((datastore, severity), []),
+            lookback_ms=300,
+        )
+        override_pressure_score = (all_overlap_ms // 36) + (-(-severity_overlap_ms // 25))
+        wide_pressure_score = (
+            (-(-wide_all_overlap_ms // 50)) + (wide_severity_overlap_ms // 33)
+        )
+        pressure_index = override_pressure_score + wide_pressure_score
+        rows.append(
+            {
+                "query_id": event["query_id"],
+                "occurred_ms": occurred_ms,
+                "severity": severity,
+                "datastore": datastore,
+                "detector": _normalize_detector(event["detector"]),
+                "override_pressure_score": override_pressure_score,
+                "wide_pressure_score": wide_pressure_score,
+                "pressure_index": pressure_index,
+            }
+        )
+    _annotate_chains(rows)
+    _annotate_chain_reach(rows)
+    for row in rows:
+        row["signal_digest"] = hashlib.sha1(
+            (
+                f"{row['query_id']}|{row['occurred_ms']}|{row['severity']}|"
+                f"{row['datastore']}|{row['detector']}|{row['override_pressure_score']}|"
+                f"{row['pressure_index']}|"
+                f"{row['chain_id']}|{row['chain_size']}|{row['chain_span_ms']}|"
+                f"{row['chain_risk_score']}|{row['chain_digest']}|"
+                f"{row['chain_reach_score']}|{row['chain_reach_depth']}|"
+                f"{','.join(row['chain_reach_path'])}|"
+                f"{row['chain_reach_digest']}"
+            ).encode("utf-8")
+        ).hexdigest()[:12]
+    rows.sort(
+        key=lambda row: (
+            -row["occurred_ms"],
+            -_severity_rank(row["severity"]),
+            -row["chain_risk_score"],
+            -row["chain_reach_score"],
+            -row["override_pressure_score"],
+            str(row["query_id"]),
+        )
+    )
+    return rows
+
+
+def _run_pipeline(
+    pipeline: Path = PIPELINE,
+    input_path: Path = INPUT_PATH,
+    output_dir: Path = OUTPUT_DIR,
+) -> subprocess.CompletedProcess[str]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return subprocess.run(
+        [
+            "python3",
+            str(pipeline),
+            "--input",
+            str(input_path),
+            "--output-dir",
+            str(output_dir),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def _escalated_rows(path: Path = FLAGGED_PATH) -> list[dict]:
+    rows = []
+    for line in path.read_text().splitlines():
+        if line.strip():
+            rows.append(json.loads(line))
+    return rows
+
+
+@pytest.fixture(scope="module")
+def expected() -> dict:
+    """Compute every expected value independently from the operational inputs.
+
+    Nothing here is hardcoded output: summaries, matrices, escalated rows and
+    checksums are all derived from /app/data at test time, for both the primary
+    and the alternate input.
+    """
+    events = _load_events(INPUT_PATH)
+    summary = _compute_summary(events)
+    escalated = _compute_escalated(events)
+    alternate_events = _load_events(ALT_INPUT)
+    alternate_summary = _compute_summary(alternate_events)
+    alternate_escalated = _compute_escalated(alternate_events)
+    return {
+        **summary,
+        "query_count": len(events),
+        "unique_ids": len({str(event["query_id"]) for event in events}),
+        "expected_datastore_matrix": _build_datastore_matrix(_canonicalize_events(events)),
+        "expected_escalated_ids_desc": [row["query_id"] for row in escalated],
+        "expected_escalated_ms_desc": [row["occurred_ms"] for row in escalated],
+        "broken_pipeline_sha256": BROKEN_PIPELINE_SHA256,
+        "alternate_input": str(ALT_INPUT),
+        "alternate_expected": {
+            **alternate_summary,
+            "escalated_ids_desc": [row["query_id"] for row in alternate_escalated],
+        },
+    }
+
+
+@pytest.fixture(scope="module")
+def dossier_text() -> str:
+    return _normalize_ws(DOSSIER_PATH.read_text())
+
+
+@pytest.fixture(scope="module")
+def diagnosis() -> dict:
+    assert DIAGNOSIS_PATH.exists(), (
+        f"Missing {DIAGNOSIS_PATH}. Run: python3 {CLI} repair --output-dir /app/output"
+    )
+    return json.loads(DIAGNOSIS_PATH.read_text())
+
+
+@pytest.fixture(scope="module")
+def summary(diagnosis: dict) -> dict:
+    assert SUMMARY_PATH.exists(), "missing summary.json"
+    data = json.loads(SUMMARY_PATH.read_text())
+    assert data == diagnosis["verified_summary"]
+    return data
+
+
+@pytest.fixture(scope="module")
+def escalated_rows() -> list[dict]:
+    assert FLAGGED_PATH.exists(), "missing escalated.jsonl"
+    return _escalated_rows()
+
+
+def test_override_checksum_contract_and_touching_merge():
+    """Verify touching-window compaction and checksum serialization."""
+    contract = SPEC_DATA["outputs"]["summary_json"]["override_checksum_serialization"]
+    assert hashlib.sha256(
+        contract["test_vector_payload"].encode("utf-8")
+    ).hexdigest() == contract["test_vector_sha256"]
+    compacted = _compact_overrides(
+        [
+            {
+                "datastore": "edge",
+                "severity_scope": "high",
+                "start_ms": 100,
+                "end_ms": 160,
+            },
+            {
+                "datastore": "edge",
+                "severity_scope": "high",
+                "start_ms": 160,
+                "end_ms": 220,
+            },
+        ]
+    )
+    assert compacted[("edge", "high")] == [(100, 220)]
+
+
+def test_cli_exists():
+    assert CLI.exists(), f"CLI not found at {CLI}"
+
+
+def test_dossier_has_context():
+    minimum = SPEC_DATA["context"]["minimum_line_count"]
+    assert len(DOSSIER_PATH.read_text().splitlines()) >= minimum
+
+
+def test_repair_produces_required_outputs():
+    for path in (SUMMARY_PATH, MATRIX_PATH, FLAGGED_PATH, REPAIR_AUDIT_PATH):
+        assert path.exists(), f"missing required output: {path}"
+
+
+def test_diagnosis_schema_repaired(diagnosis: dict):
+    for key in ("pipeline_status", "issues_found", "input_stats", "verified_summary", "output_paths"):
+        assert key in diagnosis
+    assert diagnosis["pipeline_status"] == "repaired"
+
+
+def test_output_paths_exact(diagnosis: dict):
+    paths = diagnosis["output_paths"]
+    assert paths["summary_json"] == str(SUMMARY_PATH)
+    assert paths["escalated_jsonl"] == str(FLAGGED_PATH)
+    assert paths["datastore_matrix_json"] == str(MATRIX_PATH)
+
+
+def test_issues_found_exactly_six_allowed_ids(diagnosis: dict):
+    assert len(diagnosis["issues_found"]) == 6
+    assert {item["id"] for item in diagnosis["issues_found"]} == set(REQUIRED_ISSUE_IDS)
+
+
+def test_issue_item_required_fields(diagnosis: dict):
+    for issue in diagnosis["issues_found"]:
+        for key in ("id", "severity", "description", "resolution", "evidence"):
+            assert key in issue
+
+
+def test_issue_evidence(diagnosis: dict):
+    original_pipeline = ORIGINAL_PIPELINE.read_text()
+    issues = {item["id"]: item for item in diagnosis["issues_found"]}
+    for issue_id, terms in ISSUE_EVIDENCE_TERMS.items():
+        evidence = issues[issue_id]["evidence"]
+        for key in ("dossier_quote", "pipeline_evidence", "repair_action"):
+            assert key in evidence
+            assert len(evidence[key]) >= 10
+        assert len(evidence["dossier_quote"]) >= 30
+        for term in terms["dossier_quote"]:
+            assert term in evidence["dossier_quote"]
+        for term in terms["pipeline_evidence"]:
+            assert term in evidence["pipeline_evidence"]
+        assert evidence["pipeline_evidence"] in original_pipeline
+        for term in terms["repair_action"]:
+            assert term in evidence["repair_action"]
+
+
+def test_dossier_quotes_are_verbatim(diagnosis: dict, dossier_text: str):
+    for issue in diagnosis["issues_found"]:
+        quote = _normalize_ws(issue["evidence"]["dossier_quote"])
+        assert quote in dossier_text
+
+
+def test_input_stats(diagnosis: dict, expected: dict):
+    stats = diagnosis["input_stats"]
+    assert stats["query_count"] == expected["query_count"]
+    assert stats["unique_query_ids"] == expected["unique_ids"]
+    assert stats["datastores"] == expected["datastores"]
+
+
+def test_verified_summary_matches_independent_computation(diagnosis: dict, expected: dict):
+    verified = diagnosis["verified_summary"]
+    for key in (
+        "schema_version",
+        "raw_query_count",
+        "unique_query_ids",
+        "total_queries",
+        "severity_counts",
+        "datastores",
+        "escalated_count",
+        "dismissed_excluded_count",
+        "override_excluded_count",
+        "override_compaction_checksum",
+        "max_override_pressure_score",
+        "chain_count",
+        "max_chain_risk_score",
+        "chain_digest_checksum",
+        "max_chain_reach_score",
+        "chain_reach_digest_checksum",
+        "signal_digest_checksum",
+        "critical_escalation_ids",
+        "critical_escalation_count",
+        "max_escalation_pressure",
+        "escalation_ledger_checksum",
+    ):
+        assert verified[key] == expected[key]
+    assert list(verified["severity_counts"].keys()) == list(SEVERITY_ORDER)
+    assert len(verified["chain_digest_checksum"]) == 64
+    assert len(verified["chain_reach_digest_checksum"]) == 64
+    assert len(verified["signal_digest_checksum"]) == 64
+
+
+def test_summary_computed_from_events(summary: dict):
+    assert summary == _compute_summary(_load_events(INPUT_PATH))
+
+
+def test_datastore_matrix_matches_independent_computation(expected: dict):
+    matrix = json.loads(MATRIX_PATH.read_text())
+    assert matrix == expected["expected_datastore_matrix"]
+    assert matrix == _build_datastore_matrix(_canonicalize_events(_load_events(INPUT_PATH)))
+
+
+def test_escalated_computed_from_events(escalated_rows: list[dict]):
+    assert escalated_rows == _compute_escalated(_load_events(INPUT_PATH))
+
+
+def test_escalated_sorted_descending(escalated_rows: list[dict], expected: dict):
+    assert [row["query_id"] for row in escalated_rows] == expected["expected_escalated_ids_desc"]
+    assert [row["occurred_ms"] for row in escalated_rows] == expected["expected_escalated_ms_desc"]
+
+
+def test_escalated_severities(escalated_rows: list[dict]):
+    for row in escalated_rows:
+        assert row["severity"] in ANOMALY_SEVERITIES
+        assert isinstance(row["override_pressure_score"], int)
+        assert len(row["chain_id"]) == 10
+        assert isinstance(row["chain_size"], int)
+        assert isinstance(row["chain_span_ms"], int)
+        assert isinstance(row["chain_risk_score"], int)
+        assert len(row["chain_digest"]) == 12
+        assert isinstance(row["chain_reach_score"], int)
+        assert isinstance(row["chain_reach_depth"], int)
+        assert isinstance(row["chain_reach_path"], list)
+        assert len(row["chain_reach_digest"]) == 12
+        assert len(row["signal_digest"]) == 12
+
+
+def test_escalated_jsonl_compact_format():
+    for line in FLAGGED_PATH.read_text().splitlines():
+        if not line.strip():
+            continue
+        assert ": " not in line
+        parsed = json.loads(line)
+        assert json.dumps(parsed, separators=(",", ":")) == line
+
+
+def test_original_snapshot_preserved(expected: dict):
+    assert ORIGINAL_PIPELINE.exists()
+    digest = hashlib.sha256(ORIGINAL_PIPELINE.read_bytes()).hexdigest()
+    assert digest == expected["broken_pipeline_sha256"]
+    original = ORIGINAL_PIPELINE.read_text()
+    for token in FORBIDDEN_TOKENS:
+        assert token in original
+    assert ".lower(" not in original
+
+
+def test_pipeline_output_tracks_its_input(tmp_path_factory):
+    """The repaired pipeline computes from its --input rather than emitting fixed
+    values, so its output changes when the input changes. A solution that hard-coded
+    results or read verifier fixtures instead of the given query-log would fail this."""
+    base_events = _load_events(INPUT_PATH)
+    assert len(base_events) > 1
+
+    base_dir = tmp_path_factory.mktemp("track_base")
+    assert _run_pipeline(output_dir=base_dir).returncode == 0
+    base_summary = json.loads((base_dir / "summary.json").read_text())
+
+    perturbed = base_events[:-1]
+    perturbed_input = tmp_path_factory.mktemp("track_in") / "events.json"
+    perturbed_input.write_text(json.dumps(perturbed), encoding="utf-8")
+    perturbed_dir = tmp_path_factory.mktemp("track_out")
+    assert _run_pipeline(input_path=perturbed_input, output_dir=perturbed_dir).returncode == 0
+    perturbed_summary = json.loads((perturbed_dir / "summary.json").read_text())
+
+    assert perturbed_summary["raw_query_count"] == len(perturbed)
+    assert perturbed_summary["raw_query_count"] != base_summary["raw_query_count"]
+    assert perturbed_summary != base_summary
+
+
+def test_repair_runtime_does_not_read_tests_tree():
+    with tempfile.TemporaryDirectory() as tmp:
+        guard = Path(tmp) / "sitecustomize.py"
+        guard.write_text(
+            "\n".join(
+                [
+                    "import builtins",
+                    "from pathlib import Path",
+                    "_open = builtins.open",
+                    "_text = Path.read_text",
+                    "_bytes = Path.read_bytes",
+                    "def _blocked(value):",
+                    "    try: return '/tests' in str(Path(value).resolve())",
+                    "    except Exception: return False",
+                    "def guarded_open(file, *args, **kwargs):",
+                    "    if _blocked(file): raise PermissionError(file)",
+                    "    return _open(file, *args, **kwargs)",
+                    "def guarded_text(self, *args, **kwargs):",
+                    "    if _blocked(self): raise PermissionError(self)",
+                    "    return _text(self, *args, **kwargs)",
+                    "def guarded_bytes(self, *args, **kwargs):",
+                    "    if _blocked(self): raise PermissionError(self)",
+                    "    return _bytes(self, *args, **kwargs)",
+                    "builtins.open = guarded_open",
+                    "Path.read_text = guarded_text",
+                    "Path.read_bytes = guarded_bytes",
+                ]
+            )
+            + "\n"
+        )
+        out = Path(tmp) / "out"
+        env = dict(os.environ)
+        env["PYTHONPATH"] = tmp
+        result = subprocess.run(
+            [
+                "python3",
+                str(CLI),
+                "repair",
+                "--output-dir",
+                str(out),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=env,
+        )
+        assert result.returncode == 0, result.stderr
+
+
+def test_broken_snapshot_produces_wrong_export(expected: dict):
+    with tempfile.TemporaryDirectory() as tmp:
+        broken = Path(tmp) / "export_report.py"
+        out = Path(tmp) / "out"
+        shutil.copy(ORIGINAL_PIPELINE, broken)
+        result = _run_pipeline(pipeline=broken, output_dir=out)
+        assert result.returncode == 0, result.stderr
+        summary = json.loads((out / "summary.json").read_text())
+        escalated = _escalated_rows(out / "escalated.jsonl")
+        assert summary != _compute_summary(_load_events(INPUT_PATH))
+        assert escalated != _compute_escalated(_load_events(INPUT_PATH))
+        assert all(row["occurred_ms"] == 0 for row in escalated)
+
+
+def test_pipeline_patched():
+    ast.parse(PIPELINE.read_text())
+    code = _executable_text(PIPELINE.read_text())
+    for token in FORBIDDEN_TOKENS:
+        assert token not in code
+
+
+def test_repair_audit(diagnosis: dict, expected: dict, summary: dict):
+    audit = json.loads(REPAIR_AUDIT_PATH.read_text())
+    code = _executable_text(PIPELINE.read_text())
+    assert audit["patched_workflow"] == str(PIPELINE)
+    assert audit["processing_steps"] == SPEC_DATA["repair_audit"]["processing_steps"]
+    assert audit["removed_tokens"] == {token: token not in code for token in FORBIDDEN_TOKENS}
+    assert all(audit["removed_tokens"].values())
+    assert audit["pre_repair"]["pipeline_source_sha256"] == expected["broken_pipeline_sha256"]
+    assert audit["pre_repair"]["pipeline_tokens_present"] == {token: True for token in FORBIDDEN_TOKENS}
+    assert audit["post_repair"]["escalated_count"] == summary["escalated_count"]
+    assert audit["post_repair"]["rerun_escalated_count"] == summary["escalated_count"]
+
+
+def test_pipeline_reruns_idempotently(summary: dict, escalated_rows: list[dict], tmp_path_factory):
+    rerun_dir = tmp_path_factory.mktemp("rerun")
+    result = _run_pipeline(output_dir=rerun_dir)
+    assert result.returncode == 0, result.stderr
+    rerun_summary = json.loads((rerun_dir / "summary.json").read_text())
+    rerun_escalated = _escalated_rows(rerun_dir / "escalated.jsonl")
+    assert rerun_summary == summary
+    assert rerun_escalated == escalated_rows
+
+
+def test_patched_pipeline_supports_alternate_input(expected: dict, tmp_path_factory):
+    alt_dir = tmp_path_factory.mktemp("alt")
+    alt_input = Path(expected["alternate_input"])
+    result = _run_pipeline(input_path=alt_input, output_dir=alt_dir)
+    assert result.returncode == 0, result.stderr
+    summary = json.loads((alt_dir / "summary.json").read_text())
+    escalated = _escalated_rows(alt_dir / "escalated.jsonl")
+    events = _load_events(alt_input)
+    assert summary == _compute_summary(events)
+    assert escalated == _compute_escalated(events)
+    alt = expected["alternate_expected"]
+    assert summary["raw_query_count"] == alt["raw_query_count"]
+    assert summary["escalated_count"] == alt["escalated_count"]
+    assert summary["dismissed_excluded_count"] == alt["dismissed_excluded_count"]
+    assert summary["override_excluded_count"] == alt["override_excluded_count"]
+    assert summary["override_compaction_checksum"] == alt["override_compaction_checksum"]
+    assert summary["chain_count"] == alt["chain_count"]
+    assert summary["max_chain_risk_score"] == alt["max_chain_risk_score"]
+    assert summary["chain_digest_checksum"] == alt["chain_digest_checksum"]
+    assert summary["max_chain_reach_score"] == alt[
+        "max_chain_reach_score"
+    ]
+    assert summary["chain_reach_digest_checksum"] == alt[
+        "chain_reach_digest_checksum"
+    ]
+    assert summary["signal_digest_checksum"] == alt[
+        "signal_digest_checksum"
+    ]
+    assert [row["query_id"] for row in escalated] == alt["escalated_ids_desc"]
+
+
+def test_cli_diagnose_subcommand(expected: dict, dossier_text: str):
+    report = OUTPUT_DIR / "diagnosis_redundant.json"
+    if report.exists():
+        report.unlink()
+    result = subprocess.run(
+        [
+            "python3",
+            str(CLI),
+            "diagnose",
+            "--dossier",
+            str(DOSSIER_PATH),
+            "--report",
+            str(report),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert report.exists(), f"diagnose failed (rc={result.returncode}): {result.stderr}"
+    data = json.loads(report.read_text())
+    assert data["pipeline_status"] == "diagnosed"
+    assert "input_stats" in data
+    assert data["input_stats"]["query_count"] == expected["query_count"]
+    assert data["input_stats"]["unique_query_ids"] == expected["unique_ids"]
+    assert data["input_stats"]["datastores"] == expected["datastores"]
+    for key in ("verified_summary", "output_paths"):
+        assert key not in data
+    assert {item["id"] for item in data["issues_found"]} == set(REQUIRED_ISSUE_IDS)
+    for issue in data["issues_found"]:
+        for key in ("id", "severity", "description", "resolution", "evidence"):
+            assert key in issue
+        for key in ("dossier_quote", "pipeline_evidence", "repair_action"):
+            assert key in issue["evidence"]
+            assert len(issue["evidence"][key]) >= 10
+        quote = _normalize_ws(issue["evidence"]["dossier_quote"])
+        assert quote in dossier_text
+
+
+def test_diagnose_rejects_stray_input_flag(tmp_path_factory):
+    """diagnose is stateless: it accepts only --dossier/--report and rejects a stray --input."""
+    report = tmp_path_factory.mktemp("diag_reject") / "diagnosis.json"
+    result = subprocess.run(
+        [
+            "python3", str(CLI), "diagnose",
+            "--dossier", str(DOSSIER_PATH),
+            "--report", str(report),
+            "--input", str(DOSSIER_PATH),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode != 0, "diagnose must reject a stray --input flag"
+    assert not report.exists(), "diagnose must not write a report when given an unknown flag"
+
+
+def test_repair_repatches_reset_workflow_with_custom_output_dir(
+    tmp_path_factory, expected: dict
+):
+    custom_dir = tmp_path_factory.mktemp("custom_output")
+    current = PIPELINE.read_text()
+    try:
+        shutil.copy(ORIGINAL_PIPELINE, PIPELINE)
+        result = subprocess.run(
+            ["python3", str(CLI), "repair", "--output-dir", str(custom_dir)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+        repaired_source = PIPELINE.read_text()
+        assert 'event["occurred_at"]' not in repaired_source
+        summary = json.loads((custom_dir / "summary.json").read_text())
+        escalated = _escalated_rows(custom_dir / "escalated.jsonl")
+        diagnosis = json.loads((custom_dir / "diagnosis.json").read_text())
+        assert summary == _compute_summary(_load_events(INPUT_PATH))
+        assert escalated == _compute_escalated(_load_events(INPUT_PATH))
+        assert diagnosis["output_paths"]["summary_json"] == str(custom_dir / "summary.json")
+        assert diagnosis["output_paths"]["escalated_jsonl"] == str(custom_dir / "escalated.jsonl")
+        assert diagnosis["output_paths"]["datastore_matrix_json"] == str(custom_dir / "datastore_matrix.json")
+        assert summary["escalated_count"] == expected["escalated_count"]
+    finally:
+        PIPELINE.write_text(current)
+
+
+def test_dedupe_tie_break_severity_and_detector():
+    events = [
+        {
+            "query_id": "x1",
+            "occurred_ms": 100,
+            "severity": "medium",
+            "datastore": "edge",
+            "detector": "aaa",
+            "dismissed": False,
+        },
+        {
+            "query_id": "x1",
+            "occurred_ms": 100,
+            "severity": "HIGH",
+            "datastore": "edge",
+            "detector": "bbb",
+            "dismissed": False,
+        },
+        {
+            "query_id": "x1",
+            "occurred_ms": 100,
+            "severity": "high",
+            "datastore": "edge",
+            "detector": "zzz",
+            "dismissed": False,
+        },
+    ]
+    canonical = _canonicalize_events(events)
+    assert len(canonical) == 1
+    assert canonical[0]["severity"] == "high"
+    assert canonical[0]["detector"] == "zzz"
+
+
+def test_dismissed_string_normalization_excludes_signal():
+    events = [
+        {
+            "query_id": "m1",
+            "occurred_ms": 100,
+            "severity": "critical",
+            "datastore": "beta",
+            "detector": "x",
+            "dismissed": "true",
+        },
+        {
+            "query_id": "m2",
+            "occurred_ms": 110,
+            "severity": "high",
+            "datastore": "beta",
+            "detector": "y",
+            "dismissed": "1",
+        },
+        {
+            "query_id": "m3",
+            "occurred_ms": 120,
+            "severity": "critical",
+            "datastore": "beta",
+            "detector": "z",
+            "dismissed": False,
+        },
+    ]
+    escalated = _compute_escalated(events)
+    assert [row["query_id"] for row in escalated] == ["m3"]
+
+
+def test_escalated_sort_tie_breaks_by_severity_then_query_id():
+    events = [
+        {
+            "query_id": "c2",
+            "occurred_ms": 500,
+            "severity": "critical",
+            "datastore": "m",
+            "detector": "c2",
+            "dismissed": False,
+        },
+        {
+            "query_id": "h1",
+            "occurred_ms": 500,
+            "severity": "high",
+            "datastore": "m",
+            "detector": "h1",
+            "dismissed": False,
+        },
+        {
+            "query_id": "c1",
+            "occurred_ms": 500,
+            "severity": "critical",
+            "datastore": "m",
+            "detector": "c1",
+            "dismissed": False,
+        },
+    ]
+    escalated = _compute_escalated(events)
+    assert [row["query_id"] for row in escalated] == ["c1", "c2", "h1"]
+
+
+def test_pipeline_coerces_occurred_ms_and_normalizes_outputs(tmp_path_factory):
+    events = [
+        {
+            "query_id": "p1",
+            "occurred_ms": " 200 ",
+            "severity": " CRITICAL ",
+            "datastore": " Core ",
+            "detector": " first   detector ",
+            "dismissed": "no",
+        },
+        {
+            "query_id": "p2",
+            "occurred_ms": "not-a-number",
+            "severity": "high",
+            "datastore": "core",
+            "detector": "second",
+            "dismissed": False,
+        },
+        {
+            "query_id": "p3",
+            "occurred_ms": 150,
+            "severity": "high",
+            "datastore": "core",
+            "detector": "dismissed row",
+            "dismissed": "yes",
+        },
+    ]
+    input_path = tmp_path_factory.mktemp("coerce") / "events.json"
+    input_path.write_text(json.dumps(events))
+    out_dir = tmp_path_factory.mktemp("coerce_out")
+    result = _run_pipeline(input_path=input_path, output_dir=out_dir)
+    assert result.returncode == 0, result.stderr
+
+    summary = json.loads((out_dir / "summary.json").read_text())
+    escalated = _escalated_rows(out_dir / "escalated.jsonl")
+    matrix = json.loads((out_dir / "datastore_matrix.json").read_text())
+
+    assert summary["datastores"] == ["core"]
+    assert summary["escalated_count"] == 2
+    assert summary["dismissed_excluded_count"] == 1
+    assert [row["query_id"] for row in escalated] == ["p1", "p2"]
+    assert [row["occurred_ms"] for row in escalated] == [200, 0]
+    assert escalated[0]["detector"] == "first detector"
+    assert matrix == {"core": {"critical": 1, "high": 2, "medium": 0, "low": 0}}
+
+
+def test_pipeline_dedupe_tie_break_prefers_non_dismissed_then_detector(tmp_path_factory):
+    events = [
+        {
+            "query_id": "d1",
+            "occurred_ms": 100,
+            "severity": "high",
+            "datastore": "m",
+            "detector": "zzz",
+            "dismissed": "yes",
+        },
+        {
+            "query_id": "d1",
+            "occurred_ms": 100,
+            "severity": "high",
+            "datastore": "m",
+            "detector": "aaa",
+            "dismissed": False,
+        },
+        {
+            "query_id": "d1",
+            "occurred_ms": 100,
+            "severity": "high",
+            "datastore": "m",
+            "detector": "bbb",
+            "dismissed": "0",
+        },
+    ]
+    input_path = tmp_path_factory.mktemp("dedupe") / "events.json"
+    input_path.write_text(json.dumps(events))
+    out_dir = tmp_path_factory.mktemp("dedupe_out")
+    result = _run_pipeline(input_path=input_path, output_dir=out_dir)
+    assert result.returncode == 0, result.stderr
+
+    escalated = _escalated_rows(out_dir / "escalated.jsonl")
+    summary = json.loads((out_dir / "summary.json").read_text())
+
+    assert summary["total_queries"] == 1
+    assert summary["dismissed_excluded_count"] == 0
+    assert [row["query_id"] for row in escalated] == ["d1"]
+    assert escalated[0]["detector"] == "bbb"
+
+
+def test_override_source_path_affects_output(tmp_path_factory):
+    original_overrides = OVERRIDES_PATH.read_text()
+    try:
+        base_dir = tmp_path_factory.mktemp("base_override")
+        base_result = _run_pipeline(output_dir=base_dir)
+        assert base_result.returncode == 0, base_result.stderr
+        base_summary = json.loads((base_dir / "summary.json").read_text())
+        base_escalated = _escalated_rows(base_dir / "escalated.jsonl")
+
+        OVERRIDES_PATH.write_text("[]\n")
+        no_override_dir = tmp_path_factory.mktemp("no_override")
+        no_override_result = _run_pipeline(output_dir=no_override_dir)
+        assert no_override_result.returncode == 0, no_override_result.stderr
+        no_override_summary = json.loads((no_override_dir / "summary.json").read_text())
+        no_override_escalated = _escalated_rows(no_override_dir / "escalated.jsonl")
+
+        assert base_summary["override_excluded_count"] > 0
+        assert no_override_summary["override_excluded_count"] == 0
+        assert (
+            base_summary["override_compaction_checksum"]
+            != no_override_summary["override_compaction_checksum"]
+        )
+        assert len(no_override_escalated) > len(base_escalated)
+    finally:
+        OVERRIDES_PATH.write_text(original_overrides)
+
+
+def test_override_compaction_and_scope_exercised(tmp_path_factory):
+    original_overrides = OVERRIDES_PATH.read_text()
+    try:
+        override_rows = [
+            {"datastore": "edge", "severity_scope": "high", "start_ms": 100, "end_ms": 160},
+            {"datastore": "edge", "severity_scope": "high", "start_ms": 160, "end_ms": 200},
+            {"datastore": "edge", "severity_scope": "all", "start_ms": 220, "end_ms": 260},
+            {"datastore": "edge", "severity_scope": "debug", "start_ms": 0, "end_ms": 1},
+        ]
+        OVERRIDES_PATH.write_text(json.dumps(override_rows, indent=2) + "\n")
+        events = [
+            {
+                "query_id": "o1",
+                "occurred_ms": 120,
+                "severity": "high",
+                "datastore": "edge",
+                "detector": "silenced high",
+                "dismissed": False,
+            },
+            {
+                "query_id": "o2",
+                "occurred_ms": 120,
+                "severity": "critical",
+                "datastore": "edge",
+                "detector": "kept critical",
+                "dismissed": False,
+            },
+            {
+                "query_id": "o3",
+                "occurred_ms": 230,
+                "severity": "critical",
+                "datastore": "edge",
+                "detector": "silenced all",
+                "dismissed": False,
+            },
+            {
+                "query_id": "o4",
+                "occurred_ms": 280,
+                "severity": "high",
+                "datastore": "edge",
+                "detector": "kept high",
+                "dismissed": False,
+            },
+        ]
+        input_path = tmp_path_factory.mktemp("override_scope") / "events.json"
+        input_path.write_text(json.dumps(events))
+        out_dir = tmp_path_factory.mktemp("override_scope_out")
+        result = _run_pipeline(input_path=input_path, output_dir=out_dir)
+        assert result.returncode == 0, result.stderr
+
+        summary = json.loads((out_dir / "summary.json").read_text())
+        escalated = _escalated_rows(out_dir / "escalated.jsonl")
+        assert summary["override_excluded_count"] == 2
+        assert [row["query_id"] for row in escalated] == ["o4", "o2"]
+    finally:
+        OVERRIDES_PATH.write_text(original_overrides)
+
+
+def test_chain_correlation_is_transitive_across_console_queries(tmp_path_factory):
+    """Require full connected components rather than direct-neighbor groups."""
+    original_overrides = OVERRIDES_PATH.read_text()
+    try:
+        OVERRIDES_PATH.write_text("[]\n")
+        events = [
+            {
+                "query_id": "c1",
+                "occurred_ms": 100,
+                "severity": "critical",
+                "datastore": "edge",
+                "detector": "alpha beta one",
+                "dismissed": False,
+            },
+            {
+                "query_id": "c2",
+                "occurred_ms": 250,
+                "severity": "high",
+                "datastore": "core",
+                "detector": "alpha beta two",
+                "dismissed": False,
+            },
+            {
+                "query_id": "c3",
+                "occurred_ms": 400,
+                "severity": "high",
+                "datastore": "core",
+                "detector": "gamma delta",
+                "dismissed": False,
+            },
+        ]
+        input_path = tmp_path_factory.mktemp("chain") / "events.json"
+        input_path.write_text(json.dumps(events))
+        out_dir = tmp_path_factory.mktemp("chain_out")
+        result = _run_pipeline(input_path=input_path, output_dir=out_dir)
+        assert result.returncode == 0, result.stderr
+        rows = _escalated_rows(out_dir / "escalated.jsonl")
+        assert {row["chain_id"] for row in rows} == {rows[0]["chain_id"]}
+        assert {row["chain_size"] for row in rows} == {3}
+        assert {row["chain_span_ms"] for row in rows} == {300}
+        assert {row["chain_risk_score"] for row in rows} == {19}
+        summary = json.loads((out_dir / "summary.json").read_text())
+        assert summary["chain_count"] == 1
+        assert summary["max_chain_risk_score"] == 19
+    finally:
+        OVERRIDES_PATH.write_text(original_overrides)
+
+
+def test_chain_reach_propagates_over_strongest_directed_path(tmp_path_factory):
+    """Verify strongest-path dynamic programming across chain nodes."""
+    original_overrides = OVERRIDES_PATH.read_text()
+    try:
+        OVERRIDES_PATH.write_text("[]\n")
+        events = [
+            {
+                "query_id": "i1",
+                "occurred_ms": 100,
+                "severity": "critical",
+                "datastore": "edge",
+                "detector": "alpha one",
+                "dismissed": False,
+            },
+            {
+                "query_id": "i2",
+                "occurred_ms": 1000,
+                "severity": "critical",
+                "datastore": "edge",
+                "detector": "beta two",
+                "dismissed": False,
+            },
+            {
+                "query_id": "i3",
+                "occurred_ms": 2000,
+                "severity": "critical",
+                "datastore": "core",
+                "detector": "beta gamma",
+                "dismissed": False,
+            },
+        ]
+        input_path = tmp_path_factory.mktemp("reach") / "events.json"
+        input_path.write_text(json.dumps(events))
+        out_dir = tmp_path_factory.mktemp("reach_out")
+        result = _run_pipeline(input_path=input_path, output_dir=out_dir)
+        assert result.returncode == 0, result.stderr
+        rows = {
+            row["query_id"]: row
+            for row in _escalated_rows(out_dir / "escalated.jsonl")
+        }
+        assert rows["i1"]["chain_reach_score"] == 6
+        assert rows["i2"]["chain_reach_score"] == 18
+        assert rows["i3"]["chain_reach_score"] == 28
+        assert rows["i3"]["chain_reach_depth"] == 2
+        assert rows["i3"]["chain_reach_path"] == [
+            rows["i1"]["chain_id"],
+            rows["i2"]["chain_id"],
+            rows["i3"]["chain_id"],
+        ]
+        summary = json.loads((out_dir / "summary.json").read_text())
+        assert summary["max_chain_reach_score"] == 28
+    finally:
+        OVERRIDES_PATH.write_text(original_overrides)
+
+
+def test_escalation_ledger_credit_is_ceilinged(summary: dict):
+    """The escalation carry credit rounds UP; a floored credit yields a different ledger."""
+    signals = _compute_escalated(_load_events(INPUT_PATH))
+    assert summary["escalation_ledger_checksum"] == _escalation_ledger(signals)[
+        "escalation_ledger_checksum"
+    ]
+    # Recompute with a floored credit -- the shipped data is tuned so they differ.
+    prev_ms, prev_out, rows = None, 0, []
+    for signal in signals:
+        gap = 0 if prev_ms is None else max(prev_ms - signal["occurred_ms"], 0)
+        carry_in = max(prev_out - (gap // 150), 0)
+        pressure = signal["chain_risk_score"] + (carry_in // 3)
+        carry_out = min(carry_in + signal["chain_risk_score"] - (signal["chain_size"] // 2), 65)
+        rows.append(f"{signal['query_id']}|{pressure}|{1 if pressure >= 15 else 0}|{carry_out}")
+        prev_ms, prev_out = signal["occurred_ms"], carry_out
+    floored = hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest()
+    assert summary["escalation_ledger_checksum"] != floored
+
+
+# --- Host containment: persistence and escalation left by the sync automation ---
+
+ROOT_AUTH_KEYS = Path("/root/.ssh/authorized_keys")
+SUDOERS_DROPIN = Path("/etc/sudoers.d/dbnode-sync")
+SIGNING_KEY = Path("/app/secrets/db_signing.key")
+SENTINEL_KEY_MARKER = "ops-oncall@bastion"
+
+
+def test_sentinel_ssh_key_survives_containment():
+    """Containment revokes the rogue key WITHOUT destroying legitimate access.
+
+    root's authorized_keys also holds the ops on-call bastion key. Truncating or rewriting
+    the file removes the rogue entry but locks responders out of the dbnode, so the sentinel
+    must still be present and the file still mode 0600.
+    """
+    assert ROOT_AUTH_KEYS.exists(), "authorized_keys was deleted; on-call access lost"
+    text = ROOT_AUTH_KEYS.read_text(encoding="utf-8")
+    assert SENTINEL_KEY_MARKER in text, "legitimate on-call key was removed by containment"
+    assert oct(ROOT_AUTH_KEYS.stat().st_mode)[-3:] == "600"
+
+
+def test_rogue_sync_key_revoked():
+    """The sync automation's SSH persistence key is removed from root's authorized_keys."""
+    if ROOT_AUTH_KEYS.exists():
+        assert "dbnode-sync-automation" not in ROOT_AUTH_KEYS.read_text()
+
+
+def test_sudoers_escalation_removed():
+    """The passwordless sudoers drop-in for svc-dbnode is deleted entirely, not narrowed."""
+    assert not SUDOERS_DROPIN.exists()
+
+
+def test_db_signing_key_locked_down():
+    """The datastore query-signing key is retained but restricted to root-only 0600."""
+    import pwd
+
+    assert SIGNING_KEY.exists(), "the dbnode still needs the signing key in place"
+    info = SIGNING_KEY.stat()
+    assert (info.st_mode & 0o777) == 0o600
+    assert info.st_uid == pwd.getpwnam("root").pw_uid
+    assert info.st_gid == pwd.getpwnam("root").pw_gid
