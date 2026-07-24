@@ -1,5 +1,27 @@
-Please create /app/analysis.R for an offline supervised regression model that predicts horseshoe crab satellite counts from shell color, spine condition, body width, and weight. The script reads /app/data/train.csv plus the configuration files in /app/config, respects DATA_PATH, DATA_DIR, OUT_DIR, and OUTPUT_DIR when they are set, runs with Rscript /app/analysis.R, and writes fresh artifacts under the chosen output directory on each run.
+A build tool resolves a stream of scenarios into a lock table: one selected
+version per queried module. `docs/row-grammar.md` defines the input rows;
+`docs/output-contract.md` the output. Complete `resolveStream` in `select.go`;
+parsing and formatting are wired in `main.go`. `make` builds `resolve`, which
+reads the stream from stdin, writing result lines to stdout.
 
-Rows marked fit are the only rows for learning preprocessing choices and candidate settings, rows marked validation are for selecting and reporting the active setting, and rows marked test have the public target left blank. The target is satellites, and the final prediction table needs numeric predictions with ordered interval bounds for the blank-target test rows. Required outputs are predictions.csv, validation_predictions.csv, metrics.json, selection_report.csv, feature_summary.csv, group_error_report.csv, neighbor_evidence.csv, interval_report.csv, and residual_bins.csv.
+Within a scenario a module's answer is the version a correct resolver settles
+on, `NONE` if it never joins the set reachable from the main module, or
+`CONFLICT` if it is reachable but over-constrained. Four rules interact:
 
-The count target has many zeros and a long upper tail, so score predictions with the configured closed-form ridge model on the encoded design, using the k_grid values as lambda candidates and a log1p target scale whenever the active training targets are nonnegative. Fit-row preprocessing uses median imputation for numeric features, then mean/sample-SD scaling over the imputed fit values; categorical features use full one-hot indicators for every sorted fit level plus `__missing__` and `__other__`, with unseen non-fit levels mapped to `__other__`. Choose the active lambda by the validation group-stability rule before using aggregate validation error as a tie-break; `validation_predictions.csv` uses the fit-only selected model, and final test predictions use the selected lambda refit on fit plus validation rows. Treat /app/config/artifact_contract.csv as the authoritative contract for every artifact's exact columns, row scope, row order, scoring rule, and interval details. Keep row identifiers unique, keep prediction rows sorted by row_id, and do not let validation or held-out labels influence scores assigned to those same rows.
+- **Version-conditioned edges.** A requirement or ceiling attached to version U
+  of a module applies only once that module's own selection reaches U. The main
+  module's edges always apply.
+- **Floors, not pins.** A `LOCK` entry, and any version carried in, are floors:
+  each can raise a selection, never cap it. A floor at or below the otherwise
+  selected version has no effect.
+- **Session carry.** Scenarios share one lock table that only grows; the version
+  selected for a module becomes its floor in every later scenario, until a
+  `RESET` line clears the accumulated floors. A module never built carries
+  nothing.
+- **Ceilings and conflict.** A `CAP` bounds a module from above. Judge each
+  module against the highest version any in-force requirement demands of it: if
+  that demand exceeds its lowest in-force ceiling, the module is over-constrained
+  (`CONFLICT`) and contributes no edges, so modules reachable only through it
+  are `NONE`.
+
+Resolving each scenario in isolation, or ignoring the ceilings, is incorrect.

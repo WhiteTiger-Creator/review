@@ -1,1 +1,0 @@
-Outputs are written to /app/outputs and are validated for schema, sorting, validation honesty, and held-out quality.

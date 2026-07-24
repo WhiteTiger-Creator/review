@@ -1,451 +1,674 @@
-"""Deterministic artifact and held-out checks for a generated R MLE task."""
-
-import json
 import os
-import shutil
+import re
 import subprocess
+import sys
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
-import pytest
-from sklearn.metrics import (
-    accuracy_score,
-    f1_score,
-    mean_absolute_error,
-    mean_squared_error,
-    r2_score,
-)
+sys.path.insert(0, os.path.dirname(__file__))
+import reference as ref
 
-DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
-CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/app/config"))
-OUT = Path(os.environ.get("OUT_DIR", os.environ.get("OUTPUT_DIR", "/app/outputs")))
-LABELS = Path(os.environ.get("EVAL_LABELS_PATH", "/tests/eval/test_labels.csv"))
-ANALYSIS = Path(os.environ.get("ANALYSIS_PATH", "/app/analysis.R"))
+APP = "/app"
+BIN = os.path.join(APP, "resolve")
+RV = "v1.0.0"  # root edges are always active regardless of this label
 
+PUBLIC = ref.load_battery("public.jsonl")
+HIDDEN = ref.load_battery("hidden.jsonl")
+ALL = PUBLIC + HIDDEN
 
-def read_key_values(path):
-    frame = pd.read_csv(path)
-    return dict(zip(frame["key"], frame["value"]))
+FULL_INPUT = "".join(rec["scenario"].rstrip("\n") + "\n" for rec in ALL)
+EXPECTED = [line for rec in ALL for line in rec["expected"]]
+PUB_ROWS = sum(len(r["expected"]) for r in PUBLIC)
 
+# Ordered parse of the whole stream, preserving RESET boundaries.
+SCEN = ref.parse_stream(FULL_INPUT)
+REF_STREAM = ref.pinned_stream(SCEN)
+PS_LINES = ref.per_scenario_stream(SCEN)
+FL_LINES = ref.flat_stream(SCEN)
+IL_LINES = ref.ignore_lock_stream(SCEN)
+CI_LINES = ref.cap_ignore_stream(SCEN)
+NR_LINES = ref.no_retract_stream(SCEN)
 
-def class_probability_columns(classes):
-    return ["prob_" + "".join(ch.lower() if ch.isalnum() else "_" for ch in c).strip("_") for c in classes]
+# Row identity (sid, module) for each output line, in order.
+ROWMETA = [{"sid": sc["sid"], "mod": m} for sc in SCEN for m in ref.qmods(sc)]
 
-
-def macro_f1(actual, predicted, classes):
-    return f1_score(actual, predicted, labels=classes, average="macro", zero_division=0)
-
-
-MISSING_TOKENS = {"", "NA", "NaN", "nan", "null", "?", "MISSING"}
-
-
-def is_missing(value):
-    if pd.isna(value):
-        return True
-    return str(value).strip() in MISSING_TOKENS
+# Naive readings that must each be wrong: independent per-scenario resolution
+# (no carry), textbook flatten, dropping the lock floor, ignoring the CAP
+# ceilings entirely, and detecting conflicts without retracting dependents.
+PER_TRAPS = [i for i in range(len(EXPECTED)) if PS_LINES[i] != REF_STREAM[i]]
+FLAT_TRAPS = [i for i in range(len(EXPECTED)) if FL_LINES[i] != REF_STREAM[i]]
+LOCK_TRAPS = [i for i in range(len(EXPECTED)) if IL_LINES[i] != REF_STREAM[i]]
+CAP_TRAPS = [i for i in range(len(EXPECTED)) if CI_LINES[i] != REF_STREAM[i]]
+RETRACT_TRAPS = [i for i in range(len(EXPECTED)) if NR_LINES[i] != REF_STREAM[i]]
 
 
-def clean_numeric(series):
-    values = pd.to_numeric(series, errors="coerce").astype(float)
-    values[~np.isfinite(values)] = np.nan
-    return values
+def _build():
+    r = subprocess.run(["make", "-C", APP], capture_output=True, text=True, check=False)
+    return r.returncode == 0 and os.path.exists(BIN)
 
 
-def feature_rows(roles):
-    return roles.loc[roles["role"] == "feature"].reset_index(drop=True)
+BUILT = _build()
 
 
-def learn_encoder(frame, roles):
-    encoders = {}
-    for _, role in feature_rows(roles).iterrows():
-        feature = role["feature"]
-        if role["data_type"] == "numeric":
-            values = clean_numeric(frame[feature])
-            finite = values.dropna()
-            med = float(finite.median()) if len(finite) else 0.0
-            imputed = values.fillna(med).astype(float)
-            center = float(imputed.mean())
-            scale = float(imputed.std(ddof=1)) if len(imputed) > 1 else 1.0
-            if not np.isfinite(scale) or scale < 1e-9:
-                scale = 1.0
-            encoders[feature] = {"type": "numeric", "median": med, "mean": center, "sd": scale}
-        else:
-            vals = ["__missing__" if is_missing(value) else str(value).strip() for value in frame[feature]]
-            levels = sorted(set(vals))
-            for extra in ["__missing__", "__other__"]:
-                if extra not in levels:
-                    levels.append(extra)
-            encoders[feature] = {"type": "categorical", "levels": levels}
-    return encoders
-
-
-def apply_encoder(frame, encoders):
-    parts = []
-    for feature, encoder in encoders.items():
-        if encoder["type"] == "numeric":
-            values = clean_numeric(frame[feature]).fillna(encoder["median"]).astype(float)
-            parts.append(((values - encoder["mean"]) / encoder["sd"]).to_numpy().reshape(-1, 1))
-        else:
-            vals = ["__missing__" if is_missing(value) else str(value).strip() for value in frame[feature]]
-            vals = [value if value in encoder["levels"] else "__other__" for value in vals]
-            mat = np.zeros((len(frame), len(encoder["levels"])), dtype=float)
-            for idx, level in enumerate(encoder["levels"]):
-                mat[:, idx] = [1.0 if value == level else 0.0 for value in vals]
-            parts.append(mat)
-    return np.column_stack(parts) if parts else np.zeros((len(frame), 0), dtype=float)
-
-
-def fit_ridge(x, y, lambda_value):
-    design = np.column_stack([np.ones(len(x)), x])
-    penalty = np.eye(design.shape[1])
-    penalty[0, 0] = 0.0
-    return np.linalg.solve(design.T @ design + float(lambda_value) * penalty, design.T @ y)
-
-
-def predict_ridge(beta, x):
-    design = np.column_stack([np.ones(len(x)), x])
-    return design @ beta
-
-
-def target_for_model(y, use_log):
-    return np.log1p(np.maximum(y, 0.0)) if use_log else y
-
-
-def target_from_model(y, use_log):
-    return np.maximum(0.0, np.expm1(y)) if use_log else y
-
-
-def expected_selection_report(public_data, config, roles):
-    """Recompute validation k selection with group-stability ranking."""
-    split_col = config["split_column"]
-    target_col = config["target_column"]
-    group_col = config["group_column"]
-    fit = public_data[public_data[split_col] == "fit"].reset_index(drop=True)
-    validation = public_data[public_data[split_col] == "validation"].reset_index(drop=True)
-    encoders = learn_encoder(fit, roles)
-    fit_x = apply_encoder(fit, encoders)
-    validation_x = apply_encoder(validation, encoders)
-    fit_y = clean_numeric(fit[target_col]).to_numpy(float)
-    validation_y = clean_numeric(validation[target_col]).to_numpy(float)
-    use_log = bool(np.nanmin(np.concatenate([fit_y, validation_y])) >= 0.0)
-    groups = validation[group_col].fillna("__missing__").astype(str).replace({"": "__missing__"})
-    rows = []
-    for candidate_k in [int(value) for value in str(config["k_grid"]).split("|")]:
-        beta = fit_ridge(fit_x, target_for_model(fit_y, use_log), candidate_k)
-        prediction = target_from_model(predict_ridge(beta, validation_x), use_log)
-        rmse = float(np.sqrt(mean_squared_error(validation_y, prediction)))
-        group_rmse = []
-        for group in sorted(groups.unique()):
-            mask = (groups == group).to_numpy()
-            group_rmse.append(float(np.sqrt(mean_squared_error(validation_y[mask], prediction[mask]))))
-        rows.append(
-            {
-                "candidate_k": candidate_k,
-                "validation_metric": rmse,
-                "worst_group_rmse": max(group_rmse),
-                "best_group_rmse": min(group_rmse),
-                "stability_gap": max(group_rmse) - min(group_rmse),
-                "selected": False,
-            }
-        )
-    selected_idx = min(
-        range(len(rows)),
-        key=lambda idx: (
-            rows[idx]["stability_gap"],
-            rows[idx]["validation_metric"],
-            rows[idx]["candidate_k"],
-        ),
+def _run(text):
+    r = subprocess.run(
+        [BIN], input=text, capture_output=True, text=True, timeout=120, check=False
     )
-    rows[selected_idx]["selected"] = True
-    return pd.DataFrame(rows)
+    return r.stdout.splitlines()
 
 
-def selected_lambda(public_data, config, roles):
-    expected = expected_selection_report(public_data, config, roles)
-    selected = expected[expected["selected"]]
-    assert len(selected) == 1
-    return int(selected["candidate_k"].iloc[0])
+ACTUAL = _run(FULL_INPUT) if BUILT else []
 
 
-def expected_ridge_predictions(public_data, config, roles, split_name):
-    """Recompute row-level ridge predictions for validation or test rows."""
-    split_col = config["split_column"]
-    target_col = config["target_column"]
-    lambda_value = selected_lambda(public_data, config, roles)
-    if split_name == "validation":
-        train = public_data[public_data[split_col] == "fit"].reset_index(drop=True)
-        evaluation = public_data[public_data[split_col] == "validation"].reset_index(drop=True)
-        log_source = public_data[public_data[split_col].isin(["fit", "validation"])][target_col]
-    elif split_name == "test":
-        train = public_data[public_data[split_col].isin(["fit", "validation"])].reset_index(drop=True)
-        evaluation = public_data[public_data[split_col] == "test"].reset_index(drop=True)
-        log_source = train[target_col]
-    else:
-        raise ValueError(f"Unsupported split_name: {split_name}")
-    encoders = learn_encoder(train, roles)
-    train_x = apply_encoder(train, encoders)
-    evaluation_x = apply_encoder(evaluation, encoders)
-    train_y = clean_numeric(train[target_col]).to_numpy(float)
-    log_values = clean_numeric(log_source).dropna().to_numpy(float)
-    use_log = bool(len(log_values) and np.nanmin(log_values) >= 0.0)
-    beta = fit_ridge(train_x, target_for_model(train_y, use_log), lambda_value)
-    prediction = target_from_model(predict_ridge(beta, evaluation_x), use_log)
-    return pd.DataFrame({"row_id": evaluation["row_id"], "expected_prediction": prediction}).sort_values("row_id")
+# -- committed data is internally consistent ---------------------------------
 
 
-def run_analysis(data_dir, out_dir):
-    env = os.environ.copy()
-    env["DATA_DIR"] = str(data_dir)
-    env["DATA_PATH"] = str(data_dir / "train.csv")
-    env["OUT_DIR"] = str(out_dir)
-    env["OUTPUT_DIR"] = str(out_dir)
-    result = subprocess.run(
-        ["Rscript", str(ANALYSIS)],
-        text=True,
-        capture_output=True,
-        timeout=420,
-        check=False,
-        env=env,
+def test_binary_built():
+    """The agent program builds and produces an executable."""
+    assert BUILT, "make did not produce /app/resolve"
+
+
+def test_committed_expected_is_reference_stream():
+    """Committed expected equals the independently recomputed streamed answer."""
+    assert EXPECTED == REF_STREAM
+
+
+def test_total_row_count():
+    """The program emits exactly one line per distinct queried module."""
+    assert len(ACTUAL) == len(EXPECTED)
+
+
+def test_full_battery_matches():
+    """Every battery row matches the committed expected line exactly."""
+    assert ACTUAL == EXPECTED
+
+
+def _chunk(k, n=10):
+    lo = (len(EXPECTED) * k) // n
+    hi = (len(EXPECTED) * (k + 1)) // n
+    assert ACTUAL[lo:hi] == EXPECTED[lo:hi]
+
+
+def test_chunk_0():
+    """Battery rows in the first decile match exactly."""
+    _chunk(0)
+
+
+def test_chunk_1():
+    """Battery rows in the second decile match exactly."""
+    _chunk(1)
+
+
+def test_chunk_2():
+    """Battery rows in the third decile match exactly."""
+    _chunk(2)
+
+
+def test_chunk_3():
+    """Battery rows in the fourth decile match exactly."""
+    _chunk(3)
+
+
+def test_chunk_4():
+    """Battery rows in the fifth decile match exactly."""
+    _chunk(4)
+
+
+def test_chunk_5():
+    """Battery rows in the sixth decile match exactly."""
+    _chunk(5)
+
+
+def test_chunk_6():
+    """Battery rows in the seventh decile match exactly."""
+    _chunk(6)
+
+
+def test_chunk_7():
+    """Battery rows in the eighth decile match exactly."""
+    _chunk(7)
+
+
+def test_chunk_8():
+    """Battery rows in the ninth decile match exactly."""
+    _chunk(8)
+
+
+def test_chunk_9():
+    """Battery rows in the tenth decile match exactly."""
+    _chunk(9)
+
+
+def test_public_slice_matches():
+    """The public example rows resolve exactly as shipped."""
+    assert ACTUAL[:PUB_ROWS] == EXPECTED[:PUB_ROWS]
+
+
+def test_examples_match_public_sessions():
+    """Each shipped example session reproduces its public battery slice."""
+    n_sessions = sum(1 for rec in PUBLIC if rec.get("reset"))
+    files = sorted(
+        f
+        for f in os.listdir(os.path.join(APP, "data", "examples"))
+        if f.endswith(".in")
     )
-    assert result.returncode == 0, result.stdout + result.stderr
-    return out_dir
+    assert len(files) == n_sessions, (len(files), n_sessions)
+    idx = 0
+    for fn in files:
+        got = _run(Path(APP, "data", "examples", fn).read_text(encoding="utf-8"))
+        outp = Path(APP, "data", "examples", fn[:-3] + ".out")
+        want = outp.read_text(encoding="utf-8").splitlines()
+        assert got == want == EXPECTED[idx : idx + len(got)]
+        idx += len(got)
 
 
-@pytest.fixture(scope="module")
-def config():
-    return read_key_values(CONFIG_DIR / "model_config.csv")
+# -- identifiability: every naive reading is visibly wrong on public data -----
 
 
-@pytest.fixture(scope="module")
-def thresholds():
-    return read_key_values(CONFIG_DIR / "evaluation_thresholds.csv")
+def _public_diverge(kernel):
+    pub = SCEN[: len(PUBLIC)]
+    exp = ref.pinned_stream(pub)
+    got = kernel(pub)
+    return sum(1 for a, b in zip(exp, got, strict=True) if a != b)
 
 
-@pytest.fixture(scope="module")
-def roles():
-    return pd.read_csv(CONFIG_DIR / "feature_roles.csv")
+def test_per_scenario_diverges_on_public():
+    """Independent per-scenario resolution is wrong on several public rows."""
+    assert _public_diverge(ref.per_scenario_stream) >= 3
 
 
-@pytest.fixture(scope="module")
-def public_data():
-    return pd.read_csv(DATA_DIR / "train.csv")
+def test_flat_diverges_on_public():
+    """Textbook flatten MVS is wrong on at least two public rows."""
+    assert _public_diverge(ref.flat_stream) >= 2
 
 
-@pytest.fixture(scope="module")
-def labels():
-    return pd.read_csv(LABELS)
+def test_lock_diverges_on_public():
+    """Dropping the lock floor is wrong on a public row."""
+    assert _public_diverge(ref.ignore_lock_stream) >= 1
 
 
-@pytest.fixture(scope="module")
-def predictions():
-    return pd.read_csv(OUT / "predictions.csv")
+def test_cap_ignore_diverges_on_public():
+    """Ignoring the CAP ceilings is wrong on several public rows."""
+    assert _public_diverge(ref.cap_ignore_stream) >= 3
 
 
-@pytest.fixture(scope="module")
-def validation_predictions():
-    return pd.read_csv(OUT / "validation_predictions.csv")
+def test_no_retract_diverges_on_public():
+    """Marking conflicts without retracting dependents is wrong on public."""
+    assert _public_diverge(ref.no_retract_stream) >= 1
 
 
-@pytest.fixture(scope="module")
-def metrics():
-    return json.loads((OUT / "metrics.json").read_text())
+def test_per_scenario_scores_zero():
+    """A full independent-per-scenario submission fails graded rows."""
+    assert PS_LINES != REF_STREAM
 
 
-class TestPublicSurface:
-    def test_required_artifacts_exist(self):
-        """The required output files are present after the R analysis runs."""
-        required = [
-            "predictions.csv",
-            "validation_predictions.csv",
-            "metrics.json",
-            "selection_report.csv",
-            "feature_summary.csv",
-            "group_error_report.csv",
-            "neighbor_evidence.csv",
-            "interval_report.csv",
-            "residual_bins.csv",
-        ]
-        missing = [name for name in required if not (OUT / name).exists()]
-        assert not missing
-
-    def test_public_test_targets_are_blank(self, public_data, config):
-        """The public data does not reveal target values for held-out test rows."""
-        test_rows = public_data[public_data[config["split_column"]] == "test"]
-        assert test_rows[config["target_column"]].isna().all()
-
-    def test_feature_summary_matches_configured_features(self, roles):
-        """feature_summary.csv covers exactly the configured feature set."""
-        summary = pd.read_csv(OUT / "feature_summary.csv")
-        expected = set(roles.loc[roles["role"] == "feature", "feature"])
-        assert set(summary["feature"]) == expected
+def test_flat_scores_zero():
+    """A full textbook-flatten submission fails graded rows."""
+    assert FL_LINES != REF_STREAM
 
 
-class TestPredictionContract:
-    def test_predictions_cover_heldout_rows(self, predictions, labels):
-        """predictions.csv covers every held-out row_id exactly once."""
-        assert predictions["row_id"].is_unique
-        assert set(predictions["row_id"]) == set(labels["row_id"])
-
-    def test_predictions_are_sorted(self, predictions):
-        """predictions.csv is sorted by row_id for deterministic upload checks."""
-        values = predictions["row_id"].to_numpy()
-        assert np.all(values[:-1] <= values[1:])
-
-    def test_prediction_columns_match_task_mode(self, predictions, config):
-        """The prediction schema matches the declared modeling mode."""
-        if config["task_mode"] == "regression":
-            assert {"prediction", "lower", "upper", "group_key"}.issubset(predictions)
-            assert np.isfinite(predictions["prediction"]).all()
-            assert (predictions["lower"] <= predictions["upper"]).all()
-        else:
-            classes = config["class_order"].split("|")
-            prob_cols = class_probability_columns(classes)
-            assert {"pred_label", "group_key"}.issubset(predictions)
-            assert set(prob_cols).issubset(predictions)
-            sums = predictions[prob_cols].sum(axis=1).to_numpy()
-            np.testing.assert_allclose(sums, np.ones(len(sums)), atol=1e-4)
+def test_ignore_lock_scores_zero():
+    """A submission that ignores the lock floor fails graded rows."""
+    assert IL_LINES != REF_STREAM
 
 
-class TestValidationEvidence:
-    def test_selection_report_has_one_selected_k(self, public_data, config, roles, metrics):
-        """selection_report.csv recomputes validation group stability and marks the chosen k."""
-        report = pd.read_csv(OUT / "selection_report.csv")
-        assert list(report.columns) == [
-            "candidate_k",
-            "validation_metric",
-            "worst_group_rmse",
-            "best_group_rmse",
-            "stability_gap",
-            "selected",
-        ]
-        expected = expected_selection_report(public_data, config, roles)
-        for column in [
-            "candidate_k",
-            "validation_metric",
-            "worst_group_rmse",
-            "best_group_rmse",
-            "stability_gap",
-        ]:
-            np.testing.assert_allclose(report[column].astype(float), expected[column].astype(float), atol=5e-5)
-        selected = report[report["selected"].astype(str).str.lower().isin(["true", "1"])]
-        assert len(selected) == 1
-        assert int(selected["candidate_k"].iloc[0]) == int(metrics["selected_k"])
-        expected_selected = expected[expected["selected"]]
-        assert int(selected["candidate_k"].iloc[0]) == int(expected_selected["candidate_k"].iloc[0])
-
-    def test_group_report_uses_validation_groups(self, public_data, config):
-        """group_error_report.csv reports only groups present in validation rows."""
-        report = pd.read_csv(OUT / "group_error_report.csv")
-        validation = public_data[public_data[config["split_column"]] == "validation"]
-        assert set(report["group_key"]).issubset(set(validation[config["group_column"]]))
-        assert (report["n_validation"] > 0).all()
-
-    def test_metrics_match_validation_predictions(self, validation_predictions, metrics, config, public_data, roles):
-        """metrics.json is an honest summary of the selected fit-only validation model."""
-        if config["task_mode"] == "regression":
-            expected = expected_ridge_predictions(public_data, config, roles, "validation")
-            merged = validation_predictions.merge(expected, on="row_id", how="inner", validate="one_to_one")
-            np.testing.assert_allclose(merged["prediction"], merged["expected_prediction"], atol=1e-4)
-            rmse = np.sqrt(
-                mean_squared_error(
-                    validation_predictions["actual"],
-                    validation_predictions["prediction"],
-                )
-            )
-            mae = mean_absolute_error(
-                validation_predictions["actual"],
-                validation_predictions["prediction"],
-            )
-            assert abs(float(metrics["validation_rmse"]) - rmse) <= 1e-5
-            assert abs(float(metrics["validation_mae"]) - mae) <= 1e-5
-        else:
-            classes = config["class_order"].split("|")
-            acc = accuracy_score(
-                validation_predictions["actual"].astype(str),
-                validation_predictions["pred_label"].astype(str),
-            )
-            f1 = macro_f1(
-                validation_predictions["actual"].astype(str),
-                validation_predictions["pred_label"].astype(str),
-                classes,
-            )
-            assert abs(float(metrics["validation_accuracy"]) - acc) <= 1e-5
-            assert abs(float(metrics["validation_macro_f1"]) - f1) <= 1e-5
-
-    def test_interval_and_residual_reports_are_contentful(self, validation_predictions, metrics, config):
-        """Regression interval and residual-bin reports summarize validation predictions."""
-        if config["task_mode"] != "regression":
-            return
-        interval = pd.read_csv(OUT / "interval_report.csv")
-        assert list(interval.columns) == ["split", "interval_coverage", "mean_width"]
-        assert len(interval) == 1
-        assert interval["split"].iloc[0] == "validation"
-        coverage = float(interval["interval_coverage"].iloc[0])
-        assert 0.0 <= coverage <= 1.0
-        assert abs(coverage - float(metrics["interval_coverage"])) <= 1e-5
-        assert np.isfinite(float(interval["mean_width"].iloc[0]))
-        assert float(interval["mean_width"].iloc[0]) >= 0.0
-
-        residual_bins = pd.read_csv(OUT / "residual_bins.csv")
-        assert list(residual_bins.columns) == ["prediction_bin", "mean_abs_error", "count"]
-        assert not residual_bins.empty
-        assert int(residual_bins["count"].sum()) == len(validation_predictions)
-        assert (residual_bins["count"] > 0).all()
+def test_cap_ignore_scores_zero():
+    """A submission blind to the ceilings fails graded rows."""
+    assert CI_LINES != REF_STREAM
 
 
-class TestHeldoutQuality:
-    def test_heldout_score_clears_threshold(self, predictions, labels, config, thresholds, public_data, roles):
-        """Held-out predictions match the selected refit model and clear quality bars."""
-        merged = predictions.merge(labels, on="row_id", how="inner", validate="one_to_one")
-        target = config["target_column"]
-        if config["task_mode"] == "regression":
-            expected = expected_ridge_predictions(public_data, config, roles, "test")
-            checked = predictions.merge(expected, on="row_id", how="inner", validate="one_to_one")
-            np.testing.assert_allclose(checked["prediction"], checked["expected_prediction"], atol=1e-4)
-            rmse = np.sqrt(mean_squared_error(merged[target], merged["prediction"]))
-            mae = mean_absolute_error(merged[target], merged["prediction"])
-            r2 = r2_score(merged[target], merged["prediction"])
-            assert rmse <= float(thresholds["max_rmse"])
-            assert mae <= float(thresholds["max_mae"])
-            assert r2 >= float(thresholds["min_r2"])
-        else:
-            classes = config["class_order"].split("|")
-            acc = accuracy_score(merged[target].astype(str), merged["pred_label"].astype(str))
-            f1 = macro_f1(
-                merged[target].astype(str),
-                merged["pred_label"].astype(str),
-                classes,
-            )
-            assert acc >= float(thresholds["min_accuracy"])
-            assert f1 >= float(thresholds["min_macro_f1"])
+def test_no_retract_scores_zero():
+    """A submission that never retracts a conflicted provider fails graded rows."""
+    assert NR_LINES != REF_STREAM
 
-    def test_fit_label_perturbation_changes_predictions(self, tmp_path, predictions, config):
-        """Changing fit labels changes held-out predictions in an alternate run."""
-        alt_data = tmp_path / "data"
-        shutil.copytree(DATA_DIR, alt_data)
-        frame = pd.read_csv(alt_data / "train.csv")
-        target = config["target_column"]
-        fit_mask = frame[config["split_column"]] == "fit"
-        if config["task_mode"] == "regression":
-            values = pd.to_numeric(frame.loc[fit_mask, target])
-            frame.loc[fit_mask, target] = values + values.std(ddof=0) * 0.75
-        else:
-            classes = config["class_order"].split("|")
-            mapping = {classes[i]: classes[(i + 1) % len(classes)] for i in range(len(classes))}
-            frame.loc[fit_mask, target] = frame.loc[fit_mask, target].astype(str).map(mapping)
-        frame.to_csv(alt_data / "train.csv", index=False)
-        alt_out = tmp_path / "out"
-        alt_out.mkdir()
-        run_analysis(alt_data, alt_out)
-        changed = pd.read_csv(alt_out / "predictions.csv")
-        merged = predictions.merge(changed, on="row_id", suffixes=("_orig", "_alt"))
-        if config["task_mode"] == "regression":
-            delta = np.abs(merged["prediction_orig"] - merged["prediction_alt"]).mean()
-        else:
-            classes = config["class_order"].split("|")
-            prob_cols = class_probability_columns(classes)
-            delta = 0.0
-            for col in prob_cols:
-                delta += np.abs(merged[f"{col}_orig"] - merged[f"{col}_alt"]).mean()
-        assert delta > 1e-6
+
+def test_per_scenario_trap_fraction_in_band():
+    """Carry-sensitive rows are a substantial but bounded slice of the battery."""
+    frac = len(PER_TRAPS) / len(EXPECTED)
+    assert 0.20 <= frac <= 0.45, frac
+
+
+def test_flat_trap_fraction_in_band():
+    """Flatten-trap rows are a substantial but bounded slice of the battery."""
+    frac = len(FLAT_TRAPS) / len(EXPECTED)
+    assert 0.45 <= frac <= 0.72, frac
+
+
+def test_cap_trap_fraction_in_band():
+    """Ceiling-sensitive rows are a substantial but bounded slice of the battery."""
+    frac = len(CAP_TRAPS) / len(EXPECTED)
+    assert 0.18 <= frac <= 0.45, frac
+
+
+def test_program_correct_on_per_scenario_traps():
+    """On carry-sensitive rows the program differs from the independent pick."""
+    assert len(PER_TRAPS) >= 60
+    for i in PER_TRAPS:
+        assert ACTUAL[i] == EXPECTED[i]
+        assert ACTUAL[i] != PS_LINES[i]
+
+
+def test_program_correct_on_flat_traps():
+    """The program produces the pinned answer on every flatten-trap row."""
+    assert len(FLAT_TRAPS) >= 60
+    for i in FLAT_TRAPS:
+        assert ACTUAL[i] == EXPECTED[i]
+        assert ACTUAL[i] != FL_LINES[i]
+
+
+def test_program_correct_on_lock_traps():
+    """On lock-floor traps the chosen version differs from the no-floor pick."""
+    assert len(LOCK_TRAPS) >= 20
+    for i in LOCK_TRAPS:
+        assert ACTUAL[i] == EXPECTED[i]
+        assert ACTUAL[i] != IL_LINES[i]
+
+
+def test_program_correct_on_cap_traps():
+    """On ceiling-sensitive rows the program differs from the cap-blind pick."""
+    assert len(CAP_TRAPS) >= 60
+    for i in CAP_TRAPS:
+        assert ACTUAL[i] == EXPECTED[i]
+        assert ACTUAL[i] != CI_LINES[i]
+
+
+def test_program_correct_on_retract_traps():
+    """On retraction rows the program differs from the no-retract pick."""
+    assert len(RETRACT_TRAPS) >= 25
+    for i in RETRACT_TRAPS:
+        assert ACTUAL[i] == EXPECTED[i]
+        assert ACTUAL[i] != NR_LINES[i]
+
+
+# -- output shape -------------------------------------------------------------
+
+
+def test_line_format_wellformed():
+    """Each output line is scenario id, module, and a version, NONE or CONFLICT."""
+    pat = re.compile(r"^[^|]+\|[^|]+\|(v\d+\.\d+\.\d+|NONE|CONFLICT)$")
+    for ln in ACTUAL:
+        assert pat.match(ln), ln
+
+
+def test_module_field_matches_query():
+    """Each output line names the sorted queried module in position."""
+    for i, m in enumerate(ROWMETA):
+        parts = ACTUAL[i].split("|")
+        assert parts[0] == m["sid"] and parts[1] == m["mod"]
+
+
+def test_rows_sorted_within_scenario():
+    """Within each scenario the module field is ascending."""
+    by_sid = {}
+    for ln in ACTUAL:
+        sid, mod, _v = ln.split("|")
+        by_sid.setdefault(sid, []).append(mod)
+    for sid, mods in by_sid.items():
+        assert mods == sorted(mods), sid
+
+
+def test_no_blank_lines():
+    """No output line is empty."""
+    assert all(ACTUAL)
+
+
+def test_scenario_order_preserved():
+    """Output lines follow scenario order."""
+    sids = [ln.split("|", 1)[0] for ln in ACTUAL]
+    exp_sids = [ln.split("|", 1)[0] for ln in EXPECTED]
+    assert sids == exp_sids
+
+
+def test_none_token_present():
+    """Some queried modules have no reachable edge and print NONE."""
+    assert any(ln.endswith("|NONE") for ln in EXPECTED)
+    for i, ln in enumerate(ACTUAL):
+        if ln.endswith("|NONE"):
+            assert EXPECTED[i].endswith("|NONE")
+
+
+def test_conflict_token_present():
+    """Some queried modules are over-constrained and print CONFLICT."""
+    assert any(ln.endswith("|CONFLICT") for ln in EXPECTED)
+    for i, ln in enumerate(ACTUAL):
+        if ln.endswith("|CONFLICT"):
+            assert EXPECTED[i].endswith("|CONFLICT")
+
+
+# -- determinism --------------------------------------------------------------
+
+
+def test_determinism_full_battery_twice():
+    """Re-running the whole battery yields identical output."""
+    assert _run(FULL_INPUT) == ACTUAL
+
+
+def test_largest_scenario_stream():
+    """A prefix of the battery through the largest scenario resolves exactly."""
+    big = max(range(len(SCEN)), key=lambda i: len(ALL[i]["scenario"]))
+    text = "".join(ALL[i]["scenario"].rstrip("\n") + "\n" for i in range(big + 1))
+    got = _run(text)
+    rows = sum(len(ref.qmods(SCEN[i])) for i in range(big + 1))
+    assert got == EXPECTED[:rows]
+
+
+# -- inline semantic scenarios (self-checked against the reference) ----------
+
+
+def _render(sc):
+    lines = []
+    if sc.get("reset_before"):
+        lines.append("RESET")
+    lines += ["SCENARIO " + sc["sid"], "ROOT " + sc["root"]]
+    for u, uv, dep, dv in sc["edges"]:
+        lines.append(f"REQ {u} {uv} {dep} {dv}")
+    for u, uv, dep, mv in sc.get("caps", []):
+        lines.append(f"CAP {u} {uv} {dep} {mv}")
+    for m in sorted(sc.get("index", {})):
+        lines.append(f"INDEX {m} {' '.join(sc['index'][m])}")
+    for m in sorted(sc.get("lock", {})):
+        lines.append(f"LOCK {m} {sc['lock'][m]}")
+    for q in sc["queries"]:
+        lines.append("QUERY " + q)
+    lines.append("ENDSCENARIO")
+    return "\n".join(lines) + "\n"
+
+
+def _sc(sid, root, edges, lock, queries, caps=None, reset_before=False):
+    return {
+        "sid": sid,
+        "root": root,
+        "edges": edges,
+        "caps": caps or [],
+        "index": {},
+        "lock": lock,
+        "queries": queries,
+        "reset_before": reset_before,
+    }
+
+
+def _stream(*scs):
+    return "".join(_render(sc) for sc in scs)
+
+
+def test_inline_carry_floor_wins():
+    """A version selected earlier in the session floors a later lower pick."""
+    a = _sc("s0", "m0", [("m0", RV, "a", "v2.0.0")], {}, ["a"], reset_before=True)
+    b = _sc("s1", "m0", [("m0", RV, "a", "v1.0.0")], {}, ["a"])
+    out = _run(_stream(a, b))
+    assert out == ["s0|a|v2.0.0", "s1|a|v2.0.0"] == ref.pinned_stream([a, b])
+    assert out[1] != "s1|a|v1.0.0"
+
+
+def test_inline_carry_activates_gated_edge():
+    """The carried floor lifts a module far enough to fire its own edge."""
+    a = _sc("s0", "m0", [("m0", RV, "a", "v1.5.0")], {}, ["a"], reset_before=True)
+    b = _sc(
+        "s1",
+        "m0",
+        [("m0", RV, "a", "v1.0.0"), ("a", "v1.5.0", "b", "v3.0.0")],
+        {},
+        ["a", "b"],
+    )
+    out = _run(_stream(a, b))
+    assert (
+        out
+        == ["s0|a|v1.5.0", "s1|a|v1.5.0", "s1|b|v3.0.0"]
+        == ref.pinned_stream([a, b])
+    )
+
+
+def test_inline_reset_clears_carry():
+    """A RESET line drops the session floor so the next scenario starts fresh."""
+    a = _sc("s0", "m0", [("m0", RV, "a", "v2.0.0")], {}, ["a"], reset_before=True)
+    b = _sc("s1", "m0", [("m0", RV, "a", "v1.0.0")], {}, ["a"], reset_before=True)
+    out = _run(_stream(a, b))
+    assert out == ["s0|a|v2.0.0", "s1|a|v1.0.0"] == ref.pinned_stream([a, b])
+
+
+def test_inline_carry_only_for_built_modules():
+    """A module that never enters a build list carries no floor forward."""
+    a = _sc(
+        "s0",
+        "m0",
+        [("m0", RV, "a", "v1.0.0"), ("side", "v1.0.0", "z", "v9.0.0")],
+        {},
+        ["a"],
+        reset_before=True,
+    )
+    b = _sc("s1", "m0", [("m0", RV, "z", "v1.0.0")], {}, ["z"])
+    out = _run(_stream(a, b))
+    assert out == ["s0|a|v1.0.0", "s1|z|v1.0.0"] == ref.pinned_stream([a, b])
+
+
+def test_inline_dormant_edge_unreachable():
+    """An edge declared by an unreached version leaves its dep unreachable."""
+    sc = _sc(
+        "s2",
+        "m0",
+        [("m0", RV, "u", "v1.0.0"), ("u", "v2.0.0", "w", "v6.0.0")],
+        {},
+        ["u", "w"],
+        reset_before=True,
+    )
+    out = _run(_render(sc))
+    assert out == ["s2|u|v1.0.0", "s2|w|NONE"] == ref.pinned_one(sc)
+
+
+def test_inline_lock_floor_raises():
+    """A lock entry above the recomputed pick acts as a floor and wins."""
+    sc = _sc(
+        "s3",
+        "m0",
+        [("m0", RV, "x", "v1.2.0")],
+        {"x": "v2.5.0"},
+        ["x"],
+        reset_before=True,
+    )
+    out = _run(_render(sc))
+    assert out == ["s3|x|v2.5.0"] == ref.pinned_one(sc)
+
+
+def test_inline_stale_lock_below_ignored():
+    """A lock entry below the recomputed pick is ignored, not trusted."""
+    sc = _sc(
+        "s4",
+        "m0",
+        [("m0", RV, "x", "v2.0.0")],
+        {"x": "v1.0.0"},
+        ["x"],
+        reset_before=True,
+    )
+    out = _run(_render(sc))
+    assert out == ["s4|x|v2.0.0"] == ref.pinned_one(sc)
+
+
+def test_inline_diamond_maxima():
+    """A diamond where both arms require one module selects the higher requirement."""
+    sc = _sc(
+        "s5",
+        "m0",
+        [
+            ("m0", RV, "a", "v1.0.0"),
+            ("m0", RV, "b", "v1.0.0"),
+            ("a", "v1.0.0", "c", "v1.3.0"),
+            ("b", "v1.0.0", "c", "v1.7.0"),
+        ],
+        {},
+        ["c"],
+        reset_before=True,
+    )
+    assert _run(_render(sc)) == ["s5|c|v1.7.0"] == ref.pinned_one(sc)
+
+
+def test_inline_cascade_iterates():
+    """Raising a module activates its own higher-version edge in a later pass."""
+    sc = _sc(
+        "s6",
+        "m0",
+        [
+            ("m0", RV, "a", "v1.0.0"),
+            ("m0", RV, "c", "v1.0.0"),
+            ("c", "v1.0.0", "a", "v2.0.0"),
+            ("a", "v2.0.0", "b", "v1.5.0"),
+            ("a", "v3.0.0", "d", "v7.0.0"),
+        ],
+        {},
+        ["a", "b", "d"],
+        reset_before=True,
+    )
+    assert (
+        _run(_render(sc))
+        == ["s6|a|v2.0.0", "s6|b|v1.5.0", "s6|d|NONE"]
+        == ref.pinned_one(sc)
+    )
+
+
+def test_inline_numeric_field_width():
+    """Version fields compare numerically, not lexically, across widths."""
+    sc = _sc(
+        "s7",
+        "m0",
+        [
+            ("m0", RV, "m1", "v1.0.9"),
+            ("m0", RV, "m2", "v0.1.0"),
+            ("m2", "v0.1.0", "m1", "v1.0.12"),
+        ],
+        {},
+        ["m1"],
+        reset_before=True,
+    )
+    assert _run(_render(sc)) == ["s7|m1|v1.0.12"] == ref.pinned_one(sc)
+
+
+def test_inline_self_and_cycle_terminate():
+    """A self edge and a back edge terminate with a well-defined selection."""
+    sc = _sc(
+        "s8",
+        "m0",
+        [
+            ("m0", RV, "a", "v1.0.0"),
+            ("a", "v1.0.0", "a", "v1.0.0"),
+            ("a", "v1.0.0", "b", "v12.3.10"),
+            ("b", "v12.3.10", "a", "v1.0.0"),
+        ],
+        {},
+        ["a", "b"],
+        reset_before=True,
+    )
+    assert _run(_render(sc)) == ["s8|a|v1.0.0", "s8|b|v12.3.10"] == ref.pinned_one(sc)
+
+
+def test_inline_cap_over_constrained():
+    """A module demanded above its ceiling is CONFLICT."""
+    sc = _sc(
+        "s9",
+        "m0",
+        [("m0", RV, "a", "v5.0.0")],
+        {},
+        ["a"],
+        caps=[("m0", RV, "a", "v3.0.0")],
+        reset_before=True,
+    )
+    assert _run(_render(sc)) == ["s9|a|CONFLICT"] == ref.pinned_one(sc)
+
+
+def test_inline_cap_slack_does_not_bite():
+    """A ceiling above the demand leaves the selection unchanged."""
+    sc = _sc(
+        "s10",
+        "m0",
+        [("m0", RV, "a", "v2.0.0")],
+        {},
+        ["a"],
+        caps=[("m0", RV, "a", "v5.0.0")],
+        reset_before=True,
+    )
+    assert _run(_render(sc)) == ["s10|a|v2.0.0"] == ref.pinned_one(sc)
+
+
+def test_inline_cap_retracts_dependent():
+    """A capped-out module retracts its edge, dropping its dependent to NONE."""
+    sc = _sc(
+        "s11",
+        "m0",
+        [("m0", RV, "a", "v2.0.0"), ("a", "v2.0.0", "c", "v9.0.0")],
+        {},
+        ["a", "c"],
+        caps=[("m0", RV, "a", "v1.0.0")],
+        reset_before=True,
+    )
+    assert _run(_render(sc)) == ["s11|a|CONFLICT", "s11|c|NONE"] == ref.pinned_one(sc)
+
+
+def test_inline_cap_gated_by_declarer():
+    """A ceiling gated on version U bites only once its declarer reaches U."""
+    sc = _sc(
+        "s12",
+        "m0",
+        [("m0", RV, "x", "v2.0.0"), ("m0", RV, "y", "v3.0.0")],
+        {},
+        ["x", "y"],
+        caps=[("x", "v2.0.0", "y", "v1.0.0")],
+        reset_before=True,
+    )
+    assert _run(_render(sc)) == ["s12|x|v2.0.0", "s12|y|CONFLICT"] == ref.pinned_one(sc)
+
+
+def test_inline_cap_retract_keeps_sibling_low():
+    """Retracting a conflicted provider leaves a sibling at its direct demand."""
+    sc = _sc(
+        "s13",
+        "m0",
+        [
+            ("m0", RV, "a", "v2.0.0"),
+            ("m0", RV, "b", "v1.0.0"),
+            ("a", "v2.0.0", "b", "v8.0.0"),
+        ],
+        {},
+        ["a", "b"],
+        caps=[("m0", RV, "a", "v1.0.0")],
+        reset_before=True,
+    )
+    assert _run(_render(sc)) == ["s13|a|CONFLICT", "s13|b|v1.0.0"] == ref.pinned_one(sc)
+
+
+def test_inline_carry_then_cap_conflict():
+    """A carried floor above a later ceiling makes the module CONFLICT."""
+    a = _sc("s14", "m0", [("m0", RV, "a", "v2.0.0")], {}, ["a"], reset_before=True)
+    b = _sc(
+        "s15",
+        "m0",
+        [("m0", RV, "a", "v1.0.0")],
+        {},
+        ["a"],
+        caps=[("m0", RV, "a", "v1.5.0")],
+    )
+    out = _run(_stream(a, b))
+    assert out == ["s14|a|v2.0.0", "s15|a|CONFLICT"] == ref.pinned_stream([a, b])
+
+
+def test_hidden_generalization_recomputed():
+    """Every hidden row matches the independently recomputed streamed reference."""
+    hid = SCEN[len(PUBLIC) :]
+    assert ref.pinned_stream(hid) == EXPECTED[PUB_ROWS:]
+    text = "".join(rec["scenario"].rstrip("\n") + "\n" for rec in HIDDEN)
+    assert _run(text) == EXPECTED[PUB_ROWS:]
+
+
+def test_no_forbidden_import():
+    """No agent-visible source vendors x/mod or another whole-rule resolver helper."""
+    banned = ["golang.org/x/mod", "modfile", "pubgrub", "hashicorp/go-version"]
+    hits = []
+    for root, _dirs, files in os.walk(APP):
+        if "/data" in root or "/docs" in root:
+            continue
+        for fn in files:
+            if fn.endswith((".go", ".mod", ".sum")):
+                text = Path(root, fn).read_text(encoding="utf-8").lower()
+                hits.extend((fn, b) for b in banned if b in text)
+    assert hits == [], hits
+
+
+def test_min_semantic_cases():
+    """The battery executes well over the semantic-case floor."""
+    assert len(EXPECTED) >= 60
