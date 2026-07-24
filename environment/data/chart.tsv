@@ -1,0 +1,6 @@
+account_id	name	type	normal_balance
+CA-1000	Cash	asset	debit
+CA-2000	Accounts Payable	liability	credit
+EQ-3000	Equity	equity	credit
+REV-4000	Revenue	revenue	credit
+EXP-5000	Operating Expenses	expense	debit

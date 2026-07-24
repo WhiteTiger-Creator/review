@@ -1,0 +1,5 @@
+posting_date,account_id,debit_cents,credit_cents,memo
+2025-02-28,ca-2000,0,8000,Vendor invoice
+2025-02-28,EXP-5000,8000,0,Consulting fees
+2025-04-01,CA-1000,10000,0,April deposit excluded from Q1
+2025-04-01,rev-4000,0,10000,April revenue excluded from Q1
