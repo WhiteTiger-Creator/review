@@ -1,0 +1,14 @@
+{
+  "name": "acme-pixilock-app",
+  "private": true,
+  "dependencies": {
+    "fmt": "10.2.1",
+    "zlib": "1.3.1",
+    "spdlog": "1.12.0"
+  },
+  "pants": {
+    "fmt": "https://registry.example/pixi/fmt",
+    "zlib": "https://registry.example/pixi/zlib",
+    "spdlog": "https://registry.example/pixi/spdlog"
+  }
+}

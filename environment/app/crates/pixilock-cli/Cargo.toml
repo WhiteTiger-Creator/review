@@ -1,0 +1,12 @@
+[package]
+name = "pixilock-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pixilock-core = { path = "../pixilock-core" }
+
+[[bin]]
+name = "pixilock"
+path = "src/main.rs"

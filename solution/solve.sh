@@ -1,359 +1,188 @@
 #!/bin/bash
+# Oracle: install unfinished Rust/release implementation, then *derive* pixi resolution
+# pins + deps.csv from /app/pixi-cache digests and pins.csv (no pre-baked answers).
 set -euo pipefail
+S="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# waterfall engine -- sequential/pro-rata with PIK and cleanup
-cat > /app/waterfall.go << 'EOF'
-package main
+cp "$S/src/pixilock-graph.rs" /app/crates/aa-graph/src/lib.rs
+cp "$S/src/pixilock-core.rs" /app/crates/pixilock-core/src/lib.rs
+cp "$S/src/pixilock-cli-main.rs" /app/crates/pixilock-cli/src/main.rs
+rm -f /app/scripts/release.sh
+cp "$S/src/release.sh" /app/scripts/release.sh
+chmod 0755 /app/scripts/release.sh || true
 
-import (
-	"encoding/json"
-	"math"
-	"os"
+python3 <<'PY'
+"""Derive resolution pins, offline pixi.toml, lockfile, and deps.csv from pixi-cache digests + pins.csv."""
+from __future__ import annotations
+
+import csv
+import hashlib
+import json
+from pathlib import Path
+
+APP = Path("/app")
+CACHE = APP / "pixi-cache"
+PINS_PATH = APP / "config" / "pins.csv"
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def archive_for(name: str, version: str) -> Path:
+    path = CACHE / f"{name}-{version}.conda"
+    if not path.is_file():
+        raise SystemExit(f"missing archive: {path}")
+    if path.stat().st_size <= 32:
+        raise SystemExit(f"archive too small: {path}")
+    return path
+
+
+pins: dict[str, dict[str, str]] = {}
+with PINS_PATH.open(newline="", encoding="utf-8") as handle:
+    for row in csv.DictReader(handle):
+        pins[row["wrap"]] = row
+
+primary = ("fmt", "zlib", "spdlog")
+digests: dict[str, str] = {}
+versions: dict[str, str] = {}
+for name in primary:
+    ver = pins[name]["version"]
+    archive = archive_for(name, ver)
+    digest = sha256_file(archive)
+    expect = pins[name]["sha256"].strip().lower()
+    if expect.startswith("sha256:"):
+        expect = expect[7:]
+    if digest != expect:
+        raise SystemExit(f"digest mismatch for {name}: {digest} vs {expect}")
+    digests[name] = digest
+    versions[name] = ver
+
+deps_dir = APP / "conda" / "deps"
+deps_dir.mkdir(parents=True, exist_ok=True)
+for name in primary:
+    ver = versions[name]
+    digest = digests[name]
+    payload = {
+        "name": name,
+        "provide": name,
+        "version": ver,
+        "resolved": f"file:///app/pixi-cache/{name}-{ver}.conda",
+        "integrity": f"sha256:{digest}",
+        "packaging": "conda",
+    }
+    (deps_dir / f"{name}.json").write_text(
+        json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n"
+    )
+
+(APP / "pixi.toml").parent.mkdir(parents=True, exist_ok=True)
+(APP / "pixi.toml").write_text(
+    "offline=true\ncache-dir=/app/pixi-cache\n",
+    encoding="utf-8",
+    newline="\n",
+)
+(APP / "legacy-pixi-notes.txt").write_text(
+    "# emptied for pixi\n", encoding="utf-8", newline="\n"
 )
 
-type Tranche struct {
-	ID         string  `json:"id"`
-	Class      string  `json:"class"`
-	Balance    float64 `json:"balance"`
-	CouponRate float64 `json:"coupon_rate"`
+packages = {
+    name: f"file:///app/pixi-cache/{name}-{versions[name]}.conda" for name in primary
 }
-
-type Period struct {
-	PeriodNum    int     `json:"period"`
-	Collections  float64 `json:"collections"`
-	Defaults     float64 `json:"defaults"`
-	Prepayments  float64 `json:"prepayments"`
-	SeniorFee    float64 `json:"senior_fee"`
-	ServicerFee  float64 `json:"servicer_fee"`
+package = {
+    "name": "acme-pixilock-app",
+    "private": True,
+    "dependencies": {name: versions[name] for name in primary},
+    "pixi": packages,
 }
+(APP / "pixi.project").write_text(
+    json.dumps(package, indent=2) + "\n", encoding="utf-8", newline="\n"
+)
 
-type Input struct {
-	Tranches []Tranche `json:"tranches"`
-	Periods  []Period  `json:"periods"`
-}
+lock_lines = ["# pixi lockfile v1", ""]
+for name in primary:
+    ver = versions[name]
+    digest = digests[name]
+    url = f"file:///app/pixi-cache/{name}-{ver}.conda"
+    lock_lines.extend(
+        [
+            f"{name}@{url}:",
+            f'  version "{ver}"',
+            f'  resolved "{url}"',
+            f"  integrity sha256:{digest}",
+            "",
+        ]
+    )
+(APP / "pixi.lock").write_text("\n".join(lock_lines), encoding="utf-8", newline="\n")
 
-type TranchePayment struct {
-	ID            string  `json:"id"`
-	InterestPaid  float64 `json:"interest_paid"`
-	PrincipalPaid float64 `json:"principal_paid"`
-	EndingBalance float64 `json:"ending_balance"`
-	PIKAmount     float64 `json:"pik_amount"`
-	PIKRecovered  float64 `json:"pik_recovered"`
-}
+extra = ("legacy", "jsonA", "jsonB")
+for name in extra:
+    ver = pins[name]["version"]
+    archive = archive_for(name, ver)
+    digest = sha256_file(archive)
+    expect = pins[name]["sha256"].strip().lower()
+    if expect.startswith("sha256:"):
+        expect = expect[7:]
+    if digest != expect:
+        raise SystemExit(f"digest mismatch for {name}: {digest} vs {expect}")
+    digests[name] = digest
+    versions[name] = ver
 
-type PeriodOutput struct {
-	Period         int              `json:"period"`
-	TranchePayments []TranchePayment `json:"tranche_payments"`
-	ReserveBalance float64          `json:"reserve_balance"`
-	Mode           string           `json:"mode"`
-	CleanUp        bool             `json:"clean_up"`
-}
 
-func r2(v float64) float64 {
-	return math.Round(v*100) / 100
-}
+def file_url(name: str) -> str:
+    return f"file:///app/pixi-cache/{name}-{versions[name]}.conda"
 
-func main() {
-	raw, _ := os.ReadFile("/app/input/collections.json")
-	var input Input
-	json.Unmarshal(raw, &input)
 
-	originalPool := 0.0
-	for i := range input.Tranches {
-		originalPool += input.Tranches[i].Balance
-	}
+def sha_field(name: str) -> str:
+    return f"sha256:{digests[name]}"
 
-	balances := make([]float64, len(input.Tranches))
-	for i := range input.Tranches {
-		balances[i] = input.Tranches[i].Balance
-	}
 
-	cumPIK := make([]float64, len(input.Tranches))
+deps_path = APP / "config" / "deps.csv"
+rows: list[dict[str, str]] = []
+with deps_path.open(newline="", encoding="utf-8") as handle:
+    reader = csv.DictReader(handle)
+    fieldnames = reader.fieldnames
+    if not fieldnames:
+        raise SystemExit("deps.csv missing header")
+    for row in reader:
+        coord = row["coordinate"]
+        bare = coord.split(":", 1)[-1]
+        if bare in primary:
+            row["provide"] = bare
+            row["version"] = versions[bare]
+            row["source_url"] = file_url(bare)
+            row["source_hash"] = sha_field(bare)
+            row["patch_url"] = ""
+        elif coord == "dep:legacy":
+            row["provide"] = "legacy"
+            row["version"] = versions["legacy"]
+            row["source_url"] = file_url("legacy")
+            row["source_hash"] = sha_field("legacy")
+            row["patch_url"] = ""
+        elif coord == "dep:jsonA":
+            row["provide"] = "json"
+            row["version"] = versions["jsonA"]
+            row["source_url"] = file_url("jsonA")
+            row["source_hash"] = sha_field("jsonA")
+            row["patch_url"] = ""
+        elif coord == "dep:jsonB":
+            row["provide"] = "jsonalt"
+            row["version"] = versions["jsonB"]
+            row["source_url"] = file_url("jsonB")
+            row["source_hash"] = sha_field("jsonB")
+            row["patch_url"] = ""
+        rows.append(row)
 
-	reserve := 0.0
-	reserveTarget := r2(0.02 * originalPool)
-	cumDefaults := 0.0
-	mode := "sequential"
-	modeLocked := false
-	stepUpTriggered := false
-	var results []PeriodOutput
+with deps_path.open("w", newline="", encoding="utf-8") as handle:
+    writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(rows)
 
-	for _, p := range input.Periods {
-		cumDefaults += p.Defaults
-		available := p.Collections - p.Defaults + p.Prepayments
+print("pixi migration derived from pixi-cache digests + pins.csv")
 
-		// step-up: C coupon +1% when cum default rate hits 3%
-		cumDefaultRate := cumDefaults / originalPool
-		if !stepUpTriggered && cumDefaultRate >= 0.03 {
-			stepUpTriggered = true
-			for i := range input.Tranches {
-				if input.Tranches[i].Class == "C" {
-					input.Tranches[i].CouponRate = math.Round((input.Tranches[i].CouponRate+0.01)*10000) / 10000
-				}
-			}
-		}
+PY
 
-		// --- Loss allocation (before fees/interest) ---
-		// Current pool balance = sum of ALL tranche balances at period start
-		currentPoolStart := 0.0
-		for i := range balances {
-			currentPoolStart += balances[i]
-		}
-		lossThreshold := r2(0.03 * currentPoolStart)
-		if p.Defaults > lossThreshold {
-			excess := r2(p.Defaults - lossThreshold)
-			// write-down bottom-up: residual(3), C, B, A
-			writeOrder := []int{}
-			// find residual index
-			for i, t := range input.Tranches {
-				if t.Class == "residual" {
-					writeOrder = append(writeOrder, i)
-				}
-			}
-			// then C, B, A
-			for i, t := range input.Tranches {
-				if t.Class == "C" {
-					writeOrder = append(writeOrder, i)
-				}
-			}
-			for i, t := range input.Tranches {
-				if t.Class == "B" {
-					writeOrder = append(writeOrder, i)
-				}
-			}
-			for i, t := range input.Tranches {
-				if t.Class == "A" {
-					writeOrder = append(writeOrder, i)
-				}
-			}
-			for _, idx := range writeOrder {
-				if excess <= 0 {
-					break
-				}
-				wd := math.Min(excess, balances[idx])
-				wd = r2(wd)
-				balances[idx] = r2(balances[idx] - wd)
-				excess = r2(excess - wd)
-			}
-		}
-
-		// fees
-		available -= p.SeniorFee
-		available -= p.ServicerFee
-		available = r2(available)
-
-		// interest
-		interestDue := make([]float64, len(input.Tranches))
-		for i, t := range input.Tranches {
-			if t.Class != "residual" {
-				interestDue[i] = r2(balances[i] * t.CouponRate / 12.0)
-			}
-		}
-
-		interestPaid := make([]float64, len(input.Tranches))
-		pikAmounts := make([]float64, len(input.Tranches))
-		for i, t := range input.Tranches {
-			if t.Class == "residual" {
-				continue
-			}
-			if available >= interestDue[i] {
-				interestPaid[i] = interestDue[i]
-				available = r2(available - interestDue[i])
-			} else {
-				interestPaid[i] = r2(available)
-				shortfall := r2(interestDue[i] - interestPaid[i])
-				pikAmounts[i] = shortfall
-				balances[i] = r2(balances[i] + shortfall)
-				cumPIK[i] = r2(cumPIK[i] + shortfall)
-				available = 0
-			}
-		}
-
-		// scheduled principal = collections - interest paid - fees - prepayments
-		totalInterestPaid := 0.0
-		for i := range interestPaid {
-			totalInterestPaid += interestPaid[i]
-		}
-		scheduledPrincipal := r2(p.Collections - totalInterestPaid - p.SeniorFee - p.ServicerFee - p.Prepayments)
-		if scheduledPrincipal < 0 {
-			scheduledPrincipal = 0
-		}
-
-		// triggers
-		currentPool := 0.0
-		for i := range balances {
-			currentPool += balances[i]
-		}
-		poolFactor := currentPool / originalPool
-		abcBalance := 0.0
-		for i, t := range input.Tranches {
-			if t.Class != "residual" {
-				abcBalance += balances[i]
-			}
-		}
-		ocTest := abcBalance < 0.92*currentPool
-
-		allTriggersPass := poolFactor > 0.50 && cumDefaultRate < 0.04 && ocTest
-
-		if !modeLocked {
-			if mode == "sequential" && allTriggersPass {
-				mode = "pro_rata"
-			} else if mode == "pro_rata" && !allTriggersPass {
-				mode = "sequential"
-				modeLocked = true
-			}
-		}
-
-		// distribute scheduled principal
-		principalPaid := make([]float64, len(input.Tranches))
-		schedAvail := math.Min(float64(scheduledPrincipal), available)
-
-		if mode == "sequential" {
-			for i, t := range input.Tranches {
-				if t.Class == "residual" {
-					continue
-				}
-				pay := math.Min(schedAvail, balances[i])
-				pay = r2(pay)
-				principalPaid[i] += pay
-				balances[i] = r2(balances[i] - pay)
-				schedAvail = r2(schedAvail - pay)
-				available = r2(available - pay)
-			}
-		} else {
-			totalABC := 0.0
-			for i, t := range input.Tranches {
-				if t.Class != "residual" {
-					totalABC += balances[i]
-				}
-			}
-			if totalABC > 0 {
-				for i, t := range input.Tranches {
-					if t.Class == "residual" {
-						continue
-					}
-					share := balances[i] / totalABC
-					pay := r2(schedAvail * share)
-					pay = math.Min(pay, balances[i])
-					pay = r2(pay)
-					principalPaid[i] += pay
-					balances[i] = r2(balances[i] - pay)
-					available = r2(available - pay)
-				}
-			}
-		}
-
-		// prepayment principal always pro-rata
-		prepayAvail := math.Min(p.Prepayments, available)
-		totalABC := 0.0
-		for i, t := range input.Tranches {
-			if t.Class != "residual" {
-				totalABC += balances[i]
-			}
-		}
-		if totalABC > 0 && prepayAvail > 0 {
-			for i, t := range input.Tranches {
-				if t.Class == "residual" {
-					continue
-				}
-				share := balances[i] / totalABC
-				pay := r2(prepayAvail * share)
-				pay = math.Min(pay, balances[i])
-				pay = r2(pay)
-				principalPaid[i] += pay
-				balances[i] = r2(balances[i] - pay)
-				available = r2(available - pay)
-			}
-		}
-
-		// reserve trap, then PIK recovery, then turbo
-		pikRecovered := make([]float64, len(input.Tranches))
-		if available > 0 {
-			if reserve < reserveTarget {
-				trap := math.Min(available, r2(reserveTarget-reserve))
-				reserve = r2(reserve + trap)
-				available = r2(available - trap)
-			}
-
-			// PIK recovery: A → B → C (after reserve cap reached, before turbo)
-			if available > 0 {
-				for i, t := range input.Tranches {
-					if t.Class == "residual" {
-						continue
-					}
-					if cumPIK[i] > 0 && available > 0 && balances[i] > 0 {
-						recovery := math.Min(available, cumPIK[i])
-						recovery = math.Min(recovery, balances[i])
-						recovery = r2(recovery)
-						pikRecovered[i] = recovery
-						balances[i] = r2(balances[i] - recovery)
-						cumPIK[i] = r2(cumPIK[i] - recovery)
-						available = r2(available - recovery)
-					}
-				}
-			}
-
-			// turbo cascades through most senior with balance
-			if available > 0 && ocTest {
-				for i, t := range input.Tranches {
-					if t.Class == "residual" {
-						continue
-					}
-					if balances[i] > 0 && available > 0 {
-						turbo := math.Min(available, balances[i])
-						turbo = r2(turbo)
-						principalPaid[i] += turbo
-						balances[i] = r2(balances[i] - turbo)
-						available = r2(available - turbo)
-					}
-				}
-			}
-		}
-
-		// clean-up
-		currentPool = 0.0
-		for i := range balances {
-			currentPool += balances[i]
-		}
-		cleanUp := currentPool < 0.10*originalPool && currentPool > 0
-
-		if cleanUp {
-			for i := range balances {
-				principalPaid[i] += balances[i]
-				balances[i] = 0
-			}
-		}
-
-		payments := make([]TranchePayment, len(input.Tranches))
-		for i, t := range input.Tranches {
-			payments[i] = TranchePayment{
-				ID:            t.ID,
-				InterestPaid:  r2(interestPaid[i]),
-				PrincipalPaid: r2(principalPaid[i]),
-				EndingBalance: r2(balances[i]),
-				PIKAmount:     r2(pikAmounts[i]),
-				PIKRecovered:  r2(pikRecovered[i]),
-			}
-		}
-
-		results = append(results, PeriodOutput{
-			Period:          p.PeriodNum,
-			TranchePayments: payments,
-			ReserveBalance:  r2(reserve),
-			Mode:            mode,
-			CleanUp:         cleanUp,
-		})
-
-		if cleanUp {
-			break
-		}
-	}
-
-	out, _ := json.MarshalIndent(results, "", "  ")
-	os.MkdirAll("/app/output", 0755)
-	os.WriteFile("/app/output/waterfall.json", out, 0644)
-}
-EOF
-
-cd /app && go mod init waterfall 2>/dev/null || true
-cd /app && go build -o /app/waterfall . && /app/waterfall
+bash /app/scripts/release.sh

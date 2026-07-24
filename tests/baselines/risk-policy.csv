@@ -1,0 +1,10 @@
+kind,risk
+remote,191
+hashdrift,149
+versiondrift,127
+mirrormiss,139
+provcollide,163
+xor,173
+missingpin,101
+ban,241
+cap,131

@@ -1,0 +1,8 @@
+{
+  "name": "spdlog",
+  "provide": "fmt",
+  "version": "1.12.0",
+  "resolved": "https://registry.example/pixi/spdlog",
+  "integrity": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "packaging": "jar"
+}

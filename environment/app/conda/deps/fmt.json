@@ -1,0 +1,8 @@
+{
+  "name": "fmt",
+  "provide": "fmt",
+  "version": "10.2.1",
+  "resolved": "https://registry.example/pixi/fmt",
+  "integrity": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "packaging": "jar"
+}

@@ -1,0 +1,13 @@
+[workspace]
+members = [
+    "crates/aa-graph",
+    "crates/pixilock-core",
+    "crates/pixilock-cli",
+    "crates/zz-index",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+version = "12.6.3"
