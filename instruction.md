@@ -1,31 +1,32 @@
-# Restore OIDC gateway trust after mTLS policy migration failure
+# Lockfile Semver Range Inference
 
-An offline security migration service under `/app/environment` converts a legacy mutual-TLS service call graph, authorization YAML, and security decision corpus into an OIDC gateway policy bundle plus SQLite audit evidence. A partial cutover left trust-boundary enforcement broken: unsafe JWKS material can be accepted, semantic issuer URLs are replaced with hardcoded values, transport fixture hosts leak into policy, parallel edges collapse, dossier authority is ignored, explicit denies are bypassed, and recursive coverage checks are skipped.
+The offline lockfile tool under `/app/environment` is drifting in CI due to bugs in the source code.
 
-Recover gateway trust by repairing verifier logic under `/app/environment`. Static output writes or verifier edits are insufficient; the migrator binary must regenerate policy and audit artifacts through the normal pipeline.
+Your task is to **debug and repair the broken Go source files** in `/app/environment` so that the tool behaves exactly according to the semantic rules verified by the tests.
 
-After `/app/environment/bin/reset-state`, this command must exit zero from working directory `/app`:
+## Overall Workflow
 
-```bash
-/app/environment/bin/migrate-policy
-```
+1. **Repair:** Edit the Go source files in `/app/environment` to fix the implementation.
+2. **Rebuild:** Rebuild `/app/bin/depctrl` from `/app/environment` after edits, using the build recipe in `/app/environment/docs/phase_contract.md`.
+3. **Execute:** Run `/app/bin/depctrl reconcile --all-mirrors` to verify. The automated tests will rebuild the binary and execute that path, or specific CLI chains.
+4. **Verify:** Ensure the sealed output in `/app/output/constraint_report.json` meets all requirements.
 
-Inputs live under `/app/environment/input` and `/app/environment/dossier`. Identity-provider metadata must be obtained through the configured offline transport. Effective policy must record semantic issuer URLs from bundled discovery documents, not loopback fixture hosts.
+## Test Requirements & Behaviors
 
-## Trust and security requirements
+The automated tests verify several critical behaviors. You must ensure your fixes correctly implement all of these:
 
-- Retire all mTLS-only certificate fields (`client_cert_subject`, `ca_bundle`, `serial_number`, `mtls_trust_bundle`) from emitted gateway policy.
-- JWKS ingestion must reject symmetric algorithms, `none`, encryption-only keys, and keys without verify operations.
-- Policy issuers must match bundled semantic discovery URLs; hardcoded or transport-derived issuer values are invalid.
-- Parallel graph edges with distinct environment, method, path, or authz_scope must remain distinct in policy output.
-- Dossier authority rules under `/data/dossier-authority` govern which decision statuses and scopes are authoritative.
-- Superseded and proposed dossier entries must not override accepted or amended audience decisions.
-- Explicit deny edges such as `api-gateway` to `payment-service` must remain `action: deny`.
-- Retired service `admin-api` must not appear with `action: allow`.
-- Recursive audit view `coverage_gaps` must be empty and `latest_complete_run.status` must be `COMPLETE`.
-- Re-running migration must be idempotent and produce byte-identical `/output/gateway-policy.yaml`.
-- Protected trees under `/data/canonical`, `/data/oidc-contracts`, and `/data/dossier-authority` must remain unchanged.
+- **Output Format & Overwrites:** The terminal report (`/app/output/constraint_report.json`) must be a JSON object with a `rows` array. Staging output is not the sealed report. Existing report files must be overwritten on a successful seal.
+- **Digest Construction:** Each row needs `pkg`, `dep`, `lo`, `hi`, `pre_tok`, `lift`, and `row_digest`. `row_digest` must be the first 16 hex characters of the SHA-256 hash of the payload string `{pkg}|{dep}|{lo}|{hi}|{pre_tok}|{lift}` with `lift` formatted as `1` or `0`.
+- **Peer Ceiling Semantics:** When `lift` is `true`, the resolved `hi` bound is capped by `peer_hi`. Raising `peer_hi` above the intersection loosens the ceiling.
+- **Pre-Token Folding:** Arm tag `a` treats an empty `pre_tok` as `allow`. Arm tag `b` strips `-pre.` from bounds if `pre_tok` is not `allow`. An empty final `pre_tok` means bounds must not retain `-pre.`.
+- **Sequence Logic:** Within a single arm tag, only the event with the highest `seq` number for a `(pkg, dep)` pair is kept for sealing.
+- **Activation Gating:** Optional edges (e.g., `side-b`) appear only if their activation key is enabled in `/app/environment/data/act_map.json`. Disabling an activation key must immediately drop the edge, even if the cache is warm.
+- **WAL CRC Handling:** The journal (`lock.wal`) must seal without torn or CRC-mismatched frames in the fold. Such invalid frames must be dropped and must not poison the output.
+- **Cache Invalidation:** Warm cache blobs must stay coherent with the live peer fingerprint, activation map, and seeds. Stale ceilings (e.g., mutated `peer_hi`) must be correctly recalculated instead of hitting the cache.
+- **CLI Chain:** The manual CLI chain of `depctrl collect` -> `depctrl reconcile` (without flags) -> `depctrl emit` must successfully seal a full terminal report.
+- **Idempotency:** A double reconcile (running reconcile twice with identical inputs) must be completely idempotent, yielding the exact same generated digests and bounds.
+- **Traces:** After a successful run, `/app/output/traces/last_run.json` must record `row_n` (number of rows in the sealed report), `frame_n` (where `frame_n >= row_n`), and `cache_hit`.
 
-Write `/output/gateway-policy.yaml`, `/output/migration-summary.json`, and `/output/migration-audit.db`. The migration-contract at `/app/environment/docs/migration-contract.md` documents required `schema_version`, issuers, edges, edge `action`, `jwks_uri`, `run_id`, `edge_count`, and `status` fields.
+*Note:* `depctrl status` printing `steady` is not proof that the terminal report is correctly sealed. Hand-written reports or static mock outputs will fail.
 
-Grading uses Python's `sqlite3` module against `/output/migration-audit.db` and PyYAML against `/output/gateway-policy.yaml`, running `python3 -m pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py` after reset. Do not modify `/tests`.
+See `/app/environment/docs/phase_contract.md` for specific technical recipes and cache constraints.

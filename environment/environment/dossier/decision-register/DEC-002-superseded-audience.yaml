@@ -1,7 +1,0 @@
-id: DEC-002
-status: superseded
-scope: service
-effective_date: 2025-09-01
-target_service: user-service
-audiences:
-  - https://legacy-users.example.com
