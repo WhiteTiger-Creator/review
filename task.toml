@@ -4,28 +4,24 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "security"
-category_profile = "security_authority_split"
-tags = ["security", "firewall", "shadow-rules", "conntrack", "zone-policy", "optimization"]
-languages = ["typescript", "bash"]
+category = "system-administration"
+subcategories = ["tool_specific"]
+tags = ["filesystem-operations", "crash-recovery", "systemd", "offline-maintenance"]
+languages = ["C++", "bash", "systemd"]
 codebase_size = "small"
 number_of_milestones = 0
-subcategories = []
-expert_time_estimate_min = 90
-junior_time_estimate_min = 240
-
-[reference_pattern]
-justification_if_none = "No promoted reference in docs/reference_tasks/index.json for firewall shadow rule minimize; construction follows overlay mold verifier shape reframed to security + optimization_under_constraints + TypeScript orchestrator/worker split."
+expert_time_estimate_min = 120
+junior_time_estimate_min = 360
 
 [agent]
 timeout_sec = 1800
 
 [verifier]
-timeout_sec = 900
+timeout_sec = 600
 
 [environment]
 allow_internet = false
-build_timeout_sec = 900
+build_timeout_sec = 600
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
