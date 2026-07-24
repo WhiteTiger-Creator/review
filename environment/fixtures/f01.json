@@ -1,0 +1,11 @@
+{
+  "name": "f01",
+  "nodes": [
+    {"id": "cu_a", "features": [-2.1, 0.4]},
+    {"id": "cu_b", "features": [-1.9, 0.6]},
+    {"id": "cu_c", "features": [2.2, -0.1]},
+    {"id": "cu_d", "features": [2.0, -0.3]},
+    {"id": "cu_e", "features": [0.0, 2.4]}
+  ],
+  "marks": []
+}

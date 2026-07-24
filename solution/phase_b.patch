@@ -1,0 +1,39 @@
+--- a/environment/stream/WindowPhase.java
++++ b/environment/stream/WindowPhase.java
+@@ -9,10 +9,34 @@
+     int dim = samples[0].length;
+     double[] shift = new double[dim];
+     double[] scale = new double[dim];
++    double sumNorm = 0.0;
++    double[] norms = new double[samples.length];
++    for (int i = 0; i < samples.length; i++) {
++      double acc = 0.0;
++      for (int d = 0; d < dim; d++) {
++        acc += samples[i][d] * samples[i][d];
++      }
++      norms[i] = Math.sqrt(acc);
++      sumNorm += norms[i];
++    }
++    double avg = sumNorm / samples.length;
++    if (avg < 1e-9) {
++      avg = 1.0;
++    }
+     for (int d = 0; d < dim; d++) {
+       shift[d] = 0.0;
+-      scale[d] = 1.0;
++      scale[d] = avg;
++    }
++    double[] sorted = norms.clone();
++    java.util.Arrays.sort(sorted);
++    double median = sorted[sorted.length / 2];
++    int above = 0;
++    for (double norm : norms) {
++      if (norm > median) {
++        above++;
++      }
+     }
+-    return new State(shift, scale, 0);
++    int bucket = above % 3;
++    return new State(shift, scale, bucket);
+   }
+ }

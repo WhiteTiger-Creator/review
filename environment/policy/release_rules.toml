@@ -1,3 +1,0 @@
-require_commit_coverage = true
-reject_shallow_gap = true
-honor_replace = true

@@ -1,41 +1,34 @@
-FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git=1:2.39.5-0+deb12u3 \
-    gpg=2.2.40-1.1+deb12u2 \
-    gpg-agent=2.2.40-1.1+deb12u2 \
-    make=4.3-4.1 \
-    python3=3.11.2-1+b1 \
-    python3-venv=3.11.2-1+b1 \
-    tmux=3.3a-3 \
-    asciinema=2.2.0-1 \
-    ca-certificates=20230311+deb12u1 \
-    && rm -rf /var/lib/apt/lists/*
+# Canonical Java (JDK) runtime base per docs/PLATFORM_AUTO_EVAL.md (Edition 2).
+FROM public.ecr.aws/docker/library/eclipse-temurin:21-jdk-jammy@sha256:25d1276565738d3c805e632a4542c3a7598866ef967f4def6544c15de3a74b14
 
 WORKDIR /app
-COPY requirements.lock /tmp/verifier-requirements.txt
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3=3.10.6-1~22.04.1 \
+    python3-venv=3.10.6-1~22.04.1 \
+    tmux=3.2a-4ubuntu0.2 \
+    asciinema=2.1.0-1 \
+    ca-certificates=20260601~22.04.1 \
+    maven=3.6.3-5 \
+    patch=2.7.6-7build2 \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN python3 -m venv /opt/verifier \
- && /opt/verifier/bin/pip install --no-cache-dir --require-hashes --no-deps \
-      -r /tmp/verifier-requirements.txt
+    && /opt/verifier/bin/pip install --no-cache-dir \
+      pytest==8.4.1 \
+      pytest-json-ctrf==0.3.5 \
+      pyyaml==6.0.2
 
-ENV PATH=/opt/verifier/bin:/usr/local/go/bin:${PATH}
+ENV PATH=/opt/verifier/bin:${PATH}
+ENV MAVEN_OPTS="-Dmaven.repo.local=/opt/m2"
 
-COPY BUILD.md Makefile go.mod go.sum /app/environment/
-COPY cmd/ /app/environment/cmd/
-COPY docs/ /app/environment/docs/
-COPY fixtures/ /app/environment/fixtures/
-COPY k2/ /app/environment/k2/
-COPY lib/ /app/environment/lib/
-COPY p7/ /app/environment/p7/
-COPY policy/ /app/environment/policy/
-COPY q4/ /app/environment/q4/
-COPY scripts/ /app/environment/scripts/
+COPY . /app/environment
 
-RUN mkdir -p /app/output /app/policy \
- && cp -r /app/environment/policy/* /app/policy/ \
- && cd /app/environment \
- && bash scripts/build_fixtures.sh \
- && cp -r /app/environment/policy/* /app/policy/ \
- && make build
+RUN mkdir -p /opt/m2 /app/output \
+    && chmod +x /app/environment/scripts/*.sh \
+    && cd /app/environment \
+    && mvn -Dmaven.repo.local=/opt/m2 -q -DskipTests package
 
 WORKDIR /app

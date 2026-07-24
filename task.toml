@@ -1,21 +1,17 @@
 version = "2.0"
 
 [metadata]
-name = "git-object-trust-boundary"
 author_name = "anonymous"
 author_email = "anonymous"
-title = "Git object trust boundary"
-category = "security"
-task_shape = "adversarial_generalization"
-category_profile = "security_authority_split"
 difficulty = "hard"
-number_of_milestones = 0
-subcategories = []
-tags = ["security", "git", "provenance", "signatures", "authority", "go"]
-languages = ["go"]
+category = "machine-learning"
+tags = ["model-evaluation", "spectral-clustering", "eigengap", "inference", "metamorphic-testing", "java"]
+languages = ["java"]
 codebase_size = "small"
-expert_time_estimate_min = 120
-junior_time_estimate_min = 300
+number_of_milestones = 0
+subcategories = ["tool_specific"]
+expert_time_estimate_min = 90
+junior_time_estimate_min = 240
 
 [agent]
 timeout_sec = 1800
@@ -24,12 +20,8 @@ timeout_sec = 1800
 timeout_sec = 900
 
 [environment]
-base_image = "public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac"
 allow_internet = false
-build_timeout_sec = 900
+build_timeout_sec = 600
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-
-[reference_pattern]
-justification_if_none = "No promoted reference in docs/reference_tasks/index.json matches Git object provenance graph rewriting with a Go admit-repo CLI and property-derived replay verifier."

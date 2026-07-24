@@ -1,1 +1,0 @@
-arm_rpl_a7,arm_shlw_b2,arm_tag_c3,arm_fmt_d4
