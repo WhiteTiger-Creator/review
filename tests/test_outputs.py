@@ -1,187 +1,315 @@
-import hashlib
-import json
-import shutil
+"""Behavioral verification for harden-rails-compose-archive-attestation."""
+
+from __future__ import annotations
+
 import subprocess
 from pathlib import Path
 
-APP = Path("/app")
-ROOT = APP / "environment"
-BIN = APP / "bin" / "collectorctl"
-REPORT = APP / "output" / "collector-compliance-report.json"
-TRACE = APP / "output" / "collector-runtime-trace.json"
-MANIFEST = ROOT / "generated" / "exporter.manifest"
-EXPECTED_HASH_FILE = ROOT / "var" / "lib" / "collectorctl.sha256"
+import pytest
+import requests
+
+from support.archive_factory import build_archive
+from support.corpus_fixture import metadata, unpack
+from support.integrity import verify_fixture_checksums
+from support.puma_server import PumaServer
+from support.signature_checks import verify_attestation
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+META = metadata()
 
 
-def run_ctl(*args, check=True):
-    result = subprocess.run(
-        [str(BIN), *args],
-        cwd=str(APP),
+@pytest.fixture(scope="session", autouse=True)
+def _checksums() -> None:
+    verify_fixture_checksums()
+
+
+@pytest.fixture
+def cache_dir(tmp_path: Path) -> Path:
+    d = tmp_path / "cache"
+    d.mkdir()
+    return d
+
+
+def post_attestation(server: PumaServer, archive: bytes, release_ref: str | None = None) -> requests.Response:
+    files = {"archive": ("archive.tar", archive, "application/x-tar")}
+    data = {}
+    if release_ref:
+        data["release_ref"] = release_ref
+    return requests.post(f"{server.base_url}/api/v1/attestations", files=files, data=data, timeout=60)
+
+
+def test_health_route_is_preserved(cache_dir: Path) -> None:
+    """GET /up remains available."""
+    repo = unpack("trusted-corpus-a")
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = requests.get(f"{server.base_url}/up", timeout=10)
+        assert resp.status_code == 200
+
+
+def test_default_trusted_release_clean_archive_passes(cache_dir: Path) -> None:
+    """Clean seeded archive returns pass attestation with valid signature."""
+    repo = unpack("trusted-corpus-a")
+    archive, _ = build_archive(
+        11,
+        [
+            {"name": "compose.yml", "data": "services:\n  web:\n    image: nginx\n"},
+            {"name": "app.env", "data": "PUBLIC_URL=https://example.com\n"},
+        ],
+    )
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["verdict"] == "pass"
+        assert body["findings"] == []
+        verify_attestation(dict(body))
+
+
+def test_mixed_archive_reports_constructed_findings_without_secret_leakage(cache_dir: Path) -> None:
+    """Injected violations appear without leaking secret bytes."""
+    repo = unpack("trusted-corpus-a")
+    secret = "sk_live_abcdefghijklmnop"
+    archive, manifest = build_archive(
+        22,
+        [
+            {
+                "path": "stack/docker-compose.yml",
+                "data": f"services:\n  api:\n    environment:\n      DATABASE_PASSWORD: {secret}\n",
+                "expect_finding": True,
+                "rule_id": "compose.secret",
+            },
+            {
+                "path": "tokens/bad.jwt",
+                "data": "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJhYmMifQ.\n",
+                "expect_finding": True,
+                "kind": "jwt",
+                "rule_id": "jwt.forbidden_algorithm",
+            },
+        ],
+    )
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive, META["trusted_a"]["ref"])
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["verdict"] == "reject"
+        raw = resp.text
+        assert secret not in raw
+        paths = {f["path"] for f in body["findings"]}
+        assert any(m.path in paths for m in manifest)
+
+
+def test_archive_path_traversal_is_rejected_before_scanning(cache_dir: Path) -> None:
+    """Parent-traversing archive paths are rejected with HTTP 422 before scanning."""
+    repo = unpack("trusted-corpus-a")
+    archive, _ = build_archive(33, [{"path": "../outside.env", "data": "SECRET=1\n"}])
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive)
+        assert resp.status_code == 422
+        assert "error" in resp.json()
+
+
+def test_unsafe_archive_precedes_corpus_resolution_failure(cache_dir: Path) -> None:
+    """Unsafe archive validation returns HTTP 422 before an unavailable corpus can return HTTP 424."""
+    archive, _ = build_archive(331, [{"path": "../outside.env", "data": "SECRET=1\n"}])
+    missing_remote = cache_dir.parent / "missing-corpus.git"
+    with PumaServer(remote_url=f"file://{missing_remote}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive)
+        assert resp.status_code == 422, resp.text
+        assert resp.json()["error"]["code"] == "unsafe_path"
+
+
+def test_archive_absolute_path_is_rejected(cache_dir: Path) -> None:
+    """Absolute tar member paths are rejected with HTTP 422."""
+    repo = unpack("trusted-corpus-a")
+    archive, _ = build_archive(34, [{"path": "/etc/attestor.env", "data": "SECRET=1\n"}])
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive)
+        assert resp.status_code == 422
+        assert "error" in resp.json()
+
+
+def test_archive_duplicate_normalized_path_is_rejected(cache_dir: Path) -> None:
+    """Duplicate tar member paths are rejected with HTTP 422."""
+    repo = unpack("trusted-corpus-a")
+    archive, _ = build_archive(
+        35,
+        [
+            {"path": "config/app.env", "data": "A=1\n"},
+            {"path": "config/app.env", "data": "B=2\n"},
+        ],
+    )
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive)
+        assert resp.status_code == 422
+        assert "error" in resp.json()
+
+
+@pytest.mark.parametrize(
+    ("entry_type", "linkname"),
+    [("symlink", "target.env"), ("hardlink", "target.env")],
+)
+def test_archive_links_are_rejected(cache_dir: Path, entry_type: str, linkname: str) -> None:
+    """Symbolic and hard-link tar entries are rejected with HTTP 422."""
+    repo = unpack("trusted-corpus-a")
+    archive, _ = build_archive(
+        36,
+        [{"path": f"payload/{entry_type}.env", "data": b"", "type": entry_type, "linkname": linkname}],
+    )
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive)
+        assert resp.status_code == 422
+        assert "error" in resp.json()
+
+
+def test_archive_non_regular_entry_is_rejected(cache_dir: Path) -> None:
+    """Special non-regular tar entries are rejected with HTTP 422."""
+    repo = unpack("trusted-corpus-a")
+    archive, _ = build_archive(37, [{"path": "payload/channel", "data": b"", "type": "fifo"}])
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive)
+        assert resp.status_code == 422
+        assert "error" in resp.json()
+
+
+def test_archive_non_normalized_name_is_rejected(cache_dir: Path) -> None:
+    """Tar names containing a redundant non-normalized segment are rejected with HTTP 422."""
+    repo = unpack("trusted-corpus-a")
+    archive, _ = build_archive(38, [{"path": "payload/./hidden.env", "data": "SECRET=1\n"}])
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive)
+        assert resp.status_code == 422
+        assert "error" in resp.json()
+
+
+def test_invalid_or_non_tag_release_refs_are_refused(cache_dir: Path) -> None:
+    """Branch refs and other non-tag release references are refused."""
+    repo = unpack("trusted-corpus-a")
+    archive, _ = build_archive(44, [{"name": "ok.env", "data": "OK=1\n"}])
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive, META["trusted_a"]["branch_ref"])
+        assert resp.status_code in {422, 424}
+
+
+def test_lightweight_tag_is_refused(cache_dir: Path) -> None:
+    """Lightweight tags are refused even when their target commit is otherwise trusted."""
+    repo = unpack("trusted-corpus-a")
+    archive, _ = build_archive(54, [{"name": "ok.env", "data": "OK=1\n"}])
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive, META["trusted_a"]["lightweight_ref"])
+        assert resp.status_code == 424
+        assert "error" in resp.json()
+
+
+def test_unsigned_annotated_tag_is_refused(cache_dir: Path) -> None:
+    """Unsigned annotated tags return HTTP 424."""
+    repo = unpack("unsigned-corpus")
+    archive, _ = build_archive(55, [{"name": "ok.env", "data": "OK=1\n"}])
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive, META["unsigned"]["ref"])
+        assert resp.status_code == 424
+
+
+def test_valid_signature_from_untrusted_fingerprint_is_refused(cache_dir: Path) -> None:
+    """Valid signatures from fingerprints outside the allowlist are refused."""
+    repo = unpack("untrusted-signer-corpus")
+    archive, _ = build_archive(66, [{"name": "ok.env", "data": "OK=1\n"}])
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive, META["untrusted"]["ref"])
+        assert resp.status_code == 424
+
+
+def test_missing_lfs_object_is_refused(cache_dir: Path) -> None:
+    """A signed release with an unavailable required LFS object fails closed with HTTP 424."""
+    repo = unpack("missing-lfs-corpus")
+    archive, _ = build_archive(76, [{"name": "ok.env", "data": "OK=1\n"}])
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive, META["missing_lfs"]["ref"])
+        assert resp.status_code == 424
+        assert "error" in resp.json()
+
+
+def test_cache_isolated_by_remote_url(cache_dir: Path) -> None:
+    """A cache warmed from one remote is never reused for another remote with the same tag ref."""
+    trusted_repo = unpack("trusted-corpus-a")
+    untrusted_repo = unpack("untrusted-signer-corpus")
+    archive, _ = build_archive(75, [{"name": "ok.env", "data": "OK=1\n"}])
+
+    with PumaServer(remote_url=f"file://{trusted_repo}", cache_root=str(cache_dir)) as server:
+        warm = post_attestation(server, archive, META["trusted_a"]["ref"])
+        assert warm.status_code == 200, warm.text
+
+    with PumaServer(remote_url=f"file://{untrusted_repo}", cache_root=str(cache_dir)) as server:
+        poisoned = post_attestation(server, archive, META["untrusted"]["ref"])
+        assert poisoned.status_code == 424, poisoned.text
+        assert "error" in poisoned.json()
+
+
+def test_cache_isolated_by_allowed_signer(cache_dir: Path) -> None:
+    """A cache warmed for one allowed signer is not reused after the signer override changes."""
+    repo = unpack("trusted-corpus-a")
+    archive, _ = build_archive(751, [{"name": "ok.env", "data": "OK=1\n"}])
+
+    with PumaServer(
+        remote_url=f"file://{repo}",
+        cache_root=str(cache_dir),
+        allowed_signer=META["trusted_a"]["signer_fingerprint"],
+    ) as server:
+        warm = post_attestation(server, archive, META["trusted_a"]["ref"])
+        assert warm.status_code == 200, warm.text
+
+    with PumaServer(
+        remote_url=f"file://{repo}",
+        cache_root=str(cache_dir),
+        allowed_signer=META["trusted_b"]["signer_fingerprint"],
+    ) as server:
+        refused = post_attestation(server, archive, META["trusted_a"]["ref"])
+        assert refused.status_code == 424, refused.text
+        assert "error" in refused.json()
+
+
+def test_lfs_policy_is_hydrated_and_controls_results(cache_dir: Path) -> None:
+    """Corpus B LFS policy hydration drives scanner findings and policy_sha256."""
+    repo = unpack("trusted-corpus-b")
+    archive, _ = build_archive(
+        77,
+        [{"path": "notes.txt", "data": "corp_b_vault_marker\n", "expect_finding": True, "rule_id": "CORPUS-B-VAULT-LINE"}],
+    )
+    with PumaServer(
+        remote_url=f"file://{repo}",
+        cache_root=str(cache_dir),
+        allowed_signer=META["trusted_b"]["signer_fingerprint"],
+    ) as server:
+        resp = post_attestation(server, archive, META["trusted_b"]["ref"])
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["baseline"]["policy_sha256"] == META["trusted_b"]["policy_sha256"]
+
+
+def test_attestation_signature_matches_canonical_payload(cache_dir: Path) -> None:
+    """RS256 signature verifies against the canonical unsigned payload."""
+    repo = unpack("trusted-corpus-a")
+    archive, _ = build_archive(88, [{"name": "bad.env", "data": "API_SECRET=sk_live_qwertyuiopasdfgh\n", "expect_finding": True, "rule_id": "compose.secret"}])
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive)
+        body = resp.json()
+        verify_attestation(dict(body))
+
+
+def test_repeated_identical_request_is_byte_deterministic(cache_dir: Path) -> None:
+    """Identical requests produce byte-identical JSON responses."""
+    repo = unpack("trusted-corpus-a")
+    archive, _ = build_archive(99, [{"name": "compose.yml", "data": "services:\n  web:\n    image: nginx\n"}])
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        bodies = [post_attestation(server, archive).content for _ in range(3)]
+        assert bodies[0] == bodies[1] == bodies[2]
+
+
+def test_existing_rspec_behavior_remains_green() -> None:
+    """Shipped RSpec examples continue to pass after the repair."""
+    proc = subprocess.run(
+        ["bundle", "exec", "rspec", "--format", "progress", "/app/environment/source/spec"],
+        cwd="/app",
+        capture_output=True,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
     )
-    if check and result.returncode != 0:
-        raise AssertionError(
-            f"collectorctl {' '.join(args)} failed with {result.returncode}\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
-        )
-    return result
-
-
-def parse_manifest(path: Path) -> dict[str, str]:
-    values = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip() or line.startswith("#"):
-            continue
-        key, value = line.split("=", 1)
-        values[key] = value
-    return values
-
-
-def load_report() -> dict:
-    return json.loads(REPORT.read_text(encoding="utf-8"))
-
-
-def load_trace() -> dict:
-    return json.loads(TRACE.read_text(encoding="utf-8"))
-
-
-def canonical_json(path: Path) -> str:
-    return json.dumps(
-        json.loads(path.read_text(encoding="utf-8")),
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-
-
-def test_collectorctl_identity_is_preserved():
-    """The shipped operator binary remains the same recorder that the image built."""
-    expected = EXPECTED_HASH_FILE.read_text(encoding="utf-8").split()[0]
-    actual = hashlib.sha256(BIN.read_bytes()).hexdigest()
-    assert actual == expected
-
-
-def test_regenerated_manifest_matches_visible_authorities(tmp_path):
-    """The on-disk manifest is the deterministic export of the current unit, yaml, and tmpfiles authority set."""
-    expected = tmp_path / "expected.manifest"
-    run_ctl("manifest", "--root", str(ROOT), "--out", str(expected))
-    assert MANIFEST.read_text(encoding="utf-8") == expected.read_text(encoding="utf-8")
-    values = parse_manifest(MANIFEST)
-    assert values["schema"] == "telemetry.collector.exporter.v2"
-    assert values["authority"] == "systemd"
-    assert values["socket_path"] == "/run/telemetry/collector.sock"
-    assert values["socket_user"] == "collector-sink"
-    assert values["socket_group"] == "collector-sink"
-    assert values["socket_mode"] == "0660"
-    assert values["service_socket"] == "collector.socket"
-    assert values["service_socket_mode"] == "systemd"
-    assert values["tmpfiles_socket_owner"] == "collector-sink"
-    assert values["tmpfiles_socket_group"] == "collector-sink"
-    assert values["tmpfiles_socket_mode"] == "0660"
-    assert values["sink_owner"] == "collector-sink"
-    assert values["provenance"] == "regenerated-from-visible-authorities"
-
-
-def test_lifecycle_report_uses_systemd_socket_through_reload_and_rotation():
-    """Lifecycle replay observes one systemd socket authority through reload, activation, restart, rotation, and regeneration."""
-    run_ctl("manifest", "--root", str(ROOT), "--out", str(MANIFEST))
-    run_ctl(
-        "lifecycle", "--root", str(ROOT), "--report", str(REPORT), "--trace", str(TRACE)
-    )
-    report = load_report()
-    trace = load_trace()
-    assert report["ok"] is True
-    assert report["runtime"]["authority"] == "systemd"
-    assert report["runtime"]["socket_path"] == "/run/telemetry/collector.sock"
-    assert report["runtime"]["socket_owner"] == "collector-sink"
-    assert report["runtime"]["socket_group"] == "collector-sink"
-    assert report["runtime"]["socket_mode"] == "0660"
-    assert report["manifest"]["consistent"] is True
-    for key in [
-        "generated_manifest_current",
-        "runtime_socket_matches_manifest",
-        "socket_owned_by_collector_sink",
-        "tmpfiles_preserve_socket_owner",
-        "service_binds_declared_socket",
-        "main_systemd_socket_authority",
-        "main_socket_mode_expected",
-        "tmpfiles_directory_owned",
-        "lifecycle_socket_inode_stable",
-    ]:
-        assert report["checks"][key] is True, key
-    expected_phases = [
-        "daemon-reload",
-        "first-activation",
-        "service-restart",
-        "sink-rotation",
-        "report-regeneration",
-    ]
-    assert [phase["phase"] for phase in report["lifecycle"]] == expected_phases
-    assert len({phase["socket_inode"] for phase in report["lifecycle"]}) == 1
-    assert trace["stable_inode"] is True
-    assert trace["runtime_socket"]["authority"] == "systemd"
-
-
-def test_report_regenerates_deterministically_after_artifact_removal(tmp_path):
-    """Removing generated surfaces and replaying the commands yields byte-equivalent structured reports."""
-    for target in [MANIFEST, REPORT, TRACE]:
-        target.unlink(missing_ok=True)
-    first_report = tmp_path / "first-report.json"
-    first_trace = tmp_path / "first-trace.json"
-    second_report = tmp_path / "second-report.json"
-    second_trace = tmp_path / "second-trace.json"
-    run_ctl("manifest", "--root", str(ROOT), "--out", str(MANIFEST))
-    run_ctl(
-        "lifecycle",
-        "--root",
-        str(ROOT),
-        "--report",
-        str(first_report),
-        "--trace",
-        str(first_trace),
-    )
-    MANIFEST.unlink(missing_ok=True)
-    run_ctl("manifest", "--root", str(ROOT), "--out", str(MANIFEST))
-    run_ctl(
-        "lifecycle",
-        "--root",
-        str(ROOT),
-        "--report",
-        str(second_report),
-        "--trace",
-        str(second_trace),
-    )
-    assert canonical_json(first_report) == canonical_json(second_report)
-    assert canonical_json(first_trace) == canonical_json(second_trace)
-
-
-def test_legacy_yaml_fallback_survives_without_socket_unit(tmp_path):
-    """The compatibility root has no socket unit, so yaml bind_path remains the runtime authority there."""
-    legacy_src = ROOT / "fixtures" / "legacy-root"
-    legacy = tmp_path / "legacy-root"
-    shutil.copytree(legacy_src, legacy)
-    manifest = legacy / "generated" / "exporter.manifest"
-    report = tmp_path / "legacy-report.json"
-    trace = tmp_path / "legacy-trace.json"
-    run_ctl("manifest", "--root", str(legacy), "--out", str(manifest))
-    run_ctl(
-        "lifecycle",
-        "--root",
-        str(legacy),
-        "--report",
-        str(report),
-        "--trace",
-        str(trace),
-    )
-    values = parse_manifest(manifest)
-    legacy_report = json.loads(report.read_text(encoding="utf-8"))
-    legacy_trace = json.loads(trace.read_text(encoding="utf-8"))
-    assert values["authority"] == "collector.yaml"
-    assert values["socket_path"] == "/run/legacy-collector.sock"
-    assert legacy_report["ok"] is True
-    assert legacy_report["runtime"]["authority"] == "collector.yaml"
-    assert legacy_report["runtime"]["socket_path"] == "/run/legacy-collector.sock"
-    assert legacy_report["checks"]["legacy_yaml_fallback_allowed"] is True
-    assert legacy_report["checks"]["legacy_fallback_path_present"] is True
-    assert legacy_trace["runtime_socket"]["authority"] == "collector.yaml"
+    assert proc.returncode == 0, proc.stdout + proc.stderr

@@ -1,43 +1,26 @@
-#!/bin/bash
-set -u
-mkdir -p /app/environment/systemd /app/environment/etc/collector /app/environment/etc/tmpfiles.d /app/environment/generated /app/output
-cat > /app/environment/systemd/collector.socket <<'UNIT'
-[Unit]
-Description=Telemetry Collector socket
+#!/usr/bin/env bash
+set -euo pipefail
+ORACLE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd /app
 
-[Socket]
-ListenStream=/run/telemetry/collector.sock
-SocketUser=collector-sink
-SocketGroup=collector-sink
-SocketMode=0660
+if false; then patch -p1 --forward < patches/all.patch; fi
+patch -p1 --forward < "$ORACLE_ROOT/patches/all.patch"
 
-[Install]
-WantedBy=sockets.target
-UNIT
-cat > /app/environment/systemd/collector.service <<'UNIT'
-[Unit]
-Description=Telemetry Collector
-Requires=network.target
-Requires=collector.socket
-After=collector.socket
-
-[Service]
-Type=simple
-Sockets=collector.socket
-Environment=COLLECTOR_SOCKET_MODE=systemd
-ExecStart=/app/bin/collectorctl serve --config /app/environment/etc/collector/collector.yaml --socket-mode=systemd
-Restart=on-failure
-UNIT
-cat > /app/environment/etc/collector/collector.yaml <<'YAML'
-bind_path: /run/collector-fallback.sock
-run_user: collector-sink
-sink_owner: collector-sink
-sink_path: /var/lib/telemetry/collector.ndjson
-report_label: main-telemetry-collector
-YAML
-cat > /app/environment/etc/tmpfiles.d/collector.conf <<'CONF'
-d /run/telemetry 0750 collector-sink collector-sink -
-z /run/telemetry/collector.sock 0660 collector-sink collector-sink -
-CONF
-/app/bin/collectorctl manifest --root /app/environment --out /app/environment/generated/exporter.manifest
-/app/bin/collectorctl lifecycle --root /app/environment --report /app/output/collector-compliance-report.json --trace /app/output/collector-runtime-trace.json >/dev/null
+bundle exec ruby -c app/services/corpus/resolver.rb
+bundle exec ruby -c app/services/archive/reader.rb
+bundle exec ruby -c app/services/attestation/canonical_json.rb
+bundle exec rspec --format progress
+bundle exec puma -C config/puma.rb -b tcp://127.0.0.1:3000 >/tmp/puma.log 2>&1 &
+PUMA_PID=$!  # verifier smoke-server parent tracks child PID for cleanup
+cleanup() { kill "$PUMA_PID" 2>/dev/null || true; }
+trap cleanup EXIT
+for _ in $(seq 1 60); do
+  if curl -sf http://127.0.0.1:3000/up >/dev/null; then
+    break
+  fi
+  sleep 0.5
+done
+script/attest-local /app/fixtures/archives/clean-compose.tar > /tmp/clean-attestation.json
+script/attest-local /app/fixtures/archives/mixed-leaks.tar > /tmp/reject-attestation.json
+script/attest-local /app/fixtures/archives/clean-compose.tar > /tmp/clean-attestation-2.json
+cmp /tmp/clean-attestation.json /tmp/clean-attestation-2.json

@@ -1,5 +1,0 @@
-bind_path: /run/collector-fallback.sock
-run_user: collector-sink
-sink_owner: root
-sink_path: /var/lib/telemetry/collector.ndjson
-report_label: main-telemetry-collector
