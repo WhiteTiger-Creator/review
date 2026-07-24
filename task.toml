@@ -1,30 +1,35 @@
 version = "2.0"
 
 [metadata]
-author_name = "Anonymous"
-author_email = "anonymous@example.com"
+name = "git-object-trust-boundary"
+author_name = "anonymous"
+author_email = "anonymous"
+title = "Git object trust boundary"
+category = "security"
+task_shape = "adversarial_generalization"
+category_profile = "security_authority_split"
 difficulty = "hard"
-category = "scientific-computing"
-subcategories = []
-languages = ["csharp"]
-tags = ["csharp", "spherical-harmonics", "quadrature", "numerical-integration", "scientific-computing"]
-codebase_size = "minimal"
 number_of_milestones = 0
-expert_time_estimate_min = 240.0
-junior_time_estimate_min = 1200.0
-
-[verifier]
-timeout_sec = 900.0
+subcategories = []
+tags = ["security", "git", "provenance", "signatures", "authority", "go"]
+languages = ["go"]
+codebase_size = "small"
+expert_time_estimate_min = 120
+junior_time_estimate_min = 300
 
 [agent]
-timeout_sec = 1800.0
+timeout_sec = 1800
+
+[verifier]
+timeout_sec = 900
 
 [environment]
+base_image = "public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac"
 allow_internet = false
-build_timeout_sec = 600.0
+build_timeout_sec = 900
 cpus = 2
 memory_mb = 4096
-storage_mb = 8192
-docker_flags = []
-gpus = 0
-gpu_types = []
+storage_mb = 10240
+
+[reference_pattern]
+justification_if_none = "No promoted reference in docs/reference_tasks/index.json matches Git object provenance graph rewriting with a Go admit-repo CLI and property-derived replay verifier."
