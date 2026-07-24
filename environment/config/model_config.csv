@@ -1,0 +1,13 @@
+key,value
+task_id,horseshoe-crab-satellite-regression
+task_mode,regression
+target_column,satellites
+id_column,row_id
+split_column,split_role
+group_column,group_key
+k_grid,3|5|7|11|15
+class_order,
+positive_class,1
+source_note,Rdatasets vcdExtra CrabSatellites CSV snapshot
+model_family,scaled_mixed_ridge_knn_evidence
+target_transform,log1p_when_nonnegative

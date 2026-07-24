@@ -1,349 +1,451 @@
-"""Differential replay dossier domain checks."""
+"""Deterministic artifact and held-out checks for a generated R MLE task."""
 
 import json
+import os
+import shutil
 import subprocess
 from pathlib import Path
 
-APP = Path("/app")
-OUT = APP / "output" / "diff_replay_dossier.json"
-DATA = APP / "environment" / "app" / "data"
+import numpy as np
+import pandas as pd
+import pytest
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score,
+)
+
+DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
+CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/app/config"))
+OUT = Path(os.environ.get("OUT_DIR", os.environ.get("OUTPUT_DIR", "/app/outputs")))
+LABELS = Path(os.environ.get("EVAL_LABELS_PATH", "/tests/eval/test_labels.csv"))
+ANALYSIS = Path(os.environ.get("ANALYSIS_PATH", "/app/analysis.R"))
 
 
-def load_pack(name: str) -> dict:
-    return json.loads((DATA / name).read_text(encoding="utf-8"))
+def read_key_values(path):
+    frame = pd.read_csv(path)
+    return dict(zip(frame["key"], frame["value"]))
 
 
-def load_table() -> dict:
-    return json.loads((DATA / "ref_q7_pack.json").read_text(encoding="utf-8"))
+def class_probability_columns(classes):
+    return ["prob_" + "".join(ch.lower() if ch.isalnum() else "_" for ch in c).strip("_") for c in classes]
 
 
-def load_draws_doc() -> dict:
-    return json.loads((DATA / "k9_k7_pack.json").read_text(encoding="utf-8"))
+def macro_f1(actual, predicted, classes):
+    return f1_score(actual, predicted, labels=classes, average="macro", zero_division=0)
 
 
-def label_rank(label: str) -> int:
-    return int(label[1])
+MISSING_TOKENS = {"", "NA", "NaN", "nan", "null", "?", "MISSING"}
 
 
-def arm_salt(arm_id: int) -> int:
-    return (arm_id * 131) % 997
+def is_missing(value):
+    if pd.isna(value):
+        return True
+    return str(value).strip() in MISSING_TOKENS
 
 
-def pack_bases(pack: dict) -> list[int]:
-    table = load_table()
-    if pack.get("margin_bases"):
-        return pack["margin_bases"]
-    return table["table_bases"]
+def clean_numeric(series):
+    values = pd.to_numeric(series, errors="coerce").astype(float)
+    values[~np.isfinite(values)] = np.nan
+    return values
 
 
-def wave_scale(wave: str) -> int:
-    doc = load_draws_doc()
-    return doc.get("wave_scale", {}).get(wave, 3)
+def feature_rows(roles):
+    return roles.loc[roles["role"] == "feature"].reset_index(drop=True)
 
 
-def visit_order(pack: dict, apply_permute: bool) -> list[str]:
-    permute = pack.get("permute_order") or []
-    if permute and apply_permute:
-        return list(permute)
-    return [cluster["cluster_id"] for cluster in pack["cue_clusters"]]
-
-
-def cue_slice(cluster: dict) -> bytes:
-    raw = bytes(int(cluster["cue_bytes"][i : i + 2], 16) for i in range(0, len(cluster["cue_bytes"]), 2))
-    padded = bytearray(raw)
-    while len(padded) < 8:
-        padded.append(0)
-    if cluster.get("boundary"):
-        padded[4] |= 0x01
-    return bytes(padded)
-
-
-def narrowed_labels(pack: dict, apply_permute: bool) -> dict[str, str]:
-    order = visit_order(pack, apply_permute)
-    clusters = {cluster["cluster_id"]: cluster for cluster in pack["cue_clusters"]}
-    labels = {cid: pack["label_map"][cid] for cid in order}
-    out: dict[str, str] = {}
-    for cid in order:
-        label = labels[cid]
-        cluster = clusters[cid]
-        slice_bytes = cue_slice(cluster)
-        if (slice_bytes[4] & 0x01) != 0:
-            neighbor = labels[cluster["neighbor_id"]]
-            rank = min(label_rank(label), label_rank(neighbor))
-            label = f"L{rank}"
-        labels[cid] = label
-        out[cid] = label
-    return out
-
-
-def expected_margins(pack: dict, apply_permute: bool, wave: str | None = None) -> list[int]:
-    table = load_table()
-    keys = table["row_keys"]
-    bases = pack_bases(pack)
-    hashes = table["cue_hashes"]
-    labels = narrowed_labels(pack, apply_permute)
-    salt = arm_salt(pack["arm_id"])
-    boost: dict[str, int] = {}
-    if wave is not None:
-        scale = wave_scale(wave)
-        for draw in load_draws_doc()["draws"]:
-            if draw["wave"] == wave and draw["arm_id"] == pack["arm_id"]:
-                cid = draw["cluster_id"]
-                boost[cid] = boost.get(cid, 0) + int(draw["weight"] * scale)
-    margins = []
-    for i, cid in enumerate(keys):
-        rank = label_rank(labels[cid])
-        margins.append(hashes[i] + salt + rank - bases[i] + boost.get(cid, 0))
-    return margins
-
-
-def sha256_hex(data: str) -> str:
-    proc = subprocess.run(
-        ["sha256sum"],
-        input=data.encode(),
-        capture_output=True,
-        check=True,
-    )
-    return proc.stdout.decode().split()[0]
-
-
-def witness_ref(arm_id: int, cluster_id: str, margin: int) -> str:
-    raw = f"{arm_id}|{cluster_id}|{margin}"
-    return "w-" + sha256_hex(raw)[:12]
-
-
-def merge_token(case_id: int, run_mode: str, refs: list[str]) -> str:
-    body = "|".join(sorted(refs)) + f"|{case_id}|{run_mode}"
-    return sha256_hex(body)[:16]
-
-
-def trace_cluster_sequence(pack: dict, apply_permute: bool) -> list[str]:
-    table = load_table()
-    order = visit_order(pack, apply_permute) if (apply_permute and pack.get("permute_order")) else list(table["row_keys"])
-    if not order:
-        return []
-    return order + [order[-1]]
-
-
-def expected_replay_deltas(arm_id: int, margins: list[int], trace_seq: list[str]) -> list[dict]:
-    row_keys = load_table()["row_keys"]
-    prev: dict[str, int] = {}
-    deltas = []
-    for step, cid in enumerate(trace_seq):
-        idx = row_keys.index(cid)
-        margin = margins[idx]
-        if cid in prev:
-            delta = margin - prev[cid]
+def learn_encoder(frame, roles):
+    encoders = {}
+    for _, role in feature_rows(roles).iterrows():
+        feature = role["feature"]
+        if role["data_type"] == "numeric":
+            values = clean_numeric(frame[feature])
+            finite = values.dropna()
+            med = float(finite.median()) if len(finite) else 0.0
+            imputed = values.fillna(med).astype(float)
+            center = float(imputed.mean())
+            scale = float(imputed.std(ddof=1)) if len(imputed) > 1 else 1.0
+            if not np.isfinite(scale) or scale < 1e-9:
+                scale = 1.0
+            encoders[feature] = {"type": "numeric", "median": med, "mean": center, "sd": scale}
         else:
-            delta = 0
-        prev[cid] = margin
-        deltas.append({"step": step, "arm_id": arm_id, "cluster_id": cid, "delta": delta})
-    return deltas
+            vals = ["__missing__" if is_missing(value) else str(value).strip() for value in frame[feature]]
+            levels = sorted(set(vals))
+            for extra in ["__missing__", "__other__"]:
+                if extra not in levels:
+                    levels.append(extra)
+            encoders[feature] = {"type": "categorical", "levels": levels}
+    return encoders
 
 
-def expected_witness_rows(arm_id: int, margins: list[int], trace_seq: list[str]) -> list[dict]:
-    row_keys = load_table()["row_keys"]
-    rows: list[dict] = []
-    seen: set[str] = set()
-    for cid in trace_seq:
-        if cid in seen:
-            continue
-        seen.add(cid)
-        idx = row_keys.index(cid)
-        margin = margins[idx]
+def apply_encoder(frame, encoders):
+    parts = []
+    for feature, encoder in encoders.items():
+        if encoder["type"] == "numeric":
+            values = clean_numeric(frame[feature]).fillna(encoder["median"]).astype(float)
+            parts.append(((values - encoder["mean"]) / encoder["sd"]).to_numpy().reshape(-1, 1))
+        else:
+            vals = ["__missing__" if is_missing(value) else str(value).strip() for value in frame[feature]]
+            vals = [value if value in encoder["levels"] else "__other__" for value in vals]
+            mat = np.zeros((len(frame), len(encoder["levels"])), dtype=float)
+            for idx, level in enumerate(encoder["levels"]):
+                mat[:, idx] = [1.0 if value == level else 0.0 for value in vals]
+            parts.append(mat)
+    return np.column_stack(parts) if parts else np.zeros((len(frame), 0), dtype=float)
+
+
+def fit_ridge(x, y, lambda_value):
+    design = np.column_stack([np.ones(len(x)), x])
+    penalty = np.eye(design.shape[1])
+    penalty[0, 0] = 0.0
+    return np.linalg.solve(design.T @ design + float(lambda_value) * penalty, design.T @ y)
+
+
+def predict_ridge(beta, x):
+    design = np.column_stack([np.ones(len(x)), x])
+    return design @ beta
+
+
+def target_for_model(y, use_log):
+    return np.log1p(np.maximum(y, 0.0)) if use_log else y
+
+
+def target_from_model(y, use_log):
+    return np.maximum(0.0, np.expm1(y)) if use_log else y
+
+
+def expected_selection_report(public_data, config, roles):
+    """Recompute validation k selection with group-stability ranking."""
+    split_col = config["split_column"]
+    target_col = config["target_column"]
+    group_col = config["group_column"]
+    fit = public_data[public_data[split_col] == "fit"].reset_index(drop=True)
+    validation = public_data[public_data[split_col] == "validation"].reset_index(drop=True)
+    encoders = learn_encoder(fit, roles)
+    fit_x = apply_encoder(fit, encoders)
+    validation_x = apply_encoder(validation, encoders)
+    fit_y = clean_numeric(fit[target_col]).to_numpy(float)
+    validation_y = clean_numeric(validation[target_col]).to_numpy(float)
+    use_log = bool(np.nanmin(np.concatenate([fit_y, validation_y])) >= 0.0)
+    groups = validation[group_col].fillna("__missing__").astype(str).replace({"": "__missing__"})
+    rows = []
+    for candidate_k in [int(value) for value in str(config["k_grid"]).split("|")]:
+        beta = fit_ridge(fit_x, target_for_model(fit_y, use_log), candidate_k)
+        prediction = target_from_model(predict_ridge(beta, validation_x), use_log)
+        rmse = float(np.sqrt(mean_squared_error(validation_y, prediction)))
+        group_rmse = []
+        for group in sorted(groups.unique()):
+            mask = (groups == group).to_numpy()
+            group_rmse.append(float(np.sqrt(mean_squared_error(validation_y[mask], prediction[mask]))))
         rows.append(
             {
-                "arm_id": arm_id,
-                "cluster_id": cid,
-                "margin": margin,
-                "ref": witness_ref(arm_id, cid, margin),
+                "candidate_k": candidate_k,
+                "validation_metric": rmse,
+                "worst_group_rmse": max(group_rmse),
+                "best_group_rmse": min(group_rmse),
+                "stability_gap": max(group_rmse) - min(group_rmse),
+                "selected": False,
             }
         )
-    return rows
-
-
-def ref_table_bases_margins(pack: dict, apply_permute: bool) -> list[int]:
-    table = load_table()
-    labels = narrowed_labels(pack, apply_permute)
-    salt = arm_salt(pack["arm_id"])
-    margins = []
-    for i, cid in enumerate(table["row_keys"]):
-        rank = label_rank(labels[cid])
-        margins.append(table["cue_hashes"][i] + salt + rank - table["table_bases"][i])
-    return margins
-
-
-def stress_w0_active_arm_weight_sum(pack: dict) -> float:
-    return sum(
-        draw["weight"]
-        for draw in load_draws_doc()["draws"]
-        if draw["wave"] == "w0" and draw["arm_id"] == pack["arm_id"]
+    selected_idx = min(
+        range(len(rows)),
+        key=lambda idx: (
+            rows[idx]["stability_gap"],
+            rows[idx]["validation_metric"],
+            rows[idx]["candidate_k"],
+        ),
     )
+    rows[selected_idx]["selected"] = True
+    return pd.DataFrame(rows)
 
 
-def termination_threshold() -> float:
-    return float(load_draws_doc()["termination_weight"])
+def selected_lambda(public_data, config, roles):
+    expected = expected_selection_report(public_data, config, roles)
+    selected = expected[expected["selected"]]
+    assert len(selected) == 1
+    return int(selected["candidate_k"].iloc[0])
 
 
-def run_diff(mode: str, wave: str | None = None, permute: bool = False) -> dict:
-    if OUT.exists():
-        OUT.unlink()
-    subprocess.run(["make", "-C", "/app/environment"], check=True)
-    if mode == "direct":
-        proc = subprocess.run(
-            ["/app/exec/diff_run", "--case", "352", "--mode", "direct"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    elif mode == "held" and permute:
-        proc = subprocess.run(
-            ["/app/exec/diff_run", "--case", "352", "--mode", "held", "--permute"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    elif mode == "stress" and wave == "w0":
-        proc = subprocess.run(
-            ["/app/exec/diff_run", "--case", "352", "--mode", "stress", "--wave", "w0"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    elif mode == "stress" and wave == "w1":
-        proc = subprocess.run(
-            ["/app/exec/diff_run", "--case", "352", "--mode", "stress", "--wave", "w1"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+def expected_ridge_predictions(public_data, config, roles, split_name):
+    """Recompute row-level ridge predictions for validation or test rows."""
+    split_col = config["split_column"]
+    target_col = config["target_column"]
+    lambda_value = selected_lambda(public_data, config, roles)
+    if split_name == "validation":
+        train = public_data[public_data[split_col] == "fit"].reset_index(drop=True)
+        evaluation = public_data[public_data[split_col] == "validation"].reset_index(drop=True)
+        log_source = public_data[public_data[split_col].isin(["fit", "validation"])][target_col]
+    elif split_name == "test":
+        train = public_data[public_data[split_col].isin(["fit", "validation"])].reset_index(drop=True)
+        evaluation = public_data[public_data[split_col] == "test"].reset_index(drop=True)
+        log_source = train[target_col]
     else:
-        raise AssertionError(f"unsupported diff_run invocation: mode={mode} wave={wave} permute={permute}")
-    assert proc.returncode == 0, proc.stderr or proc.stdout
-    assert OUT.is_file()
-    return json.loads(OUT.read_text(encoding="utf-8"))
+        raise ValueError(f"Unsupported split_name: {split_name}")
+    encoders = learn_encoder(train, roles)
+    train_x = apply_encoder(train, encoders)
+    evaluation_x = apply_encoder(evaluation, encoders)
+    train_y = clean_numeric(train[target_col]).to_numpy(float)
+    log_values = clean_numeric(log_source).dropna().to_numpy(float)
+    use_log = bool(len(log_values) and np.nanmin(log_values) >= 0.0)
+    beta = fit_ridge(train_x, target_for_model(train_y, use_log), lambda_value)
+    prediction = target_from_model(predict_ridge(beta, evaluation_x), use_log)
+    return pd.DataFrame({"row_id": evaluation["row_id"], "expected_prediction": prediction}).sort_values("row_id")
 
 
-def test_m7_qz_emit() -> None:
-    """Direct mode: witness rows and barrier margins must match values recomputed from fixture packs."""
-    report = run_diff("direct")
-    pack = load_pack("pack_t352.json")
-    table = load_table()
-    expected = expected_margins(pack, apply_permute=False)
-    trace_seq = trace_cluster_sequence(pack, apply_permute=False)
-    assert report["barrier_margins"] == expected
-    assert report["witness_rows"] == expected_witness_rows(pack["arm_id"], expected, trace_seq)
-    for row in report["witness_rows"]:
-        idx = table["row_keys"].index(row["cluster_id"])
-        assert row["margin"] == report["barrier_margins"][idx]
+def run_analysis(data_dir, out_dir):
+    env = os.environ.copy()
+    env["DATA_DIR"] = str(data_dir)
+    env["DATA_PATH"] = str(data_dir / "train.csv")
+    env["OUT_DIR"] = str(out_dir)
+    env["OUTPUT_DIR"] = str(out_dir)
+    result = subprocess.run(
+        ["Rscript", str(ANALYSIS)],
+        text=True,
+        capture_output=True,
+        timeout=420,
+        check=False,
+        env=env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return out_dir
 
 
-def test_n4_pl_pair() -> None:
-    """Held permute margins must differ from direct mode and match recomputed held-pack values."""
-    direct = run_diff("direct")
-    held = run_diff("held", permute=True)
-    direct_pack = load_pack("pack_t352.json")
-    held_pack = load_pack("pack_h0352.json")
-    assert direct["barrier_margins"] != held["barrier_margins"]
-    assert direct["barrier_margins"] == expected_margins(direct_pack, apply_permute=False)
-    assert held["barrier_margins"] == expected_margins(held_pack, apply_permute=True)
+@pytest.fixture(scope="module")
+def config():
+    return read_key_values(CONFIG_DIR / "model_config.csv")
 
 
-def test_idempo_dup() -> None:
-    """Two identical direct runs must yield the same witness refs and merge token with no duplicates."""
-    first = run_diff("direct")
-    second = run_diff("direct")
-    refs_first = [row["ref"] for row in first["witness_rows"]]
-    refs_second = [row["ref"] for row in second["witness_rows"]]
-    assert refs_first == refs_second
-    assert first["merge_token"] == second["merge_token"]
-    assert len(refs_second) == len(set(refs_second))
+@pytest.fixture(scope="module")
+def thresholds():
+    return read_key_values(CONFIG_DIR / "evaluation_thresholds.csv")
 
 
-def test_v3_trace_permute_order() -> None:
-    """Held+permute: replay deltas must follow permute order, fork the last cluster, and match recomputed margins."""
-    report = run_diff("held", permute=True)
-    pack = load_pack("pack_h0352.json")
-    order = visit_order(pack, apply_permute=True)
-    expected = expected_margins(pack, apply_permute=True)
-    trace_seq = trace_cluster_sequence(pack, apply_permute=True)
-    cluster_seq = [row["cluster_id"] for row in report["replay_deltas"][:3]]
-    assert cluster_seq == order
-    assert report["replay_deltas"][3]["cluster_id"] == order[-1]
-    assert report["replay_deltas"] == expected_replay_deltas(pack["arm_id"], expected, trace_seq)
-    assert report["barrier_margins"] == expected
+@pytest.fixture(scope="module")
+def roles():
+    return pd.read_csv(CONFIG_DIR / "feature_roles.csv")
 
 
-def test_z2_held_margin_bases() -> None:
-    """Held+permute margins must use pack margin_bases rather than reference table_bases alone."""
-    report = run_diff("held", permute=True)
-    pack = load_pack("pack_h0352.json")
-    table = load_table()
-    expected = expected_margins(pack, apply_permute=True)
-    assert pack["margin_bases"] != table["table_bases"]
-    assert report["barrier_margins"] == expected
-    assert report["barrier_margins"] != ref_table_bases_margins(pack, apply_permute=True)
+@pytest.fixture(scope="module")
+def public_data():
+    return pd.read_csv(DATA_DIR / "train.csv")
 
 
-def test_fork_x9() -> None:
-    """Direct mode: fork replay deltas for a cluster must be consistent; witness margins must match barrier vector."""
-    report = run_diff("direct")
-    table = load_table()
-    by_cluster: dict[str, list[int]] = {}
-    for row in report["replay_deltas"]:
-        cluster_id = row["cluster_id"]
-        if cluster_id not in by_cluster:
-            by_cluster[cluster_id] = []
-        by_cluster[cluster_id].append(row["delta"])
-    for deltas in by_cluster.values():
-        if len(deltas) > 1:
-            assert len(set(deltas)) == 1
-    margins = {row["cluster_id"]: row["margin"] for row in report["witness_rows"]}
-    for row in report["witness_rows"]:
-        idx = table["row_keys"].index(row["cluster_id"])
-        assert row["margin"] == report["barrier_margins"][idx]
-        assert row["margin"] == margins[row["cluster_id"]]
+@pytest.fixture(scope="module")
+def labels():
+    return pd.read_csv(LABELS)
 
 
-def test_h2_wk_term() -> None:
-    """Stress w0: active-arm draw weight must meet termination threshold; margins match recomputed w0 values."""
-    report = run_diff("stress", wave="w0")
-    pack = load_pack("pack_t352.json")
-    expected = expected_margins(pack, apply_permute=False, wave="w0")
-    assert stress_w0_active_arm_weight_sum(pack) >= termination_threshold()
-    assert report["barrier_margins"] == expected
+@pytest.fixture(scope="module")
+def predictions():
+    return pd.read_csv(OUT / "predictions.csv")
 
 
-def test_w9_arm_draw() -> None:
-    """Stress w0: full barrier margin vector must match recomputed values with foreign-arm draws excluded."""
-    report = run_diff("stress", wave="w0")
-    pack = load_pack("pack_t352.json")
-    expected = expected_margins(pack, apply_permute=False, wave="w0")
-    table = load_table()
-    c1 = table["row_keys"].index("c1")
-    assert report["barrier_margins"][c1] == expected[c1]
-    assert report["barrier_margins"] == expected
+@pytest.fixture(scope="module")
+def validation_predictions():
+    return pd.read_csv(OUT / "validation_predictions.csv")
 
 
-def test_q8_merge_token_bind() -> None:
-    """Direct mode: merge_token must match the digest recomputed from sorted witness refs, case id, and run mode."""
-    report = run_diff("direct")
-    refs = sorted(row["ref"] for row in report["witness_rows"])
-    expected = merge_token(report["case_id"], report["run_mode"], refs)
-    assert report["merge_token"] == expected
-    pack = load_pack("pack_t352.json")
-    margins = expected_margins(pack, apply_permute=False)
-    trace_seq = trace_cluster_sequence(pack, apply_permute=False)
-    assert len(refs) == len(expected_witness_rows(pack["arm_id"], margins, trace_seq))
+@pytest.fixture(scope="module")
+def metrics():
+    return json.loads((OUT / "metrics.json").read_text())
 
 
-def test_p4_nq_rotate() -> None:
-    """Stress w0 and w1 must produce different margins, each matching its recomputed wave-specific vector."""
-    w0 = run_diff("stress", wave="w0")
-    w1 = run_diff("stress", wave="w1")
-    pack = load_pack("pack_t352.json")
-    expected_w0 = expected_margins(pack, apply_permute=False, wave="w0")
-    expected_w1 = expected_margins(pack, apply_permute=False, wave="w1")
-    assert w0["barrier_margins"] != w1["barrier_margins"]
-    assert w0["barrier_margins"] == expected_w0
-    assert w1["barrier_margins"] == expected_w1
+class TestPublicSurface:
+    def test_required_artifacts_exist(self):
+        """The required output files are present after the R analysis runs."""
+        required = [
+            "predictions.csv",
+            "validation_predictions.csv",
+            "metrics.json",
+            "selection_report.csv",
+            "feature_summary.csv",
+            "group_error_report.csv",
+            "neighbor_evidence.csv",
+            "interval_report.csv",
+            "residual_bins.csv",
+        ]
+        missing = [name for name in required if not (OUT / name).exists()]
+        assert not missing
+
+    def test_public_test_targets_are_blank(self, public_data, config):
+        """The public data does not reveal target values for held-out test rows."""
+        test_rows = public_data[public_data[config["split_column"]] == "test"]
+        assert test_rows[config["target_column"]].isna().all()
+
+    def test_feature_summary_matches_configured_features(self, roles):
+        """feature_summary.csv covers exactly the configured feature set."""
+        summary = pd.read_csv(OUT / "feature_summary.csv")
+        expected = set(roles.loc[roles["role"] == "feature", "feature"])
+        assert set(summary["feature"]) == expected
+
+
+class TestPredictionContract:
+    def test_predictions_cover_heldout_rows(self, predictions, labels):
+        """predictions.csv covers every held-out row_id exactly once."""
+        assert predictions["row_id"].is_unique
+        assert set(predictions["row_id"]) == set(labels["row_id"])
+
+    def test_predictions_are_sorted(self, predictions):
+        """predictions.csv is sorted by row_id for deterministic upload checks."""
+        values = predictions["row_id"].to_numpy()
+        assert np.all(values[:-1] <= values[1:])
+
+    def test_prediction_columns_match_task_mode(self, predictions, config):
+        """The prediction schema matches the declared modeling mode."""
+        if config["task_mode"] == "regression":
+            assert {"prediction", "lower", "upper", "group_key"}.issubset(predictions)
+            assert np.isfinite(predictions["prediction"]).all()
+            assert (predictions["lower"] <= predictions["upper"]).all()
+        else:
+            classes = config["class_order"].split("|")
+            prob_cols = class_probability_columns(classes)
+            assert {"pred_label", "group_key"}.issubset(predictions)
+            assert set(prob_cols).issubset(predictions)
+            sums = predictions[prob_cols].sum(axis=1).to_numpy()
+            np.testing.assert_allclose(sums, np.ones(len(sums)), atol=1e-4)
+
+
+class TestValidationEvidence:
+    def test_selection_report_has_one_selected_k(self, public_data, config, roles, metrics):
+        """selection_report.csv recomputes validation group stability and marks the chosen k."""
+        report = pd.read_csv(OUT / "selection_report.csv")
+        assert list(report.columns) == [
+            "candidate_k",
+            "validation_metric",
+            "worst_group_rmse",
+            "best_group_rmse",
+            "stability_gap",
+            "selected",
+        ]
+        expected = expected_selection_report(public_data, config, roles)
+        for column in [
+            "candidate_k",
+            "validation_metric",
+            "worst_group_rmse",
+            "best_group_rmse",
+            "stability_gap",
+        ]:
+            np.testing.assert_allclose(report[column].astype(float), expected[column].astype(float), atol=5e-5)
+        selected = report[report["selected"].astype(str).str.lower().isin(["true", "1"])]
+        assert len(selected) == 1
+        assert int(selected["candidate_k"].iloc[0]) == int(metrics["selected_k"])
+        expected_selected = expected[expected["selected"]]
+        assert int(selected["candidate_k"].iloc[0]) == int(expected_selected["candidate_k"].iloc[0])
+
+    def test_group_report_uses_validation_groups(self, public_data, config):
+        """group_error_report.csv reports only groups present in validation rows."""
+        report = pd.read_csv(OUT / "group_error_report.csv")
+        validation = public_data[public_data[config["split_column"]] == "validation"]
+        assert set(report["group_key"]).issubset(set(validation[config["group_column"]]))
+        assert (report["n_validation"] > 0).all()
+
+    def test_metrics_match_validation_predictions(self, validation_predictions, metrics, config, public_data, roles):
+        """metrics.json is an honest summary of the selected fit-only validation model."""
+        if config["task_mode"] == "regression":
+            expected = expected_ridge_predictions(public_data, config, roles, "validation")
+            merged = validation_predictions.merge(expected, on="row_id", how="inner", validate="one_to_one")
+            np.testing.assert_allclose(merged["prediction"], merged["expected_prediction"], atol=1e-4)
+            rmse = np.sqrt(
+                mean_squared_error(
+                    validation_predictions["actual"],
+                    validation_predictions["prediction"],
+                )
+            )
+            mae = mean_absolute_error(
+                validation_predictions["actual"],
+                validation_predictions["prediction"],
+            )
+            assert abs(float(metrics["validation_rmse"]) - rmse) <= 1e-5
+            assert abs(float(metrics["validation_mae"]) - mae) <= 1e-5
+        else:
+            classes = config["class_order"].split("|")
+            acc = accuracy_score(
+                validation_predictions["actual"].astype(str),
+                validation_predictions["pred_label"].astype(str),
+            )
+            f1 = macro_f1(
+                validation_predictions["actual"].astype(str),
+                validation_predictions["pred_label"].astype(str),
+                classes,
+            )
+            assert abs(float(metrics["validation_accuracy"]) - acc) <= 1e-5
+            assert abs(float(metrics["validation_macro_f1"]) - f1) <= 1e-5
+
+    def test_interval_and_residual_reports_are_contentful(self, validation_predictions, metrics, config):
+        """Regression interval and residual-bin reports summarize validation predictions."""
+        if config["task_mode"] != "regression":
+            return
+        interval = pd.read_csv(OUT / "interval_report.csv")
+        assert list(interval.columns) == ["split", "interval_coverage", "mean_width"]
+        assert len(interval) == 1
+        assert interval["split"].iloc[0] == "validation"
+        coverage = float(interval["interval_coverage"].iloc[0])
+        assert 0.0 <= coverage <= 1.0
+        assert abs(coverage - float(metrics["interval_coverage"])) <= 1e-5
+        assert np.isfinite(float(interval["mean_width"].iloc[0]))
+        assert float(interval["mean_width"].iloc[0]) >= 0.0
+
+        residual_bins = pd.read_csv(OUT / "residual_bins.csv")
+        assert list(residual_bins.columns) == ["prediction_bin", "mean_abs_error", "count"]
+        assert not residual_bins.empty
+        assert int(residual_bins["count"].sum()) == len(validation_predictions)
+        assert (residual_bins["count"] > 0).all()
+
+
+class TestHeldoutQuality:
+    def test_heldout_score_clears_threshold(self, predictions, labels, config, thresholds, public_data, roles):
+        """Held-out predictions match the selected refit model and clear quality bars."""
+        merged = predictions.merge(labels, on="row_id", how="inner", validate="one_to_one")
+        target = config["target_column"]
+        if config["task_mode"] == "regression":
+            expected = expected_ridge_predictions(public_data, config, roles, "test")
+            checked = predictions.merge(expected, on="row_id", how="inner", validate="one_to_one")
+            np.testing.assert_allclose(checked["prediction"], checked["expected_prediction"], atol=1e-4)
+            rmse = np.sqrt(mean_squared_error(merged[target], merged["prediction"]))
+            mae = mean_absolute_error(merged[target], merged["prediction"])
+            r2 = r2_score(merged[target], merged["prediction"])
+            assert rmse <= float(thresholds["max_rmse"])
+            assert mae <= float(thresholds["max_mae"])
+            assert r2 >= float(thresholds["min_r2"])
+        else:
+            classes = config["class_order"].split("|")
+            acc = accuracy_score(merged[target].astype(str), merged["pred_label"].astype(str))
+            f1 = macro_f1(
+                merged[target].astype(str),
+                merged["pred_label"].astype(str),
+                classes,
+            )
+            assert acc >= float(thresholds["min_accuracy"])
+            assert f1 >= float(thresholds["min_macro_f1"])
+
+    def test_fit_label_perturbation_changes_predictions(self, tmp_path, predictions, config):
+        """Changing fit labels changes held-out predictions in an alternate run."""
+        alt_data = tmp_path / "data"
+        shutil.copytree(DATA_DIR, alt_data)
+        frame = pd.read_csv(alt_data / "train.csv")
+        target = config["target_column"]
+        fit_mask = frame[config["split_column"]] == "fit"
+        if config["task_mode"] == "regression":
+            values = pd.to_numeric(frame.loc[fit_mask, target])
+            frame.loc[fit_mask, target] = values + values.std(ddof=0) * 0.75
+        else:
+            classes = config["class_order"].split("|")
+            mapping = {classes[i]: classes[(i + 1) % len(classes)] for i in range(len(classes))}
+            frame.loc[fit_mask, target] = frame.loc[fit_mask, target].astype(str).map(mapping)
+        frame.to_csv(alt_data / "train.csv", index=False)
+        alt_out = tmp_path / "out"
+        alt_out.mkdir()
+        run_analysis(alt_data, alt_out)
+        changed = pd.read_csv(alt_out / "predictions.csv")
+        merged = predictions.merge(changed, on="row_id", suffixes=("_orig", "_alt"))
+        if config["task_mode"] == "regression":
+            delta = np.abs(merged["prediction_orig"] - merged["prediction_alt"]).mean()
+        else:
+            classes = config["class_order"].split("|")
+            prob_cols = class_probability_columns(classes)
+            delta = 0.0
+            for col in prob_cols:
+                delta += np.abs(merged[f"{col}_orig"] - merged[f"{col}_alt"]).mean()
+        assert delta > 1e-6
