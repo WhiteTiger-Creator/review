@@ -1,27 +1,34 @@
+# Task configuration schema version
 version = "2.0"
 
+# Task metadata (author, difficulty, categorization)
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "machine-learning"
-subcategories = []
-tags = ["demand-modeling", "price-elasticity", "cross-validation", "regularized-regression", "model-reproduction"]
-languages = ["kotlin"]
-codebase_size = "minimal"
+category = "security"
+subcategories = [ ]
 number_of_milestones = 0
-expert_time_estimate_min = 120
-junior_time_estimate_min = 360
+codebase_size = "minimal"
+languages = [ "java",]
+tags = [ "java", "security", "cryptography", "threshold-signing", "audit",]
+expert_time_estimate_min = 210
+junior_time_estimate_min = 480
 
+# Verifier: runs the test script to check task completion
+[verifier]
+timeout_sec = 600.0
+
+# Agent: limits how long the agent can run when attempting the task
+[agent]
+timeout_sec = 1800.0
+
+# Sandbox environment limits
 [environment]
-allow_internet = false
-build_timeout_sec = 1500
+build_timeout_sec = 600.0
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-
-[verifier]
-timeout_sec = 1200
-
-[agent]
-timeout_sec = 1800
+# Fully offline task: the release ledger is a local file and every cosignature,
+# aggregate tag, and authorization verdict is computed without network access.
+allow_internet = false

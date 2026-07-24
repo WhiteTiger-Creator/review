@@ -1,5 +1,24 @@
-The Kotlin pipeline under /app fits ELAST-X v2, a machine-learning demand model that estimates per-segment price elasticities from a product-week panel. It runs a cross-validated regularized regression of log-demand on log-price and covariates, then reports the fitted coefficients, the per-segment elasticities, and a holdout error metric. The current sources fit a generic pooled regression that does not follow the ELAST-X v2 methodology, so the numbers it produces are not ELAST-X v2.
+We gate every release behind threshold co-signing: it ships only when a quorum
+of enrolled signers co-signed it with valid keyed tags whose aggregate
+reconstructs correctly. Build a Java audit tool that reads one append-only
+release ledger — enrollments, removals, key rotations, anchor/vouch trust
+designations, releases, cosignatures, authorization queries — and renders a
+k-of-n verdict per query. This is a co-signing authorization control, not a
+tally or voting exercise.
 
-The methodology is written up in /app/docs/elast_x_memo.md: the target transform, the feature winsorization and standardization, the sample weighting, the ridge penalty and how its strength is cross-validated, the monotonicity treatment of the price response, the elasticity convention, and the holdout metric. Bring the pipeline into agreement with that memo. Build it with /app/build.sh and run it as /app/run.sh --panel /app/data/panel.csv --out /app/artifacts/elasticity.json, writing the object the memo specifies.
+Each keyed tag is a hand-rolled MAC and each aggregate an order-dependent
+combine of signer tags, both bit-exact on the JDK standard library alone, no
+`javax.crypto`, no third-party jar, offline at `/app/audit` on the ledger
+path. Write one JSON line to `/app/output/result.json` and print it.
 
-The artifact must be your pipeline's own output. Grading rebuilds the pipeline and runs it again on held-out panels it has never seen, fed through the same entrypoint, comparing every reported figure against ELAST-X v2 at a tight tolerance.
+A verdict draws only on ledger state above its query: active roster, each
+signer's key in force, cosignatures verified under that key. Removal drops a
+signer; rotation voids that signer's earlier cosignatures. When the ledger
+names any anchors, a cosignature also needs its signer currently in
+*standing*: permanent for active anchors, earned by anyone else only through
+two distinct already-standing vouchers — a ring vouching solely for itself
+never bootstraps standing without a path back to an anchor. Authorized needs
+threshold-met cosigners and a matching aggregate; short is unauthorized, met
+but mismatched is tag_mismatch. Full grammar, MAC, combine, roster/rotation/
+standing rules, schema, exit codes, and precedence are in `/app/SPEC.md` with
+worked vectors.
