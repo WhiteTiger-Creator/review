@@ -1,38 +1,43 @@
+# Task configuration schema version
 version = "2.0"
 
+# Task metadata (author, difficulty, categorization)
 [metadata]
-author_name = "Bhagyawanth"
-author_email = "J26.0898.adl@airdawglabs.com"
+author_name = "anonymous"
+author_email = "anonymous"
 difficulty = "hard"
-category = "system-administration"
-legacy_category = "data-processing"
-subcategories = []
-languages = ["bash"]
-tags = [
-  "bash",
-  "system-administration",
-  "systemd",
-  "permissions",
-  "file-operations",
-  "ops-tooling",
-]
-expert_time_estimate_min = 90
-junior_time_estimate_min = 180
+category = "security"
+# Options for subcategories are: "long_context", "tool_specific", "api_integration", "db_interaction", "ui_building"
+subcategories = ["api_integration", "tool_specific"]
+# The number of milestones in the task (can be zero if not a milestone task)
 number_of_milestones = 0
-codebase_size = "minimal"
+# Size of the codebase: minimal -> 0-20 files, small -> 20+ files, large -> 200+ files
+codebase_size = "small"
+# Coding languages used in the oracle solution or required by the agent
+languages = ["java", "bash"]
+# For tool_specific, api_integration, and db_interaction subcategories, please include specific tool, api framework, or database software
+tags = ["jwe", "ecdh-1pu", "concat-kdf", "jose", "java-cryptography"]
+# Estimated time to complete (minutes)
+expert_time_estimate_min = 180
+junior_time_estimate_min = 420
 
-[environment]
-build_timeout_sec = 600
-cpus = 1
-memory_mb = 2048
-storage_mb = 10240
-allow_internet = false
-
+# Verifier: runs the test script to check task completion
 [verifier]
-timeout_sec = 300
+timeout_sec = 600.0
 
+# Agent: limits how long the agent can run when attempting the task
 [agent]
-timeout_sec = 1800
+timeout_sec = 1800.0
 
-[oracle]
-timeout_sec = 600
+# Sandbox environment limits
+[environment]
+# ECDH-1PU is authenticated encryption: unsealing a message needs the sender's static public key,
+# which the recipient does not hold. That key is fetched from the sender registry each message names,
+# so the network is required by the task itself. Most tests drive the tool against a local registry
+# on 127.0.0.1, and one test resolves a real published key set over the network and compares the
+# tool's RFC 7638 thumbprint against an independent fetch of the same document.
+allow_internet = true
+build_timeout_sec = 900.0
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240

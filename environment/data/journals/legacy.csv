@@ -1,5 +1,0 @@
-posting_date,account_id,debit_cents,credit_cents,memo
-2024-12-20,CA-1000,3000,0,Prior-period accrual
-2025-03-15,eq-3000,0,15000,Owner draw
-2025-03-15,ca-1000,15000,0,Cash transfer for draw
-2025-03-20,ORPHAN-99,500,0,Unmapped staging account

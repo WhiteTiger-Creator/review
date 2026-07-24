@@ -1,31 +1,18 @@
 #!/bin/bash
 set -euo pipefail
 
-APP_ROOT="${APP_ROOT:-/app}"
-SRC_DIR="${APP_ROOT}/src"
-# Harbor mounts the solution at /solution (not /app/solution); resolve relative to this script.
-SOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PKG_DIR=/app/unsealer/src/main/java/com/acme/inbox/jwe
 
-echo "[oracle] repairing periodctl and host control plane"
+# Replace the stub with the JDK-only implementation: JWK loading and P-256 conversion, the three
+# JWE serializations, ECDH-1PU key agreement with the hand-rolled Concat KDF, AES key unwrap and
+# AES-GCM decryption, the sender registry fetch, and the canonical report plus transcript digest.
+mkdir -p "$PKG_DIR"
+rm -f "$PKG_DIR"/*.java
+cp "$SCRIPT_DIR"/src/*.java "$PKG_DIR"/
 
-# Copy corrected files to the target directory
-cp "${SOL_DIR}/periodctl" "${SRC_DIR}/periodctl"
-cp "${SOL_DIR}/reconciler.py" "${SRC_DIR}/reconciler.py"
-cp "${SOL_DIR}/ledger.py" "${SRC_DIR}/ledger.py"
+cd /app/unsealer
+mvn -B -q clean package
 
-chmod 0755 "${SRC_DIR}/periodctl"
-chmod 0644 "${SRC_DIR}/reconciler.py"
-chmod 0644 "${SRC_DIR}/ledger.py"
-
-echo "[oracle] restoring period-close host layout"
-mkdir -p /etc/period-close /var/lib/period-close
-cp "${APP_ROOT}/data/window.json" /etc/period-close/window.json
-chmod 0644 /etc/period-close/window.json
-chmod 0755 /var/lib/period-close
-ln -sfn "${SRC_DIR}/periodctl" /usr/local/sbin/periodctl
-
-if [[ -f /etc/systemd/system/period-close.service ]]; then
-    chmod 0644 /etc/systemd/system/period-close.service
-fi
-
-echo "[oracle] solution applied successfully"
+test -f /app/unsealer/target/jwe-unsealer.jar
+echo "built /app/unsealer/target/jwe-unsealer.jar"

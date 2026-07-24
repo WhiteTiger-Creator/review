@@ -1,8 +1,13 @@
 .git
 .gitignore
+**/.git
+**/.gitignore
+**/.DS_Store
+**/target/
 **/__pycache__/
 **/*.pyc
 **/.pytest_cache/
 **/.mypy_cache/
 **/.ruff_cache/
 **/node_modules/
+requirements.in

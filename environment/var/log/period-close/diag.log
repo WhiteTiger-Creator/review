@@ -1,7 +1,0 @@
-2025-03-31T18:42:01Z period-close ERROR periodctl: control plane is defective - full rewrite required
-2025-03-31T18:42:01Z period-close WARN  repair scope:
-2025-03-31T18:42:01Z period-close WARN    - /app/src/periodctl (lockfile, quoting, exit codes, reconciler invocation)
-2025-03-31T18:42:01Z period-close WARN    - /app/src/reconciler.py (window bounds, row validation, netting, CSV quoting)
-2025-03-31T18:42:01Z period-close WARN    - /app/src/ledger.py (chart load, case-fold lookup, whitespace trim)
-2025-03-31T18:42:02Z period-close WARN  host layout also broken: sbin symlink, /etc/period-close/window.json, /var/lib/period-close mode, unit mode
-2025-03-31T18:42:02Z period-close INFO  authoritative semantics are in the task instruction - do not trust legacy helpers
