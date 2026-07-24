@@ -1,0 +1,10 @@
+{
+  "compatibility.json": "d2d3df9234a561da735c3950617a4afecbd660d5b39c54a3e9b0f7f3eba46083",
+  "fixture-checksums.json": "59e0d77ea8c7d4d06cc24e69e5577b4cebe0f29790c7372a3d7913bddfe6cfd6",
+  "google-revision-a/jwks.json": "661fd6227bece7b87cf75bd24442036109f5f37c737493fb4be7b886a2372215",
+  "google-revision-a/openid-configuration.json": "be95b20a1100fb2e2b703004fded5ede9b386aed92333109f8a60eba453eda3e",
+  "google-revision-a/transport.json": "d699ca3395f9e5ec2af9546724e9b46ff74ffc02a204b5f95531b7882a2b9621",
+  "google-revision-b/jwks.json": "bf654dc2131357cd7adbe234bfb02a7ef5d1787ce55df0338b813de1e103ec00",
+  "google-revision-b/openid-configuration.json": "1caf16b898d1f3adfe38fd7faff8543a389f7b66b4714b55be2bfe9b7c7da719",
+  "google-revision-b/transport.json": "d699ca3395f9e5ec2af9546724e9b46ff74ffc02a204b5f95531b7882a2b9621"
+}

@@ -4,24 +4,24 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "machine-learning"
-tags = ["model-evaluation", "spectral-clustering", "eigengap", "inference", "metamorphic-testing", "java"]
-languages = ["java"]
+category = "security"
+subcategories = ["long_context", "db_interaction", "api_integration"]
+tags = ["mtls", "oidc", "jwks", "gateway-policy", "trust-boundary", "offline"]
+languages = ["go", "sql", "yaml", "xml", "json", "bash", "markdown"]
 codebase_size = "small"
 number_of_milestones = 0
-subcategories = ["tool_specific"]
-expert_time_estimate_min = 90
-junior_time_estimate_min = 240
+expert_time_estimate_min = 420
+junior_time_estimate_min = 2400
 
 [agent]
 timeout_sec = 1800
 
 [verifier]
-timeout_sec = 900
+timeout_sec = 1200
 
 [environment]
+build_timeout_sec = 1800
+cpus = 4
+memory_mb = 8192
+storage_mb = 12288
 allow_internet = false
-build_timeout_sec = 600
-cpus = 2
-memory_mb = 4096
-storage_mb = 10240

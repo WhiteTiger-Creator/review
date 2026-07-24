@@ -1,0 +1,7 @@
+id: DEC-003
+status: accepted
+scope: service
+effective_date: 2025-03-15
+target_service: user-service
+audiences:
+  - https://users.example.com/v2

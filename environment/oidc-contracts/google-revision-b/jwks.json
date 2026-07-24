@@ -1,0 +1,27 @@
+{
+  "keys": [
+    {
+      "kid": "ec-valid-2",
+      "kty": "EC",
+      "alg": "ES256",
+      "use": "sig",
+      "key_ops": [
+        "verify"
+      ]
+    },
+    {
+      "kid": "rsa-valid-2",
+      "kty": "RSA",
+      "use": "sig",
+      "key_ops": [
+        "verify"
+      ]
+    },
+    {
+      "kid": "enc-only-b",
+      "kty": "RSA",
+      "alg": "RS256",
+      "use": "enc"
+    }
+  ]
+}

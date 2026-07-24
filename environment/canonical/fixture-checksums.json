@@ -1,0 +1,8 @@
+{
+  "algorithm-policy.json": "2861b9d625ef64a83a792dbd35c857b5c7dcfbf3fb596432fd587164ff5cf4ef",
+  "alias-register.json": "be53c1d8e66c84c0260b76a1c20684aa061f0928357dd506bd682b7fc60e269a",
+  "fixture-checksums.json": "0d25bc040931f168dac8e2a3d2f331f927766ce022b6a8d731b8aaf9d7d3f997",
+  "policy-contract.json": "c483d3a8fa95490526589e582325b717a6ba06ee63948736c33d105280c58379",
+  "retirement-register.json": "f17b4e6eb422aa5648319e35bd5f3af59f448869820aa14be4a37074418dc99d",
+  "topology-contract.json": "dda0c20825fba4785a1a72056dc20e8a8c2915603d6b96dbe683d813063fdd6d"
+}

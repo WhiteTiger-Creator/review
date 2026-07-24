@@ -1,0 +1,43 @@
+{
+  "keys": [
+    {
+      "kid": "rsa-valid-1",
+      "kty": "RSA",
+      "alg": "RS256",
+      "use": "sig",
+      "key_ops": [
+        "verify"
+      ]
+    },
+    {
+      "kid": "ec-valid-1",
+      "kty": "EC",
+      "alg": "ES256",
+      "use": "sig",
+      "key_ops": [
+        "verify"
+      ]
+    },
+    {
+      "kid": "enc-only",
+      "kty": "RSA",
+      "alg": "RS256",
+      "use": "enc"
+    },
+    {
+      "kid": "hmac-bad",
+      "kty": "oct",
+      "alg": "HS256",
+      "use": "sig"
+    },
+    {
+      "kid": "no-ops",
+      "kty": "RSA",
+      "alg": "RS256",
+      "use": "sig",
+      "key_ops": [
+        "encrypt"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "scopes": [
+    "edge",
+    "service",
+    "environment",
+    "global"
+  ]
+}
