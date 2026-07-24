@@ -1,17 +1,17 @@
 version = "2.0"
 
 [metadata]
-author_name = "anonymous"
-author_email = "anonymous@gmail.com"
+author_name = "Anonymous"
+author_email = "anonymous@example.com"
 difficulty = "hard"
 category = "scientific-computing"
 subcategories = []
+languages = ["csharp"]
+tags = ["csharp", "spherical-harmonics", "quadrature", "numerical-integration", "scientific-computing"]
+codebase_size = "minimal"
 number_of_milestones = 0
-codebase_size = "small"
-languages = ["c"]
-tags = ["scientific-computing", "finite-field-arithmetic", "galois-field-gf256", "reed-solomon-channel-coding", "dynamic-programming", "discrete-optimization", "information-theory", "error-correcting-codes", "combinatorial-minimization", "numerical-analysis"]
-expert_time_estimate_min = 180
-junior_time_estimate_min = 360
+expert_time_estimate_min = 240.0
+junior_time_estimate_min = 1200.0
 
 [verifier]
 timeout_sec = 900.0
@@ -20,9 +20,11 @@ timeout_sec = 900.0
 timeout_sec = 1800.0
 
 [environment]
-build_timeout_sec = 900.0
+allow_internet = false
+build_timeout_sec = 600.0
 cpus = 2
 memory_mb = 4096
-storage_mb = 10240
-workdir = "/app"
-allow_internet = false
+storage_mb = 8192
+docker_flags = []
+gpus = 0
+gpu_types = []

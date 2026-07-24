@@ -1,41 +1,20 @@
-FROM public.ecr.aws/docker/library/gcc:13-bookworm@sha256:930f2ebe239275fa67226654cb79273ea34eee672ae61c8a39f689c37fb7ac5c
+# Uses Python slim for the pytest harness because there is no canonical Mono base image for this task.
+FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
 
-LABEL org.opencontainers.image.source="terminus/qr-model2-segment-interleave-mask-tournament"
+WORKDIR /app
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-    bash \
-    asciinema \
-    ca-certificates \
-    cmake \
-    findutils \
-    python3 \
-    python3-pip \
-    python3-venv \
-    tmux \
-    zbar-tools \
+    asciinema=2.2.0-1 \
+    make=4.3-4.1 \
+    mono-mcs=6.8.0.105+dfsg-3.3+deb12u1 \
+    mono-runtime=6.8.0.105+dfsg-3.3+deb12u1 \
+    python3-pytest=7.2.1-2 \
+    tmux=3.3a-3 \
+    util-linux=2.38.1-5+deb12u3 \
  && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.lock /tmp/requirements.lock
-RUN python3 -m venv /opt/verifier-venv \
- && /opt/verifier-venv/bin/pip install --no-cache-dir --require-hashes -r /tmp/requirements.lock
+COPY task_file /app/task_file
 
-ENV PATH="/opt/verifier-venv/bin:/opt/verifier-scripts:${PATH}"
-
-COPY app/ /app/
-WORKDIR /app
-RUN mkdir -p /app/bin /app/state /app/output/labels /app/build \
- && cmake -S /app -B /app/build -DCMAKE_BUILD_TYPE=Release \
- && cmake --build /app/build --target qr-composer \
- && install -m 0755 /app/build/qr-composer /app/bin/qr-composer
-
-RUN mkdir -p /opt/verifier-scripts \
- && printf '%s\n' '#!/bin/bash' 'set -euo pipefail' \
-    'export PATH="/usr/local/bin:/usr/bin:/bin:${PATH}"' \
-    'cd /app' \
-    'cmake --build /app/build --target qr-composer' \
-    'install -m 0755 /app/build/qr-composer /app/bin/qr-composer' \
-    > /opt/verifier-scripts/rebuild-qr-composer \
- && chmod +x /opt/verifier-scripts/rebuild-qr-composer
-
-WORKDIR /app
+WORKDIR /app/task_file
+CMD ["/bin/bash"]

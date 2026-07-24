@@ -1,7 +1,0 @@
-# ISO 18004 Model 2 numerical defaults
-[intake]
-inbox_dir = "/app/fixtures/shipbatch-inbox"
-
-[render]
-module_scale = 8
-quiet_modules = 4

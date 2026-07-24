@@ -1,0 +1,13 @@
+cell_id,ring_id,phi_start_deg,phi_end_deg,region,exposure
+C00,R0,-20,90,north,1.00
+C01,R0,90,210,north,0.85
+C02,R0,210,340,polar,1.15
+C10,R1,15,125,north,1.20
+C11,R1,125,260,east,0.95
+C12,R1,260,405,west,1.05
+C20,R2,-45,75,east,0.75
+C21,R2,75,190,central,1.30
+C22,R2,190,315,west,0.90
+C30,R3,0,150,south,1.10
+C31,R3,150,300,south,0.80
+C32,R3,300,360,polar,1.40

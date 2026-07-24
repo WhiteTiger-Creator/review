@@ -1,9 +1,0 @@
-{
-  "batch_id": "se-207",
-  "payloads": [
-    {"payload_id": "p-010", "ecc_level": "L", "text": "882236559104478821736600941255873310448892217365123409871265534998172635541230098716253359980172645windows31ady"},
-    {"payload_id": "p-011", "ecc_level": "M", "text": "TRK-2026-0071-BLU LANE 04 BAY 118 SEAL 99201"},
-    {"payload_id": "p-012", "ecc_level": "Q", "text": "https://labels.example/track?id=88412&lane=7&hub=se-207"},
-    {"payload_id": "p-013", "ecc_level": "H", "text": "Fragile optics crate 44 route via SE-207 to NW-114 handle upright only max stack 1"}
-  ]
-}
