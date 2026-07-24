@@ -1,0 +1,58 @@
+{
+  "settings": [
+    {
+      "setting_name": "shared_preload_libraries",
+      "value_type": "string_array",
+      "allowed_scopes": ["system"],
+      "minimum_integer_or_null": null,
+      "maximum_integer_or_null": null,
+      "activation_mode": "restart",
+      "transaction_compatible": false
+    },
+    {
+      "setting_name": "max_connections",
+      "value_type": "integer",
+      "allowed_scopes": ["system"],
+      "minimum_integer_or_null": 10,
+      "maximum_integer_or_null": 500,
+      "activation_mode": "reload",
+      "transaction_compatible": false
+    },
+    {
+      "setting_name": "log_min_duration_statement",
+      "value_type": "integer",
+      "allowed_scopes": ["system", "database", "role", "role_database"],
+      "minimum_integer_or_null": -1,
+      "maximum_integer_or_null": 2147483647,
+      "activation_mode": "reload",
+      "transaction_compatible": true
+    },
+    {
+      "setting_name": "statement_timeout",
+      "value_type": "integer",
+      "allowed_scopes": ["database", "role", "role_database"],
+      "minimum_integer_or_null": 0,
+      "maximum_integer_or_null": 2147483647,
+      "activation_mode": "immediate",
+      "transaction_compatible": true
+    },
+    {
+      "setting_name": "idle_in_transaction_session_timeout",
+      "value_type": "integer",
+      "allowed_scopes": ["role", "role_database"],
+      "minimum_integer_or_null": 0,
+      "maximum_integer_or_null": 2147483647,
+      "activation_mode": "immediate",
+      "transaction_compatible": true
+    },
+    {
+      "setting_name": "default_transaction_read_only",
+      "value_type": "boolean",
+      "allowed_scopes": ["database", "role", "role_database"],
+      "minimum_integer_or_null": null,
+      "maximum_integer_or_null": null,
+      "activation_mode": "new_session",
+      "transaction_compatible": true
+    }
+  ]
+}

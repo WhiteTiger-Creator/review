@@ -2,27 +2,26 @@ version = "2.0"
 
 [metadata]
 author_name = "anonymous"
-author_email = "anonymous@example.com"
+author_email = "anonymous"
 difficulty = "hard"
-category = "security"
-subcategories = ["db_interaction"]
+category = "build-and-dependency-management"
+subcategories = []
 number_of_milestones = 0
-codebase_size = "small"
-languages = ["typescript", "sql", "javascript", "bash"]
-tags = ["security", "cryptography", "compose", "trust-policy", "long-context"]
-expert_time_estimate_min = 120
-junior_time_estimate_min = 240
+codebase_size = "large"
+languages = ["rust"]
+tags = ["postgresql", "bootstrap", "policy", "dependency-graph", "offline"]
+expert_time_estimate_min = 360
+junior_time_estimate_min = 720
 
-[environment]
-build_timeout_sec = 600.0
-cpus = 2
-memory_mb = 4096
-storage_mb = 10240
-workdir = "/app"
-allow_internet = false
+[verifier]
+timeout_sec = 600.0
 
 [agent]
 timeout_sec = 1800.0
 
-[verifier]
-timeout_sec = 450.0
+[environment]
+allow_internet = false
+build_timeout_sec = 900.0
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240

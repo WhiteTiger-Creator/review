@@ -3,13 +3,19 @@
 **/__pycache__/
 **/*.pyc
 **/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
 **/node_modules/
+**/target/
 **/dist/
-**/build/
 **/.venv/
 **/venv/
-.env
-*.log
+**/*.tmp
+# Do NOT ignore *.orig: cargo vendor ships Cargo.toml.orig inside crate
+# packages and lists them in .cargo-checksum.json. Excluding them breaks
+# `cargo build --locked --offline` inside the image.
+output/
 solution/
 tests/
-trust.db
+authoring/
+gate-report/

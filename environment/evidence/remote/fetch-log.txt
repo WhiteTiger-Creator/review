@@ -1,2 +1,0 @@
-Captured by the release evidence mirror on 2024-12-20T17:12:00Z.
-The runtime verifier is offline; these files stand in for the public Compose schema endpoint and docker/compose refs.
