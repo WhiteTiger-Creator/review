@@ -1,6 +1,0 @@
-[[edge]]
-pkg = "app"
-dep = "core-a"
-lo = "1.0.0"
-hi = "2.0.0-pre.2"
-witness = "pre"

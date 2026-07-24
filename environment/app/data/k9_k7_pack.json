@@ -1,0 +1,14 @@
+{
+  "termination_weight": 0.85,
+  "wave_scale": {
+    "w0": 3,
+    "w1": 4
+  },
+  "draws": [
+    { "wave": "w0", "arm_id": 352, "cluster_id": "c0", "weight": 0.4 },
+    { "wave": "w0", "arm_id": 352, "cluster_id": "c2", "weight": 0.5 },
+    { "wave": "w0", "arm_id": 999, "cluster_id": "c1", "weight": 0.9 },
+    { "wave": "w1", "arm_id": 352, "cluster_id": "c1", "weight": 0.7 },
+    { "wave": "w1", "arm_id": 352, "cluster_id": "c0", "weight": 0.2 }
+  ]
+}

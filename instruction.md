@@ -1,32 +1,9 @@
-# Lockfile Semver Range Inference
+Node 0352 runs a Java numerical barrier-margin pipeline for case 352 annex packs. `/app/exec/diff_run` should write `/app/output/diff_replay_dossier.json`, but the current build disagrees with the published contracts on direct training packs, held permute arms, and stress draw waves.
 
-The offline lockfile tool under `/app/environment` is drifting in CI due to bugs in the source code.
+Repair the Java sources under `/app/environment` so a rebuilt `diff_run` passes all contract checks. Core obligations live in `/app/environment/app/docs/k4_surface.md`. Pack-specific binding overrides (margin bases, wave multipliers, trace visit order) are in `/app/environment/app/docs/binding_profiles.md`.
 
-Your task is to **debug and repair the broken Go source files** in `/app/environment` so that the tool behaves exactly according to the semantic rules verified by the tests.
+Fixture data under `/app/environment/app/data/` includes training and held packs. The reference table defines cue_hashes computed as the unsigned byte-sum of each cluster cue modulo 1009, aligned to row_keys. Stress fixtures define per-wave draws that must list arm id, cluster id, and weight for importance sampling.
 
-## Overall Workflow
+Output layout is defined in `/app/environment/schemas/q8_report.schema.json`. The dossier must populate case_id, run_mode, witness_rows, barrier_margins, replay_deltas, and merge_token. Witness rows must align each cluster margin with the barrier vector. Replay deltas must record stepwise margin changes computed as the delta from the prior step on the same cluster. Merge token must be the idempotent digest over sorted witness refs, case id, and run mode; see `k4_surface.md` section 6 for the pipe-delimited serialization format and worked example. Lattice narrowing at boundary clusters and fork replay framing are defined in `k4_surface.md` sections 2 and 5 and `binding_profiles.md`.
 
-1. **Repair:** Edit the Go source files in `/app/environment` to fix the implementation.
-2. **Rebuild:** Rebuild `/app/bin/depctrl` from `/app/environment` after edits, using the build recipe in `/app/environment/docs/phase_contract.md`.
-3. **Execute:** Run `/app/bin/depctrl reconcile --all-mirrors` to verify. The automated tests will rebuild the binary and execute that path, or specific CLI chains.
-4. **Verify:** Ensure the sealed output in `/app/output/constraint_report.json` meets all requirements.
-
-## Test Requirements & Behaviors
-
-The automated tests verify several critical behaviors. You must ensure your fixes correctly implement all of these:
-
-- **Output Format & Overwrites:** The terminal report (`/app/output/constraint_report.json`) must be a JSON object with a `rows` array. Staging output is not the sealed report. Existing report files must be overwritten on a successful seal.
-- **Digest Construction:** Each row needs `pkg`, `dep`, `lo`, `hi`, `pre_tok`, `lift`, and `row_digest`. `row_digest` must be the first 16 hex characters of the SHA-256 hash of the payload string `{pkg}|{dep}|{lo}|{hi}|{pre_tok}|{lift}` with `lift` formatted as `1` or `0`.
-- **Peer Ceiling Semantics:** When `lift` is `true`, the resolved `hi` bound is capped by `peer_hi`. Raising `peer_hi` above the intersection loosens the ceiling.
-- **Pre-Token Folding:** Arm tag `a` treats an empty `pre_tok` as `allow`. Arm tag `b` strips `-pre.` from bounds if `pre_tok` is not `allow`. An empty final `pre_tok` means bounds must not retain `-pre.`.
-- **Sequence Logic:** Within a single arm tag, only the event with the highest `seq` number for a `(pkg, dep)` pair is kept for sealing.
-- **Activation Gating:** Optional edges (e.g., `side-b`) appear only if their activation key is enabled in `/app/environment/data/act_map.json`. Disabling an activation key must immediately drop the edge, even if the cache is warm.
-- **WAL CRC Handling:** The journal (`lock.wal`) must seal without torn or CRC-mismatched frames in the fold. Such invalid frames must be dropped and must not poison the output.
-- **Cache Invalidation:** Warm cache blobs must stay coherent with the live peer fingerprint, activation map, and seeds. Stale ceilings (e.g., mutated `peer_hi`) must be correctly recalculated instead of hitting the cache.
-- **CLI Chain:** The manual CLI chain of `depctrl collect` -> `depctrl reconcile` (without flags) -> `depctrl emit` must successfully seal a full terminal report.
-- **Idempotency:** A double reconcile (running reconcile twice with identical inputs) must be completely idempotent, yielding the exact same generated digests and bounds.
-- **Traces:** After a successful run, `/app/output/traces/last_run.json` must record `row_n` (number of rows in the sealed report), `frame_n` (where `frame_n >= row_n`), and `cache_hit`.
-
-*Note:* `depctrl status` printing `steady` is not proof that the terminal report is correctly sealed. Hand-written reports or static mock outputs will fail.
-
-See `/app/environment/docs/phase_contract.md` for specific technical recipes and cache constraints.
+The normal `diff_run` pipeline must regenerate `/app/output/diff_replay_dossier.json`; static or manual dossier writes are insufficient. Run `make -C /app/environment` before invoking `/app/exec/diff_run`. Operator notes: `/app/environment/app/docs/operators.md`.

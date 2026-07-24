@@ -3,13 +3,13 @@ version = "2.0"
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
-difficulty = "hard"
-category = "build-and-dependency-management"
-subcategories = []
-tags = ["lockfile", "semver", "go", "mirror", "constraint", "reverse-engineering"]
-languages = ["go", "bash"]
+difficulty = "medium"
+category = "scientific-computing"
+tags = ["scientific-computing", "formal-reasoning", "importance-sampling", "barrier-certificate", "numerical-analysis", "java"]
+languages = ["java"]
 codebase_size = "small"
 number_of_milestones = 0
+subcategories = ["tool_specific"]
 expert_time_estimate_min = 120
 junior_time_estimate_min = 360
 
@@ -18,6 +18,9 @@ timeout_sec = 1800
 
 [verifier]
 timeout_sec = 900
+
+[reference_pattern]
+justification_if_none = "No promoted reference in docs/reference_tasks/index.json matches Java CCS barrier witness formal_reasoning; construction is net-new under scientific-computing."
 
 [environment]
 allow_internet = false
