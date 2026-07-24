@@ -1,0 +1,9 @@
+# Fleet capability matrix — binds profiles to lane sets and activation modes.
+
+[fleet_a]
+lanes = ["mqtt", "lora"]
+mode = "required-together"
+
+[fleet_b]
+lanes = ["uart"]
+mode = "solo"
