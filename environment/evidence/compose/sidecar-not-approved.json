@@ -1,0 +1,15 @@
+{
+  "name": "nimbusvault-prod",
+  "services": {
+    "nimbus-sidecar": {
+      "image": "registry.local/nimbus/sidecar:2024.12"
+    }
+  },
+  "x-nimbus-exceptions": [
+    {
+      "id": "NV-EX-099",
+      "service": "nimbus-sidecar",
+      "rule": "MTLS_REMOTE_DEBUG"
+    }
+  ]
+}

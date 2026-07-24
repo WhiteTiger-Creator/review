@@ -1,0 +1,12 @@
+{
+  "name": "nimbusvault-compose-trust-attestor",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "trust:attest": "node scripts/run-trust-attestor.mjs",
+    "trust:seal": "node scripts/seal-trust-ledger.mjs",
+    "test": "npm run trust:attest && npm run trust:seal"
+  },
+  "dependencies": {}
+}

@@ -1,0 +1,25 @@
+{
+  "name": "nimbusvault-prod",
+  "services": {
+    "nimbus-gateway": {
+      "image": "registry.local/nimbus/gateway:2024.12",
+      "environment": {
+        "NV_MTLS_MODE": "exception-bound"
+      },
+      "ports": [
+        "8443:8443"
+      ]
+    },
+    "nimbus-worker": {
+      "image": "registry.local/nimbus/worker:2024.12"
+    }
+  },
+  "x-nimbus-exceptions": [
+    {
+      "id": "NV-EX-001",
+      "service": "nimbus-gateway",
+      "rule": "MTLS_REMOTE_DEBUG",
+      "network": "corp-vpn-only"
+    }
+  ]
+}

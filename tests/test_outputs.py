@@ -1,315 +1,104 @@
-"""Behavioral verification for harden-rails-compose-archive-attestation."""
+"""Verifier tests for the NimbusVault Compose trust attestation task."""
 
-from __future__ import annotations
-
+import hashlib
+import json
 import subprocess
 from pathlib import Path
 
-import pytest
-import requests
-
-from support.archive_factory import build_archive
-from support.corpus_fixture import metadata, unpack
-from support.integrity import verify_fixture_checksums
-from support.puma_server import PumaServer
-from support.signature_checks import verify_attestation
-
-FIXTURES = Path(__file__).resolve().parent / "fixtures"
-META = metadata()
+APP_DIR = Path("/app")
+DB_PATH = APP_DIR / "trust.db"
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _checksums() -> None:
-    verify_fixture_checksums()
-
-
-@pytest.fixture
-def cache_dir(tmp_path: Path) -> Path:
-    d = tmp_path / "cache"
-    d.mkdir()
-    return d
-
-
-def post_attestation(server: PumaServer, archive: bytes, release_ref: str | None = None) -> requests.Response:
-    files = {"archive": ("archive.tar", archive, "application/x-tar")}
-    data = {}
-    if release_ref:
-        data["release_ref"] = release_ref
-    return requests.post(f"{server.base_url}/api/v1/attestations", files=files, data=data, timeout=60)
-
-
-def test_health_route_is_preserved(cache_dir: Path) -> None:
-    """GET /up remains available."""
-    repo = unpack("trusted-corpus-a")
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = requests.get(f"{server.base_url}/up", timeout=10)
-        assert resp.status_code == 200
-
-
-def test_default_trusted_release_clean_archive_passes(cache_dir: Path) -> None:
-    """Clean seeded archive returns pass attestation with valid signature."""
-    repo = unpack("trusted-corpus-a")
-    archive, _ = build_archive(
-        11,
-        [
-            {"name": "compose.yml", "data": "services:\n  web:\n    image: nginx\n"},
-            {"name": "app.env", "data": "PUBLIC_URL=https://example.com\n"},
-        ],
-    )
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive)
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert body["verdict"] == "pass"
-        assert body["findings"] == []
-        verify_attestation(dict(body))
-
-
-def test_mixed_archive_reports_constructed_findings_without_secret_leakage(cache_dir: Path) -> None:
-    """Injected violations appear without leaking secret bytes."""
-    repo = unpack("trusted-corpus-a")
-    secret = "sk_live_abcdefghijklmnop"
-    archive, manifest = build_archive(
-        22,
-        [
-            {
-                "path": "stack/docker-compose.yml",
-                "data": f"services:\n  api:\n    environment:\n      DATABASE_PASSWORD: {secret}\n",
-                "expect_finding": True,
-                "rule_id": "compose.secret",
-            },
-            {
-                "path": "tokens/bad.jwt",
-                "data": "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJhYmMifQ.\n",
-                "expect_finding": True,
-                "kind": "jwt",
-                "rule_id": "jwt.forbidden_algorithm",
-            },
-        ],
-    )
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive, META["trusted_a"]["ref"])
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert body["verdict"] == "reject"
-        raw = resp.text
-        assert secret not in raw
-        paths = {f["path"] for f in body["findings"]}
-        assert any(m.path in paths for m in manifest)
-
-
-def test_archive_path_traversal_is_rejected_before_scanning(cache_dir: Path) -> None:
-    """Parent-traversing archive paths are rejected with HTTP 422 before scanning."""
-    repo = unpack("trusted-corpus-a")
-    archive, _ = build_archive(33, [{"path": "../outside.env", "data": "SECRET=1\n"}])
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive)
-        assert resp.status_code == 422
-        assert "error" in resp.json()
-
-
-def test_unsafe_archive_precedes_corpus_resolution_failure(cache_dir: Path) -> None:
-    """Unsafe archive validation returns HTTP 422 before an unavailable corpus can return HTTP 424."""
-    archive, _ = build_archive(331, [{"path": "../outside.env", "data": "SECRET=1\n"}])
-    missing_remote = cache_dir.parent / "missing-corpus.git"
-    with PumaServer(remote_url=f"file://{missing_remote}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive)
-        assert resp.status_code == 422, resp.text
-        assert resp.json()["error"]["code"] == "unsafe_path"
-
-
-def test_archive_absolute_path_is_rejected(cache_dir: Path) -> None:
-    """Absolute tar member paths are rejected with HTTP 422."""
-    repo = unpack("trusted-corpus-a")
-    archive, _ = build_archive(34, [{"path": "/etc/attestor.env", "data": "SECRET=1\n"}])
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive)
-        assert resp.status_code == 422
-        assert "error" in resp.json()
-
-
-def test_archive_duplicate_normalized_path_is_rejected(cache_dir: Path) -> None:
-    """Duplicate tar member paths are rejected with HTTP 422."""
-    repo = unpack("trusted-corpus-a")
-    archive, _ = build_archive(
-        35,
-        [
-            {"path": "config/app.env", "data": "A=1\n"},
-            {"path": "config/app.env", "data": "B=2\n"},
-        ],
-    )
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive)
-        assert resp.status_code == 422
-        assert "error" in resp.json()
-
-
-@pytest.mark.parametrize(
-    ("entry_type", "linkname"),
-    [("symlink", "target.env"), ("hardlink", "target.env")],
-)
-def test_archive_links_are_rejected(cache_dir: Path, entry_type: str, linkname: str) -> None:
-    """Symbolic and hard-link tar entries are rejected with HTTP 422."""
-    repo = unpack("trusted-corpus-a")
-    archive, _ = build_archive(
-        36,
-        [{"path": f"payload/{entry_type}.env", "data": b"", "type": entry_type, "linkname": linkname}],
-    )
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive)
-        assert resp.status_code == 422
-        assert "error" in resp.json()
-
-
-def test_archive_non_regular_entry_is_rejected(cache_dir: Path) -> None:
-    """Special non-regular tar entries are rejected with HTTP 422."""
-    repo = unpack("trusted-corpus-a")
-    archive, _ = build_archive(37, [{"path": "payload/channel", "data": b"", "type": "fifo"}])
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive)
-        assert resp.status_code == 422
-        assert "error" in resp.json()
-
-
-def test_archive_non_normalized_name_is_rejected(cache_dir: Path) -> None:
-    """Tar names containing a redundant non-normalized segment are rejected with HTTP 422."""
-    repo = unpack("trusted-corpus-a")
-    archive, _ = build_archive(38, [{"path": "payload/./hidden.env", "data": "SECRET=1\n"}])
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive)
-        assert resp.status_code == 422
-        assert "error" in resp.json()
-
-
-def test_invalid_or_non_tag_release_refs_are_refused(cache_dir: Path) -> None:
-    """Branch refs and other non-tag release references are refused."""
-    repo = unpack("trusted-corpus-a")
-    archive, _ = build_archive(44, [{"name": "ok.env", "data": "OK=1\n"}])
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive, META["trusted_a"]["branch_ref"])
-        assert resp.status_code in {422, 424}
-
-
-def test_lightweight_tag_is_refused(cache_dir: Path) -> None:
-    """Lightweight tags are refused even when their target commit is otherwise trusted."""
-    repo = unpack("trusted-corpus-a")
-    archive, _ = build_archive(54, [{"name": "ok.env", "data": "OK=1\n"}])
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive, META["trusted_a"]["lightweight_ref"])
-        assert resp.status_code == 424
-        assert "error" in resp.json()
-
-
-def test_unsigned_annotated_tag_is_refused(cache_dir: Path) -> None:
-    """Unsigned annotated tags return HTTP 424."""
-    repo = unpack("unsigned-corpus")
-    archive, _ = build_archive(55, [{"name": "ok.env", "data": "OK=1\n"}])
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive, META["unsigned"]["ref"])
-        assert resp.status_code == 424
-
-
-def test_valid_signature_from_untrusted_fingerprint_is_refused(cache_dir: Path) -> None:
-    """Valid signatures from fingerprints outside the allowlist are refused."""
-    repo = unpack("untrusted-signer-corpus")
-    archive, _ = build_archive(66, [{"name": "ok.env", "data": "OK=1\n"}])
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive, META["untrusted"]["ref"])
-        assert resp.status_code == 424
-
-
-def test_missing_lfs_object_is_refused(cache_dir: Path) -> None:
-    """A signed release with an unavailable required LFS object fails closed with HTTP 424."""
-    repo = unpack("missing-lfs-corpus")
-    archive, _ = build_archive(76, [{"name": "ok.env", "data": "OK=1\n"}])
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive, META["missing_lfs"]["ref"])
-        assert resp.status_code == 424
-        assert "error" in resp.json()
-
-
-def test_cache_isolated_by_remote_url(cache_dir: Path) -> None:
-    """A cache warmed from one remote is never reused for another remote with the same tag ref."""
-    trusted_repo = unpack("trusted-corpus-a")
-    untrusted_repo = unpack("untrusted-signer-corpus")
-    archive, _ = build_archive(75, [{"name": "ok.env", "data": "OK=1\n"}])
-
-    with PumaServer(remote_url=f"file://{trusted_repo}", cache_root=str(cache_dir)) as server:
-        warm = post_attestation(server, archive, META["trusted_a"]["ref"])
-        assert warm.status_code == 200, warm.text
-
-    with PumaServer(remote_url=f"file://{untrusted_repo}", cache_root=str(cache_dir)) as server:
-        poisoned = post_attestation(server, archive, META["untrusted"]["ref"])
-        assert poisoned.status_code == 424, poisoned.text
-        assert "error" in poisoned.json()
-
-
-def test_cache_isolated_by_allowed_signer(cache_dir: Path) -> None:
-    """A cache warmed for one allowed signer is not reused after the signer override changes."""
-    repo = unpack("trusted-corpus-a")
-    archive, _ = build_archive(751, [{"name": "ok.env", "data": "OK=1\n"}])
-
-    with PumaServer(
-        remote_url=f"file://{repo}",
-        cache_root=str(cache_dir),
-        allowed_signer=META["trusted_a"]["signer_fingerprint"],
-    ) as server:
-        warm = post_attestation(server, archive, META["trusted_a"]["ref"])
-        assert warm.status_code == 200, warm.text
-
-    with PumaServer(
-        remote_url=f"file://{repo}",
-        cache_root=str(cache_dir),
-        allowed_signer=META["trusted_b"]["signer_fingerprint"],
-    ) as server:
-        refused = post_attestation(server, archive, META["trusted_a"]["ref"])
-        assert refused.status_code == 424, refused.text
-        assert "error" in refused.json()
-
-
-def test_lfs_policy_is_hydrated_and_controls_results(cache_dir: Path) -> None:
-    """Corpus B LFS policy hydration drives scanner findings and policy_sha256."""
-    repo = unpack("trusted-corpus-b")
-    archive, _ = build_archive(
-        77,
-        [{"path": "notes.txt", "data": "corp_b_vault_marker\n", "expect_finding": True, "rule_id": "CORPUS-B-VAULT-LINE"}],
-    )
-    with PumaServer(
-        remote_url=f"file://{repo}",
-        cache_root=str(cache_dir),
-        allowed_signer=META["trusted_b"]["signer_fingerprint"],
-    ) as server:
-        resp = post_attestation(server, archive, META["trusted_b"]["ref"])
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert body["baseline"]["policy_sha256"] == META["trusted_b"]["policy_sha256"]
-
-
-def test_attestation_signature_matches_canonical_payload(cache_dir: Path) -> None:
-    """RS256 signature verifies against the canonical unsigned payload."""
-    repo = unpack("trusted-corpus-a")
-    archive, _ = build_archive(88, [{"name": "bad.env", "data": "API_SECRET=sk_live_qwertyuiopasdfgh\n", "expect_finding": True, "rule_id": "compose.secret"}])
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive)
-        body = resp.json()
-        verify_attestation(dict(body))
-
-
-def test_repeated_identical_request_is_byte_deterministic(cache_dir: Path) -> None:
-    """Identical requests produce byte-identical JSON responses."""
-    repo = unpack("trusted-corpus-a")
-    archive, _ = build_archive(99, [{"name": "compose.yml", "data": "services:\n  web:\n    image: nginx\n"}])
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        bodies = [post_attestation(server, archive).content for _ in range(3)]
-        assert bodies[0] == bodies[1] == bodies[2]
-
-
-def test_existing_rspec_behavior_remains_green() -> None:
-    """Shipped RSpec examples continue to pass after the repair."""
-    proc = subprocess.run(
-        ["bundle", "exec", "rspec", "--format", "progress", "/app/environment/source/spec"],
-        cwd="/app",
-        capture_output=True,
+def run(cmd, *args):
+    result = subprocess.run(
+        [cmd, *args],
+        cwd=APP_DIR,
         text=True,
+        capture_output=True,
+        check=False,
     )
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert result.returncode == 0, (
+        f"{cmd} {' '.join(args)} failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+    )
+    return result.stdout
+
+
+def query(sql):
+    result = subprocess.run(
+        ["sqlite3", "-json", str(DB_PATH), sql],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    payload = result.stdout.strip()
+    return json.loads(payload) if payload else []
+
+
+def trust_ledger_snapshot():
+    return {
+        "compose_exceptions": query(
+            "SELECT exception_id,service,compose_file,rule_code,expires_on,approver,evidence_ref,mount_target,environment,canonical_note "
+            "FROM compose_exceptions ORDER BY exception_id"
+        ),
+        "release_refs": query(
+            "SELECT branch,source_ref,observed_at FROM release_refs ORDER BY branch"
+        ),
+        "changelog_tags": query(
+            "SELECT tag,source_ref,signed,observed_at FROM changelog_tags ORDER BY tag"
+        ),
+        "audit_events": query(
+            "SELECT event_key,event_value FROM audit_events ORDER BY event_key"
+        ),
+    }
+
+
+def ledger_seal():
+    payload = json.dumps(trust_ledger_snapshot(), separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def test_attestor_runs_from_typescript_sources():
+    """The TypeScript runner updates trust.db without relying on a prebuilt database."""
+    run("npm", "run", "trust:attest")
+    assert DB_PATH.exists(), "trust.db was not created"
+
+
+def test_trust_ledger_snapshot_seal_matches_canonical_ledger():
+    """The security ledger snapshot matches the canonical trust ledger seal."""
+    assert ledger_seal() == "f7f1ef02d7448e8157e233ab8a4da2ea538c6f9bdfbc8af7186943610d45ebfb"
+
+
+def test_exception_filtering_uses_latest_status_and_compose_evidence():
+    """Latest review status, expiry, and Compose evidence validation decide canonical exceptions."""
+    rows = query(
+        "SELECT exception_id,service,rule_code,environment FROM compose_exceptions ORDER BY exception_id"
+    )
+    assert len(rows) == 2
+    assert [row["exception_id"] for row in rows] == ["NV-EX-001", "NV-EX-004"]
+    leaked = {"NV-EX-002", "NV-EX-003", "NV-EX-005"} & {
+        row["exception_id"] for row in rows
+    }
+    assert not leaked, f"withdrawn, invalid, or expired exception leaked into trust.db: {sorted(leaked)}"
+
+
+def test_release_branches_and_changelog_tags_are_canonical():
+    """Suffix, prefix, RC, draft, and unsigned release near misses are excluded."""
+    branches = [
+        row["branch"]
+        for row in query("SELECT branch FROM release_refs ORDER BY branch")
+    ]
+    assert branches == ["release/2.27", "release/2.28", "release/2.29"]
+
+    tags = query("SELECT tag,source_ref,signed FROM changelog_tags ORDER BY tag")
+    assert [row["tag"] for row in tags] == ["v2.27.4", "v2.28.0", "v2.29.1"]
+    tag_228 = next(row for row in tags if row["tag"] == "v2.28.0")
+    assert tag_228["source_ref"] == "v2.28.0+in-toto"
+    assert tag_228["signed"] == 1
+
+
+def test_attestor_is_deterministic_on_rerun():
+    """Re-running the trust attestation produces the same security ledger snapshot."""
+    before = ledger_seal()
+    run("npm", "run", "trust:attest")
+    after = ledger_seal()
+    assert before == after

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://compose-spec.io/schema/compose-spec.json",
+  "title": "Compose Specification",
+  "type": "object",
+  "required": [
+    "services"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "services": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object"
+      }
+    },
+    "secrets": {
+      "type": "object"
+    },
+    "x-nimbus-exceptions": {
+      "type": "array"
+    }
+  },
+  "additionalProperties": true
+}

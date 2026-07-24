@@ -1,0 +1,67 @@
+{
+  "repository": "docker/compose",
+  "captured_at": "2024-12-20T17:12:00Z",
+  "refs": [
+    {
+      "name": "refs/heads/release/2.27",
+      "object": "4a1df0"
+    },
+    {
+      "name": "refs/heads/release/2.27.x",
+      "object": "bad-nearmiss"
+    },
+    {
+      "name": "refs/heads/release/2.28",
+      "object": "bb8e20"
+    },
+    {
+      "name": "refs/heads/release/2.29",
+      "object": "c013fe"
+    },
+    {
+      "name": "refs/heads/release/security-2.29",
+      "object": "reject-prefix"
+    },
+    {
+      "name": "refs/heads/main",
+      "object": "main"
+    }
+  ],
+  "tags": [
+    {
+      "name": "v2.27.4",
+      "signed": true,
+      "changelog": "CHANGELOG.md#2274"
+    },
+    {
+      "name": "v2.27.4-rc.1",
+      "signed": true,
+      "changelog": "CHANGELOG.md#2274-rc1"
+    },
+    {
+      "name": "v2.28.0",
+      "signed": false,
+      "changelog": "CHANGELOG.md#2280"
+    },
+    {
+      "name": "v2.28.0+in-toto",
+      "signed": true,
+      "changelog": "CHANGELOG.md#2280"
+    },
+    {
+      "name": "v2.29.1",
+      "signed": true,
+      "changelog": "CHANGELOG.md#2291"
+    },
+    {
+      "name": "compose/v2.29.1",
+      "signed": true,
+      "changelog": "CHANGELOG.md#2291"
+    },
+    {
+      "name": "v2.30.0",
+      "signed": true,
+      "changelog": "draft"
+    }
+  ]
+}

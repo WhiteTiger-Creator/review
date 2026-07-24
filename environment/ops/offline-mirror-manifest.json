@@ -1,0 +1,8 @@
+{
+  "captured_at": "2024-12-20T17:12:00Z",
+  "files": [
+    "evidence/remote/compose-spec.schema.json",
+    "evidence/remote/docker-compose-refs.json"
+  ],
+  "purpose": "offline replay of remote schema and ref checks"
+}
