@@ -1,5 +1,0 @@
-target/
-*.class
-*.mv.db
-*.trace.db
-*.lock.db

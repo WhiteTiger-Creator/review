@@ -1,10 +1,11 @@
 .git
 .gitignore
+solution/
+tests/
 **/__pycache__/
 **/*.pyc
 **/.pytest_cache/
 **/.mypy_cache/
 **/.ruff_cache/
 **/node_modules/
-**/target/
-**/.DS_Store
+.DS_Store
