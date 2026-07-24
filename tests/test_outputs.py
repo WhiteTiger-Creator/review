@@ -1,975 +1,866 @@
-"""Behavioral verifier for the cosign quorum auditor task.
+"""Verification for meshgrid Gradle monorepo gridknit stabilizer."""
 
-Every check runs the agent's /app/audit executable against release-ledger files
-generated fresh at test time (random signer rosters, key rotations, removals,
-releases, valid and forged cosignatures, and authorize queries), so a tool that
-hardcodes or replays a fixed answer cannot pass. The expected object is computed
-by an independent Python reference implementation of the same scheme: the whole
-hand-rolled keyed MAC over the [rid, sid, digest] word order, the order-dependent
-aggregate combine folded in signer-id order, the positional roster replay with
-enroll/remove active-set tracking, the key-rotation voiding of earlier
-cosignatures, the k-of-n threshold, the per-release verification verdict
-precedence, and the whole-file schema. The candidate executable is run as an
-unprivileged user with /tests unreadable to it, so the reference cannot be read
-at run time. No network is touched in any path.
-"""
+from __future__ import annotations
 
+import hashlib
 import json
-import os
-import random
 import subprocess
-import tempfile
+from pathlib import Path
+from typing import Any
 
 import pytest
 
-AUDIT = "/app/audit"
-RESULT = "/app/output/result.json"
+REPORT_PATH = Path("/app/build/gradle_stabilization_report.json")
+BINARY = Path("/app/build/gridknit")
+ROOT = Path("/app/meshgrid")
+POLICY = Path("/app/gradle-policy")
+APP = Path("/app")
 
-RNG = random.Random()
+WORKSPACE_KEYS = [
+    "gradle_major",
+    "gradle_minor",
+    "module_count",
+    "require_offline_vault",
+    "fail_on_project_repos",
+    "max_direct_deps",
+    "strict_bom",
+]
+MODULE_KEYS = [
+    "module_id",
+    "coordinate",
+    "bom_consumer",
+    "direct_deps",
+    "capture",
+    "status",
+]
+CAPTURE_KEYS = [
+    "format_version",
+    "records_total",
+    "records_valid",
+    "records_rejected",
+    "dup_coord_rejects",
+    "payload_bytes",
+]
+FINDING_KEYS = [
+    "finding_id",
+    "module_id",
+    "entity_id",
+    "kind",
+    "event_seq",
+    "detail",
+]
+ROOT_KEYS = [
+    "workspace",
+    "modules",
+    "findings",
+    "duplicate_modules_skipped",
+    "status",
+]
 
-M = (1 << 64) - 1
-C0 = 0x736f6d6570736575
-C1 = 0x646f72616e646f6d
-C2 = 0x6c7967656e657261
-PAD = 0x0f0f0f0f0f0f0f0f
-FIN = 0xff00ff00ff00ff00
-SEED = 0xc3d2e1f0a1b2c3d4
-MULT = 0x9e3779b97f4a7c15
-STANDING_THRESHOLD = 2
+PLUGIN_DEFAULTS = {
+    "com.meshgrid.wireloom": (8, 7),
+    "com.meshgrid.depknit": (8, 8),
+    "com.meshgrid.artifactseal": (8, 10),
+    "com.meshgrid.pluginbridge": (8, 5),
+    "com.meshgrid.releasemesh": (8, 9),
+    "com.meshgrid.cataloghub": (8, 10),
+    "org.gradle.publish-offline": (8, 6),
+}
 
-
-def rotl(x, r):
-    x &= M
-    return ((x << r) | (x >> (64 - r))) & M
-
-
-def rnd(v0, v1, v2):
-    v0 = (v0 + v1) & M
-    v1 = rotl(v1, 13)
-    v1 ^= v0
-    v0 = rotl(v0, 32)
-    v2 = (v2 + v0) & M
-    v0 = rotl(v0, 16)
-    v0 ^= v2
-    v2 = rotl(v2, 21)
-    v1 = (v1 + v2) & M
-    v2 ^= v1
-    return v0 & M, v1 & M, v2 & M
-
-
-def mac(key, words):
-    v0 = key ^ C0
-    v1 = rotl(key, 32) ^ C1
-    v2 = key ^ C2
-    for w in words:
-        v0 = (v0 + w) & M
-        v2 ^= w
-        v0, v1, v2 = rnd(v0, v1, v2)
-        v0, v1, v2 = rnd(v0, v1, v2)
-    v2 ^= PAD
-    v0, v1, v2 = rnd(v0, v1, v2)
-    v0, v1, v2 = rnd(v0, v1, v2)
-    v1 ^= FIN
-    v0, v1, v2 = rnd(v0, v1, v2)
-    return (v0 ^ v1 ^ v2) & M
-
-
-def combine(tags):
-    acc = SEED
-    for t in tags:
-        acc ^= t
-        acc = rotl(acc, 7)
-        acc = (acc + MULT) & M
-        acc ^= rotl(t, 40)
-    acc ^= acc >> 33
-    acc = (acc * 0xff51afd7ed558ccd) & M
-    acc ^= acc >> 33
-    acc = (acc * 0xc4ceb9fe1a85ec53) & M
-    acc ^= acc >> 33
-    return acc & M
+IMMUTABLE_SHA256: dict[str, str] = {}
 
 
-def u(s):
-    return int(s, 16)
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def h(x):
-    return f"{x:016x}"
+def _sha256_coord(coord: str, version: str) -> str:
+    return hashlib.sha256(f"{coord}|{version}".encode()).hexdigest()
 
 
-def tag_of(key_hex, rid, sid, digest):
-    """The correct keyed tag a signer holding key_hex would record."""
-    return h(mac(u(key_hex), [u(rid), u(sid), u(digest)]))
+def _split_kv(line: str) -> tuple[str, str] | None:
+    if "=" not in line:
+        return None
+    k, v = line.split("=", 1)
+    return k.strip(), v.strip()
 
 
-def reference(recs):
-    """recs: ("enroll", sid, key) / ("remove", sid) / ("rotate", sid, key)
-    / ("release", rid, k, digest) / ("cosign", rid, sid, tag)
-    / ("authorize", seq, rid, claim) / ("anchor", sid)
-    / ("vouch", voucher_sid, target_sid)."""
+def load_catalog(path: Path) -> dict[str, Any]:
+    versions: dict[str, str] = {}
+    libraries: dict[str, dict[str, Any]] = {}
+    bundles: dict[str, list[str]] = {}
+    section = ""
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line.strip("[]")
+            continue
+        kv = _split_kv(line)
+        if not kv:
+            continue
+        k, v = kv
+        if section == "versions":
+            versions[k] = v.strip('"')
+        elif section == "libraries":
+            libraries[k] = _parse_lib(v)
+        elif section == "bundles":
+            inner = v.strip().strip("[]")
+            bundles[k] = [p.strip().strip('"') for p in inner.split(",") if p.strip()]
+    return {"versions": versions, "libraries": libraries, "bundles": bundles}
 
-    def malformed():
-        return {"status": "malformed", "decisions": [], "releases": [],
-                "authorized_count": 0, "under_threshold_count": 0,
-                "tag_mismatch_count": 0, "unknown_count": 0,
-                "release_count": 0, "authorize_count": 0}
 
-    releases = {}
-    enrolled = set()
-    for r in recs:
-        if r[0] == "release":
-            if r[1] in releases:
-                return malformed()
-            releases[r[1]] = (r[2], r[3])
-        elif r[0] == "enroll":
-            enrolled.add(r[1])
-    release_count = sum(1 for r in recs if r[0] == "release")
-    authorize_count = sum(1 for r in recs if r[0] == "authorize")
+def _parse_lib(rest: str) -> dict[str, Any]:
+    rest = rest.strip().strip("{}")
+    out: dict[str, Any] = {"module": "", "version": "", "version_ref": "", "inline": False}
+    for part in rest.split(","):
+        kv = _split_kv(part.strip())
+        if not kv:
+            continue
+        k, v = kv
+        v = v.strip('"')
+        if k == "module":
+            out["module"] = v
+        elif k == "version.ref":
+            out["version_ref"] = v
+        elif k == "version":
+            out["version"] = v
+            out["inline"] = True
+    return out
 
-    qi = 0
-    for r in recs:
-        if r[0] == "release":
-            if r[2] < 0:
-                return malformed()
-        elif r[0] == "cosign":
-            if r[1] not in releases or r[2] not in enrolled:
-                return malformed()
-        elif r[0] in ("remove", "rotate", "anchor"):
-            if r[1] not in enrolled:
-                return malformed()
-        elif r[0] == "vouch":
-            if r[1] not in enrolled or r[2] not in enrolled:
-                return malformed()
-            if r[1] == r[2]:
-                return malformed()
-        elif r[0] == "authorize":
-            if r[1] < 0 or r[1] != qi:
-                return malformed()
-            qi += 1
 
-    idx_recs = list(enumerate(recs))
+def load_plugins(path: Path) -> list[dict[str, Any]]:
+    reqs: list[dict[str, Any]] = []
+    cur: dict[str, Any] | None = None
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line == "[[plugins]]":
+            if cur is not None:
+                reqs.append(cur)
+            cur = {}
+            continue
+        if cur is None:
+            continue
+        kv = _split_kv(line)
+        if not kv:
+            continue
+        k, v = kv
+        v = v.strip('"')
+        if k == "id":
+            cur["id"] = v
+        elif k == "version":
+            cur["version"] = v
+        elif k == "min_gradle":
+            maj, minor = v.split(".")
+            cur["min_gradle"] = (int(maj), int(minor))
+    if cur is not None:
+        reqs.append(cur)
+    return reqs
 
-    def key_in_force(sid, upto):
-        k = None
-        for i, r in idx_recs:
-            if i > upto:
-                break
-            if r[0] in ("enroll", "rotate") and r[1] == sid:
-                k = r[2]
-        return k
 
-    def is_active(sid, upto):
-        st = None
-        for i, r in idx_recs:
-            if i >= upto:
-                break
-            if r[0] == "enroll" and r[1] == sid:
-                st = True
-            elif r[0] == "remove" and r[1] == sid:
-                st = False
-        return st is True
+def load_publish(path: Path) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        kv = _split_kv(line)
+        if not kv:
+            continue
+        k, v = kv
+        v = v.strip('"')
+        if k == "signed_publish":
+            out[k] = v == "true"
+        else:
+            out[k] = v
+    return out
 
-    anchors = {r[1] for r in recs if r[0] == "anchor"}
 
-    def standing_set(upto):
-        """Section 5.5: least-fixpoint standing at position `upto`. Returns
-        None when standing gating is inactive (no anchor declared anywhere in
-        the file), meaning every active signer qualifies regardless."""
-        if not anchors:
-            return None
-        vouchers_of = {}
-        for i, r in idx_recs:
-            if i >= upto:
-                break
-            if r[0] == "vouch":
-                vouchers_of.setdefault(r[2], set()).add(r[1])
-        standing = {a for a in anchors if is_active(a, upto)}
-        changed = True
-        while changed:
-            changed = False
-            for target, vouchers in vouchers_of.items():
-                if target in standing:
+def decode_lock(path: Path) -> tuple[dict[str, int], list[dict[str, Any]]]:
+    stats = {
+        "format_version": 0,
+        "records_total": 0,
+        "records_valid": 0,
+        "records_rejected": 0,
+        "dup_coord_rejects": 0,
+        "payload_bytes": 0,
+    }
+    if not path.exists():
+        return stats, []
+    lines = path.read_text().splitlines()
+    if not lines or lines[0] != "LOCK1":
+        raise ValueError("bad magic")
+    stats["format_version"] = int(lines[1])
+    seen: set[str] = set()
+    recs: list[dict[str, Any]] = []
+    for line in lines[3:]:
+        if not line.strip():
+            continue
+        stats["records_total"] += 1
+        parts = line.split("\t")
+        if len(parts) != 4:
+            stats["records_rejected"] += 1
+            continue
+        coord, version, checksum, opt = parts
+        reason = ""
+        if opt not in ("0", "1"):
+            reason = "BAD_OPTIONAL"
+        elif checksum != _sha256_coord(coord, version):
+            reason = "BAD_CHECKSUM"
+        elif coord in seen:
+            reason = "DUP_COORD"
+        seen.add(coord)
+        if reason:
+            stats["records_rejected"] += 1
+            if reason == "DUP_COORD":
+                stats["dup_coord_rejects"] += 1
+            continue
+        recs.append(
+            {
+                "coordinate": coord,
+                "version": version,
+                "checksum": checksum,
+                "optional": opt == "1",
+            }
+        )
+        stats["records_valid"] += 1
+        stats["payload_bytes"] += len(line)
+    return stats, recs
+
+
+def resolve_policy(man: dict[str, Any]) -> tuple[bool, bool, int, bool]:
+    require_offline = bool(man.get("require_offline_vault", True))
+    fail_on_project = bool(man.get("fail_on_project_repos", True))
+    max_deps = int(man.get("max_direct_deps") or 3)
+    strict_bom = bool(man.get("strict_bom", True))
+    ov = man.get("policy_overrides") or {}
+    if "require_offline_vault" in ov:
+        require_offline = bool(ov["require_offline_vault"])
+    if "fail_on_project_repos" in ov:
+        fail_on_project = bool(ov["fail_on_project_repos"])
+    if "strict_bom" in ov:
+        strict_bom = bool(ov["strict_bom"])
+    if "max_direct_deps" in ov:
+        max_deps = int(ov["max_direct_deps"])
+    return require_offline, fail_on_project, max_deps, strict_bom
+
+
+def plugin_incompatible(req: dict[str, Any], maj: int, minor: int) -> bool:
+    if "min_gradle" in req:
+        need = req["min_gradle"]
+    elif req["id"] in PLUGIN_DEFAULTS:
+        need = PLUGIN_DEFAULTS[req["id"]]
+    else:
+        return False
+    if maj < need[0]:
+        return True
+    if maj > need[0]:
+        return False
+    return minor < need[1]
+
+
+def fid(mid: str, entity: str, kind: str, seq: int) -> str:
+    return f"{mid}::{entity}::{kind}::{seq:04d}"
+
+
+def referenced_coords(mf: dict[str, Any], cat: dict[str, Any]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for alias in mf.get("library_aliases") or []:
+        lib = cat["libraries"].get(alias)
+        if not lib:
+            continue
+        if lib["version_ref"]:
+            ver = cat["versions"].get(lib["version_ref"])
+            if ver is None:
+                continue
+        elif lib["inline"]:
+            ver = lib["version"]
+        else:
+            continue
+        out[lib["module"]] = ver
+    for k, v in (mf.get("version_overrides") or {}).items():
+        out[k] = v
+    return out
+
+
+def cycle_successors(loaded: dict[str, dict[str, Any]]) -> dict[str, str]:
+    in_cycle: set[str] = set()
+    for start in loaded:
+        visited: set[str] = set()
+
+        def dfs(cur: str, path: list[str], seen: set[str]) -> bool:
+            if cur in path:
+                idx = path.index(cur)
+                in_cycle.update(path[idx:])
+                in_cycle.add(cur)
+                return True
+            if cur in seen:
+                return False
+            seen.add(cur)
+            for dep in loaded[cur].get("dependencies") or []:
+                if dep not in loaded:
                     continue
-                if not is_active(target, upto):
+                if dfs(dep, path + [cur], seen):
+                    return True
+            return False
+
+        dfs(start, [], visited)
+    out: dict[str, str] = {}
+    for mid in in_cycle:
+        cands = sorted(
+            d for d in (loaded[mid].get("dependencies") or []) if d in in_cycle
+        )
+        if cands:
+            out[mid] = cands[0]
+    return out
+
+
+def build_expected() -> dict[str, Any]:
+    man = json.loads((ROOT / "workspace.manifest.json").read_text())
+    require_offline, fail_on_project, max_deps, strict_bom = resolve_policy(man)
+    cat = load_catalog(ROOT / "catalog" / "libs.versions.toml")
+    reqs = load_plugins(ROOT / "plugins" / "plugin-requests.toml")
+    pub = load_publish(ROOT / "publish" / "offline-vault.toml")
+
+    findings: list[dict[str, Any]] = []
+
+    for req in reqs:
+        if plugin_incompatible(req, man["gradle_major"], man["gradle_minor"]):
+            findings.append(
+                {
+                    "finding_id": fid("meshgrid", req["id"], "PLUGIN_INCOMPATIBLE", 0),
+                    "module_id": "meshgrid",
+                    "entity_id": req["id"],
+                    "kind": "PLUGIN_INCOMPATIBLE",
+                    "event_seq": 0,
+                    "detail": req["version"],
+                }
+            )
+
+    for alias in sorted(set(cat["bundles"]) & set(cat["libraries"])):
+        findings.append(
+            {
+                "finding_id": fid("meshgrid", alias, "CATALOG_ALIAS_CONFLICT", 0),
+                "module_id": "meshgrid",
+                "entity_id": alias,
+                "kind": "CATALOG_ALIAS_CONFLICT",
+                "event_seq": 0,
+                "detail": "bundle",
+            }
+        )
+
+    for alias, lib in sorted(cat["libraries"].items()):
+        if not lib["inline"]:
+            continue
+        if alias in cat["versions"] and cat["versions"][alias] != lib["version"]:
+            findings.append(
+                {
+                    "finding_id": fid("meshgrid", alias, "CATALOG_VERSION_DRIFT", 0),
+                    "module_id": "meshgrid",
+                    "entity_id": alias,
+                    "kind": "CATALOG_VERSION_DRIFT",
+                    "event_seq": 0,
+                    "detail": lib["version"],
+                }
+            )
+
+    if fail_on_project and pub.get("repositories_mode") != "FAIL_ON_PROJECT_REPOS":
+        findings.append(
+            {
+                "finding_id": fid("meshgrid", "repositories_mode", "PROJECT_REPO_FORBIDDEN", 0),
+                "module_id": "meshgrid",
+                "entity_id": "repositories_mode",
+                "kind": "PROJECT_REPO_FORBIDDEN",
+                "event_seq": 0,
+                "detail": pub.get("repositories_mode", ""),
+            }
+        )
+    if require_offline:
+        if pub.get("vault_path") != "/app/meshgrid/offline-vault":
+            findings.append(
+                {
+                    "finding_id": fid("meshgrid", "vault_path", "OFFLINE_REPO_MISCONFIG", 0),
+                    "module_id": "meshgrid",
+                    "entity_id": "vault_path",
+                    "kind": "OFFLINE_REPO_MISCONFIG",
+                    "event_seq": 0,
+                    "detail": pub.get("vault_path", ""),
+                }
+            )
+        if not pub.get("signed_publish"):
+            findings.append(
+                {
+                    "finding_id": fid("meshgrid", "signed_publish", "PUBLISH_UNSIGNED", 0),
+                    "module_id": "meshgrid",
+                    "entity_id": "signed_publish",
+                    "kind": "PUBLISH_UNSIGNED",
+                    "event_seq": 0,
+                    "detail": "",
+                }
+            )
+
+    seen: set[str] = set()
+    dup_skipped = 0
+    max_ord = -1
+    loaded: dict[str, dict[str, Any]] = {}
+    module_order: list[str] = []
+    coords: dict[str, str] = {}
+    finding_count: dict[str, int] = {}
+    captures: dict[str, dict[str, int]] = {}
+
+    for ord_, mid in enumerate(man["modules"]):
+        max_ord = max(max_ord, ord_)
+        if mid in seen:
+            dup_skipped += 1
+            continue
+        seen.add(mid)
+        module_order.append(mid)
+        mf = json.loads((ROOT / "modules" / f"{mid}.module.json").read_text())
+        loaded[mid] = mf
+        coord = f"{mf['group']}:{mf['artifact']}"
+        if coord in coords:
+            findings.append(
+                {
+                    "finding_id": fid(mid, coord, "DUPLICATE_MODULE_COORDINATE", ord_),
+                    "module_id": mid,
+                    "entity_id": coord,
+                    "kind": "DUPLICATE_MODULE_COORDINATE",
+                    "event_seq": ord_,
+                    "detail": coords[coord],
+                }
+            )
+            finding_count[mid] = finding_count.get(mid, 0) + 1
+        else:
+            coords[coord] = mid
+
+        for dep in mf.get("dependencies") or []:
+            if dep == mid:
+                findings.append(
+                    {
+                        "finding_id": fid(mid, mid, "SELF_DEPENDENCY", ord_),
+                        "module_id": mid,
+                        "entity_id": mid,
+                        "kind": "SELF_DEPENDENCY",
+                        "event_seq": ord_,
+                        "detail": "",
+                    }
+                )
+                finding_count[mid] = finding_count.get(mid, 0) + 1
+
+        if len(mf.get("dependencies") or []) > max_deps:
+            findings.append(
+                {
+                    "finding_id": fid(mid, mid, "DEPENDENCY_FANOUT", ord_),
+                    "module_id": mid,
+                    "entity_id": mid,
+                    "kind": "DEPENDENCY_FANOUT",
+                    "event_seq": ord_,
+                    "detail": str(len(mf["dependencies"])),
+                }
+            )
+            finding_count[mid] = finding_count.get(mid, 0) + 1
+
+        overrides = mf.get("version_overrides") or {}
+        if strict_bom and mf.get("bom_consumer") and overrides:
+            k = min(overrides)
+            findings.append(
+                {
+                    "finding_id": fid(mid, k, "BOM_OVERRIDE_FORBIDDEN", ord_),
+                    "module_id": mid,
+                    "entity_id": k,
+                    "kind": "BOM_OVERRIDE_FORBIDDEN",
+                    "event_seq": ord_,
+                    "detail": overrides[k],
+                }
+            )
+            finding_count[mid] = finding_count.get(mid, 0) + 1
+
+        lock_path = ROOT / "locks" / f"{mid}.lock"
+        if not lock_path.exists():
+            findings.append(
+                {
+                    "finding_id": fid(mid, mid, "LOCK_MISSING", ord_),
+                    "module_id": mid,
+                    "entity_id": mid,
+                    "kind": "LOCK_MISSING",
+                    "event_seq": ord_,
+                    "detail": "",
+                }
+            )
+            finding_count[mid] = finding_count.get(mid, 0) + 1
+            captures[mid] = {
+                "format_version": 0,
+                "records_total": 0,
+                "records_valid": 0,
+                "records_rejected": 0,
+                "dup_coord_rejects": 0,
+                "payload_bytes": 0,
+            }
+        else:
+            st, recs = decode_lock(lock_path)
+            captures[mid] = st
+            refs = referenced_coords(mf, cat)
+            for rec in recs:
+                if rec["optional"]:
                     continue
-                if len(vouchers & standing) >= STANDING_THRESHOLD:
-                    standing.add(target)
-                    changed = True
-        return standing
-
-    def eval_release(rid, k, digest, upto):
-        qual = {}
-        standing = standing_set(upto)
-        for i, r in idx_recs:
-            if i >= upto:
-                break
-            if r[0] != "cosign" or r[1] != rid:
-                continue
-            sid, tag = r[2], r[3]
-            kf = key_in_force(sid, i)
-            if kf is None:
-                continue
-            voided = any(rr[0] == "rotate" and rr[1] == sid and i < j < upto
-                         for j, rr in idx_recs)
-            if voided:
-                continue
-            if not is_active(sid, upto):
-                continue
-            if standing is not None and sid not in standing:
-                continue
-            if h(mac(u(kf), [u(rid), u(sid), u(digest)])) != tag:
-                continue
-            qual[sid] = mac(u(kf), [u(rid), u(sid), u(digest)])
-        sids = sorted(qual)
-        return len(sids), h(combine([qual[s] for s in sids]))
-
-    decisions = []
-    counts = {"authorized": 0, "under_threshold": 0,
-              "tag_mismatch": 0, "unknown_release": 0}
-    declared_above = set()
-    for i, r in idx_recs:
-        if r[0] == "release":
-            declared_above.add(r[1])
-        elif r[0] == "authorize":
-            seq, rid, claim = r[1], r[2], r[3]
-            if rid not in declared_above:
-                v = "unknown_release"
-                cos, agg = 0, "0" * 16
-            else:
-                k, digest = releases[rid]
-                cos, agg = eval_release(rid, k, digest, i)
-                if cos < k:
-                    v = "under_threshold"
-                elif agg != claim:
-                    v = "tag_mismatch"
+                if rec["coordinate"] in refs:
+                    if refs[rec["coordinate"]] != rec["version"]:
+                        findings.append(
+                            {
+                                "finding_id": fid(mid, rec["coordinate"], "LOCK_VERSION_DRIFT", ord_),
+                                "module_id": mid,
+                                "entity_id": rec["coordinate"],
+                                "kind": "LOCK_VERSION_DRIFT",
+                                "event_seq": ord_,
+                                "detail": rec["version"],
+                            }
+                        )
+                        finding_count[mid] = finding_count.get(mid, 0) + 1
                 else:
-                    v = "authorized"
-            counts[v] += 1
-            decisions.append({"seq": seq, "verdict": v,
-                              "cosigners": cos, "aggregate": agg})
+                    findings.append(
+                        {
+                            "finding_id": fid(mid, rec["coordinate"], "ORPHAN_LOCK_ENTRY", ord_),
+                            "module_id": mid,
+                            "entity_id": rec["coordinate"],
+                            "kind": "ORPHAN_LOCK_ENTRY",
+                            "event_seq": ord_,
+                            "detail": "",
+                        }
+                    )
+                    finding_count[mid] = finding_count.get(mid, 0) + 1
 
-    rel_list = []
-    total = len(recs)
-    for rid in [r[1] for r in recs if r[0] == "release"]:
-        k, digest = releases[rid]
-        cos, agg = eval_release(rid, k, digest, total)
-        rel_list.append({"id": rid, "authorized": cos >= k,
-                         "cosigners": cos, "aggregate": agg})
+    for mid in module_order:
+        mf = loaded[mid]
+        ord_ = man["modules"].index(mid)
+        for dep in mf.get("dependencies") or []:
+            if dep == mid:
+                continue
+            if dep not in loaded:
+                findings.append(
+                    {
+                        "finding_id": fid(mid, dep, "UNKNOWN_DEPENDENCY", ord_),
+                        "module_id": mid,
+                        "entity_id": dep,
+                        "kind": "UNKNOWN_DEPENDENCY",
+                        "event_seq": ord_,
+                        "detail": "UNKNOWN_DEPENDENCY",
+                    }
+                )
+                finding_count[mid] = finding_count.get(mid, 0) + 1
 
-    return {"status": "ok", "decisions": decisions, "releases": rel_list,
-            "authorized_count": counts["authorized"],
-            "under_threshold_count": counts["under_threshold"],
-            "tag_mismatch_count": counts["tag_mismatch"],
-            "unknown_count": counts["unknown_release"],
-            "release_count": release_count, "authorize_count": authorize_count}
+    audit = max_ord + 1
+    for mid, succ in sorted(cycle_successors(loaded).items()):
+        findings.append(
+            {
+                "finding_id": fid(mid, mid, "MODULE_CYCLE", audit),
+                "module_id": mid,
+                "entity_id": mid,
+                "kind": "MODULE_CYCLE",
+                "event_seq": audit,
+                "detail": succ,
+            }
+        )
+        finding_count[mid] = finding_count.get(mid, 0) + 1
 
+    unresolved: set[str] = set()
+    for lib in cat["libraries"].values():
+        ref = lib["version_ref"]
+        if ref and ref not in cat["versions"]:
+            unresolved.add(ref)
+    for ref in sorted(unresolved):
+        findings.append(
+            {
+                "finding_id": fid("meshgrid", ref, "CATALOG_UNRESOLVED_REF", audit),
+                "module_id": "meshgrid",
+                "entity_id": ref,
+                "kind": "CATALOG_UNRESOLVED_REF",
+                "event_seq": audit,
+                "detail": "",
+            }
+        )
 
-def serialize(recs):
-    lines = []
-    for r in recs:
-        if r[0] == "enroll":
-            lines.append(f"enroll {r[1]} {r[2]}")
-        elif r[0] == "remove":
-            lines.append(f"remove {r[1]}")
-        elif r[0] == "rotate":
-            lines.append(f"rotate {r[1]} {r[2]}")
-        elif r[0] == "release":
-            lines.append(f"release {r[1]} {r[2]} {r[3]}")
-        elif r[0] == "cosign":
-            lines.append(f"cosign {r[1]} {r[2]} {r[3]}")
-        elif r[0] == "anchor":
-            lines.append(f"anchor {r[1]}")
-        elif r[0] == "vouch":
-            lines.append(f"vouch {r[1]} {r[2]}")
-        else:
-            lines.append(f"authorize {r[1]} {r[2]} {r[3]}")
-    return "\n".join(lines) + "\n"
+    modules_out: list[dict[str, Any]] = []
+    for mid in sorted(module_order):
+        mf = loaded[mid]
+        modules_out.append(
+            {
+                "module_id": mid,
+                "coordinate": f"{mf['group']}:{mf['artifact']}:{mf['version']}",
+                "bom_consumer": bool(mf.get("bom_consumer")),
+                "direct_deps": sorted(mf.get("dependencies") or []),
+                "capture": captures[mid],
+                "status": "DRIFT" if finding_count.get(mid, 0) else "STABLE",
+            }
+        )
 
-
-def hid():
-    return "".join(RNG.choice("0123456789abcdef") for _ in range(16))
-
-
-def agg_at(prefix, rid):
-    """The aggregate the reference computes at an authorize placed right after
-    `prefix` — used to build correctly-claimed (authorized) fixtures."""
-    seq = sum(1 for r in prefix if r[0] == "authorize")
-    out = reference(prefix + [("authorize", seq, rid, "0" * 16)])
-    return out["decisions"][-1]["aggregate"]
-
-
-WORK = tempfile.mkdtemp(prefix="cqa-fixtures-")
-os.chmod(WORK, 0o755)
-
-try:
-    import pwd
-    _SB = pwd.getpwnam("sandbox")
-
-    def _DEMOTE():
-        os.setgid(_SB.pw_gid)
-        os.setuid(_SB.pw_uid)
-except (ImportError, KeyError):
-    _DEMOTE = None
-
-try:
-    os.chmod("/tests", 0o700)
-except OSError:
-    pass
-try:
-    os.makedirs("/app/output", exist_ok=True)
-    os.chmod("/app/output", 0o1777)
-except OSError:
-    pass
-
-
-def _write(recs):
-    path = os.path.join(WORK, f"led-{RNG.randrange(1 << 40):010x}.txt")
-    with open(path, "w") as f:
-        f.write(serialize(recs))
-    os.chmod(path, 0o644)
-    return path
-
-
-def _write_raw(text, binary=False):
-    path = os.path.join(WORK, f"raw-{RNG.randrange(1 << 40):010x}.txt")
-    with open(path, "wb" if binary else "w") as f:
-        f.write(text)
-    os.chmod(path, 0o644)
-    return path
-
-
-def _run(path):
-    if os.path.exists(RESULT):
-        os.remove(RESULT)
-    kwargs = {}
-    if _DEMOTE is not None and os.geteuid() == 0:
-        kwargs["preexec_fn"] = _DEMOTE
-    proc = subprocess.run([AUDIT, path], capture_output=True, text=True,
-                          timeout=120, check=False, **kwargs)
-    parsed = None
-    if os.path.exists(RESULT):
-        with open(RESULT) as f:
-            parsed = json.load(f)
-    return proc, parsed
+    findings.sort(key=lambda f: f["finding_id"])
+    status = "DRIFT" if findings else "STABLE"
+    return {
+        "workspace": {
+            "gradle_major": man["gradle_major"],
+            "gradle_minor": man["gradle_minor"],
+            "module_count": len(modules_out),
+            "require_offline_vault": require_offline,
+            "fail_on_project_repos": fail_on_project,
+            "max_direct_deps": max_deps,
+            "strict_bom": strict_bom,
+        },
+        "modules": modules_out,
+        "findings": findings,
+        "duplicate_modules_skipped": dup_skipped,
+        "status": status,
+    }
 
 
-def _run_ok(recs):
-    path = _write(recs)
-    proc, parsed = _run(path)
-    assert proc.returncode == 0, f"expected exit 0, got {proc.returncode}: {proc.stderr}"
-    assert parsed is not None, "result.json was not written"
-    stdout = proc.stdout.strip()
-    assert stdout, "nothing printed to stdout"
-    assert json.loads(stdout) == parsed, "stdout line and result.json differ"
-    exp = reference(recs)
-    assert parsed == exp, f"\n got {parsed}\n exp {exp}\n file=\n{serialize(recs)}"
-    return parsed
+@pytest.fixture(scope="session", autouse=True)
+def _snapshot_immutable() -> None:
+    for path in sorted(POLICY.rglob("*")):
+        if path.is_file():
+            IMMUTABLE_SHA256[str(path)] = _sha256_file(path)
+    for path in sorted(ROOT.rglob("*")):
+        if path.is_file():
+            IMMUTABLE_SHA256[str(path)] = _sha256_file(path)
 
 
-def _verdicts(r):
-    return [d["verdict"] for d in r["decisions"]]
+@pytest.fixture(scope="session")
+def expected_report() -> dict[str, Any]:
+    return build_expected()
 
 
-# --------------------------------------------------------------------------
-# Infrastructure anchors
-# --------------------------------------------------------------------------
-
-def test_executable_exists():
-    assert os.path.exists(AUDIT), "/app/audit missing"
-    assert os.access(AUDIT, os.X_OK), "/app/audit is not executable"
-
-
-def test_candidate_cannot_read_reference():
-    if _DEMOTE is None or os.geteuid() != 0:
-        pytest.skip("not running as root with a sandbox account")
-    proc = subprocess.run(["cat", "/tests/test_outputs.py"], capture_output=True,
-                          text=True, check=False, preexec_fn=_DEMOTE)
-    assert proc.returncode != 0
-    assert not proc.stdout
+@pytest.fixture(scope="session")
+def report(expected_report: dict[str, Any]) -> dict[str, Any]:
+    assert BINARY.exists(), "gridknit binary missing"
+    subprocess.run([str(BINARY)], check=True, cwd="/app")
+    raw = REPORT_PATH.read_bytes()
+    assert raw.endswith(b"\n"), "report must end with newline"
+    assert b"\n\n" not in raw, "report must be compact single trailing newline"
+    data = json.loads(raw.decode())
+    # ensure compact re-encode would match oracle style separators
+    compact = (json.dumps(data, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+    # Go encoder may differ slightly on key order already validated separately
+    assert data == expected_report
+    _ = compact
+    return data
 
 
-def test_output_schema():
-    s, k, rid, dig = hid(), hid(), hid(), hid()
-    t = tag_of(k, rid, s, dig)
-    recs = [("enroll", s, k), ("release", rid, 1, dig),
-            ("cosign", rid, s, t),
-            ("authorize", 0, rid, agg_at([("enroll", s, k), ("release", rid, 1, dig),
-                                          ("cosign", rid, s, t)], rid))]
-    out = _run_ok(recs)
-    assert set(out.keys()) == {"status", "decisions", "releases", "authorized_count",
-                               "under_threshold_count", "tag_mismatch_count",
-                               "unknown_count", "release_count", "authorize_count"}
-    d = out["decisions"][0]
-    assert set(d.keys()) == {"seq", "verdict", "cosigners", "aggregate"}
-    assert d["verdict"] == "authorized"
-    rl = out["releases"][0]
-    assert set(rl.keys()) == {"id", "authorized", "cosigners", "aggregate"}
+def test_full_report_equivalence(report: dict[str, Any], expected_report: dict[str, Any]) -> None:
+    """Full report must match independent policy replay."""
+    assert report == expected_report
 
 
-# --------------------------------------------------------------------------
-# Behavioural anchors (hand-verified)
-# --------------------------------------------------------------------------
-
-def test_worked_three_signer_aggregate():
-    """Fixed vector: three valid cosigners, threshold 2, the aggregate folded
-    in signer-id order authorizes the release; a wrong claim is tag_mismatch."""
-    k1, s1 = "0000000000000011", "1111111111111111"
-    k2, s2 = "0000000000000022", "2222222222222222"
-    k3, s3 = "0000000000000033", "3333333333333333"
-    rid, dig = "abcdef0123456789", "cafebabedeadbeef"
-    t1, t2, t3 = (tag_of(k1, rid, s1, dig), tag_of(k2, rid, s2, dig),
-                  tag_of(k3, rid, s3, dig))
-    agg = h(combine([u(t1), u(t2), u(t3)]))
-    assert agg == "8ab313b523ab134c"  # hand-computed order-dependent aggregate
-    recs = [("enroll", s1, k1), ("enroll", s2, k2), ("enroll", s3, k3),
-            ("release", rid, 2, dig),
-            ("cosign", rid, s1, t1), ("cosign", rid, s2, t2), ("cosign", rid, s3, t3),
-            ("authorize", 0, rid, agg),
-            ("authorize", 1, rid, "deadbeefdeadbeef")]
-    out = _run_ok(recs)
-    assert _verdicts(out) == ["authorized", "tag_mismatch"]
-    assert out["decisions"][0]["cosigners"] == 3
-    assert out["decisions"][0]["aggregate"] == "8ab313b523ab134c"
+def test_report_schema_key_order(report: dict[str, Any]) -> None:
+    """Root workspace module capture and finding key orders are fixed."""
+    assert list(report.keys()) == ROOT_KEYS
+    assert list(report["workspace"].keys()) == WORKSPACE_KEYS
+    for mod in report["modules"]:
+        assert list(mod.keys()) == MODULE_KEYS
+        assert list(mod["capture"].keys()) == CAPTURE_KEYS
+    for finding in report["findings"]:
+        assert list(finding.keys()) == FINDING_KEYS
 
 
-def test_aggregate_is_order_dependent_by_sid():
-    """The aggregate folds in signer-id order, not cosignature-appearance order
-    and not an order-independent XOR. Signers are cosigned high-id first."""
-    khi, shi = "00000000000000a1", "ffffffffffffffff"
-    klo, slo = "00000000000000b2", "0000000000000001"
-    rid, dig = hid(), hid()
-    thi, tlo = tag_of(khi, rid, shi, dig), tag_of(klo, rid, slo, dig)
-    sid_order = h(combine([u(tlo), u(thi)]))       # slo < shi
-    appearance = h(combine([u(thi), u(tlo)]))      # cosigned high first
-    xor = h(u(thi) ^ u(tlo))
-    assert sid_order != appearance and sid_order != xor
-    recs = [("enroll", shi, khi), ("enroll", slo, klo), ("release", rid, 2, dig),
-            ("cosign", rid, shi, thi), ("cosign", rid, slo, tlo),
-            ("authorize", 0, rid, sid_order)]
-    out = _run_ok(recs)
-    assert _verdicts(out) == ["authorized"]
-    assert out["decisions"][0]["aggregate"] == sid_order
+def test_report_compact_json_byte_identical_reruns(report: dict[str, Any]) -> None:
+    """Rerunning gridknit on unchanged inputs yields byte-identical report."""
+    first = REPORT_PATH.read_bytes()
+    subprocess.run([str(BINARY)], check=True, cwd="/app")
+    second = REPORT_PATH.read_bytes()
+    assert first == second
+    assert first.endswith(b"\n")
+    _ = report
 
 
-def test_rotation_voids_earlier_cosignature():
-    """A cosignature recorded before the signer's key rotation is voided even
-    though its tag was valid under the old key."""
-    k0, k1, s = hid(), hid(), hid()
-    rid, dig = hid(), hid()
-    t = tag_of(k0, rid, s, dig)
-    base = [("enroll", s, k0), ("release", rid, 1, dig), ("cosign", rid, s, t)]
-    out = _run_ok(base + [("authorize", 0, rid, agg_at(base, rid))])
-    assert _verdicts(out) == ["authorized"]
-    rotated = base + [("rotate", s, k1)]
-    out2 = _run_ok(rotated + [("authorize", 0, rid, h(combine([])))])
-    assert _verdicts(out2) == ["under_threshold"]
-    assert out2["decisions"][0]["cosigners"] == 0
+def test_immutable_policy_and_meshgrid() -> None:
+    """Policy docs and meshgrid fixtures must remain unmodified."""
+    for path, digest in IMMUTABLE_SHA256.items():
+        assert _sha256_file(Path(path)) == digest, path
 
 
-def test_forged_tag_does_not_count():
-    """A tag that does not verify under the signer's key in force is ignored."""
-    k, s, rid, dig = hid(), hid(), hid(), hid()
-    bad = hid()
-    recs = [("enroll", s, k), ("release", rid, 1, dig),
-            ("cosign", rid, s, bad), ("authorize", 0, rid, h(combine([])))]
-    out = _run_ok(recs)
-    assert _verdicts(out) == ["under_threshold"]
-    assert out["decisions"][0]["cosigners"] == 0
+def test_build_dir_only_binary_and_report() -> None:
+    """Build directory contains only gridknit and the stabilization report."""
+    names = sorted(p.name for p in Path("/app/build").iterdir())
+    assert names == ["gradle_stabilization_report.json", "gridknit"]
 
 
-def test_removed_signer_cosignature_ignored():
-    """A removed signer's cosignature does not count at a later authorize."""
-    ka, sa, kb, sb = hid(), hid(), hid(), hid()
-    rid, dig = hid(), hid()
-    ta, tb = tag_of(ka, rid, sa, dig), tag_of(kb, rid, sb, dig)
-    base = [("enroll", sa, ka), ("enroll", sb, kb), ("release", rid, 2, dig),
-            ("cosign", rid, sa, ta), ("cosign", rid, sb, tb)]
-    out = _run_ok(base + [("authorize", 0, rid, agg_at(base, rid))])
-    assert _verdicts(out) == ["authorized"]
-    removed = base + [("remove", sb)]
-    out2 = _run_ok(removed + [("authorize", 0, rid, agg_at(removed, rid))])
-    assert _verdicts(out2) == ["under_threshold"]
-    assert out2["decisions"][0]["cosigners"] == 1
+def test_duplicate_module_skipped_exact(report: dict[str, Any]) -> None:
+    """Duplicate depknit manifest entry increments skip counter once; module_count is unique."""
+    assert report["duplicate_modules_skipped"] == 1
+    ids = [m["module_id"] for m in report["modules"]]
+    assert ids.count("depknit") == 1
+    assert report["workspace"]["module_count"] == len(report["modules"]) == 6
 
 
-def test_threshold_exactly_met_vs_one_short():
-    """Threshold k met exactly authorizes; one fewer valid cosigner does not."""
-    ka, sa, kb, sb = hid(), hid(), hid(), hid()
-    rid, dig = hid(), hid()
-    ta, tb = tag_of(ka, rid, sa, dig), tag_of(kb, rid, sb, dig)
-    met = [("enroll", sa, ka), ("enroll", sb, kb), ("release", rid, 2, dig),
-           ("cosign", rid, sa, ta), ("cosign", rid, sb, tb)]
-    out = _run_ok(met + [("authorize", 0, rid, agg_at(met, rid))])
-    assert _verdicts(out) == ["authorized"]
-    short = [("enroll", sa, ka), ("enroll", sb, kb), ("release", rid, 2, dig),
-             ("cosign", rid, sa, ta)]
-    out2 = _run_ok(short + [("authorize", 0, rid, agg_at(short, rid))])
-    assert _verdicts(out2) == ["under_threshold"]
-    assert out2["decisions"][0]["cosigners"] == 1
+def test_direct_deps_are_sorted_string_lists(report: dict[str, Any]) -> None:
+    """direct_deps is a sorted string array of dependency module ids, never an int count."""
+    for mod in report["modules"]:
+        deps = mod["direct_deps"]
+        assert isinstance(deps, list)
+        assert all(isinstance(d, str) for d in deps)
+        assert deps == sorted(deps)
+    wire = next(m for m in report["modules"] if m["module_id"] == "wireloom")
+    assert wire["direct_deps"] == ["depknit", "pluginbridge"]
 
 
-def test_forward_reference_signer_enrolled_later():
-    """A cosignature recorded before its signer is enrolled has no key in force
-    and cannot verify; once enrolled and re-cosigned it counts."""
-    k, s, rid, dig = hid(), hid(), hid(), hid()
-    t = tag_of(k, rid, s, dig)
-    # cosign BEFORE enroll: build a case where the cosign precedes enroll
-    early = [("release", rid, 1, dig), ("cosign", rid, s, t),
-             ("authorize", 0, rid, h(combine([]))),
-             ("enroll", s, k), ("cosign", rid, s, t),
-             ("authorize", 1, rid, None)]
-    early[-1] = ("authorize", 1, rid, agg_at(early[:5], rid))
-    out = _run_ok(early)
-    assert _verdicts(out) == ["under_threshold", "authorized"]
-    assert out["decisions"][0]["cosigners"] == 0
-    assert out["decisions"][1]["cosigners"] == 1
 
-
-def test_unknown_release_is_positional():
-    """An authorize on a release id not declared above the line is
-    unknown_release; once the release is declared above, it is verified."""
-    k, s, rid, dig = hid(), hid(), hid(), hid()
-    t = tag_of(k, rid, s, dig)
-    recs = [("enroll", s, k), ("authorize", 0, rid, h(combine([]))),
-            ("release", rid, 1, dig), ("cosign", rid, s, t),
-            ("authorize", 1, rid, None)]
-    recs[-1] = ("authorize", 1, rid, agg_at(recs[:4], rid))
-    out = _run_ok(recs)
-    assert _verdicts(out) == ["unknown_release", "authorized"]
-    assert out["decisions"][0]["cosigners"] == 0
-    assert out["decisions"][0]["aggregate"] == "0000000000000000"
-
-
-def test_threshold_zero_authorizes_with_matching_empty_aggregate():
-    """Threshold zero with no valid cosigners authorizes only when the claim is
-    the empty-set aggregate."""
-    rid, dig = hid(), hid()
-    empty = h(combine([]))
-    recs = [("release", rid, 0, dig), ("authorize", 0, rid, empty),
-            ("authorize", 1, rid, hid())]
-    recs[2] = ("authorize", 1, rid, "0" * 15 + "1")
-    out = _run_ok(recs)
-    assert _verdicts(out)[0] == "authorized"
-    assert _verdicts(out)[1] == "tag_mismatch"
-
-
-def test_duplicate_cosign_counts_once():
-    """The same signer cosigning a release twice still counts as one signer."""
-    k, s, rid, dig = hid(), hid(), hid(), hid()
-    t = tag_of(k, rid, s, dig)
-    base = [("enroll", s, k), ("release", rid, 1, dig),
-            ("cosign", rid, s, t), ("cosign", rid, s, t)]
-    out = _run_ok(base + [("authorize", 0, rid, agg_at(base, rid))])
-    assert _verdicts(out) == ["authorized"]
-    assert out["decisions"][0]["cosigners"] == 1
-
-
-def test_final_releases_reflect_end_state():
-    """The releases array evaluates each release under the whole file: a
-    rotation late in the file voids an earlier cosignature in the end state."""
-    k0, k1, s, rid, dig = hid(), hid(), hid(), hid(), hid()
-    t = tag_of(k0, rid, s, dig)
-    recs = [("enroll", s, k0), ("release", rid, 1, dig), ("cosign", rid, s, t),
-            ("authorize", 0, rid, agg_at([("enroll", s, k0),
-                                          ("release", rid, 1, dig),
-                                          ("cosign", rid, s, t)], rid)),
-            ("rotate", s, k1)]
-    out = _run_ok(recs)
-    assert _verdicts(out) == ["authorized"]
-    rl = out["releases"][0]
-    assert rl["authorized"] is False and rl["cosigners"] == 0
-
-
-# --------------------------------------------------------------------------
-# Signer standing (section 5.5): anchors, vouches, the least-fixpoint gate
-# --------------------------------------------------------------------------
-
-def test_standing_gating_inactive_without_any_anchor():
-    """With no `anchor` line anywhere in the file, standing gating is
-    inactive: a lone unsupported `vouch` line changes nothing."""
-    s, ks = hid(), hid()
-    other, kother = hid(), hid()
-    rid, dig = hid(), hid()
-    t = tag_of(ks, rid, s, dig)
-    recs = [("enroll", s, ks), ("enroll", other, kother),
-            ("vouch", other, s), ("release", rid, 1, dig),
-            ("cosign", rid, s, t)]
-    out = _run_ok(recs + [("authorize", 0, rid, agg_at(recs, rid))])
-    assert _verdicts(out) == ["authorized"]
-    assert out["decisions"][0]["cosigners"] == 1
-
-
-def test_standing_two_distinct_anchor_vouchers_ground_a_signer():
-    """A signer needs two distinct already-standing vouchers to gain
-    standing; one anchor vouching is not enough, a second distinct anchor
-    vouching grounds it and its cosignature starts counting."""
-    a1, ka1 = hid(), hid()
-    a2, ka2 = hid(), hid()
-    s, ks = hid(), hid()
-    rid, dig = hid(), hid()
-    t = tag_of(ks, rid, s, dig)
-    base = [("enroll", a1, ka1), ("enroll", a2, ka2), ("anchor", a1), ("anchor", a2),
-            ("enroll", s, ks), ("release", rid, 1, dig), ("cosign", rid, s, t)]
-    one_vouch = base + [("vouch", a1, s)]
-    out1 = _run_ok(one_vouch + [("authorize", 0, rid, h(combine([])))])
-    assert _verdicts(out1) == ["under_threshold"]
-    assert out1["decisions"][0]["cosigners"] == 0
-    two_vouch = one_vouch + [("vouch", a2, s)]
-    out2 = _run_ok(two_vouch + [("authorize", 0, rid, agg_at(two_vouch, rid))])
-    assert _verdicts(out2) == ["authorized"]
-    assert out2["decisions"][0]["cosigners"] == 1
-
-
-def test_standing_isolated_ring_never_grounds_despite_meeting_voucher_count():
-    """Three signers who vouch only for one another, each showing two
-    distinct vouchers, never attain standing: standing is a least (grounded)
-    fixpoint, not a greatest-fixpoint/2-core prune that a self-sustaining
-    ring would satisfy. A separate signer grounded by two real anchors DOES
-    attain standing in the same file, isolating the effect to the ring."""
-    a1, ka1 = hid(), hid()
-    a2, ka2 = hid(), hid()
-    g, kg = hid(), hid()
-    r1, k1 = hid(), hid()
-    r2, k2 = hid(), hid()
-    r3, k3 = hid(), hid()
-    rid, dig = hid(), hid()
-    tg = tag_of(kg, rid, g, dig)
-    t1, t2, t3 = (tag_of(k1, rid, r1, dig), tag_of(k2, rid, r2, dig),
-                  tag_of(k3, rid, r3, dig))
-    recs = [
-        ("enroll", a1, ka1), ("enroll", a2, ka2), ("anchor", a1), ("anchor", a2),
-        ("enroll", g, kg), ("enroll", r1, k1), ("enroll", r2, k2), ("enroll", r3, k3),
-        ("vouch", a1, g), ("vouch", a2, g),
-        ("vouch", r1, r2), ("vouch", r2, r3), ("vouch", r3, r1),
-        ("vouch", r2, r1), ("vouch", r3, r2), ("vouch", r1, r3),
-        ("release", rid, 1, dig),
-        ("cosign", rid, g, tg),
-        ("cosign", rid, r1, t1), ("cosign", rid, r2, t2), ("cosign", rid, r3, t3),
+def test_plugin_artifactseal_incompatible_numeric(report: dict[str, Any]) -> None:
+    """Plugin min_gradle 8.11 is incompatible with numeric Gradle 8.10."""
+    hits = [
+        f
+        for f in report["findings"]
+        if f["kind"] == "PLUGIN_INCOMPATIBLE" and f["entity_id"] == "com.meshgrid.artifactseal"
     ]
-    out = _run_ok(recs + [("authorize", 0, rid, agg_at(recs, rid))])
-    assert _verdicts(out) == ["authorized"]
-    assert out["decisions"][0]["cosigners"] == 1
+    assert len(hits) == 1
+    assert hits[0]["detail"] == "3.0.1"
+    assert hits[0]["event_seq"] == 0
 
 
-def test_standing_vouch_from_non_standing_signer_does_not_count():
-    """A vouch from a signer who is not itself in standing does not help its
-    target reach the two-voucher threshold, even paired with one real anchor
-    vouch."""
-    a, ka = hid(), hid()
-    x, kx = hid(), hid()
-    s, ks = hid(), hid()
-    rid, dig = hid(), hid()
-    t = tag_of(ks, rid, s, dig)
-    recs = [("enroll", a, ka), ("anchor", a), ("enroll", x, kx), ("enroll", s, ks),
-            ("vouch", a, s), ("vouch", x, s),
-            ("release", rid, 1, dig), ("cosign", rid, s, t)]
-    out = _run_ok(recs + [("authorize", 0, rid, h(combine([])))])
-    assert _verdicts(out) == ["under_threshold"]
-    assert out["decisions"][0]["cosigners"] == 0
+def test_catalog_alias_conflict_guava_detail_bundle(report: dict[str, Any]) -> None:
+    """Shared guava alias between libraries and bundles emits conflict."""
+    hits = [f for f in report["findings"] if f["kind"] == "CATALOG_ALIAS_CONFLICT"]
+    assert any(f["entity_id"] == "guava" and f["detail"] == "bundle" for f in hits)
 
 
-def test_standing_anchor_removed_no_longer_grounds():
-    """An anchor that is later removed no longer grounds anyone at a query
-    positioned after the removal, even though it grounded the same signer
-    earlier."""
-    a1, ka1 = hid(), hid()
-    a2, ka2 = hid(), hid()
-    s, ks = hid(), hid()
-    rid, dig = hid(), hid()
-    t = tag_of(ks, rid, s, dig)
-    base = [("enroll", a1, ka1), ("enroll", a2, ka2), ("anchor", a1), ("anchor", a2),
-            ("enroll", s, ks), ("vouch", a1, s), ("vouch", a2, s),
-            ("release", rid, 1, dig), ("cosign", rid, s, t)]
-    out = _run_ok(base + [("authorize", 0, rid, agg_at(base, rid))])
-    assert _verdicts(out) == ["authorized"]
-    removed = base + [("remove", a1)]
-    out2 = _run_ok(removed + [("authorize", 0, rid, h(combine([])))])
-    assert _verdicts(out2) == ["under_threshold"]
-    assert out2["decisions"][0]["cosigners"] == 0
+def test_catalog_version_drift_jackson_core(report: dict[str, Any]) -> None:
+    """Inline jackson-core version disagrees with versions table alias."""
+    hits = [f for f in report["findings"] if f["kind"] == "CATALOG_VERSION_DRIFT"]
+    assert any(f["entity_id"] == "jackson-core" and f["detail"] == "2.16.0" for f in hits)
 
 
-# --------------------------------------------------------------------------
-# Schema / malformed anchors
-# --------------------------------------------------------------------------
-
-def test_schema_anchor_unenrolled_sid():
-    out = _run_ok([("anchor", hid())])
-    assert out["status"] == "malformed"
-
-
-def test_schema_vouch_unenrolled_voucher():
-    s = hid()
-    out = _run_ok([("enroll", s, hid()), ("vouch", hid(), s)])
-    assert out["status"] == "malformed"
+def test_offline_publish_findings_exact(report: dict[str, Any]) -> None:
+    """Broken offline vault settings emit project repo vault and unsigned findings."""
+    kinds = {f["kind"]: f for f in report["findings"] if f["module_id"] == "meshgrid"}
+    assert kinds["PROJECT_REPO_FORBIDDEN"]["detail"] == "PREFER_PROJECT"
+    assert kinds["OFFLINE_REPO_MISCONFIG"]["detail"] == "/tmp/wrong-vault"
+    assert kinds["PUBLISH_UNSIGNED"]["detail"] == ""
 
 
-def test_schema_vouch_unenrolled_target():
-    s = hid()
-    out = _run_ok([("enroll", s, hid()), ("vouch", s, hid())])
-    assert out["status"] == "malformed"
+def test_releasemesh_dependency_fanout_strictly_gt(report: dict[str, Any]) -> None:
+    """Four direct deps exceeds max_direct_deps three."""
+    hits = [
+        f
+        for f in report["findings"]
+        if f["kind"] == "DEPENDENCY_FANOUT" and f["module_id"] == "releasemesh"
+    ]
+    assert len(hits) == 1
+    assert hits[0]["detail"] == "4"
 
 
-def test_schema_vouch_self():
-    s = hid()
-    out = _run_ok([("enroll", s, hid()), ("vouch", s, s)])
-    assert out["status"] == "malformed"
+def test_artifactseal_bom_and_lock_finding_ids_distinct(report: dict[str, Any]) -> None:
+    """BOM override and lock drift on the same guava coordinate use kind in finding_id."""
+    arts = [f for f in report["findings"] if f["module_id"] == "artifactseal"]
+    bom = next(f for f in arts if f["kind"] == "BOM_OVERRIDE_FORBIDDEN")
+    drift = next(f for f in arts if f["kind"] == "LOCK_VERSION_DRIFT")
+    assert bom["entity_id"] == drift["entity_id"] == "com.google.guava:guava"
+    assert bom["event_seq"] == drift["event_seq"] == 0
+    assert bom["finding_id"] == "artifactseal::com.google.guava:guava::BOM_OVERRIDE_FORBIDDEN::0000"
+    assert drift["finding_id"] == "artifactseal::com.google.guava:guava::LOCK_VERSION_DRIFT::0000"
+    assert bom["detail"] == "32.0.0"
+    assert drift["detail"] == "33.0.0"
+    ids = [f["finding_id"] for f in report["findings"]]
+    assert len(ids) == len(set(ids))
 
 
-def test_schema_duplicate_release():
-    rid, dig = hid(), hid()
-    out = _run_ok([("release", rid, 1, dig), ("release", rid, 2, dig)])
-    assert out["status"] == "malformed"
-    assert out["releases"] == [] and out["release_count"] == 0
+def test_artifactseal_bom_override_forbidden_first_key(report: dict[str, Any]) -> None:
+    """BOM consumer cannot keep version overrides under strict_bom."""
+    hits = [
+        f
+        for f in report["findings"]
+        if f["kind"] == "BOM_OVERRIDE_FORBIDDEN" and f["module_id"] == "artifactseal"
+    ]
+    assert len(hits) == 1
+    assert hits[0]["entity_id"] == "com.google.guava:guava"
+    assert hits[0]["detail"] == "32.0.0"
 
 
-def test_schema_negative_threshold():
-    rid, dig = hid(), hid()
-    out = _run_ok([("release", rid, -1, dig)])
-    assert out["status"] == "malformed"
+def test_depknit_lock_version_drift(report: dict[str, Any]) -> None:
+    """Lock version must match module override for jackson-databind."""
+    hits = [
+        f
+        for f in report["findings"]
+        if f["kind"] == "LOCK_VERSION_DRIFT" and f["module_id"] == "depknit"
+    ]
+    assert len(hits) == 1
+    assert hits[0]["entity_id"] == "com.fasterxml.jackson.core:jackson-databind"
+    assert hits[0]["detail"] == "2.16.1"
 
 
-def test_schema_cosign_unknown_release():
-    k, s = hid(), hid()
-    out = _run_ok([("enroll", s, k), ("cosign", hid(), s, hid())])
-    assert out["status"] == "malformed"
+def test_artifactseal_orphan_lock_entry(report: dict[str, Any]) -> None:
+    """Required lock coordinates unused by the module are orphaned."""
+    hits = [
+        f
+        for f in report["findings"]
+        if f["kind"] == "ORPHAN_LOCK_ENTRY" and f["module_id"] == "artifactseal"
+    ]
+    assert any(f["entity_id"] == "org.example:orphan-lib" for f in hits)
 
 
-def test_schema_cosign_unenrolled_signer():
-    rid, dig = hid(), hid()
-    out = _run_ok([("release", rid, 1, dig), ("cosign", rid, hid(), hid())])
-    assert out["status"] == "malformed"
+def test_pluginbridge_bad_checksum_capture_counters(report: dict[str, Any]) -> None:
+    """Bad checksum lines are rejected and excluded from valid lock records."""
+    mod = next(m for m in report["modules"] if m["module_id"] == "pluginbridge")
+    cap = mod["capture"]
+    assert cap["format_version"] == 1
+    assert cap["records_total"] == 2
+    assert cap["records_valid"] == 1
+    assert cap["records_rejected"] == 1
 
 
-def test_schema_rotate_remove_unenrolled():
-    assert _run_ok([("rotate", hid(), hid())])["status"] == "malformed"
-    assert _run_ok([("remove", hid())])["status"] == "malformed"
+def test_cataloghub_unknown_dependency_ghostmod(report: dict[str, Any]) -> None:
+    """Unknown dependency module ids emit UNKNOWN_DEPENDENCY."""
+    hits = [
+        f
+        for f in report["findings"]
+        if f["kind"] == "UNKNOWN_DEPENDENCY" and f["module_id"] == "cataloghub"
+    ]
+    assert len(hits) == 1
+    assert hits[0]["entity_id"] == "ghostmod"
+    assert hits[0]["detail"] == "UNKNOWN_DEPENDENCY"
 
 
-def test_schema_authorize_seq_out_of_order():
-    rid, dig = hid(), hid()
-    out = _run_ok([("release", rid, 1, dig), ("authorize", 2, rid, hid())])
-    assert out["status"] == "malformed"
+def test_module_cycle_wireloom_pluginbridge(report: dict[str, Any]) -> None:
+    """Mutual module edges form a cycle reported at audit sequence."""
+    hits = [f for f in report["findings"] if f["kind"] == "MODULE_CYCLE"]
+    mods = {f["module_id"] for f in hits}
+    assert "wireloom" in mods and "pluginbridge" in mods
+    assert all(f["event_seq"] == report["duplicate_modules_skipped"] + 6 for f in hits) or all(
+        f["event_seq"] == 7 for f in hits
+    )
 
 
-# --------------------------------------------------------------------------
-# Exit codes and parsing
-# --------------------------------------------------------------------------
-
-def test_exit_wrong_args():
-    proc = subprocess.run([AUDIT], capture_output=True, text=True, check=False)
-    assert proc.returncode == 2
-    proc = subprocess.run([AUDIT, "a", "b"], capture_output=True, text=True, check=False)
-    assert proc.returncode == 2
+def test_unresolved_ref_post_mesh(report: dict[str, Any]) -> None:
+    """Missing version.ref names emit CATALOG_UNRESOLVED_REF at max_ord plus one."""
+    hits = [f for f in report["findings"] if f["kind"] == "CATALOG_UNRESOLVED_REF"]
+    assert len(hits) == 1
+    assert hits[0]["entity_id"] == "does-not-exist"
+    assert hits[0]["event_seq"] == 7
 
 
-def test_exit_unreadable_file():
-    proc, _ = _run("/nonexistent/ledger.txt")
-    assert proc.returncode == 1
+def test_root_status_drift_when_findings(report: dict[str, Any]) -> None:
+    """Root status is DRIFT when findings are present."""
+    assert report["findings"]
+    assert report["status"] == "DRIFT"
 
 
-def test_exit_unknown_keyword():
-    proc, _ = _run(_write_raw("mint aaaa\n"))
-    assert proc.returncode == 3
-
-
-def test_exit_wrong_field_count():
-    proc, _ = _run(_write_raw(f"enroll {hid()}\n"))
-    assert proc.returncode == 3
-
-
-def test_exit_bad_hex():
-    proc, _ = _run(_write_raw(f"enroll {'Z' * 16} {hid()}\n"))
-    assert proc.returncode == 3
-
-
-def test_exit_non_integer_threshold():
-    proc, _ = _run(_write_raw(f"release {hid()} two {hid()}\n"))
-    assert proc.returncode == 3
-
-
-def test_exit_non_utf8():
-    proc, _ = _run(_write_raw(b"enroll \xff\xfe 1 -\n", binary=True))
-    assert proc.returncode == 3
-
-
-def test_comments_and_blanks_ignored():
-    k, s, rid, dig = hid(), hid(), hid(), hid()
-    t = tag_of(k, rid, s, dig)
-    body = [("enroll", s, k), ("release", rid, 1, dig), ("cosign", rid, s, t)]
-    agg = agg_at(body, rid)
-    text = (f"# release ledger\n\nenroll {s} {k}\n   \n"
-            f"release {rid} 1 {dig}\ncosign {rid} {s} {t}\n"
-            f"authorize 0 {rid} {agg}\n")
-    proc, parsed = _run(_write_raw(text))
-    assert proc.returncode == 0
-    assert [d["verdict"] for d in parsed["decisions"]] == ["authorized"]
-
-
-def test_stale_root_owned_result_is_replaced():
-    if os.geteuid() != 0:
-        pytest.skip("needs root to plant the stale file")
-    if os.path.exists(RESULT):
-        os.remove(RESULT)
-    with open(RESULT, "w") as f:
-        f.write("{}")
-    os.chmod(RESULT, 0o644)
-    k, s, rid, dig = hid(), hid(), hid(), hid()
-    t = tag_of(k, rid, s, dig)
-    base = [("enroll", s, k), ("release", rid, 1, dig), ("cosign", rid, s, t)]
-    out = _run_ok(base + [("authorize", 0, rid, agg_at(base, rid))])
-    assert _verdicts(out) == ["authorized"]
-
-
-# --------------------------------------------------------------------------
-# Randomized agreement sweep
-# --------------------------------------------------------------------------
-
-def _rand_recs():
-    recs = []
-    signers = []
-    keys = {}
-    releases = []
-    audits = 0
-    for _ in range(RNG.randint(1, 4)):
-        s, k = hid(), hid()
-        recs.append(("enroll", s, k))
-        signers.append(s)
-        keys[s] = k
-    for _ in range(RNG.randint(1, 3)):
-        rid, dig, k = hid(), hid(), RNG.randint(0, 4)
-        recs.append(("release", rid, k, dig))
-        releases.append((rid, k, dig))
-    for _ in range(RNG.randint(3, 16)):
-        roll = RNG.random()
-        if roll < 0.12 and len(signers) < 6:
-            s, k = hid(), hid()
-            recs.append(("enroll", s, k))
-            signers.append(s)
-            keys[s] = k
-        elif roll < 0.20 and signers:
-            recs.append(("remove", RNG.choice(signers)))
-        elif roll < 0.32 and signers:
-            s, nk = RNG.choice(signers), hid()
-            recs.append(("rotate", s, nk))
-            keys[s] = nk
-        elif roll < 0.36:
-            rid, dig, k = hid(), hid(), RNG.randint(0, 4)
-            recs.append(("release", rid, k, dig))
-            releases.append((rid, k, dig))
-        elif roll < 0.72 and signers and releases:
-            rid, _, dig = RNG.choice(releases)
-            s = RNG.choice(signers)
-            mode = RNG.random()
-            if mode < 0.6 and s in keys:
-                tag = tag_of(keys[s], rid, s, dig)
-            elif mode < 0.8:
-                tag = tag_of(hid(), rid, s, dig)
-            else:
-                tag = hid()
-            recs.append(("cosign", rid, s, tag))
-        else:
-            if not releases:
-                continue
-            rid, k, dig = RNG.choice(releases)
-            claim = hid() if RNG.random() < 0.5 else agg_at(recs, rid)
-            recs.append(("authorize", audits, rid, claim))
-            audits += 1
-    return recs
-
-
-def test_many_random_agree():
-    """Run the executable on many fresh random ledgers spanning every axis
-    (enroll/remove rosters, key rotations voiding earlier cosignatures, valid
-    and forged and stale-key tags, the order-dependent aggregate, the k-of-n
-    threshold, positional unknown_release, the verdict precedence, and the
-    end-state releases pass) and require the full output object to match the
-    independent reference every time."""
-    for _ in range(240):
-        recs = _rand_recs()
-        exp = reference(recs)
-        path = _write(recs)
-        proc, parsed = _run(path)
-        assert proc.returncode == 0, proc.stderr
-        assert parsed == exp, (f"\n got {parsed}\n exp {exp}\n"
-                               f" file=\n{serialize(recs)}")
-
-
-def _rand_recs_standing():
-    """Same shape as _rand_recs, but also emits anchor designations and
-    vouches, exercising the section 5.5 standing gate (including anchor-less
-    mutual-vouch dead ends) alongside every existing axis."""
-    recs = []
-    signers = []
-    keys = {}
-    releases = []
-    audits = 0
-    for _ in range(RNG.randint(2, 5)):
-        s, k = hid(), hid()
-        recs.append(("enroll", s, k))
-        signers.append(s)
-        keys[s] = k
-    for a in RNG.sample(signers, RNG.randint(1, min(2, len(signers)))):
-        recs.append(("anchor", a))
-    for _ in range(RNG.randint(1, 3)):
-        rid, dig, k = hid(), hid(), RNG.randint(0, 4)
-        recs.append(("release", rid, k, dig))
-        releases.append((rid, k, dig))
-    for _ in range(RNG.randint(6, 24)):
-        roll = RNG.random()
-        if roll < 0.10 and len(signers) < 8:
-            s, k = hid(), hid()
-            recs.append(("enroll", s, k))
-            signers.append(s)
-            keys[s] = k
-        elif roll < 0.16 and signers:
-            recs.append(("remove", RNG.choice(signers)))
-        elif roll < 0.24 and signers:
-            s, nk = RNG.choice(signers), hid()
-            recs.append(("rotate", s, nk))
-            keys[s] = nk
-        elif roll < 0.27:
-            rid, dig, k = hid(), hid(), RNG.randint(0, 4)
-            recs.append(("release", rid, k, dig))
-            releases.append((rid, k, dig))
-        elif roll < 0.55 and len(signers) >= 2:
-            voucher, target = RNG.sample(signers, 2)
-            recs.append(("vouch", voucher, target))
-        elif roll < 0.80 and signers and releases:
-            rid, _, dig = RNG.choice(releases)
-            s = RNG.choice(signers)
-            mode = RNG.random()
-            if mode < 0.6 and s in keys:
-                tag = tag_of(keys[s], rid, s, dig)
-            elif mode < 0.8:
-                tag = tag_of(hid(), rid, s, dig)
-            else:
-                tag = hid()
-            recs.append(("cosign", rid, s, tag))
-        else:
-            if not releases:
-                continue
-            rid, k, dig = RNG.choice(releases)
-            claim = hid() if RNG.random() < 0.5 else agg_at(recs, rid)
-            recs.append(("authorize", audits, rid, claim))
-            audits += 1
-    return recs
-
-
-def test_many_random_agree_with_standing():
-    """Same randomized-agreement sweep as test_many_random_agree, but every
-    fixture also carries anchors and vouches, so the section 5.5
-    least-fixpoint standing gate (grounded chains and anchor-less
-    mutual-vouch rings alike) is checked against the independent reference
-    across many fresh random ledgers, not just the pinned cases above."""
-    for _ in range(200):
-        recs = _rand_recs_standing()
-        exp = reference(recs)
-        path = _write(recs)
-        proc, parsed = _run(path)
-        assert proc.returncode == 0, proc.stderr
-        assert parsed == exp, (f"\n got {parsed}\n exp {exp}\n"
-                               f" file=\n{serialize(recs)}")
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-rA"]))
+def test_perturbed_lock_changes_report_then_restores(report: dict[str, Any]) -> None:
+    """Changing a lock file must change findings then restore after revert."""
+    lock = ROOT / "locks" / "wireloom.lock"
+    original = lock.read_bytes()
+    first = REPORT_PATH.read_bytes()
+    try:
+        lock.write_text(
+            "LOCK1\n1\n1\n"
+            "com.google.guava:guava\t99.0.0\t"
+            + _sha256_coord("com.google.guava:guava", "99.0.0")
+            + "\t0\n"
+        )
+        # meshgrid is immutable for agents but verifier may perturb temporarily
+        # Restore digest tracker expectation by reverting after
+        subprocess.run([str(BINARY)], check=True, cwd="/app")
+        second = REPORT_PATH.read_bytes()
+        assert second != first
+    finally:
+        lock.write_bytes(original)
+        subprocess.run([str(BINARY)], check=True, cwd="/app")
+        assert REPORT_PATH.read_bytes() == first
+    _ = report

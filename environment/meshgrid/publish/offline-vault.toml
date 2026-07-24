@@ -1,0 +1,3 @@
+repositories_mode = "PREFER_PROJECT"
+vault_path = "/tmp/wrong-vault"
+signed_publish = false

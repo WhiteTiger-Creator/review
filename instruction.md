@@ -1,24 +1,5 @@
-We gate every release behind threshold co-signing: it ships only when a quorum
-of enrolled signers co-signed it with valid keyed tags whose aggregate
-reconstructs correctly. Build a Java audit tool that reads one append-only
-release ledger — enrollments, removals, key rotations, anchor/vouch trust
-designations, releases, cosignatures, authorization queries — and renders a
-k-of-n verdict per query. This is a co-signing authorization control, not a
-tally or voting exercise.
+The meshgrid monorepo stabilizer at absolute path /app must converge version catalogs plugin pins dependency locks and offline publishing against immutable fixtures at absolute path /app/meshgrid. Absolute path /app/gradle-policy defines finding kinds entity id event seq finding id format capture counters and report schema. Absolute path /app/gradle-policy and absolute path /app/meshgrid must stay byte identical. Only sources under absolute path /app/gridknit and absolute path /app/internal may change. Absolute path /app/build must contain only the gridknit binary and absolute path /app/build/gradle_stabilization_report.json as compact JSON with one trailing newline.
 
-Each keyed tag is a hand-rolled MAC and each aggregate an order-dependent
-combine of signer tags, both bit-exact on the JDK standard library alone, no
-`javax.crypto`, no third-party jar, offline at `/app/audit` on the ledger
-path. Write one JSON line to `/app/output/result.json` and print it.
+The report must list unique modules after duplicate manifest skips. Module count equals the modules array length. Direct deps are sorted string lists. Findings for catalog plugin publish mesh lock and offline must sort by finding id. Each finding id is module id then entity id then kind then a four digit event seq so BOM override and lock drift on the same coordinate stay distinct. Lock version drift detail is the lock version string. Status is STABLE when findings is empty otherwise DRIFT.
 
-A verdict draws only on ledger state above its query: active roster, each
-signer's key in force, cosignatures verified under that key. Removal drops a
-signer; rotation voids that signer's earlier cosignatures. When the ledger
-names any anchors, a cosignature also needs its signer currently in
-*standing*: permanent for active anchors, earned by anyone else only through
-two distinct already-standing vouchers — a ring vouching solely for itself
-never bootstraps standing without a path back to an anchor. Authorized needs
-threshold-met cosigners and a matching aggregate; short is unauthorized, met
-but mismatched is tag_mismatch. Full grammar, MAC, combine, roster/rotation/
-standing rules, schema, exit codes, and precedence are in `/app/SPEC.md` with
-worked vectors.
+Success requires workspace modules findings duplicate modules skipped status and capture counters to match gradle-policy on the bundled meshgrid inputs and to stay byte identical across reruns.

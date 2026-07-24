@@ -1,0 +1,14 @@
+{
+  "module_id": "pluginbridge",
+  "group": "com.meshgrid",
+  "artifact": "pluginbridge",
+  "version": "1.8.0",
+  "bom_consumer": false,
+  "dependencies": [
+    "wireloom"
+  ],
+  "library_aliases": [
+    "okhttp"
+  ],
+  "version_overrides": {}
+}

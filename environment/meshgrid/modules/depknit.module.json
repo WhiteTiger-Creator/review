@@ -1,0 +1,17 @@
+{
+  "module_id": "depknit",
+  "group": "com.meshgrid",
+  "artifact": "depknit",
+  "version": "2.1.0",
+  "bom_consumer": false,
+  "dependencies": [
+    "artifactseal"
+  ],
+  "library_aliases": [
+    "jackson",
+    "slf4j"
+  ],
+  "version_overrides": {
+    "com.fasterxml.jackson.core:jackson-databind": "2.17.1"
+  }
+}

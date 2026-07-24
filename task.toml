@@ -1,34 +1,61 @@
 # Task configuration schema version
 version = "2.0"
 
-# Task metadata (author, difficulty, categorization)
+[proposal]
+idea_summary = """
+Meshgrid Gradle monorepo stabilization fails after cutover: gridknit no longer converges version catalogs, plugin compatibility pins, LOCK1 dependency locks, and offline publishing vault rules, so CI artifacts drift. Agents repair the Go gridknit stabilizer under catalog, plugins, locks, publish, and mesh packages using read-only gradle-policy docs and immutable meshgrid fixtures, then emit a deterministic gradle_stabilization_report.json. Domain is Gradle monorepo catalog/lock/offline-publish stabilization—not PAM session replay, cargo lockweave, or generic ETL.
+"""
+idea_category = "build_dependency_management"
+associated_skills = [
+    "gradle-version-catalog-convergence",
+    "plugin-min-gradle-numeric-compat",
+    "lock1-checksum-and-orphan-audit",
+    "offline-vault-publish-gate",
+    "module-mesh-cycle-and-fanout",
+    "bom-override-forbidden-detection",
+]
+proposal_tags = [
+    "gradle-monorepo",
+    "version-catalog",
+    "dependency-locking",
+    "offline-publishing",
+    "gridknit",
+    "meshgrid",
+]
+
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "security"
-subcategories = [ ]
+category = "build-and-dependency-management"
+subcategories = ["tool_specific"]
 number_of_milestones = 0
-codebase_size = "minimal"
-languages = [ "java",]
-tags = [ "java", "security", "cryptography", "threshold-signing", "audit",]
-expert_time_estimate_min = 210
-junior_time_estimate_min = 480
+codebase_size = "small"
+languages = ["go", "bash"]
+tags = [
+    "gradle-monorepo",
+    "version-catalog",
+    "dependency-locking",
+    "offline-publishing",
+    "gridknit",
+    "meshgrid",
+]
+expert_time_estimate_min = 180.0
+junior_time_estimate_min = 360.0
 
-# Verifier: runs the test script to check task completion
 [verifier]
-timeout_sec = 600.0
+timeout_sec = 900.0
 
-# Agent: limits how long the agent can run when attempting the task
 [agent]
 timeout_sec = 1800.0
 
-# Sandbox environment limits
 [environment]
-build_timeout_sec = 600.0
+allow_internet = false
+build_timeout_sec = 900.0
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-# Fully offline task: the release ledger is a local file and every cosignature,
-# aggregate tag, and authorization verdict is computed without network access.
-allow_internet = false
+workdir = "/app"
+
+[evaluation]
+solvability_excluded_tests = ["verifier_did_not_run", "test_verifier_did_not_run"]

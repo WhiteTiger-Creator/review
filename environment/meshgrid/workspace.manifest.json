@@ -1,0 +1,20 @@
+{
+  "gradle_major": 8,
+  "gradle_minor": 10,
+  "modules": [
+    "artifactseal",
+    "cataloghub",
+    "depknit",
+    "pluginbridge",
+    "releasemesh",
+    "wireloom",
+    "depknit"
+  ],
+  "require_offline_vault": true,
+  "fail_on_project_repos": true,
+  "max_direct_deps": 3,
+  "strict_bom": true,
+  "policy_overrides": {
+    "max_direct_deps": 3
+  }
+}

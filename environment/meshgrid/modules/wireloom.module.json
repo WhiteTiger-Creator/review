@@ -1,0 +1,16 @@
+{
+  "module_id": "wireloom",
+  "group": "com.meshgrid",
+  "artifact": "wireloom",
+  "version": "1.4.2",
+  "bom_consumer": false,
+  "dependencies": [
+    "depknit",
+    "pluginbridge"
+  ],
+  "library_aliases": [
+    "guava",
+    "okhttp"
+  ],
+  "version_overrides": {}
+}
