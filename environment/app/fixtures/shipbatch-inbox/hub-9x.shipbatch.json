@@ -1,0 +1,9 @@
+{
+  "batch_id": "hub-9x",
+  "payloads": [
+    {"payload_id": "p-020", "ecc_level": "M", "text": "12345678901234567890123456789012345678901234567890ABCDEFGHIJ KLMNOPQRSTUVWXYZ $%*+-./: mixed tail 0099"},
+    {"payload_id": "p-021", "ecc_level": "L", "text": "PALLET 7781 CONTENTS: 44 UNITS GLASS PANES 1200X800MM NET 612KG GROSS 655KG STACK LIMIT 2 DELIVER DOCK 9 EAST WING BEFORE 0600"},
+    {"payload_id": "p-022", "ecc_level": "Q", "text": "9917726534409817265533120099441-A"},
+    {"payload_id": "p-023", "ecc_level": "H", "text": "hub9x relay manifest 2026-07-19 pouch 12 of 30 chain custody unbroken carrier delta-kilo-4 next scan point OSL-T2 belt 11 return label affixed inner sleeve"}
+  ]
+}

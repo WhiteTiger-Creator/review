@@ -1,27 +1,5 @@
-A build tool resolves a stream of scenarios into a lock table: one selected
-version per queried module. `docs/row-grammar.md` defines the input rows;
-`docs/output-contract.md` the output. Complete `resolveStream` in `select.go`;
-parsing and formatting are wired in `main.go`. `make` builds `resolve`, which
-reads the stream from stdin, writing result lines to stdout.
+Scientific computing: model Reed-Solomon channel coding and discrete combinatorial optimization over the Galois field GF(256) for two-dimensional binary module lattices under the ISO/IEC 18004 Model 2 algebraic specification. The computation jointly solves a mixed-mode segmentation dynamic program that minimizes numeric, alphanumeric, and byte bit cost under version-class character-count indicator widths; the minimal-version capacity fixpoint; terminated and padded data codeword assembly; unequal-block Reed-Solomon protection with primitive polynomial x^8+x^4+x^3+x^2+1 (0x11D) and generator roots alpha^0 through alpha^(degree-1); round-robin column interleave of group-1 and group-2 blocks; and an eight-candidate mask tournament that minimizes the four ISO adjacency and finder-pattern penalty scores before format-information BCH bits and the documented format XOR are placed on the module grid.
 
-Within a scenario a module's answer is the version a correct resolver settles
-on, `NONE` if it never joins the set reachable from the main module, or
-`CONFLICT` if it is reachable but over-constrained. Four rules interact:
+Payload character sequences are read from /app/fixtures/shipbatch-inbox (or an absolute TB3_SHIPBATCH_INBOX; relative paths are rejected with a non-zero exit), reduced into the tab-separated numerical tables under /app/state defined in /app/docs/staging-schema.md, and published as PGM module matrices plus /app/output/labels/label-run-manifest.json from persisted state only, never by re-reading the inbox. Deliver the compiled scientific-computing instrument /app/bin/qr-composer via /app/docs/rebuild-contract.md, not a script or foreign library substitute. Numerical defaults live in /app/config/composer.toml. The tree at /app/vendor/decoy_code128 is a non-authoritative legacy linear-code helper outside this GF(256) computation.
 
-- **Version-conditioned edges.** A requirement or ceiling attached to version U
-  of a module applies only once that module's own selection reaches U. The main
-  module's edges always apply.
-- **Floors, not pins.** A `LOCK` entry, and any version carried in, are floors:
-  each can raise a selection, never cap it. A floor at or below the otherwise
-  selected version has no effect.
-- **Session carry.** Scenarios share one lock table that only grows; the version
-  selected for a module becomes its floor in every later scenario, until a
-  `RESET` line clears the accumulated floors. A module never built carries
-  nothing.
-- **Ceilings and conflict.** A `CAP` bounds a module from above. Judge each
-  module against the highest version any in-force requirement demands of it: if
-  that demand exceeds its lowest in-force ceiling, the module is over-constrained
-  (`CONFLICT`) and contributes no edges, so modules reachable only through it
-  are `NONE`.
-
-Resolving each scenario in isolation, or ignoring the ceilings, is incorrect.
+Follow the /app/docs contracts exactly: /app/docs/cli-surface.md and /app/docs/pipeline-overview.md (evaluation order), /app/docs/segmentation-dp.md (dynamic program and version fixpoint), /app/docs/codeword-assembly.md (bitstream arithmetic), /app/docs/rs-protection.md (finite-field generator polynomials and syndromes), /app/docs/interleave-order.md (block geometry), /app/docs/mask-tournament.md (discrete penalty minimization), /app/docs/matrix-placement.md (module-grid placement), and /app/docs/manifest-export.md (state-only publication). Plan, segment, codeword, block, stream, and tournament rows must match an independent recomputation on the shipped inbox and on verifier-supplied absolute inbox overrides; every Reed-Solomon block must have all-zero syndromes at the documented generator roots; each published PGM matrix must decode under an external conforming Model 2 reader to the exact payload text; and repeated evaluations over unchanged inputs must be byte-identical.

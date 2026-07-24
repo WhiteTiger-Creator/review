@@ -1,0 +1,9 @@
+{
+  "batch_id": "nw-114",
+  "payloads": [
+    {"payload_id": "p-001", "ecc_level": "M", "text": "01234567"},
+    {"payload_id": "p-002", "ecc_level": "L", "text": "HELLO WORLD 2026 TERMINAL 7"},
+    {"payload_id": "p-003", "ecc_level": "Q", "text": "shipment 88 dock 12 gate A"},
+    {"payload_id": "p-004", "ecc_level": "H", "text": "004417882236559104478821736600941255873310448892217365"}
+  ]
+}
