@@ -1,21 +1,11 @@
 .git
 .gitignore
+target/
+*.zip
+*.tar.gz
 **/__pycache__/
 **/*.pyc
 **/.pytest_cache/
 **/.mypy_cache/
 **/.ruff_cache/
 **/node_modules/
-**/target/
-**/dist/
-**/.venv/
-**/venv/
-**/*.tmp
-# Do NOT ignore *.orig: cargo vendor ships Cargo.toml.orig inside crate
-# packages and lists them in .cargo-checksum.json. Excluding them breaks
-# `cargo build --locked --offline` inside the image.
-output/
-solution/
-tests/
-authoring/
-gate-report/

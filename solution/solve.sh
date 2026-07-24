@@ -1,20 +1,20 @@
-#!/usr/bin/env bash
+# Oracle solve — task identity x509-path-reconstructor token 59cebf22
+#!/bin/bash
+# Oracle solve — X.509 trust admission attestation
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -d /solution/oracle_src ]; then
-  ORACLE_ROOT=/solution/oracle_src
-elif [ -d "$SCRIPT_DIR/oracle_src" ]; then
-  ORACLE_ROOT="$SCRIPT_DIR/oracle_src"
-else
-  echo "oracle_src not found (looked in /solution and $SCRIPT_DIR)" >&2
-  exit 1
-fi
+PATH="/app/bin:/opt/verifier-venv/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-rm -rf /app/src /app/target
-cp -r "$ORACLE_ROOT/src" /app/src
-cp "$ORACLE_ROOT/Cargo.toml" /app/Cargo.toml
-cp "$ORACLE_ROOT/Cargo.lock" /app/Cargo.lock
+ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+patch --batch -p2 -d /app/src < "${ROOT_DIR}/solution.patch"
 
 cd /app
-cargo build --release --locked --offline
+cargo build --release --locked
+mkdir -p /app/bin
+cp -f /app/target/release/trustadmit /app/bin/trustadmit
+
+test -x /app/bin/trustadmit \
+  || { echo "ERROR: trustadmit binary not found at /app/bin/trustadmit"; exit 1; }
+
+echo "X.509 trust admission attestation oracle completed."

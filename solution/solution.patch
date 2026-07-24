@@ -1,0 +1,495 @@
+diff -ruN environment/src/cert.rs solution/files/src/cert.rs
+--- environment/src/cert.rs	2026-07-21 07:33:13.794592051 +0530
++++ solution/files/src/cert.rs	2026-07-21 07:33:13.795591894 +0530
+@@ -1,4 +1,5 @@
+ use serde::{Deserialize, Serialize};
++use sha2::{Digest, Sha256};
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ pub struct Validity {
+@@ -113,7 +114,12 @@
+ 
+     /// Verifies if this certificate's signature is valid under the issuer's public key.
+     pub fn verify_signature(&self, issuer_pub_key: &str) -> bool {
+-        let _ = issuer_pub_key;
+-        true
++        let canon = self.canonical_string();
++        let mut hasher = Sha256::new();
++        hasher.update(canon.as_bytes());
++        hasher.update(issuer_pub_key.as_bytes());
++        let result = hasher.finalize();
++        let expected_sig = hex::encode(result);
++        self.signature == expected_sig
+     }
+ }
+diff -ruN environment/src/chain_attest.rs solution/files/src/chain_attest.rs
+--- environment/src/chain_attest.rs	2026-07-21 19:37:52.250572875 +0530
++++ solution/files/src/chain_attest.rs	2026-07-21 19:41:49.234080390 +0530
+@@ -1,23 +1,72 @@
+ use crate::cert::Certificate;
+-use crate::issuer_adjacency::IssuerAdjacency;
++use crate::issuer_adjacency::{self, IssuerAdjacency};
++use crate::validation::validate_path;
+ 
+-/// Attests a valid certificate chain from the target leaf to a trusted root.
+-pub fn find_path(
++fn collect_paths(
+     curr_id: &str,
+     pool: &[Certificate],
+     roots: &[String],
+     validation_time: u64,
+-    _adjacency: &IssuerAdjacency,
++    adjacency: &IssuerAdjacency,
+     visited: &mut Vec<String>,
+     current_path: &mut Vec<Certificate>,
+-) -> Option<Vec<String>> {
+-    let _ = validation_time;
+-    let cert = pool.iter().find(|c| c.id == curr_id)?;
++    all_paths: &mut Vec<Vec<String>>,
++) {
++    let cert = match pool.iter().find(|c| c.id == curr_id) {
++        Some(c) => c,
++        None => return,
++    };
++
+     visited.push(curr_id.to_string());
+     current_path.push(cert.clone());
+ 
+     if roots.contains(&cert.id) {
+-        return Some(vec![cert.id.clone()]);
++        if validate_path(current_path, roots, validation_time) {
++            all_paths.push(current_path.iter().map(|c| c.id.clone()).collect());
++        }
++        current_path.pop();
++        visited.pop();
++        return;
+     }
+-    None
++
++    let candidates = issuer_adjacency::adjacency_candidates(adjacency, pool, &cert.issuer, visited);
++    for candidate in candidates {
++        collect_paths(
++            &candidate.id,
++            pool,
++            roots,
++            validation_time,
++            adjacency,
++            visited,
++            current_path,
++            all_paths,
++        );
++    }
++
++    current_path.pop();
++    visited.pop();
++}
++
++/// Attests a valid certificate chain from the target leaf to a trusted root.
++pub fn find_path(
++    curr_id: &str,
++    pool: &[Certificate],
++    roots: &[String],
++    validation_time: u64,
++    adjacency: &IssuerAdjacency,
++    visited: &mut Vec<String>,
++    current_path: &mut Vec<Certificate>,
++) -> Option<Vec<String>> {
++    let mut all_paths = Vec::new();
++    collect_paths(
++        curr_id,
++        pool,
++        roots,
++        validation_time,
++        adjacency,
++        visited,
++        current_path,
++        &mut all_paths,
++    );
++    all_paths.into_iter().min()
+ }
+diff -ruN environment/src/constraint/name_rules.rs solution/files/src/constraint/name_rules.rs
+--- environment/src/constraint/name_rules.rs	2026-07-21 07:33:13.825587189 +0530
++++ solution/files/src/constraint/name_rules.rs	2026-07-21 07:33:13.646615265 +0530
+@@ -1,6 +1,37 @@
+ use crate::cert::Certificate;
++use crate::domain::{domain_matches, extract_domain};
+ 
+ /// Evaluates permitted and excluded DNS name constraints against the leaf subject.
+-pub fn check_name_constraints(_path: &[Certificate]) -> bool {
++pub fn check_name_constraints(path: &[Certificate]) -> bool {
++    for j in 1..path.len() {
++        let cert = &path[j];
++        if let Some(nc) = &cert.name_constraints {
++            let subject_domain = match extract_domain(&path[0].subject) {
++                Some(d) => d,
++                None => return false,
++            };
++            if let Some(permitted) = &nc.permitted_dns {
++                if !permitted.is_empty() {
++                    let mut any_match = false;
++                    for p in permitted {
++                        if domain_matches(&subject_domain, p) {
++                            any_match = true;
++                            break;
++                        }
++                    }
++                    if !any_match {
++                        return false;
++                    }
++                }
++            }
++            if let Some(excluded) = &nc.excluded_dns {
++                for e in excluded {
++                    if domain_matches(&subject_domain, e) {
++                        return false;
++                    }
++                }
++            }
++        }
++    }
+     true
+ }
+diff -ruN environment/src/constraint/policy_rules.rs solution/files/src/constraint/policy_rules.rs
+--- environment/src/constraint/policy_rules.rs	2026-07-21 07:33:13.826587032 +0530
++++ solution/files/src/constraint/policy_rules.rs	2026-07-21 07:33:13.742600208 +0530
+@@ -1,6 +1,55 @@
+ use crate::cert::Certificate;
++use std::collections::HashSet;
+ 
+ /// Evaluates policy OID intersection and requireExplicitPolicy along the chain.
+-pub fn check_policy_constraints(_path: &[Certificate]) -> bool {
++pub fn check_policy_constraints(path: &[Certificate]) -> bool {
++    let root = &path[path.len() - 1];
++    let mut v: HashSet<String> = root
++        .certificate_policies
++        .as_ref()
++        .map_or(HashSet::new(), |p| p.iter().cloned().collect());
++
++    for i in (0..path.len() - 1).rev() {
++        let cert = &path[i];
++        let p_i: HashSet<String> = cert
++            .certificate_policies
++            .as_ref()
++            .map_or(HashSet::new(), |p| p.iter().cloned().collect());
++        let p_i_nonempty = !p_i.is_empty();
++
++        if v.is_empty() {
++            v = p_i;
++        } else if v.contains("2.5.29.32.0") {
++            v = p_i;
++        } else if p_i.contains("2.5.29.32.0") {
++            // v remains same
++        } else {
++            v = v.intersection(&p_i).cloned().collect();
++        }
++
++        if v.is_empty() && p_i_nonempty {
++            return false;
++        }
++    }
++
++    for j in 1..path.len() {
++        let cert = &path[j];
++        if let Some(pc) = &cert.policy_constraints {
++            if let Some(r) = pc.require_explicit_policy {
++                if j >= r as usize {
++                    let leaf_has_explicit = path[0]
++                        .certificate_policies
++                        .as_ref()
++                        .map_or(false, |policies| {
++                            policies.iter().any(|p| p != "2.5.29.32.0")
++                        });
++                    if !leaf_has_explicit {
++                        return false;
++                    }
++                }
++            }
++        }
++    }
++
+     true
+ }
+diff -ruN environment/src/corpus_seal.rs solution/files/src/corpus_seal.rs
+--- environment/src/corpus_seal.rs	2026-07-21 19:37:45.696724774 +0530
++++ solution/files/src/corpus_seal.rs	2026-07-21 19:41:38.218621269 +0530
+@@ -1,5 +1,6 @@
+ use crate::cert::Certificate;
+ use serde::{Deserialize, Serialize};
++use sha2::{Digest, Sha256};
+ use std::fs::File;
+ use std::io::Write;
+ use std::path::Path;
+@@ -21,17 +22,48 @@
+ }
+ 
+ /// Computes the corpus digest used to bind seal-corpus output to attest-chain input.
+-pub fn compute_pool_digest(_pool: &[Certificate]) -> String {
+-    String::new()
++pub fn compute_pool_digest(pool: &[Certificate]) -> String {
++    let mut sorted: Vec<&Certificate> = pool.iter().collect();
++    sorted.sort_by(|a, b| a.id.cmp(&b.id));
++    let mut hasher = Sha256::new();
++    for cert in sorted {
++        hasher.update(cert.canonical_string().as_bytes());
++        hasher.update(b"\n");
++    }
++    hex::encode(hasher.finalize())
++}
++
++fn bump_and_write_ledger(pool_digest: &str) -> Result<u64, String> {
++    let mut epoch = 1u64;
++    if Path::new(LEDGER_PATH).exists() {
++        let file = File::open(LEDGER_PATH).map_err(|e| e.to_string())?;
++        let prev: SealEpochLedger = serde_json::from_reader(file).map_err(|e| e.to_string())?;
++        epoch = prev.epoch.saturating_add(1);
++    }
++    let ledger = SealEpochLedger {
++        epoch,
++        pool_digest: pool_digest.to_string(),
++    };
++    if let Some(parent) = Path::new(LEDGER_PATH).parent() {
++        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
++    }
++    let file = File::create(LEDGER_PATH).map_err(|e| e.to_string())?;
++    serde_json::to_writer_pretty(file, &ledger).map_err(|e| e.to_string())?;
++    Ok(epoch)
+ }
+ 
+ pub fn write_binding(binding_path: &str, pool_path: &str, pool: &[Certificate]) -> Result<(), String> {
++    let pool_digest = compute_pool_digest(pool);
++    let ingest_epoch = bump_and_write_ledger(&pool_digest)?;
+     let binding = PoolBinding {
+         pool_path: pool_path.to_string(),
+-        pool_digest: compute_pool_digest(pool),
++        pool_digest,
+         cert_count: pool.len(),
+-        ingest_epoch: 0,
++        ingest_epoch,
+     };
++    if let Some(parent) = Path::new(binding_path).parent() {
++        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
++    }
+     let file = File::create(binding_path).map_err(|e| e.to_string())?;
+     serde_json::to_writer_pretty(file, &binding).map_err(|e| e.to_string())
+ }
+@@ -42,11 +74,22 @@
+ }
+ 
+ pub fn verify_binding(binding: &PoolBinding, pool: &[Certificate]) -> bool {
+-    binding.cert_count == pool.len()
++    binding.cert_count == pool.len() && binding.pool_digest == compute_pool_digest(pool)
+ }
+ 
+-/// Cross-run seal-epoch check — open in the baseline (always succeeds until implemented).
+-pub fn verify_seal_epoch(_binding: &PoolBinding) -> Result<(), String> {
++/// Ensures the on-disk seal-epoch ledger matches this binding's epoch and digest.
++pub fn verify_seal_epoch(binding: &PoolBinding) -> Result<(), String> {
++    if !Path::new(LEDGER_PATH).exists() {
++        return Err("Seal epoch ledger missing at /app/state/seal_epoch.json".to_string());
++    }
++    let file = File::open(LEDGER_PATH).map_err(|e| e.to_string())?;
++    let ledger: SealEpochLedger = serde_json::from_reader(file).map_err(|e| e.to_string())?;
++    if ledger.epoch != binding.ingest_epoch {
++        return Err("Seal epoch ledger epoch does not match binding".to_string());
++    }
++    if ledger.pool_digest != binding.pool_digest {
++        return Err("Seal epoch ledger digest does not match binding".to_string());
++    }
+     Ok(())
+ }
+ 
+@@ -60,7 +103,7 @@
+ }
+ 
+ pub fn touch_state_marker() -> Result<(), String> {
+-    let _ = Path::new(LEDGER_PATH);
++    std::fs::create_dir_all("/app/state").map_err(|e| e.to_string())?;
+     let mut file = File::create("/app/state/.trustadmit_ready").map_err(|e| e.to_string())?;
+     file.write_all(b"1").map_err(|e| e.to_string())
+ }
+diff -ruN environment/src/domain.rs solution/files/src/domain.rs
+--- environment/src/domain.rs	2026-07-21 07:33:13.742600208 +0530
++++ solution/files/src/domain.rs	2026-07-13 14:09:14.000000000 +0530
+@@ -1,5 +1,6 @@
+ /// Extracts the domain from the CN attribute of the subject distinguished name.
+ pub fn extract_domain(subject: &str) -> Option<String> {
++    // Initial code outline for domain extraction
+     for part in subject.split(',') {
+         let trimmed = part.trim();
+         if trimmed.to_lowercase().starts_with("cn=") {
+@@ -11,6 +12,14 @@
+ 
+ /// Matches a domain name against a name constraint pattern.
+ pub fn domain_matches(domain: &str, pattern: &str) -> bool {
+-    let _ = (domain, pattern);
+-    true
++    // Initial code outline for name constraint matching
++    let d_lower = domain.to_lowercase();
++    let p_lower = pattern.to_lowercase();
++    if d_lower == p_lower {
++        return true;
++    }
++    if d_lower.ends_with(&format!(".{}", p_lower)) {
++        return true;
++    }
++    false
+ }
+diff -ruN environment/src/helper/ready_gate.rs solution/files/src/helper/ready_gate.rs
+--- environment/src/helper/ready_gate.rs	2026-07-21 19:37:52.707528381 +0530
++++ solution/files/src/helper/ready_gate.rs	2026-07-21 19:41:49.905068524 +0530
+@@ -1,4 +1,7 @@
+ /// Ensures seal-corpus completed and wrote the runtime ready marker under /app/state/.
+ pub fn require_ready_marker() -> Result<(), String> {
++    if !std::path::Path::new("/app/state/.trustadmit_ready").exists() {
++        return Err("Seal-corpus ready marker missing at /app/state/.trustadmit_ready".to_string());
++    }
+     Ok(())
+ }
+diff -ruN environment/src/issuer_adjacency.rs solution/files/src/issuer_adjacency.rs
+--- environment/src/issuer_adjacency.rs	2026-07-21 19:37:50.951202069 +0530
++++ solution/files/src/issuer_adjacency.rs	2026-07-21 19:41:46.199029068 +0530
+@@ -1,6 +1,7 @@
+ use crate::cert::Certificate;
+-use crate::corpus_seal::{self, PoolBinding};
++use crate::corpus_seal::PoolBinding;
+ use serde::{Deserialize, Serialize};
++use sha2::{Digest, Sha256};
+ use std::collections::BTreeMap;
+ use std::fs::File;
+ use std::path::Path;
+@@ -15,13 +16,44 @@
+     pub edges: BTreeMap<String, Vec<String>>,
+ }
+ 
++pub fn compute_adjacency_digest(edges: &BTreeMap<String, Vec<String>>) -> String {
++    let mut hasher = Sha256::new();
++    for (subject, ids) in edges.iter() {
++        hasher.update(subject.as_bytes());
++        hasher.update(b"\n");
++        for id in ids {
++            hasher.update(id.as_bytes());
++            hasher.update(b"\n");
++        }
++        hasher.update(b"\n");
++    }
++    hex::encode(hasher.finalize())
++}
++
++fn build_edges(pool: &[Certificate]) -> BTreeMap<String, Vec<String>> {
++    let mut edges: BTreeMap<String, Vec<String>> = BTreeMap::new();
++    for cert in pool {
++        edges
++            .entry(cert.subject.clone())
++            .or_default()
++            .push(cert.id.clone());
++    }
++    for ids in edges.values_mut() {
++        ids.sort();
++        ids.dedup();
++    }
++    edges
++}
++
+ /// Builds and seals the issuer adjacency index for the bound corpus.
+-pub fn write_issuer_adjacency(_binding: &PoolBinding, _pool: &[Certificate]) -> Result<(), String> {
++pub fn write_issuer_adjacency(binding: &PoolBinding, pool: &[Certificate]) -> Result<(), String> {
++    let edges = build_edges(pool);
++    let fold_digest = compute_adjacency_digest(&edges);
+     let adjacency = IssuerAdjacency {
+-        fold_epoch: 0,
+-        pool_digest: String::new(),
+-        fold_digest: String::new(),
+-        edges: BTreeMap::new(),
++        fold_epoch: binding.ingest_epoch,
++        pool_digest: binding.pool_digest.clone(),
++        fold_digest,
++        edges,
+     };
+     if let Some(parent) = Path::new(ADJACENCY_PATH).parent() {
+         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+@@ -31,13 +63,24 @@
+ }
+ 
+ pub fn load_issuer_adjacency() -> Result<IssuerAdjacency, String> {
++    if !Path::new(ADJACENCY_PATH).exists() {
++        return Err("Issuer adjacency missing at /app/state/issuer_adjacency.json".to_string());
++    }
+     let file = File::open(ADJACENCY_PATH).map_err(|e| e.to_string())?;
+     serde_json::from_reader(file).map_err(|e| e.to_string())
+ }
+ 
+-/// Cross-stage check — open baseline always succeeds until implemented.
+-pub fn verify_issuer_adjacency(_binding: &PoolBinding, _adjacency: &IssuerAdjacency) -> Result<(), String> {
+-    let _ = corpus_seal::compute_pool_digest;
++pub fn verify_issuer_adjacency(binding: &PoolBinding, adjacency: &IssuerAdjacency) -> Result<(), String> {
++    if adjacency.fold_epoch != binding.ingest_epoch {
++        return Err("Issuer adjacency epoch does not match binding".to_string());
++    }
++    if adjacency.pool_digest != binding.pool_digest {
++        return Err("Issuer adjacency digest does not match binding".to_string());
++    }
++    let recomputed = compute_adjacency_digest(&adjacency.edges);
++    if recomputed != adjacency.fold_digest {
++        return Err("Issuer adjacency fold_digest mismatch".to_string());
++    }
+     Ok(())
+ }
+ 
+diff -ruN environment/src/validation.rs solution/files/src/validation.rs
+--- environment/src/validation.rs	2026-07-21 07:33:13.676610560 +0530
++++ solution/files/src/validation.rs	2026-07-21 07:33:13.825587189 +0530
+@@ -15,6 +15,47 @@
+         return false;
+     }
+ 
++    for cert in path {
++        if validation_time < cert.validity.not_before || validation_time > cert.validity.not_after {
++            return false;
++        }
++    }
++
++    for i in 0..path.len() - 1 {
++        let cert = &path[i];
++        let issuer = &path[i + 1];
++        if cert.issuer != issuer.subject {
++            return false;
++        }
++        if !cert.verify_signature(&issuer.public_key) {
++            return false;
++        }
++    }
++    if !root.verify_signature(&root.public_key) {
++        return false;
++    }
++
++    if !root.basic_constraints.as_ref().map_or(false, |bc| bc.is_ca) {
++        return false;
++    }
++    for i in 1..path.len() - 1 {
++        let cert = &path[i];
++        if !cert.basic_constraints.as_ref().map_or(false, |bc| bc.is_ca) {
++            return false;
++        }
++    }
++
++    for j in 1..path.len() {
++        let cert = &path[j];
++        if let Some(bc) = &cert.basic_constraints {
++            if let Some(l) = bc.path_len_constraint {
++                if (j - 1) as u32 > l {
++                    return false;
++                }
++            }
++        }
++    }
++
+     if !name_rules::check_name_constraints(path) {
+         return false;
+     }
+@@ -22,6 +63,5 @@
+         return false;
+     }
+ 
+-    let _ = validation_time;
+     true
+ }

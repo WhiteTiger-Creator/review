@@ -1,7 +1,0 @@
-# Vendored third-party crates are immutable raw bytes protected by
-# .cargo-checksum.json. Never apply text/eol normalization under vendor/.
-environment/app/vendor/** -text
-
-# First-party shell and Dockerfile stay LF for Linux containers.
-*.sh text eol=lf
-environment/Dockerfile text eol=lf

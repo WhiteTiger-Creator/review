@@ -1,27 +1,15 @@
-We're blocked on the Postgres cutover. The checked-in cluster manifests under
-`/app/data` disagree with the organization policy snapshot, so bootstraps keep
-shipping wrong identities, privileges, HBA first-match order, and extension
-prerequisites.
+# Cryptographic trust-admission attestation
 
-Finish the unfinished planner already living in `/app`. The binary is named
-`pg-bootstrap`. Its `plan` entrypoint must fetch and digest-check the policy
-snapshot from the localhost base URL it already takes, merge that snapshot with
-the local YAML/TOML plus the extension and setting catalogs, reject forbidden
-capabilities, place every operation after its dependencies in a legal phase, and
-emit `/app/output/bootstrap.sql` together with `/app/output/bootstrap_plan.json`.
+Task identity 59cebf22ed governs cryptographic trust-admission attestation under RFC 5280 trust policy for a zero-trust gateway. Client identity caches mix cross-signed intermediates, expired siblings, and name- or policy-constrained peers. Sealed corpus digests, issuer-adjacency witnesses, and attested leaf-to-root identity chains must agree with independent policy checks before admission; otherwise the gateway emits a cryptographic refusal envelope.
 
-Do real HTTP against the supplied policy service. Do not replace that fixture,
-edit verifier files, or dump precomputed SQL/plan tables from Python or shell.
+Authoritative behavior is defined only by /app/docs/, including /app/docs/security-attestation-workflow.md and /app/docs/trust-admission-attestation.md. Packages under src/decoy_policy/, src/decoy_nc/, and src/decoy_lex/ are non-authoritative decoys.
 
-Whole-run fatals exit nonzero, print a stderr line that starts with
-`<reason_token>:`, and delete both requested outputs. A rejected cluster only
-gets a rejection row; later clusters still get planned, and the process still
-exits zero if nothing whole-run fatal happened.
+## Trust-admission problem
 
-The rules are in `/app/docs/incident_summary.md`,
-`/app/docs/bootstrap_policy_profile.md`, `/app/docs/input_schema.md`,
-`/app/docs/policy_fragment_schema.md`, `/app/docs/rejection_precedence.md`,
-`/app/docs/extension_resolution.md`, `/app/docs/phase_contract.md`,
-`/app/docs/api_contract.md`, `/app/docs/plan_schema.md`, and
-`/app/docs/sql_serialization.md`. The supported argument surface is already
-declared in `/app/src/cli.rs`.
+Admission control refuses clients whose PKIX chains should still validate under policy. Corpus digests drift after seal-corpus, issuer adjacency seals go stale across re-seal epochs, and tie-breaking among otherwise-valid chains disagrees with /app/docs/attested-chain-selection.md. Temporal windows, basicConstraints pathLen, DNS name constraints, and policy OID intersection must all hold for the admitted chain. Compromise modeling treats a digest-mismatched corpus or a stale adjacency seal as a trust failure, not a soft warning.
+
+## Required capability
+
+Build a new trust-admission attestation workflow under /app that seals corpus digests, binds issuer adjacency witnesses, and emits attested identity chains or refusal envelopes per /app/docs/trustadmit-operator-manual.md. Graded surface: /app/bin/trustadmit. Seal epoch, digest, and anchor rules: /app/docs/trusted-root-anchor-binding.md. Signature and temporal checks: /app/docs/rfc5280-signature-verification.md. Success and refusal JSON shapes: /app/docs/attestation-refusal-envelope.md. Path length: /app/docs/pathlen-security-bound.md. Name and policy rules: /app/docs/dns-name-constraint-enforcement.md and /app/docs/certificate-policy-intersection.md. Chain selection: /app/docs/attested-chain-selection.md. Issuer adjacency seal: /app/docs/issuer-adjacency-seal.md.
+
+Bundled trust material lives at /app/data/pool.json and /app/data/roots.json; default binding is /app/state/trust_bind.json; seal-epoch ledger /app/state/seal_epoch.json; ready latch /app/state/.trustadmit_ready; adjacency witness /app/state/issuer_adjacency.json; non-integer --time values such as invalid-timestamp must be rejected. Unknown targets such as non-existent-leaf must be refused per the attestation envelope contract.
