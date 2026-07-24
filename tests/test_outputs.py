@@ -1,808 +1,779 @@
-"""
-Verification harness for cryptographic trust-admission attestation.
-Exercises seal-corpus, bind-issuers, and attest-chain against bundled and holdout fixtures.
-"""
-
-from __future__ import annotations
+"""Securitization waterfall engine verification - exercises all paths."""
 
 import json
 import subprocess
-import sys
-from pathlib import Path
-
 import pytest
+import os
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "verifier-support"))
-from chain_oracle import load_json, reference_reconstruct_path  # noqa: E402
-
-BINARY_PATH = "/app/bin/trustadmit"
-POOL_PATH = "/app/data/pool.json"
-ROOTS_PATH = "/app/data/roots.json"
-DEFAULT_BINDING = "/app/state/trust_bind.json"
+BIN = '/app/waterfall'
+INPUT = '/app/input/collections.json'
+OUTPUT = '/app/output/waterfall.json'
+TIMEOUT = 30
 
 
-def _fixture_dir() -> Path:
-    opt = Path("/") / "opt" / ("verifier" + "-fixtures")
-    local = Path(__file__).resolve().parent / ("verifier" + "-fixtures")
-    if (opt / ("hidden" + "_pool.json")).exists():
-        return opt
-    return local
-
-
-VERIFIER_FIXTURES = _fixture_dir()
-
-HIDDEN_POOL_PATH = VERIFIER_FIXTURES / ("hidden" + "_pool.json")
-HIDDEN_ROOTS_PATH = VERIFIER_FIXTURES / ("hidden" + "_roots.json")
-HOLDOUT_POOL_PATH = VERIFIER_FIXTURES / ("holdout" + "_pool.json")
-
-
-def _leaf_id(pool_path: Path, *fragments: str) -> str:
-    """Resolve a leaf certificate id from fixture fragments (avoid opaque literals in tests)."""
-    for cert in load_json(pool_path):
-        cid = str(cert.get("id", ""))
-        if not cid.startswith("leaf"):
-            continue
-        if all(part in cid for part in fragments):
-            return cid
-    raise AssertionError("missing leaf id for fragments")
-
-
-HIDDEN_TARGETS = [
-    _leaf_id(HIDDEN_POOL_PATH, "loop"),
-    _leaf_id(HIDDEN_POOL_PATH, "nc", "nested", "1"),
-]
-
-
-@pytest.fixture(scope="module")
-def built_binary():
-    """Ensure the trustadmit binary exists before subprocess tests."""
-    subprocess.run(["cargo", "build", "--release", "--locked"], cwd="/app", check=True)
-    Path("/app/bin").mkdir(parents=True, exist_ok=True)
-    # Install cargo release artifact to the operator path without Path("/app") baselines.
+@pytest.fixture(scope='session', autouse=True)
+def build_and_run():
+    """build and run the waterfall engine as appuser (matches test.sh isolation)"""
     subprocess.run(
-        ["cp", "-f", "/app/target/release/trustadmit", BINARY_PATH],
-        check=True,
+        ['su', 'appuser', '-c', 'cd /app && go build -o /app/waterfall . && /app/waterfall'],
+        capture_output=True, timeout=60,
     )
-    assert Path(BINARY_PATH).exists()
+    yield
 
 
-@pytest.fixture
-def temp_output(tmp_path):
-    return tmp_path / "roots.json"
+@pytest.fixture(scope='session')
+def output_data(build_and_run):
+    """load the output waterfall json"""
+    with open(OUTPUT) as f:
+        return json.load(f)
 
 
-def seal_bind_and_attest(
-    pool,
-    roots,
-    target,
-    time,
-    output,
-    binding=DEFAULT_BINDING,
-    *,
-    skip_seal=False,
-    skip_bind=False,
-):
-    """Run seal-corpus, bind-issuers, then attest-chain for the given pool and roots paths."""
-    pool_path = pool
-    if not isinstance(pool, (str, Path)):
-        raise TypeError("pool must be a filesystem path")
+# === STRUCTURAL TESTS ===
 
-    if not skip_seal:
-        sealed = subprocess.run(
-            [
-                BINARY_PATH,
-                "seal-corpus",
-                "--pool",
-                str(pool_path),
-                "--binding",
-                str(binding),
-            ],
-            capture_output=True,
-            text=True,
+def test_output_file_exists(build_and_run):
+    """output file must be created at the specified path"""
+    assert os.path.isfile(OUTPUT)
+
+
+def test_output_is_array_of_11_periods(output_data):
+    """output contains exactly 11 period records (deal terminates at clean-up)"""
+    assert isinstance(output_data, list)
+    assert len(output_data) == 11
+
+
+def test_period_one_structure(output_data):
+    """period 1 record has all required fields"""
+    p1 = output_data[0]
+    assert p1['period'] == 1
+    assert 'tranche_payments' in p1
+    assert 'reserve_balance' in p1
+    assert 'mode' in p1
+    assert 'clean_up' in p1
+
+
+def test_tranche_payment_structure(output_data):
+    """each tranche payment has all required fields"""
+    for p in output_data:
+        for tp in p['tranche_payments']:
+            assert 'id' in tp
+            assert 'interest_paid' in tp
+            assert 'principal_paid' in tp
+            assert 'ending_balance' in tp
+            assert 'pik_amount' in tp
+
+
+def test_four_tranches_per_period(output_data):
+    """each period has exactly 4 tranche payments"""
+    for p in output_data:
+        assert len(p['tranche_payments']) == 4
+
+
+# === PERIOD 1 - SEQUENTIAL MODE, NORMAL FLOW ===
+
+def test_period_1_mode_sequential(output_data):
+    """first period uses sequential distribution mode"""
+    assert output_data[0]['mode'] == 'sequential'
+
+
+def test_period_1_tranche_a_interest(output_data):
+    """tranche A interest: 5000000 * 0.05/12 = 20833.33"""
+    p1 = output_data[0]
+    a = next(t for t in p1['tranche_payments'] if t['id'] == 'T-A')
+    assert a['interest_paid'] == 20833.33
+
+
+def test_period_1_tranche_b_interest(output_data):
+    """tranche B interest: 2000000 * 0.07/12 = 11666.67"""
+    p1 = output_data[0]
+    b = next(t for t in p1['tranche_payments'] if t['id'] == 'T-B')
+    assert b['interest_paid'] == 11666.67
+
+
+def test_period_1_tranche_c_interest(output_data):
+    """tranche C interest: 1000000 * 0.09/12 = 7500.00"""
+    p1 = output_data[0]
+    c = next(t for t in p1['tranche_payments'] if t['id'] == 'T-C')
+    assert c['interest_paid'] == 7500.0
+
+
+def test_period_1_no_pik(output_data):
+    """no PIK shortfall occurs in period 1"""
+    p1 = output_data[0]
+    for tp in p1['tranche_payments']:
+        assert tp['pik_amount'] == 0.0
+
+
+def test_period_1_a_principal(output_data):
+    """tranche A principal paid in period 1 (sequential scheduled + prepay share)"""
+    p1 = output_data[0]
+    a = next(t for t in p1['tranche_payments'] if t['id'] == 'T-A')
+    assert a['principal_paid'] == 382387.03
+
+
+def test_period_1_a_ending_balance(output_data):
+    """tranche A ending balance after period 1"""
+    p1 = output_data[0]
+    a = next(t for t in p1['tranche_payments'] if t['id'] == 'T-A')
+    assert a['ending_balance'] == 4617612.97
+
+
+def test_period_1_b_principal(output_data):
+    """tranche B prepay share in period 1"""
+    p1 = output_data[0]
+    b = next(t for t in p1['tranche_payments'] if t['id'] == 'T-B')
+    assert b['principal_paid'] == 13075.31
+
+
+def test_period_1_c_principal(output_data):
+    """tranche C prepay share in period 1"""
+    p1 = output_data[0]
+    c = next(t for t in p1['tranche_payments'] if t['id'] == 'T-C')
+    assert c['principal_paid'] == 6537.66
+
+
+def test_sequential_principal_goes_to_a_first(output_data):
+    """sequential mode directs scheduled principal to tranche A before B"""
+    p1 = output_data[0]
+    a = next(t for t in p1['tranche_payments'] if t['id'] == 'T-A')
+    b = next(t for t in p1['tranche_payments'] if t['id'] == 'T-B')
+    assert a['principal_paid'] > b['principal_paid']
+
+
+# === PERIOD 3 - PIK (INTEREST SHORTFALL) ===
+
+def test_period_3_pik_fires_on_c(output_data):
+    """period 3 has very low collections causing PIK on tranche C"""
+    p3 = output_data[2]
+    c = next(t for t in p3['tranche_payments'] if t['id'] == 'T-C')
+    assert c['pik_amount'] == 4590.75
+
+
+def test_period_3_c_partial_interest(output_data):
+    """tranche C receives only partial interest in period 3"""
+    p3 = output_data[2]
+    c = next(t for t in p3['tranche_payments'] if t['id'] == 'T-C')
+    assert c['interest_paid'] == 2803.77
+
+
+def test_period_3_c_balance_increases(output_data):
+    """PIK capitalizes shortfall onto C balance"""
+    p3 = output_data[2]
+    c = next(t for t in p3['tranche_payments'] if t['id'] == 'T-C')
+    assert c['ending_balance'] == 990526.12
+
+
+def test_period_3_a_and_b_fully_paid_interest(output_data):
+    """tranches A and B still get full interest in period 3"""
+    p3 = output_data[2]
+    a = next(t for t in p3['tranche_payments'] if t['id'] == 'T-A')
+    b = next(t for t in p3['tranche_payments'] if t['id'] == 'T-B')
+    assert a['pik_amount'] == 0.0
+    assert b['pik_amount'] == 0.0
+    assert a['interest_paid'] == 17693.65
+    assert b['interest_paid'] == 11502.58
+
+
+def test_period_3_no_principal(output_data):
+    """no principal distributed in period 3 (scheduled principal is 0)"""
+    p3 = output_data[2]
+    for tp in p3['tranche_payments']:
+        assert tp['principal_paid'] == 0.0
+
+
+# === PERIODS 5-6 - PRO-RATA MODE ===
+
+def test_period_5_pro_rata_mode(output_data):
+    """period 5 switches to pro_rata (all triggers pass)"""
+    assert output_data[4]['mode'] == 'pro_rata'
+
+
+def test_period_6_pro_rata_mode(output_data):
+    """period 6 remains in pro_rata"""
+    assert output_data[5]['mode'] == 'pro_rata'
+
+
+def test_period_5_principal_proportional(output_data):
+    """pro-rata distributes principal proportionally to A/B/C balances"""
+    p5 = output_data[4]
+    a = next(t for t in p5['tranche_payments'] if t['id'] == 'T-A')
+    b = next(t for t in p5['tranche_payments'] if t['id'] == 'T-B')
+    c = next(t for t in p5['tranche_payments'] if t['id'] == 'T-C')
+    assert a['principal_paid'] == 384116.17
+    assert b['principal_paid'] == 157140.14
+    assert c['principal_paid'] == 78564.57
+
+
+def test_period_6_principal_values(output_data):
+    """period 6 pro-rata principal exact values"""
+    p6 = output_data[5]
+    a = next(t for t in p6['tranche_payments'] if t['id'] == 'T-A')
+    b = next(t for t in p6['tranche_payments'] if t['id'] == 'T-B')
+    c = next(t for t in p6['tranche_payments'] if t['id'] == 'T-C')
+    assert a['principal_paid'] == 366521.26
+    assert b['principal_paid'] == 154274.25
+    assert c['principal_paid'] == 77131.73
+
+
+# === PERIOD 7 - TRIGGER BREACH, SEQUENTIAL LOCK, STEP-UP, PIK ===
+
+def test_period_7_sequential_lock(output_data):
+    """period 7 reverts to sequential permanently (cum_default_rate >= 0.04)"""
+    assert output_data[6]['mode'] == 'sequential'
+
+
+def test_period_7_pik_on_c(output_data):
+    """period 7 triggers PIK on C (high defaults + loss writedown reduce available)"""
+    p7 = output_data[6]
+    c = next(t for t in p7['tranche_payments'] if t['id'] == 'T-C')
+    assert c['pik_amount'] == 6746.82
+
+
+def test_period_7_c_partial_interest(output_data):
+    """tranche C gets only partial interest in period 7"""
+    p7 = output_data[6]
+    c = next(t for t in p7['tranche_payments'] if t['id'] == 'T-C')
+    assert c['interest_paid'] == 49.62
+
+
+def test_period_7_step_up_active(output_data):
+    """step-up triggers in period 7 (cum defaults >= 3%), C rate goes to 10%"""
+    p8 = output_data[7]
+    c = next(t for t in p8['tranche_payments'] if t['id'] == 'T-C')
+    assert c['interest_paid'] == 6852.66
+
+
+# === PERIODS 8-11 - SEQUENTIAL STAYS LOCKED ===
+
+def test_sequential_stays_locked_period_8(output_data):
+    """mode remains sequential after lock"""
+    assert output_data[7]['mode'] == 'sequential'
+
+
+def test_sequential_stays_locked_period_9(output_data):
+    """mode remains sequential in period 9"""
+    assert output_data[8]['mode'] == 'sequential'
+
+
+def test_sequential_stays_locked_period_10(output_data):
+    """mode remains sequential in period 10"""
+    assert output_data[9]['mode'] == 'sequential'
+
+
+def test_sequential_lock_never_reverts(output_data):
+    """once locked sequential, no period reverts to pro_rata"""
+    modes = [p['mode'] for p in output_data]
+    for m in modes[6:]:
+        assert m == 'sequential'
+
+
+# === PERIOD 8 - SEQUENTIAL PRINCIPAL EXACT VALUES ===
+
+def test_period_8_a_principal(output_data):
+    """period 8 tranche A principal in sequential mode"""
+    p8 = output_data[7]
+    a = next(t for t in p8['tranche_payments'] if t['id'] == 'T-A')
+    assert a['principal_paid'] == 513875.93
+    assert a['ending_balance'] == 2470451.75
+
+
+# === RESERVE BALANCE TESTS ===
+
+def test_reserve_fills_by_period_4(output_data):
+    """reserve reaches target (172000) by period 4"""
+    assert output_data[3]['reserve_balance'] == 172000.0
+
+
+def test_reserve_period_1(output_data):
+    """reserve accumulates 45000 in period 1 from excess after principal"""
+    assert output_data[0]['reserve_balance'] == 45000.0
+
+
+def test_reserve_capped_at_target(output_data):
+    """reserve never exceeds 2% of original pool balance (172000)"""
+    for p in output_data:
+        assert p['reserve_balance'] <= 172000.0
+
+
+# === TURBO PRINCIPAL - FLOWS WHEN OC PASSES ===
+
+def test_turbo_flows_period_5(output_data):
+    """period 5 has turbo flowing to A after reserve is full and OC passes"""
+    p5 = output_data[4]
+    a = next(t for t in p5['tranche_payments'] if t['id'] == 'T-A')
+    # A gets: pro-rata scheduled share + prepay share + turbo (82000)
+    # total A principal = 384116.17 which includes 82000 turbo
+    # without turbo, A sched+prepay would be 301888.39
+    # verify the total includes turbo by checking the exact value
+    assert a['principal_paid'] == 384116.17
+
+
+def test_turbo_amount_period_8(output_data):
+    """period 8 turbo sends principal to tranche A in sequential mode"""
+    p8 = output_data[7]
+    a = next(t for t in p8['tranche_payments'] if t['id'] == 'T-A')
+    assert a['principal_paid'] == 513875.93
+
+
+def test_turbo_amount_period_9_exact(output_data):
+    """period 9 turbo flows to A (most senior with balance)"""
+    p9 = output_data[8]
+    a = next(t for t in p9['tranche_payments'] if t['id'] == 'T-A')
+    assert a['principal_paid'] == 723093.13
+
+
+def test_turbo_amount_period_10(output_data):
+    """period 10 turbo flows to A"""
+    p10 = output_data[9]
+    a = next(t for t in p10['tranche_payments'] if t['id'] == 'T-A')
+    assert a['principal_paid'] == 826741.34
+    assert a['ending_balance'] == 920617.28
+
+
+# === TURBO BLOCKED - OC TEST FAILURE ===
+
+def test_turbo_blocked_period_4_oc_fails(output_data):
+    """period 4 OC test fails so turbo does not flow despite reserve being full"""
+    p4 = output_data[3]
+    a = next(t for t in p4['tranche_payments'] if t['id'] == 'T-A')
+    b = next(t for t in p4['tranche_payments'] if t['id'] == 'T-B')
+    c = next(t for t in p4['tranche_payments'] if t['id'] == 'T-C')
+    # total principal = sched to A + prepay pro-rata (no turbo component)
+    # if turbo were flowing, A would get 15000 more
+    assert a['principal_paid'] == 511510.19
+    assert b['principal_paid'] == 29197.77
+    assert c['principal_paid'] == 14666.86
+
+
+def test_period_4_reserve_at_target_but_no_turbo(output_data):
+    """reserve hits 172000 in period 4, but OC failure blocks turbo"""
+    p4 = output_data[3]
+    assert p4['reserve_balance'] == 172000.0
+    # A ending balance proves no turbo flowed (would be 15000 less if it did)
+    a = next(t for t in p4['tranche_payments'] if t['id'] == 'T-A')
+    assert a['ending_balance'] == 3734965.11
+
+
+# === CLEAN-UP CALL ===
+
+def test_clean_up_fires_period_11(output_data):
+    """clean-up triggers in period 11 (pool < 10% of original)"""
+    assert output_data[10]['clean_up'] is True
+
+
+def test_clean_up_zeroes_all_balances(output_data):
+    """clean-up sets all tranche ending balances to zero"""
+    p11 = output_data[10]
+    for tp in p11['tranche_payments']:
+        assert tp['ending_balance'] == 0.0
+
+
+def test_clean_up_residual_gets_principal(output_data):
+    """residual tranche receives its balance as principal in clean-up"""
+    p11 = output_data[10]
+    r = next(t for t in p11['tranche_payments'] if t['id'] == 'T-R')
+    assert r['principal_paid'] == 470934.75
+
+
+def test_clean_up_a_principal(output_data):
+    """clean-up pays all remaining A balance as principal"""
+    p11 = output_data[10]
+    a = next(t for t in p11['tranche_payments'] if t['id'] == 'T-A')
+    assert a['principal_paid'] == 920617.28
+
+
+def test_clean_up_b_principal(output_data):
+    """clean-up pays all remaining B balance as principal"""
+    p11 = output_data[10]
+    b = next(t for t in p11['tranche_payments'] if t['id'] == 'T-B')
+    assert b['principal_paid'] == 1455005.40
+
+
+def test_clean_up_c_principal(output_data):
+    """clean-up pays all remaining C balance as principal"""
+    p11 = output_data[10]
+    c = next(t for t in p11['tranche_payments'] if t['id'] == 'T-C')
+    assert c['principal_paid'] == 727328.34
+
+
+def test_no_periods_after_cleanup(output_data):
+    """deal terminates after clean-up, no period 12 output"""
+    periods = [p['period'] for p in output_data]
+    assert 12 not in periods
+
+
+# === GENERAL INVARIANTS ===
+
+def test_all_values_two_decimal_places(output_data):
+    """every monetary value is rounded to exactly 2 decimal places"""
+    for p in output_data:
+        assert p['reserve_balance'] == round(p['reserve_balance'], 2)
+        for tp in p['tranche_payments']:
+            assert tp['interest_paid'] == round(tp['interest_paid'], 2)
+            assert tp['principal_paid'] == round(tp['principal_paid'], 2)
+            assert tp['ending_balance'] == round(tp['ending_balance'], 2)
+            assert tp['pik_amount'] == round(tp['pik_amount'], 2)
+
+
+def test_residual_gets_no_interest(output_data):
+    """residual tranche never receives interest payments"""
+    for p in output_data:
+        r = next(t for t in p['tranche_payments'] if t['id'] == 'T-R')
+        assert r['interest_paid'] == 0.0
+
+
+def test_mode_field_valid_values(output_data):
+    """mode is either sequential or pro_rata in every period"""
+    for p in output_data:
+        assert p['mode'] in ('sequential', 'pro_rata')
+
+
+def test_no_clean_up_before_period_11(output_data):
+    """clean-up does not fire in periods 1-10"""
+    for p in output_data[:10]:
+        assert p['clean_up'] is False
+
+
+def test_prepayment_distributed_pro_rata_in_sequential(output_data):
+    """prepay goes to B and C even in sequential mode (period 1)"""
+    p1 = output_data[0]
+    b = next(t for t in p1['tranche_payments'] if t['id'] == 'T-B')
+    c = next(t for t in p1['tranche_payments'] if t['id'] == 'T-C')
+    assert b['principal_paid'] > 0
+    assert c['principal_paid'] > 0
+
+
+def test_period_9_a_ending_balance(output_data):
+    """tranche A ending balance after period 9"""
+    p9 = output_data[8]
+    a = next(t for t in p9['tranche_payments'] if t['id'] == 'T-A')
+    assert a['ending_balance'] == 1747358.62
+
+
+def test_period_10_a_ending_balance(output_data):
+    """tranche A ending balance after period 10"""
+    p10 = output_data[9]
+    a = next(t for t in p10['tranche_payments'] if t['id'] == 'T-A')
+    assert a['ending_balance'] == 920617.28
+
+
+# === LOSS ALLOCATION TESTS ===
+
+def test_period_7_loss_writedown_residual(output_data):
+    """period 7 defaults (310000) exceed 3% of pool, residual written down"""
+    p7 = output_data[6]
+    r = next(t for t in p7['tranche_payments'] if t['id'] == 'T-R')
+    # residual ending balance reduced from 600000 by writedown
+    assert r['ending_balance'] == 470934.75
+
+
+def test_no_writedown_period_1(output_data):
+    """period 1 defaults (5000) well below 3% threshold, no writedown"""
+    p1 = output_data[0]
+    r = next(t for t in p1['tranche_payments'] if t['id'] == 'T-R')
+    assert r['ending_balance'] == 600000.0
+
+
+def test_residual_absorbs_loss_first(output_data):
+    """loss allocation hits residual before any senior tranche"""
+    p7 = output_data[6]
+    # A and B balances unchanged by writedown (only residual hit)
+    a = next(t for t in p7['tranche_payments'] if t['id'] == 'T-A')
+    b = next(t for t in p7['tranche_payments'] if t['id'] == 'T-B')
+    assert a['ending_balance'] == 2984327.68
+    assert b['ending_balance'] == 1631258.58
+
+
+# === PIK RECOVERY TESTS ===
+
+def test_pik_recovery_period_4(output_data):
+    """period 4 reserve hits cap, accumulated PIK on C recovered"""
+    p4 = output_data[3]
+    c = next(t for t in p4['tranche_payments'] if t['id'] == 'T-C')
+    assert c['pik_recovered'] == 4590.75
+
+
+def test_pik_recovery_period_8(output_data):
+    """period 8 reserve at cap, accumulated PIK on C from period 7 recovered"""
+    p8 = output_data[7]
+    c = next(t for t in p8['tranche_payments'] if t['id'] == 'T-C')
+    assert c['pik_recovered'] == 6746.82
+
+
+def test_no_pik_recovery_period_1(output_data):
+    """period 1 no PIK accumulated, no recovery"""
+    p1 = output_data[0]
+    for t in p1['tranche_payments']:
+        assert t['pik_recovered'] == 0
+
+
+def test_pik_recovery_reduces_balance(output_data):
+    """PIK recovery on C in period 4 reduces C's ending balance"""
+    p4 = output_data[3]
+    c = next(t for t in p4['tranche_payments'] if t['id'] == 'T-C')
+    # C balance went down by pik_recovered amount (since PIK had increased it)
+    assert c['ending_balance'] == 971268.51
+
+
+# === HIDDEN INPUT TESTS ===
+
+@pytest.fixture(scope='session')
+def hidden_output(build_and_run):
+    """swap in hidden input, run engine, restore original, return hidden results"""
+    import shutil
+    # backup original input
+    shutil.copy('/app/input/collections.json', '/tmp/collections_backup.json')
+    # copy hidden fixture (only accessible from /tests/ at verifier time)
+    shutil.copy('/tests/collections_hidden.json', '/app/input/collections.json')
+    subprocess.run(
+        ['bash', '-c', '/app/waterfall'],
+        capture_output=True, timeout=60,
+    )
+    with open('/app/output/waterfall.json') as f:
+        result = json.load(f)
+    # restore original immediately so agent binary cannot observe hidden data
+    shutil.copy('/tmp/collections_backup.json', '/app/input/collections.json')
+    subprocess.run(
+        ['bash', '-c', '/app/waterfall'],
+        capture_output=True, timeout=60,
+    )
+    return result
+
+
+def test_hidden_output_is_list(hidden_output):
+    """hidden input produces a valid array of period records"""
+    assert isinstance(hidden_output, list)
+    assert len(hidden_output) >= 5
+
+
+def test_hidden_period_1_interest_a(hidden_output):
+    """H-A interest period 1: 3000000 * 0.04/12 = 10000.00"""
+    p1 = hidden_output[0]
+    a = next(t for t in p1['tranche_payments'] if t['id'] == 'H-A')
+    assert a['interest_paid'] == 10000.00
+
+
+def test_hidden_period_1_interest_b(hidden_output):
+    """H-B interest period 1: 1500000 * 0.06/12 = 7500.00"""
+    p1 = hidden_output[0]
+    b = next(t for t in p1['tranche_payments'] if t['id'] == 'H-B')
+    assert b['interest_paid'] == 7500.00
+
+
+def test_hidden_period_1_interest_c(hidden_output):
+    """H-C interest period 1: 800000 * 0.08/12 = 5333.33"""
+    p1 = hidden_output[0]
+    c = next(t for t in p1['tranche_payments'] if t['id'] == 'H-C')
+    assert c['interest_paid'] == 5333.33
+
+
+def test_hidden_period_1_mode_sequential(hidden_output):
+    """hidden dataset starts in sequential mode"""
+    assert hidden_output[0]['mode'] == 'sequential'
+
+
+def test_hidden_four_tranches_per_period(hidden_output):
+    """each hidden period has exactly 4 tranche payments"""
+    for p in hidden_output:
+        assert len(p['tranche_payments']) == 4
+
+
+def test_hidden_reserve_capped(hidden_output):
+    """hidden reserve never exceeds 2% of 5700000 = 114000"""
+    for p in hidden_output:
+        assert p['reserve_balance'] <= 114000.0
+
+
+def test_hidden_residual_no_interest(hidden_output):
+    """residual tranche never receives interest in hidden dataset"""
+    for p in hidden_output:
+        r = next(t for t in p['tranche_payments'] if t['id'] == 'H-R')
+        assert r['interest_paid'] == 0.0
+
+
+def test_hidden_all_values_two_dp(hidden_output):
+    """all monetary values rounded to 2dp in hidden output"""
+    for p in hidden_output:
+        assert p['reserve_balance'] == round(p['reserve_balance'], 2)
+        for tp in p['tranche_payments']:
+            assert tp['interest_paid'] == round(tp['interest_paid'], 2)
+            assert tp['principal_paid'] == round(tp['principal_paid'], 2)
+            assert tp['ending_balance'] == round(tp['ending_balance'], 2)
+
+
+def test_hidden_cleanup_zeroes_all(hidden_output):
+    """cleanup period (last) sets all ending balances to zero"""
+    last = hidden_output[-1]
+    if last['clean_up']:
+        for tp in last['tranche_payments']:
+            assert tp['ending_balance'] == 0.0
+
+
+def test_hidden_step_up_triggers(hidden_output):
+    """step-up triggers when cum defaults reach 3% of 5700000 = 171000"""
+    # periods 1-4 defaults: 3000+4000+5000+6000=18000
+    # period 5 defaults: 160000, cum=178000 > 171000 -> step-up in period 5
+    # C rate goes from 0.08 to 0.09, so period 5 C interest uses 0.09
+    p5 = hidden_output[4]
+    c = next(t for t in p5['tranche_payments'] if t['id'] == 'H-C')
+    # need to know C balance at start of period 5 to verify
+    # just check that step-up happened by comparing periods 4 and 5 rates
+    p4 = hidden_output[3]
+    c4 = next(t for t in p4['tranche_payments'] if t['id'] == 'H-C')
+    # period 5 interest should use 0.09 rate on period-4 ending balance
+    expected_c5_interest = round(c4['ending_balance'] * 0.09 / 12, 2)
+    assert c['interest_paid'] == expected_c5_interest
+
+
+def test_hidden_period1_a_principal(hidden_output):
+    """H-A principal in period 1: scheduled principal goes to A first in sequential"""
+    p1 = hidden_output[0]
+    a = next(t for t in p1['tranche_payments'] if t['id'] == 'H-A')
+    # A must receive most principal in sequential mode
+    b = next(t for t in p1['tranche_payments'] if t['id'] == 'H-B')
+    assert a['principal_paid'] > b['principal_paid']
+    assert a['principal_paid'] > 250000
+
+
+def test_hidden_period1_a_ending(hidden_output):
+    """H-A ending balance after period 1 consistent with starting 3000000"""
+    p1 = hidden_output[0]
+    a = next(t for t in p1['tranche_payments'] if t['id'] == 'H-A')
+    assert a['ending_balance'] == 3000000 - a['principal_paid']
+
+
+def test_hidden_period1_b_prepay(hidden_output):
+    """H-B gets prepay share in period 1 sequential mode"""
+    p1 = hidden_output[0]
+    b = next(t for t in p1['tranche_payments'] if t['id'] == 'H-B')
+    assert b['principal_paid'] > 0
+
+
+def test_hidden_period1_reserve(hidden_output):
+    """reserve accumulates from excess in period 1"""
+    assert hidden_output[0]['reserve_balance'] > 0
+
+
+class TestAntiHardcode:
+    """Verify outputs are computed dynamically, not precomputed."""
+
+    def test_perturbed_collections_change_output(self, build_and_run):
+        """Modify period 1 collections and verify output diverges from original."""
+        import shutil
+
+        # capture original output
+        with open('/app/output/waterfall.json') as f:
+            original = json.load(f)
+        original_p1_a = next(
+            t for t in original[0]['tranche_payments'] if t['id'] == 'T-A'
         )
-        if sealed.returncode != 0:
-            return sealed
-
-    if not skip_bind:
-        bound = subprocess.run(
-            [BINARY_PATH, "bind-issuers", "--binding", str(binding)],
-            capture_output=True,
-            text=True,
+        original_p1_principal = sum(
+            t['principal_paid'] for t in original[0]['tranche_payments']
         )
-        if bound.returncode != 0:
-            return bound
-
-    return subprocess.run(
-        [
-            BINARY_PATH,
-            "attest-chain",
-            "--binding",
-            str(binding),
-            "--roots",
-            str(roots),
-            "--target",
-            str(target),
-            "--time",
-            str(time),
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-    )
-
-
-def write_pool(tmp_path: Path, pool_data) -> Path:
-    pool_file = tmp_path / "pool.json"
-    with open(pool_file, "w", encoding="utf-8") as handle:
-        json.dump(pool_data, handle)
-    return pool_file
-
-
-def bundled_expected(target: str, time: int = 3000):
-    """Reference oracle for the bundled /app/data pool and roots."""
-    pool = load_json(POOL_PATH)
-    roots = load_json(ROOTS_PATH)
-    return reference_reconstruct_path(pool, roots, target, time)
-
-
-def test_attest_simple_chain(built_binary, temp_output, tmp_path):
-    """Bundled pool: reconstruct a straightforward leaf-to-root chain via seal-corpus then attest-chain."""
-    binding = tmp_path / "binding.json"
-    expected = bundled_expected("leaf-1")
-    res = seal_bind_and_attest(POOL_PATH, ROOTS_PATH, "leaf-1", 3000, temp_output, binding)
-    assert res.returncode == 0
-    chain = json.loads(temp_output.read_text())
-    assert chain == expected
-
-
-def test_attest_expired_intermediate_backtrack(built_binary, temp_output, tmp_path):
-    """Bundled pool: skip expired intermediates and backtrack to a valid signing path."""
-    binding = tmp_path / "binding.json"
-    expected = bundled_expected("leaf-2")
-    res = seal_bind_and_attest(POOL_PATH, ROOTS_PATH, "leaf-2", 3000, temp_output, binding)
-    assert res.returncode == 0
-    chain = json.loads(temp_output.read_text())
-    assert chain == expected
-
-
-def test_attest_cross_signed_root(built_binary, temp_output, tmp_path):
-    """Bundled pool: prefer the cross-signed intermediate path when multiple roots exist."""
-    binding = tmp_path / "binding.json"
-    expected = bundled_expected("leaf-3")
-    res = seal_bind_and_attest(POOL_PATH, ROOTS_PATH, "leaf-3", 3000, temp_output, binding)
-    assert res.returncode == 0
-    chain = json.loads(temp_output.read_text())
-    assert chain == expected
-
-
-def test_refusal_pathlen_violation(built_binary, temp_output, tmp_path):
-    """Bundled pool: reject chains that exceed basicConstraints pathLenConstraint."""
-    binding = tmp_path / "binding.json"
-    res = seal_bind_and_attest(POOL_PATH, ROOTS_PATH, "leaf-4", 3000, temp_output, binding)
-    assert res.returncode != 0
-    report = json.loads(temp_output.read_text())
-    assert report["status"] == "failed"
-
-
-def test_attest_name_constraint_permitted(built_binary, temp_output, tmp_path):
-    """Bundled pool: accept a leaf whose DNS name satisfies permitted name constraints."""
-    binding = tmp_path / "binding.json"
-    expected = bundled_expected("leaf-nc-1")
-    res = seal_bind_and_attest(POOL_PATH, ROOTS_PATH, "leaf-nc-1", 3000, temp_output, binding)
-    assert res.returncode == 0
-    chain = json.loads(temp_output.read_text())
-    assert chain == expected
-
-
-def test_refusal_name_constraint_excluded(built_binary, temp_output, tmp_path):
-    """Bundled pool: reject a leaf whose DNS name matches an excluded name constraint."""
-    binding = tmp_path / "binding.json"
-    res = seal_bind_and_attest(POOL_PATH, ROOTS_PATH, "leaf-nc-2", 3000, temp_output, binding)
-    assert res.returncode != 0
-    report = json.loads(temp_output.read_text())
-    assert report["status"] == "failed"
-
-
-def test_refusal_name_constraint_not_permitted(built_binary, temp_output, tmp_path):
-    """Bundled pool: reject a leaf outside all permitted name constraint subtrees."""
-    binding = tmp_path / "binding.json"
-    res = seal_bind_and_attest(POOL_PATH, ROOTS_PATH, "leaf-nc-3", 3000, temp_output, binding)
-    assert res.returncode != 0
-    report = json.loads(temp_output.read_text())
-    assert report["status"] == "failed"
-
-
-def test_attest_policy_intersection(built_binary, temp_output, tmp_path):
-    """Bundled pool: accept when leaf policy OIDs intersect along the chain."""
-    binding = tmp_path / "binding.json"
-    expected = bundled_expected("leaf-pol-1")
-    res = seal_bind_and_attest(POOL_PATH, ROOTS_PATH, "leaf-pol-1", 3000, temp_output, binding)
-    assert res.returncode == 0
-    chain = json.loads(temp_output.read_text())
-    assert chain == expected
-
-
-def test_refusal_policy_intersection(built_binary, temp_output, tmp_path):
-    """Bundled pool: reject when policy OID sets have empty intersection."""
-    binding = tmp_path / "binding.json"
-    res = seal_bind_and_attest(POOL_PATH, ROOTS_PATH, "leaf-pol-2", 3000, temp_output, binding)
-    assert res.returncode != 0
-    report = json.loads(temp_output.read_text())
-    assert report["status"] == "failed"
-
-
-def test_refusal_explicit_policy(built_binary, temp_output, tmp_path):
-    """Bundled pool: reject when requireExplicitPolicy is set but leaf asserts no policy."""
-    binding = tmp_path / "binding.json"
-    res = seal_bind_and_attest(POOL_PATH, ROOTS_PATH, "leaf-pol-3", 3000, temp_output, binding)
-    assert res.returncode != 0
-    report = json.loads(temp_output.read_text())
-    assert report["status"] == "failed"
-
-
-def test_refusal_unresolvable_chain(built_binary, temp_output, tmp_path):
-    """Bundled pool: emit failure report when the target cannot chain to any trusted root."""
-    binding = tmp_path / "binding.json"
-    res = seal_bind_and_attest(POOL_PATH, ROOTS_PATH, "root-c", 3000, temp_output, binding)
-    assert res.returncode != 0
-    report = json.loads(temp_output.read_text())
-    assert report["status"] == "failed"
-
-
-def test_attest_loop_backtrack(built_binary, temp_output, tmp_path):
-    """Holdout corpus: detect issuer loops and backtrack to a valid path."""
-    binding = tmp_path / "binding.json"
-    pool = load_json(HIDDEN_POOL_PATH)
-    roots = load_json(HIDDEN_ROOTS_PATH)
-    expected = reference_reconstruct_path(pool, roots, "leaf-loop", 3000)
-    res = seal_bind_and_attest(HIDDEN_POOL_PATH, HIDDEN_ROOTS_PATH, "leaf-loop", 3000, temp_output, binding)
-    assert res.returncode == 0
-    chain = json.loads(temp_output.read_text())
-    assert chain == expected
-
-
-def test_attest_nested_name_constraints(built_binary, temp_output, tmp_path):
-    """Holdout corpus: nested permitted name constraints on the leaf DNS."""
-    binding = tmp_path / "binding.json"
-    pool = load_json(HIDDEN_POOL_PATH)
-    roots = load_json(HIDDEN_ROOTS_PATH)
-    expected = reference_reconstruct_path(pool, roots, _leaf_id(HIDDEN_POOL_PATH, "nc", "nested", "1"), 3000)
-    res = seal_bind_and_attest(
-        HIDDEN_POOL_PATH, HIDDEN_ROOTS_PATH, _leaf_id(HIDDEN_POOL_PATH, "nc", "nested", "1"), 3000, temp_output, binding
-    )
-    assert res.returncode == 0
-    chain = json.loads(temp_output.read_text())
-    assert chain == expected
-
-
-def test_refusal_nested_name_constraints(built_binary, temp_output, tmp_path):
-    """Holdout corpus: reject leaf violating nested name constraints."""
-    binding = tmp_path / "binding.json"
-    res = seal_bind_and_attest(
-        HIDDEN_POOL_PATH, HIDDEN_ROOTS_PATH, _leaf_id(HIDDEN_POOL_PATH, "nc", "nested", "2"), 3000, temp_output, binding
-    )
-    assert res.returncode != 0
-    report = json.loads(temp_output.read_text())
-    assert report["status"] == "failed"
-
-
-def test_attest_missing_required_args(built_binary, temp_output, tmp_path):
-    """Attest-chain subcommand must require --time and reject invocations missing required flags."""
-    binding = tmp_path / "binding.json"
-    subprocess.run(
-        [BINARY_PATH, "seal-corpus", "--pool", POOL_PATH, "--binding", str(binding)],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    res = subprocess.run(
-        [
-            BINARY_PATH,
-            "attest-chain",
-            "--binding",
-            str(binding),
-            "--roots",
-            ROOTS_PATH,
-            "--target",
-            "leaf-1",
-            "--output",
-            str(temp_output),
-        ],
-        capture_output=True,
-        text=True,
-    )
-    assert res.returncode != 0
-
-
-def test_attest_invalid_timestamp(built_binary, temp_output, tmp_path):
-    """Attest-chain subcommand must reject non-integer --time values with a clear error."""
-    binding = tmp_path / "binding.json"
-    subprocess.run(
-        [BINARY_PATH, "seal-corpus", "--pool", POOL_PATH, "--binding", str(binding)],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    res = subprocess.run(
-        [
-            BINARY_PATH,
-            "attest-chain",
-            "--binding",
-            str(binding),
-            "--roots",
-            ROOTS_PATH,
-            "--target",
-            "leaf-1",
-            "--time",
-            "invalid-timestamp",
-            "--output",
-            str(temp_output),
-        ],
-        capture_output=True,
-        text=True,
-    )
-    assert res.returncode != 0
-
-
-def test_seal_invalid_json_corpus(built_binary, temp_output, tmp_path):
-    """Seal-corpus must fail with non-zero exit when the pool file is not valid JSON."""
-    bad_pool = tmp_path / "pool.json"
-    bad_pool.write_text("{invalid json", encoding="utf-8")
-    binding = tmp_path / "binding.json"
-    res = subprocess.run(
-        [BINARY_PATH, "seal-corpus", "--pool", str(bad_pool), "--binding", str(binding)],
-        capture_output=True,
-        text=True,
-    )
-    assert res.returncode != 0
-    assert "Failed" in res.stderr
-
-
-def test_refusal_unknown_target(built_binary, temp_output, tmp_path):
-    """Attest-chain must write a failure report when the target certificate id is absent from the pool."""
-    binding = tmp_path / "binding.json"
-    res = seal_bind_and_attest(POOL_PATH, ROOTS_PATH, "non-existent-leaf", 3000, temp_output, binding)
-    assert res.returncode != 0
-    report = json.loads(temp_output.read_text())
-    assert report["status"] == "failed"
-
-
-def test_attest_self_signed_root(built_binary, temp_output, tmp_path):
-    """Bundled pool: when the target is itself a trusted root, output a singleton chain."""
-    binding = tmp_path / "binding.json"
-    expected = bundled_expected("root-a")
-    res = seal_bind_and_attest(POOL_PATH, ROOTS_PATH, "root-a", 3000, temp_output, binding)
-    assert res.returncode == 0
-    chain = json.loads(temp_output.read_text())
-    assert chain == expected
-
-
-def test_refusal_signature_verification(built_binary, temp_output, tmp_path):
-    """Attest-chain must reject paths when a certificate signature no longer verifies."""
-    pool = load_json(POOL_PATH)
-    target_id = next(
-        cert["id"]
-        for cert in pool
-        if not cert.get("basic_constraints", {}).get("is_ca", False)
-    )
-    for cert in pool:
-        if cert["id"] == target_id:
-            cert["signature"] = "0" * 64
-    bad_pool = write_pool(tmp_path, pool)
-    binding = tmp_path / "binding.json"
-    res = seal_bind_and_attest(bad_pool, ROOTS_PATH, target_id, 3000, temp_output, binding)
-    assert res.returncode != 0
-    report = json.loads(temp_output.read_text())
-    assert report["status"] == "failed"
-
-
-def test_bundled_data_paths_readable(built_binary):
-    """Bundled /app/data/pool.json and /app/data/roots.json must exist and parse as JSON arrays."""
-    pool = load_json("/app/data/pool.json")
-    roots = load_json("/app/data/roots.json")
-    assert Path("/app/data/roots.json").is_file()
-    assert Path("/app/data/pool.json").is_file()
-    assert Path("/app/state/trust_bind.json").parent == Path("/app/state")
-    assert isinstance(pool, list) and len(pool) > 0
-    assert isinstance(roots, list) and len(roots) > 0
-
-
-def test_trust_bind_snapshot_written(built_binary, temp_output, tmp_path):
-    """Seal-corpus writes pool_path, cert_count, pool_digest, and ingest_epoch; seal epoch and adjacency mirror them."""
-    binding = Path(DEFAULT_BINDING)
-    binding.parent.mkdir(parents=True, exist_ok=True)
-    ledger = Path("/app/state/seal_epoch.json")
-    if ledger.exists():
-        ledger.unlink()
-    ready = Path("/app/state/.trustadmit_ready")
-    ready.unlink(missing_ok=True)
-    adjacency_path = Path("/app/state/issuer_adjacency.json")
-    adjacency_path.unlink(missing_ok=True)
-    res = seal_bind_and_attest(POOL_PATH, ROOTS_PATH, "leaf-1", 3000, temp_output, binding)
-    assert res.returncode == 0
-    snapshot = json.loads(binding.read_text())
-    assert snapshot["pool_path"] == POOL_PATH
-    assert snapshot["cert_count"] > 0
-    assert isinstance(snapshot["pool_digest"], str)
-    assert len(snapshot["pool_digest"]) == 64
-    assert isinstance(snapshot["ingest_epoch"], int)
-    assert snapshot["ingest_epoch"] >= 1
-    assert ledger.exists()
-    ledger_doc = json.loads(ledger.read_text())
-    assert ledger_doc["epoch"] == snapshot["ingest_epoch"]
-    assert ledger_doc["pool_digest"] == snapshot["pool_digest"]
-    assert adjacency_path.exists()
-    adjacency_doc = json.loads(adjacency_path.read_text())
-    assert adjacency_doc["fold_epoch"] == snapshot["ingest_epoch"]
-    assert adjacency_doc["pool_digest"] == snapshot["pool_digest"]
-    assert isinstance(adjacency_doc["edges"], dict) and len(adjacency_doc["edges"]) > 0
-    assert len(adjacency_doc["fold_digest"]) == 64
-    assert Path(ROOTS_PATH).is_file()
-
-
-def test_attest_without_seal_fails(built_binary, temp_output, tmp_path):
-    """Attest-chain must fail when no prior seal-corpus produced the requested binding artifact."""
-    binding = tmp_path / "trust_bind.json"
-    res = subprocess.run(
-        [
-            BINARY_PATH,
-            "attest-chain",
-            "--binding",
-            str(binding),
-            "--roots",
-            ROOTS_PATH,
-            "--target",
-            "leaf-1",
-            "--time",
-            "3000",
-            "--output",
-            str(temp_output),
-        ],
-        capture_output=True,
-        text=True,
-    )
-    assert res.returncode != 0
-
-
-def test_attest_without_ready_marker_fails(built_binary, temp_output, tmp_path):
-    """Attest-chain must fail when /app/state/.trustadmit_ready is absent even with a valid binding."""
-    binding = tmp_path / "binding.json"
-    ready = Path("/app/state/.trustadmit_ready")
-    if ready.exists():
-        ready.unlink()
-    sealed = subprocess.run(
-        [BINARY_PATH, "seal-corpus", "--pool", POOL_PATH, "--binding", str(binding)],
-        capture_output=True,
-        text=True,
-    )
-    assert sealed.returncode == 0
-    ready.unlink(missing_ok=True)
-    res = subprocess.run(
-        [
-            BINARY_PATH,
-            "attest-chain",
-            "--binding",
-            str(binding),
-            "--roots",
-            ROOTS_PATH,
-            "--target",
-            "leaf-1",
-            "--time",
-            "3000",
-            "--output",
-            str(temp_output),
-        ],
-        capture_output=True,
-        text=True,
-    )
-    assert res.returncode != 0
-
-
-def test_attest_without_seal_epoch_fails(built_binary, temp_output, tmp_path):
-    """Attest-chain must fail when the seal-epoch ledger is removed after a successful seal-corpus."""
-    binding = tmp_path / "binding.json"
-    sealed = subprocess.run(
-        [BINARY_PATH, "seal-corpus", "--pool", POOL_PATH, "--binding", str(binding)],
-        capture_output=True,
-        text=True,
-    )
-    assert sealed.returncode == 0
-    ledger = Path("/app/state/seal_epoch.json")
-    assert ledger.exists()
-    ledger.unlink()
-    res = seal_bind_and_attest(
-        POOL_PATH, ROOTS_PATH, "leaf-1", 3000, temp_output, binding, skip_seal=True
-    )
-    assert res.returncode != 0
-
-
-def test_refusal_stale_binding_after_reseal(built_binary, temp_output, tmp_path):
-    """Re-seal advances the ledger epoch; a copied older binding must be rejected."""
-    binding_old = tmp_path / ("binding" + "-old.json")
-    binding_new = tmp_path / ("binding" + "-new.json")
-    first = subprocess.run(
-        [BINARY_PATH, "seal-corpus", "--pool", POOL_PATH, "--binding", str(binding_old)],
-        capture_output=True,
-        text=True,
-    )
-    assert first.returncode == 0
-    old_snapshot = json.loads(binding_old.read_text())
-    second = subprocess.run(
-        [BINARY_PATH, "seal-corpus", "--pool", POOL_PATH, "--binding", str(binding_new)],
-        capture_output=True,
-        text=True,
-    )
-    assert second.returncode == 0
-    new_snapshot = json.loads(binding_new.read_text())
-    assert new_snapshot["ingest_epoch"] > old_snapshot["ingest_epoch"]
-    res = seal_bind_and_attest(
-        POOL_PATH, ROOTS_PATH, "leaf-1", 3000, temp_output, binding_old, skip_seal=True
-    )
-    assert res.returncode != 0
-
-
-def test_refusal_corpus_digest_tamper(built_binary, temp_output, tmp_path):
-    """Attest-chain must reject pools whose on-disk content changed after seal-corpus digest binding."""
-    pool_copy = write_pool(tmp_path, load_json(POOL_PATH))
-    binding = tmp_path / "binding.json"
-    sealed = subprocess.run(
-        [BINARY_PATH, "seal-corpus", "--pool", str(pool_copy), "--binding", str(binding)],
-        capture_output=True,
-        text=True,
-    )
-    assert sealed.returncode == 0
-    bound = subprocess.run(
-        [BINARY_PATH, "bind-issuers", "--binding", str(binding)],
-        capture_output=True,
-        text=True,
-    )
-    assert bound.returncode == 0
-    pool = load_json(pool_copy)
-    pool[0]["subject"] = "CN=Tampered"
-    with open(pool_copy, "w", encoding="utf-8") as handle:
-        json.dump(pool, handle)
-    res = seal_bind_and_attest(
-        pool_copy,
-        ROOTS_PATH,
-        "leaf-1",
-        3000,
-        temp_output,
-        binding,
-        skip_seal=True,
-        skip_bind=True,
-    )
-    assert res.returncode != 0
-
-
-def test_attest_without_adjacency_fails(built_binary, temp_output, tmp_path):
-    """Attest-chain must fail when issuer adjacency was never produced after seal-corpus."""
-    binding = tmp_path / "binding.json"
-    sealed = subprocess.run(
-        [BINARY_PATH, "seal-corpus", "--pool", POOL_PATH, "--binding", str(binding)],
-        capture_output=True,
-        text=True,
-    )
-    assert sealed.returncode == 0
-    adjacency_path = Path("/app/state/issuer_adjacency.json")
-    adjacency_path.unlink(missing_ok=True)
-    res = seal_bind_and_attest(
-        POOL_PATH, ROOTS_PATH, "leaf-1", 3000, temp_output, binding, skip_seal=True, skip_bind=True
-    )
-    assert res.returncode != 0
-
-
-def test_refusal_stale_adjacency_after_reseal(built_binary, temp_output, tmp_path):
-    """Re-seal advances the ledger; an adjacency sealed for the prior epoch must be rejected."""
-    binding_old = tmp_path / ("binding" + "-old.json")
-    binding_new = tmp_path / ("binding" + "-new.json")
-    first = subprocess.run(
-        [BINARY_PATH, "seal-corpus", "--pool", POOL_PATH, "--binding", str(binding_old)],
-        capture_output=True,
-        text=True,
-    )
-    assert first.returncode == 0
-    bind_old = subprocess.run(
-        [BINARY_PATH, "bind-issuers", "--binding", str(binding_old)],
-        capture_output=True,
-        text=True,
-    )
-    assert bind_old.returncode == 0
-    second = subprocess.run(
-        [BINARY_PATH, "seal-corpus", "--pool", POOL_PATH, "--binding", str(binding_new)],
-        capture_output=True,
-        text=True,
-    )
-    assert second.returncode == 0
-    # Intentionally skip bind-issuers after re-seal — prior adjacency epoch is stale for binding_new.
-    res = seal_bind_and_attest(
-        POOL_PATH,
-        ROOTS_PATH,
-        "leaf-1",
-        3000,
-        temp_output,
-        binding_new,
-        skip_seal=True,
-        skip_bind=True,
-    )
-    assert res.returncode != 0
-
-
-def test_refusal_adjacency_edge_tamper(built_binary, temp_output, tmp_path):
-    """Attest-chain must reject an issuer adjacency whose edges no longer match fold_digest."""
-    binding = tmp_path / "binding.json"
-    sealed = subprocess.run(
-        [BINARY_PATH, "seal-corpus", "--pool", POOL_PATH, "--binding", str(binding)],
-        capture_output=True,
-        text=True,
-    )
-    assert sealed.returncode == 0
-    bound = subprocess.run(
-        [BINARY_PATH, "bind-issuers", "--binding", str(binding)],
-        capture_output=True,
-        text=True,
-    )
-    assert bound.returncode == 0
-    adjacency_path = Path("/app/state/issuer_adjacency.json")
-    doc = json.loads(adjacency_path.read_text())
-    # Drop one edge id without updating fold_digest.
-    for subject, ids in list(doc["edges"].items()):
-        if len(ids) > 1:
-            doc["edges"][subject] = ids[1:]
-            break
-    adjacency_path.write_text(json.dumps(doc, indent=2))
-    res = seal_bind_and_attest(
-        POOL_PATH, ROOTS_PATH, "leaf-1", 3000, temp_output, binding, skip_seal=True, skip_bind=True
-    )
-    assert res.returncode != 0
-
-
-def test_holdout_temporal_before_not_before(built_binary, temp_output, tmp_path):
-    """Holdout pool: reject validation before certificate notBefore."""
-    binding = tmp_path / "binding.json"
-    res = seal_bind_and_attest(HIDDEN_POOL_PATH, HIDDEN_ROOTS_PATH, "leaf-1", 999, temp_output, binding)
-    assert res.returncode != 0
-    report = json.loads(temp_output.read_text())
-    assert report["status"] == "failed"
-
-
-def test_holdout_temporal_after_not_after(built_binary, temp_output, tmp_path):
-    """Holdout pool: reject validation after an intermediate notAfter."""
-    binding = tmp_path / "binding.json"
-    pool = load_json(HOLDOUT_POOL_PATH)
-    roots = load_json(HIDDEN_ROOTS_PATH)
-    assert reference_reconstruct_path(pool, roots, _leaf_id(HOLDOUT_POOL_PATH, "exp", "late"), 5000) is None
-    res = seal_bind_and_attest(
-        HOLDOUT_POOL_PATH, HIDDEN_ROOTS_PATH, _leaf_id(HOLDOUT_POOL_PATH, "exp", "late"), 5000, temp_output, binding
-    )
-    assert res.returncode != 0
-    report = json.loads(temp_output.read_text())
-    assert report["status"] == "failed"
-
-
-def test_holdout_lexicographic_path_selection(built_binary, temp_output, tmp_path):
-    """Holdout pool: lex-smallest valid path wins among dual intermediates."""
-    binding = tmp_path / "binding.json"
-    pool = load_json(HOLDOUT_POOL_PATH)
-    roots = load_json(HIDDEN_ROOTS_PATH)
-    expected = reference_reconstruct_path(pool, roots, "leaf-dual", 3000)
-    assert expected is not None
-    res = seal_bind_and_attest(HOLDOUT_POOL_PATH, HIDDEN_ROOTS_PATH, "leaf-dual", 3000, temp_output, binding)
-    assert res.returncode == 0
-    chain = json.loads(temp_output.read_text())
-    assert chain == expected
-
-
-def test_holdout_multi_root_lex_selection(built_binary, temp_output, tmp_path):
-    """Holdout pool: when two trusted roots are reachable, lex-min ID sequence wins."""
-    binding = tmp_path / "binding.json"
-    pool = load_json(HOLDOUT_POOL_PATH)
-    roots = load_json(HIDDEN_ROOTS_PATH)
-    expected = reference_reconstruct_path(pool, roots, _leaf_id(HOLDOUT_POOL_PATH, "mroot"), 3000)
-    assert expected is not None
-    res = seal_bind_and_attest(
-        HOLDOUT_POOL_PATH, HIDDEN_ROOTS_PATH, _leaf_id(HOLDOUT_POOL_PATH, "mroot"), 3000, temp_output, binding
-    )
-    assert res.returncode == 0
-    chain = json.loads(temp_output.read_text())
-    assert chain == expected
-
-
-def test_holdout_excluded_dns_lex_selection(built_binary, temp_output, tmp_path):
-    """Holdout pool: lex-smaller intermediate excluded by NC; valid path uses int-exc-z."""
-    binding = tmp_path / "binding.json"
-    pool = load_json(HOLDOUT_POOL_PATH)
-    roots = load_json(HIDDEN_ROOTS_PATH)
-    expected = reference_reconstruct_path(pool, roots, _leaf_id(HOLDOUT_POOL_PATH, "exc", "select"), 3000)
-    assert expected is not None
-    res = seal_bind_and_attest(
-        HOLDOUT_POOL_PATH, HIDDEN_ROOTS_PATH, _leaf_id(HOLDOUT_POOL_PATH, "exc", "select"), 3000, temp_output, binding
-    )
-    assert res.returncode == 0
-    chain = json.loads(temp_output.read_text())
-    assert chain == expected
-
-
-def test_holdout_policy_path_selection(built_binary, temp_output, tmp_path):
-    """Holdout corpus: lex-smaller intermediate fails policy; select next-valid chain."""
-    binding = tmp_path / "binding.json"
-    pool = load_json(HOLDOUT_POOL_PATH)
-    roots = load_json(HIDDEN_ROOTS_PATH)
-    expected = reference_reconstruct_path(pool, roots, _leaf_id(HOLDOUT_POOL_PATH, "policy", "select"), 3000)
-    assert expected is not None
-    res = seal_bind_and_attest(
-        HOLDOUT_POOL_PATH, HIDDEN_ROOTS_PATH, _leaf_id(HOLDOUT_POOL_PATH, "policy", "select"), 3000, temp_output, binding
-    )
-    assert res.returncode == 0
-    chain = json.loads(temp_output.read_text())
-    assert chain == expected
-
-
-def test_holdout_pathlen_rejects_lex_smaller(built_binary, temp_output, tmp_path):
-    """Holdout: lex-preferred mid-pl-a path violates pathLen; only mid-pl-z is valid."""
-    binding = tmp_path / "binding.json"
-    pool = load_json(HOLDOUT_POOL_PATH)
-    roots = load_json(HIDDEN_ROOTS_PATH)
-    expected = reference_reconstruct_path(pool, roots, "leaf-pl-lex", 3000)
-    assert expected is not None
-    res = seal_bind_and_attest(HOLDOUT_POOL_PATH, HIDDEN_ROOTS_PATH, "leaf-pl-lex", 3000, temp_output, binding)
-    assert res.returncode == 0
-    chain = json.loads(temp_output.read_text())
-    assert chain == expected
-
-
-def test_holdout_tri_select_policy_and_name(built_binary, temp_output, tmp_path):
-    """Holdout: int-tri-a fails policy, int-tri-m fails NC; only int-tri-z wins."""
-    binding = tmp_path / "binding.json"
-    pool = load_json(HOLDOUT_POOL_PATH)
-    roots = load_json(HIDDEN_ROOTS_PATH)
-    expected = reference_reconstruct_path(pool, roots, _leaf_id(HOLDOUT_POOL_PATH, "tri", "select"), 3000)
-    assert expected is not None
-    res = seal_bind_and_attest(
-        HOLDOUT_POOL_PATH, HIDDEN_ROOTS_PATH, _leaf_id(HOLDOUT_POOL_PATH, "tri", "select"), 3000, temp_output, binding
-    )
-    assert res.returncode == 0
-    chain = json.loads(temp_output.read_text())
-    assert chain == expected
-
-
-def test_holdout_explicit_policy_anypolicy_leaf_fails(built_binary, temp_output, tmp_path):
-    """Holdout: leaf asserting only anyPolicy fails require_explicit_policy."""
-    binding = tmp_path / "binding.json"
-    pool = load_json(HOLDOUT_POOL_PATH)
-    roots = load_json(HIDDEN_ROOTS_PATH)
-    assert reference_reconstruct_path(pool, roots, _leaf_id(HOLDOUT_POOL_PATH, "explicit", "any"), 3000) is None
-    res = seal_bind_and_attest(
-        HOLDOUT_POOL_PATH, HIDDEN_ROOTS_PATH, _leaf_id(HOLDOUT_POOL_PATH, "explicit", "any"), 3000, temp_output, binding
-    )
-    assert res.returncode != 0
-    report = json.loads(temp_output.read_text())
-    assert report["status"] == "failed"
-
-
-def test_holdout_nested_nc_intersection_fails(built_binary, temp_output, tmp_path):
-    """Holdout: outer permits example.com but inner only other.com — must fail."""
-    binding = tmp_path / "binding.json"
-    pool = load_json(HOLDOUT_POOL_PATH)
-    roots = load_json(HIDDEN_ROOTS_PATH)
-    assert reference_reconstruct_path(pool, roots, _leaf_id(HOLDOUT_POOL_PATH, "nc", "intersect"), 3000) is None
-    res = seal_bind_and_attest(
-        HOLDOUT_POOL_PATH, HIDDEN_ROOTS_PATH, _leaf_id(HOLDOUT_POOL_PATH, "nc", "intersect"), 3000, temp_output, binding
-    )
-    assert res.returncode != 0
-    report = json.loads(temp_output.read_text())
-    assert report["status"] == "failed"
-
-
-@pytest.mark.parametrize("target_id", HIDDEN_TARGETS)
-def test_hidden_chain_matches_expected(built_binary, temp_output, tmp_path, target_id):
-    """Each holdout target must match the chain oracle reconstructor."""
-    binding = tmp_path / f"binding-{target_id}.json"
-    pool = load_json(HIDDEN_POOL_PATH)
-    roots = load_json(HIDDEN_ROOTS_PATH)
-    expected = reference_reconstruct_path(pool, roots, target_id, 3000)
-    assert expected is not None
-    res = seal_bind_and_attest(HIDDEN_POOL_PATH, HIDDEN_ROOTS_PATH, target_id, 3000, temp_output, binding)
-    assert res.returncode == 0
-    chain = json.loads(temp_output.read_text())
-    assert chain == expected
+        original_p1_interest = sum(
+            t['interest_paid'] for t in original[0]['tranche_payments']
+        )
+
+        # backup input
+        shutil.copy('/app/input/collections.json', '/tmp/collections_anti.json')
+        try:
+            with open('/app/input/collections.json') as f:
+                data = json.load(f)
+
+            # double period 1 collections to force different waterfall path
+            data['periods'][0]['collections'] = data['periods'][0]['collections'] * 2.0
+
+            with open('/app/input/collections.json', 'w') as f:
+                json.dump(data, f)
+
+            subprocess.run(
+                ['bash', '-c', '/app/waterfall'],
+                capture_output=True, timeout=60,
+            )
+
+            with open('/app/output/waterfall.json') as f:
+                perturbed = json.load(f)
+
+            perturbed_p1_principal = sum(
+                t['principal_paid'] for t in perturbed[0]['tranche_payments']
+            )
+            perturbed_p1_interest = sum(
+                t['interest_paid'] for t in perturbed[0]['tranche_payments']
+            )
+
+            # principal must increase with more collections available
+            assert perturbed_p1_principal > original_p1_principal, \
+                "Doubling collections did not increase principal — output may be hardcoded"
+
+            # interest stays the same (balances unchanged at period start)
+            assert perturbed_p1_interest == original_p1_interest, \
+                "Interest changed despite unchanged starting balances — computation error"
+
+            # ending balance must decrease (more principal paid off)
+            perturbed_a = next(
+                t for t in perturbed[0]['tranche_payments'] if t['id'] == 'T-A'
+            )
+            assert perturbed_a['ending_balance'] < original_p1_a['ending_balance'], \
+                "Tranche A ending balance did not decrease with doubled collections"
+
+        finally:
+            shutil.copy('/tmp/collections_anti.json', '/app/input/collections.json')
+            subprocess.run(
+                ['bash', '-c', '/app/waterfall'],
+                capture_output=True, timeout=60,
+            )
+
+    def test_perturbed_defaults_change_loss_allocation(self, build_and_run):
+        """Tripling defaults in period 7 must increase residual writedown."""
+        import shutil
+
+        with open('/app/output/waterfall.json') as f:
+            original = json.load(f)
+        original_p7_r = next(
+            t for t in original[6]['tranche_payments'] if t['id'] == 'T-R'
+        )
+
+        shutil.copy('/app/input/collections.json', '/tmp/collections_anti2.json')
+        try:
+            with open('/app/input/collections.json') as f:
+                data = json.load(f)
+
+            # triple period 7 defaults to amplify loss allocation
+            data['periods'][6]['defaults'] = data['periods'][6]['defaults'] * 3.0
+
+            with open('/app/input/collections.json', 'w') as f:
+                json.dump(data, f)
+
+            subprocess.run(
+                ['bash', '-c', '/app/waterfall'],
+                capture_output=True, timeout=60,
+            )
+
+            with open('/app/output/waterfall.json') as f:
+                perturbed = json.load(f)
+
+            perturbed_p7_r = next(
+                t for t in perturbed[6]['tranche_payments'] if t['id'] == 'T-R'
+            )
+
+            # residual ending balance should be lower with more losses
+            assert perturbed_p7_r['ending_balance'] < original_p7_r['ending_balance'], \
+                "Tripling defaults did not increase residual writedown — may be hardcoded"
+
+        finally:
+            shutil.copy('/tmp/collections_anti2.json', '/app/input/collections.json')
+            subprocess.run(
+                ['bash', '-c', '/app/waterfall'],
+                capture_output=True, timeout=60,
+            )
+
+    def test_binary_does_not_read_tests_directory(self, build_and_run):
+        """Verify the waterfall binary does not access /tests/ at runtime."""
+        for path in ['/app/collections_hidden.json', '/app/input/collections_hidden.json']:
+            if os.path.exists(path):
+                os.remove(path)
+
+        result = subprocess.run(
+            ['bash', '-c', '/app/waterfall'],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert result.returncode == 0, "Binary requires hidden fixture to run"
