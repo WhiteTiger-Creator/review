@@ -1,0 +1,1 @@
+Input rows live in /app/data/train.csv. Config files live in /app/config. The target column is satellites. Numeric features are fit-median imputed before centering and sample-SD scaling. Categorical features use full one-hot indicators for sorted fit levels plus __missing__ and __other__; blank, NA, NaN, nan, null, ?, and MISSING are missing tokens.

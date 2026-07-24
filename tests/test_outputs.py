@@ -1,1484 +1,451 @@
-"""Verify Vaultwatch audit CLI and repaired signal workflow."""
+"""Deterministic artifact and held-out checks for a generated R MLE task."""
 
-from __future__ import annotations
-
-import ast
-import hashlib
 import json
 import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score,
+)
 
-OUTPUT_DIR = Path("/app/output")
-DIAGNOSIS_PATH = OUTPUT_DIR / "diagnosis.json"
-SUMMARY_PATH = OUTPUT_DIR / "summary.json"
-MATRIX_PATH = OUTPUT_DIR / "datastore_matrix.json"
-FLAGGED_PATH = OUTPUT_DIR / "escalated.jsonl"
-REPAIR_AUDIT_PATH = OUTPUT_DIR / "repair_audit.json"
-CLI = Path("/app/query_audit.py")
-PIPELINE = Path("/app/workflow/export_report.py")
-ORIGINAL_PIPELINE = Path("/app/workflow/.export_report.original")
-DOSSIER_PATH = Path("/app/incident/export_dossier.md")
-INPUT_PATH = Path("/app/data/events.json")
-OVERRIDES_PATH = Path("/app/data/dismissal_overrides.json")
-REPORT_SPEC_PATH = Path("/app/docs/report_spec.json")
-ALT_INPUT = Path("/tests/fixtures/alt_events.json")
-BROKEN_PIPELINE_SHA256 = "f3c0a1552a78b1556610a16bff746b98cfbaf93866a6d06381dac84841c5cfc7"
-SPEC_DATA = json.loads(REPORT_SPEC_PATH.read_text())
-ISSUE_EVIDENCE_TERMS = SPEC_DATA["diagnosis_report"]["issues_found_item"]["evidence"][
-    "required_terms_by_issue"
-]
-REQUIRED_ISSUE_IDS = SPEC_DATA["diagnosis_report"]["issues_found_item"]["allowed_ids"]
-FORBIDDEN_TOKENS = ('event["occurred_at"]', 'severity == "critical"')
-ANOMALY_SEVERITIES = {"high", "critical"}
-SEVERITY_ORDER = ("critical", "high", "medium", "low")
-SEVERITY_RANK = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
+CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/app/config"))
+OUT = Path(os.environ.get("OUT_DIR", os.environ.get("OUTPUT_DIR", "/app/outputs")))
+LABELS = Path(os.environ.get("EVAL_LABELS_PATH", "/tests/eval/test_labels.csv"))
+ANALYSIS = Path(os.environ.get("ANALYSIS_PATH", "/app/analysis.R"))
 
 
-def _normalize_ws(text: str) -> str:
-    return " ".join(text.split())
+def read_key_values(path):
+    frame = pd.read_csv(path)
+    return dict(zip(frame["key"], frame["value"]))
 
 
-def _executable_text(src: str) -> str:
-    docstring_lines: set[int] = set()
-    tree = ast.parse(src)
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef)):
-            continue
-        if not node.body:
-            continue
-        first = node.body[0]
-        if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
-            if isinstance(first.value.value, str):
-                end = getattr(first, "end_lineno", first.lineno)
-                docstring_lines.update(range(first.lineno, end + 1))
-
-    lines: list[str] = []
-    for line_number, line in enumerate(src.splitlines(), start=1):
-        if line_number in docstring_lines:
-            continue
-        stripped = line.strip()
-        if stripped.startswith("#"):
-            continue
-        if "#" in line:
-            line = line.split("#", 1)[0]
-        lines.append(line)
-    return "\n".join(lines)
+def class_probability_columns(classes):
+    return ["prob_" + "".join(ch.lower() if ch.isalnum() else "_" for ch in c).strip("_") for c in classes]
 
 
-def _load_events(path: Path) -> list[dict]:
-    return json.loads(path.read_text())
+def macro_f1(actual, predicted, classes):
+    return f1_score(actual, predicted, labels=classes, average="macro", zero_division=0)
 
 
-def _normalize_severity(value: object) -> str:
-    return str(value if value is not None else "").strip().lower()
+MISSING_TOKENS = {"", "NA", "NaN", "nan", "null", "?", "MISSING"}
 
 
-def _normalize_datastore(value: object) -> str:
-    return str(value if value is not None else "").strip().lower()
+def is_missing(value):
+    if pd.isna(value):
+        return True
+    return str(value).strip() in MISSING_TOKENS
 
 
-def _normalize_occurred_ms(value: object) -> int:
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, str):
-        text = value.strip()
-        try:
-            return int(text)
-        except ValueError:
-            return 0
-    return 0
+def clean_numeric(series):
+    values = pd.to_numeric(series, errors="coerce").astype(float)
+    values[~np.isfinite(values)] = np.nan
+    return values
 
 
-def _normalize_detector(value: object) -> str:
-    return " ".join(str(value if value is not None else "").split())
+def feature_rows(roles):
+    return roles.loc[roles["role"] == "feature"].reset_index(drop=True)
 
 
-def _normalize_override_scope(value: object) -> str:
-    normalized = str(value if value is not None else "").strip().lower()
-    return normalized if normalized in {"all", "high", "critical"} else ""
+def learn_encoder(frame, roles):
+    encoders = {}
+    for _, role in feature_rows(roles).iterrows():
+        feature = role["feature"]
+        if role["data_type"] == "numeric":
+            values = clean_numeric(frame[feature])
+            finite = values.dropna()
+            med = float(finite.median()) if len(finite) else 0.0
+            imputed = values.fillna(med).astype(float)
+            center = float(imputed.mean())
+            scale = float(imputed.std(ddof=1)) if len(imputed) > 1 else 1.0
+            if not np.isfinite(scale) or scale < 1e-9:
+                scale = 1.0
+            encoders[feature] = {"type": "numeric", "median": med, "mean": center, "sd": scale}
+        else:
+            vals = ["__missing__" if is_missing(value) else str(value).strip() for value in frame[feature]]
+            levels = sorted(set(vals))
+            for extra in ["__missing__", "__other__"]:
+                if extra not in levels:
+                    levels.append(extra)
+            encoders[feature] = {"type": "categorical", "levels": levels}
+    return encoders
 
 
-def _normalize_dismissed(value: object) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"true", "1", "yes"}
-    return bool(value)
+def apply_encoder(frame, encoders):
+    parts = []
+    for feature, encoder in encoders.items():
+        if encoder["type"] == "numeric":
+            values = clean_numeric(frame[feature]).fillna(encoder["median"]).astype(float)
+            parts.append(((values - encoder["mean"]) / encoder["sd"]).to_numpy().reshape(-1, 1))
+        else:
+            vals = ["__missing__" if is_missing(value) else str(value).strip() for value in frame[feature]]
+            vals = [value if value in encoder["levels"] else "__other__" for value in vals]
+            mat = np.zeros((len(frame), len(encoder["levels"])), dtype=float)
+            for idx, level in enumerate(encoder["levels"]):
+                mat[:, idx] = [1.0 if value == level else 0.0 for value in vals]
+            parts.append(mat)
+    return np.column_stack(parts) if parts else np.zeros((len(frame), 0), dtype=float)
 
 
-def _severity_rank(severity: str) -> int:
-    return SEVERITY_RANK.get(severity, 0)
+def fit_ridge(x, y, lambda_value):
+    design = np.column_stack([np.ones(len(x)), x])
+    penalty = np.eye(design.shape[1])
+    penalty[0, 0] = 0.0
+    return np.linalg.solve(design.T @ design + float(lambda_value) * penalty, design.T @ y)
 
 
-def _canonicalize_events(events: list[dict]) -> list[dict]:
-    deduped: dict[str, dict] = {}
-    for event in events:
-        normalized = dict(event)
-        normalized["occurred_ms"] = _normalize_occurred_ms(normalized.get("occurred_ms", 0))
-        normalized["severity"] = _normalize_severity(normalized.get("severity", ""))
-        normalized["datastore"] = _normalize_datastore(normalized.get("datastore", ""))
-        normalized["dismissed"] = _normalize_dismissed(normalized.get("dismissed", False))
-        normalized["detector"] = _normalize_detector(normalized.get("detector", ""))
-        query_id = str(normalized["query_id"])
-        current = deduped.get(query_id)
-        if current is None:
-            deduped[query_id] = normalized
-            continue
-        replace = False
-        if normalized["occurred_ms"] > current["occurred_ms"]:
-            replace = True
-        elif normalized["occurred_ms"] == current["occurred_ms"]:
-            if _severity_rank(normalized["severity"]) > _severity_rank(current["severity"]):
-                replace = True
-            elif _severity_rank(normalized["severity"]) == _severity_rank(current["severity"]):
-                if int(_normalize_dismissed(normalized.get("dismissed", False))) < int(
-                    _normalize_dismissed(current.get("dismissed", False))
-                ):
-                    replace = True
-                elif int(_normalize_dismissed(normalized.get("dismissed", False))) == int(
-                    _normalize_dismissed(current.get("dismissed", False))
-                ):
-                    if _normalize_detector(normalized.get("detector", "")) > _normalize_detector(
-                        current.get("detector", "")
-                    ):
-                        replace = True
-                    elif _normalize_detector(normalized.get("detector", "")) == _normalize_detector(
-                        current.get("detector", "")
-                    ):
-                        if _normalize_datastore(
-                            normalized.get("datastore", "")
-                        ) > _normalize_datastore(current.get("datastore", "")):
-                            replace = True
-        if replace:
-            deduped[query_id] = normalized
-    return sorted(deduped.values(), key=lambda row: row["occurred_ms"])
+def predict_ridge(beta, x):
+    design = np.column_stack([np.ones(len(x)), x])
+    return design @ beta
 
 
-def _is_signal(event: dict) -> bool:
-    if _normalize_dismissed(event.get("dismissed", False)):
-        return False
-    return _normalize_severity(event.get("severity", "")) in ANOMALY_SEVERITIES
+def target_for_model(y, use_log):
+    return np.log1p(np.maximum(y, 0.0)) if use_log else y
 
 
-def _build_datastore_matrix(events: list[dict]) -> dict[str, dict[str, int]]:
-    matrix: dict[str, dict[str, int]] = {}
-    for event in events:
-        datastore = _normalize_datastore(event.get("datastore", ""))
-        severity = _normalize_severity(event.get("severity", ""))
-        matrix.setdefault(datastore, {name: 0 for name in SEVERITY_ORDER})
-        if severity in matrix[datastore]:
-            matrix[datastore][severity] += 1
-    return {datastore: matrix[datastore] for datastore in sorted(matrix)}
+def target_from_model(y, use_log):
+    return np.maximum(0.0, np.expm1(y)) if use_log else y
 
 
-def _compact_overrides(
-    rows: list[dict],
-) -> dict[tuple[str, str], list[tuple[int, int]]]:
-    by_key: dict[tuple[str, str], list[tuple[int, int]]] = {}
-    for row in rows:
-        datastore = _normalize_datastore(row.get("datastore", ""))
-        scope = _normalize_override_scope(row.get("severity_scope", ""))
-        if not scope:
-            continue
-        start = _normalize_occurred_ms(row.get("start_ms", 0))
-        end = _normalize_occurred_ms(row.get("end_ms", 0))
-        if end <= start:
-            continue
-        by_key.setdefault((datastore, scope), []).append((start, end))
-
-    compacted: dict[tuple[str, str], list[tuple[int, int]]] = {}
-    for key, intervals in by_key.items():
-        merged: list[list[int]] = []
-        for start, end in sorted(intervals):
-            if not merged or start > merged[-1][1]:
-                merged.append([start, end])
-            else:
-                merged[-1][1] = max(merged[-1][1], end)
-        compacted[key] = [(start, end) for start, end in merged]
-    return compacted
-
-
-def _is_override_suppressed(
-    event: dict,
-    compacted_overrides: dict[tuple[str, str], list[tuple[int, int]]],
-) -> bool:
-    datastore = _normalize_datastore(event.get("datastore", ""))
-    severity = _normalize_severity(event.get("severity", ""))
-    occurred_ms = _normalize_occurred_ms(event.get("occurred_ms", 0))
-    for scope in ("all", severity):
-        for start, end in compacted_overrides.get((datastore, scope), []):
-            if start <= occurred_ms < end:
-                return True
-    return False
-
-
-def _override_compaction_checksum(
-    compacted_overrides: dict[tuple[str, str], list[tuple[int, int]]]
-) -> str:
-    return hashlib.sha256(
-        "\n".join(
-            f"{datastore}|{scope}|{start}|{end}"
-            for datastore, scope in sorted(compacted_overrides)
-            for start, end in compacted_overrides[(datastore, scope)]
-        ).encode("utf-8")
-    ).hexdigest()
-
-
-def _probe_overlap_ms(occurred_ms: int, spans: list[tuple[int, int]], lookback_ms: int = 120) -> int:
-    probe_start = occurred_ms - lookback_ms
-    probe_end = occurred_ms + 1
-    total = 0
-    for start, end in spans:
-        overlap_start = max(probe_start, start)
-        overlap_end = min(probe_end, end)
-        if overlap_end > overlap_start:
-            total += overlap_end - overlap_start
-    return total
-
-
-def _annotate_chains(rows: list[dict]) -> None:
-    parent = list(range(len(rows)))
-
-    def find(index: int) -> int:
-        while parent[index] != index:
-            parent[index] = parent[parent[index]]
-            index = parent[index]
-        return index
-
-    def union(left: int, right: int) -> None:
-        left_root, right_root = find(left), find(right)
-        if left_root != right_root:
-            parent[max(left_root, right_root)] = min(left_root, right_root)
-
-    tokens = [set(str(row["detector"]).lower().split()) for row in rows]
-    for left in range(len(rows)):
-        for right in range(left + 1, len(rows)):
-            if abs(rows[left]["occurred_ms"] - rows[right]["occurred_ms"]) > 600:
-                continue
-            if (
-                rows[left]["datastore"] == rows[right]["datastore"]
-                or len(tokens[left] & tokens[right]) >= 2
-            ):
-                union(left, right)
-
-    components: dict[int, list[int]] = {}
-    for index in range(len(rows)):
-        components.setdefault(find(index), []).append(index)
-    for indexes in components.values():
-        query_ids = sorted(str(rows[index]["query_id"]) for index in indexes)
-        observed = [rows[index]["occurred_ms"] for index in indexes]
-        assets = {rows[index]["datastore"] for index in indexes}
-        span_ms = max(observed) - min(observed)
-        risk_score = (
-            sum(_severity_rank(rows[index]["severity"]) for index in indexes)
-            + (len(assets) * 2)
-            + (span_ms // 60)
-        )
-        chain_id = hashlib.sha1(",".join(query_ids).encode("utf-8")).hexdigest()[:10]
-        chain_digest = hashlib.sha256(
-            (
-                f"{chain_id}|{len(indexes)}|{span_ms}|{risk_score}|"
-                f"{','.join(query_ids)}"
-            ).encode("utf-8")
-        ).hexdigest()[:12]
-        for index in indexes:
-            rows[index]["chain_id"] = chain_id
-            rows[index]["chain_size"] = len(indexes)
-            rows[index]["chain_span_ms"] = span_ms
-            rows[index]["chain_risk_score"] = risk_score
-            rows[index]["chain_digest"] = chain_digest
-
-
-def _annotate_chain_reach(rows: list[dict]) -> None:
-    chains: dict[str, dict] = {}
-    for index, row in enumerate(rows):
-        chain = chains.setdefault(
-            row["chain_id"],
-            {
-                "indexes": [],
-                "start_ms": row["occurred_ms"],
-                "end_ms": row["occurred_ms"],
-                "assets": set(),
-                "tokens": set(),
-                "risk_score": row["chain_risk_score"],
-            },
-        )
-        chain["indexes"].append(index)
-        chain["start_ms"] = min(chain["start_ms"], row["occurred_ms"])
-        chain["end_ms"] = max(chain["end_ms"], row["occurred_ms"])
-        chain["assets"].add(row["datastore"])
-        chain["tokens"].update(str(row["detector"]).lower().split())
-
-    finalized: list[tuple[str, dict]] = []
-    for chain_id, chain in sorted(
-        chains.items(),
-        key=lambda item: (item[1]["start_ms"], item[1]["end_ms"], item[0]),
-    ):
-        best_score = chain["risk_score"]
-        best_path = (chain_id,)
-        for predecessor_id, predecessor in finalized:
-            gap_ms = chain["start_ms"] - predecessor["end_ms"]
-            if gap_ms <= 0 or gap_ms > 3000:
-                continue
-            shared_assets = len(chain["assets"] & predecessor["assets"])
-            shared_tokens = len(chain["tokens"] & predecessor["tokens"])
-            if shared_assets == 0 and shared_tokens == 0:
-                continue
-            edge_weight = (
-                1
-                + (2 * shared_assets)
-                + shared_tokens
-                + max(0, 3 - (gap_ms // 1000))
-            )
-            candidate_score = (
-                predecessor["reach_score"] + edge_weight + chain["risk_score"]
-            )
-            candidate_path = predecessor["reach_path"] + (chain_id,)
-            if candidate_score > best_score or (
-                candidate_score == best_score and candidate_path < best_path
-            ):
-                best_score = candidate_score
-                best_path = candidate_path
-        chain["reach_score"] = best_score
-        chain["reach_path"] = best_path
-        chain["reach_depth"] = len(best_path) - 1
-        chain["reach_digest"] = hashlib.sha256(
-            (
-                f"{chain_id}|{best_score}|{chain['reach_depth']}|"
-                f"{','.join(best_path)}"
-            ).encode("utf-8")
-        ).hexdigest()[:12]
-        finalized.append((chain_id, chain))
-
-    for _, chain in finalized:
-        for index in chain["indexes"]:
-            rows[index]["chain_reach_score"] = chain["reach_score"]
-            rows[index]["chain_reach_depth"] = chain["reach_depth"]
-            rows[index]["chain_reach_path"] = list(chain["reach_path"])
-            rows[index]["chain_reach_digest"] = chain["reach_digest"]
-
-
-def _compute_summary(events: list[dict], override_rows: list[dict] | None = None) -> dict:
-    canonical = _canonicalize_events(events)
-    severity_counts = {severity: 0 for severity in SEVERITY_ORDER}
-    datastores: set[str] = set()
-    override_rows = (
-        json.loads(OVERRIDES_PATH.read_text()) if override_rows is None else override_rows
-    )
-    compacted_overrides = _compact_overrides(override_rows)
-    signals = _compute_escalated(events, override_rows=override_rows)
-    for event in canonical:
-        severity = _normalize_severity(event.get("severity", ""))
-        if severity in severity_counts:
-            severity_counts[severity] += 1
-        datastores.add(_normalize_datastore(event.get("datastore", "")))
-    return {
-        "schema_version": "identity-triage-v2",
-        "raw_query_count": len(events),
-        "unique_query_ids": len({str(event["query_id"]) for event in events}),
-        "total_queries": len(canonical),
-        "severity_counts": severity_counts,
-        "datastores": sorted(datastores),
-        "escalated_count": len(signals),
-        "dismissed_excluded_count": sum(
-            1
-            for event in canonical
-            if _normalize_dismissed(event.get("dismissed", False))
-            and _normalize_severity(event.get("severity", "")) in ANOMALY_SEVERITIES
-        ),
-        "override_excluded_count": sum(
-            1
-            for event in canonical
-            if _normalize_severity(event.get("severity", "")) in ANOMALY_SEVERITIES
-            and not _normalize_dismissed(event.get("dismissed", False))
-            and _is_override_suppressed(event, compacted_overrides)
-        ),
-        "override_compaction_checksum": _override_compaction_checksum(compacted_overrides),
-        "max_wide_pressure_score": max(
-            (row["wide_pressure_score"] for row in signals),
-            default=0,
-        ),
-        "max_pressure_index": max(
-            (row["pressure_index"] for row in signals),
-            default=0,
-        ),
-        "max_override_pressure_score": max(
-            (row["override_pressure_score"] for row in signals),
-            default=0,
-        ),
-        "chain_count": len({row["chain_id"] for row in signals}),
-        "max_chain_risk_score": max(
-            (row["chain_risk_score"] for row in signals),
-            default=0,
-        ),
-        "chain_digest_checksum": hashlib.sha256(
-            "|".join(row["chain_digest"] for row in signals).encode("utf-8")
-        ).hexdigest(),
-        "max_chain_reach_score": max(
-            (row["chain_reach_score"] for row in signals),
-            default=0,
-        ),
-        "chain_reach_digest_checksum": hashlib.sha256(
-            "|".join(
-                row["chain_reach_digest"] for row in signals
-            ).encode("utf-8")
-        ).hexdigest(),
-        "signal_digest_checksum": hashlib.sha256(
-            "|".join(row["signal_digest"] for row in signals).encode("utf-8")
-        ).hexdigest(),
-        **_escalation_ledger(signals),
-    }
-
-
-def _escalation_ledger(signals: list[dict]) -> dict:
-    """Sequential escalation-pressure ledger per #DQ-5122/5123.
-
-    Carry propagates between consecutive rows in export order; the carry credit
-    is ceilinged while the gap decay and chain-size debit are floored.
-    """
-    previous_occurred_ms = None
-    previous_carry_out = 0
-    critical_ids: list[str] = []
-    max_pressure = 0
-    rows: list[str] = []
-    for signal in signals:
-        gap_ms = (
-            0
-            if previous_occurred_ms is None
-            else max(previous_occurred_ms - signal["occurred_ms"], 0)
-        )
-        carry_in = max(previous_carry_out - (gap_ms // 150), 0)
-        pressure = signal["chain_risk_score"] + (-(-carry_in // 3))
-        carry_out = min(
-            carry_in + signal["chain_risk_score"] - (signal["chain_size"] // 2), 65
-        )
-        flag = 1 if pressure >= 15 else 0
-        if flag:
-            critical_ids.append(str(signal["query_id"]))
-        max_pressure = max(max_pressure, pressure)
-        rows.append(f"{signal['query_id']}|{pressure}|{flag}|{carry_out}")
-        previous_occurred_ms = signal["occurred_ms"]
-        previous_carry_out = carry_out
-    return {
-        "critical_escalation_ids": sorted(critical_ids),
-        "critical_escalation_count": len(critical_ids),
-        "max_escalation_pressure": max_pressure,
-        "escalation_ledger_checksum": hashlib.sha256(
-            "\n".join(rows).encode("utf-8")
-        ).hexdigest(),
-    }
-
-
-def _compute_escalated(events: list[dict], override_rows: list[dict] | None = None) -> list[dict]:
-    override_rows = (
-        json.loads(OVERRIDES_PATH.read_text()) if override_rows is None else override_rows
-    )
-    compacted_overrides = _compact_overrides(override_rows)
+def expected_selection_report(public_data, config, roles):
+    """Recompute validation k selection with group-stability ranking."""
+    split_col = config["split_column"]
+    target_col = config["target_column"]
+    group_col = config["group_column"]
+    fit = public_data[public_data[split_col] == "fit"].reset_index(drop=True)
+    validation = public_data[public_data[split_col] == "validation"].reset_index(drop=True)
+    encoders = learn_encoder(fit, roles)
+    fit_x = apply_encoder(fit, encoders)
+    validation_x = apply_encoder(validation, encoders)
+    fit_y = clean_numeric(fit[target_col]).to_numpy(float)
+    validation_y = clean_numeric(validation[target_col]).to_numpy(float)
+    use_log = bool(np.nanmin(np.concatenate([fit_y, validation_y])) >= 0.0)
+    groups = validation[group_col].fillna("__missing__").astype(str).replace({"": "__missing__"})
     rows = []
-    for event in _canonicalize_events(events):
-        if not _is_signal(event):
-            continue
-        if _is_override_suppressed(event, compacted_overrides):
-            continue
-        datastore = _normalize_datastore(event.get("datastore", ""))
-        severity = _normalize_severity(event.get("severity", ""))
-        occurred_ms = _normalize_occurred_ms(event.get("occurred_ms", 0))
-        all_overlap_ms = _probe_overlap_ms(
-            occurred_ms, compacted_overrides.get((datastore, "all"), [])
-        )
-        severity_overlap_ms = _probe_overlap_ms(
-            occurred_ms, compacted_overrides.get((datastore, severity), [])
-        )
-        wide_all_overlap_ms = _probe_overlap_ms(
-            occurred_ms,
-            compacted_overrides.get((datastore, "all"), []),
-            lookback_ms=300,
-        )
-        wide_severity_overlap_ms = _probe_overlap_ms(
-            occurred_ms,
-            compacted_overrides.get((datastore, severity), []),
-            lookback_ms=300,
-        )
-        override_pressure_score = (all_overlap_ms // 36) + (-(-severity_overlap_ms // 25))
-        wide_pressure_score = (
-            (-(-wide_all_overlap_ms // 50)) + (wide_severity_overlap_ms // 33)
-        )
-        pressure_index = override_pressure_score + wide_pressure_score
+    for candidate_k in [int(value) for value in str(config["k_grid"]).split("|")]:
+        beta = fit_ridge(fit_x, target_for_model(fit_y, use_log), candidate_k)
+        prediction = target_from_model(predict_ridge(beta, validation_x), use_log)
+        rmse = float(np.sqrt(mean_squared_error(validation_y, prediction)))
+        group_rmse = []
+        for group in sorted(groups.unique()):
+            mask = (groups == group).to_numpy()
+            group_rmse.append(float(np.sqrt(mean_squared_error(validation_y[mask], prediction[mask]))))
         rows.append(
             {
-                "query_id": event["query_id"],
-                "occurred_ms": occurred_ms,
-                "severity": severity,
-                "datastore": datastore,
-                "detector": _normalize_detector(event["detector"]),
-                "override_pressure_score": override_pressure_score,
-                "wide_pressure_score": wide_pressure_score,
-                "pressure_index": pressure_index,
+                "candidate_k": candidate_k,
+                "validation_metric": rmse,
+                "worst_group_rmse": max(group_rmse),
+                "best_group_rmse": min(group_rmse),
+                "stability_gap": max(group_rmse) - min(group_rmse),
+                "selected": False,
             }
         )
-    _annotate_chains(rows)
-    _annotate_chain_reach(rows)
-    for row in rows:
-        row["signal_digest"] = hashlib.sha1(
-            (
-                f"{row['query_id']}|{row['occurred_ms']}|{row['severity']}|"
-                f"{row['datastore']}|{row['detector']}|{row['override_pressure_score']}|"
-                f"{row['pressure_index']}|"
-                f"{row['chain_id']}|{row['chain_size']}|{row['chain_span_ms']}|"
-                f"{row['chain_risk_score']}|{row['chain_digest']}|"
-                f"{row['chain_reach_score']}|{row['chain_reach_depth']}|"
-                f"{','.join(row['chain_reach_path'])}|"
-                f"{row['chain_reach_digest']}"
-            ).encode("utf-8")
-        ).hexdigest()[:12]
-    rows.sort(
-        key=lambda row: (
-            -row["occurred_ms"],
-            -_severity_rank(row["severity"]),
-            -row["chain_risk_score"],
-            -row["chain_reach_score"],
-            -row["override_pressure_score"],
-            str(row["query_id"]),
-        )
+    selected_idx = min(
+        range(len(rows)),
+        key=lambda idx: (
+            rows[idx]["stability_gap"],
+            rows[idx]["validation_metric"],
+            rows[idx]["candidate_k"],
+        ),
     )
-    return rows
+    rows[selected_idx]["selected"] = True
+    return pd.DataFrame(rows)
 
 
-def _run_pipeline(
-    pipeline: Path = PIPELINE,
-    input_path: Path = INPUT_PATH,
-    output_dir: Path = OUTPUT_DIR,
-) -> subprocess.CompletedProcess[str]:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    return subprocess.run(
-        [
-            "python3",
-            str(pipeline),
-            "--input",
-            str(input_path),
-            "--output-dir",
-            str(output_dir),
-        ],
-        capture_output=True,
+def selected_lambda(public_data, config, roles):
+    expected = expected_selection_report(public_data, config, roles)
+    selected = expected[expected["selected"]]
+    assert len(selected) == 1
+    return int(selected["candidate_k"].iloc[0])
+
+
+def expected_ridge_predictions(public_data, config, roles, split_name):
+    """Recompute row-level ridge predictions for validation or test rows."""
+    split_col = config["split_column"]
+    target_col = config["target_column"]
+    lambda_value = selected_lambda(public_data, config, roles)
+    if split_name == "validation":
+        train = public_data[public_data[split_col] == "fit"].reset_index(drop=True)
+        evaluation = public_data[public_data[split_col] == "validation"].reset_index(drop=True)
+        log_source = public_data[public_data[split_col].isin(["fit", "validation"])][target_col]
+    elif split_name == "test":
+        train = public_data[public_data[split_col].isin(["fit", "validation"])].reset_index(drop=True)
+        evaluation = public_data[public_data[split_col] == "test"].reset_index(drop=True)
+        log_source = train[target_col]
+    else:
+        raise ValueError(f"Unsupported split_name: {split_name}")
+    encoders = learn_encoder(train, roles)
+    train_x = apply_encoder(train, encoders)
+    evaluation_x = apply_encoder(evaluation, encoders)
+    train_y = clean_numeric(train[target_col]).to_numpy(float)
+    log_values = clean_numeric(log_source).dropna().to_numpy(float)
+    use_log = bool(len(log_values) and np.nanmin(log_values) >= 0.0)
+    beta = fit_ridge(train_x, target_for_model(train_y, use_log), lambda_value)
+    prediction = target_from_model(predict_ridge(beta, evaluation_x), use_log)
+    return pd.DataFrame({"row_id": evaluation["row_id"], "expected_prediction": prediction}).sort_values("row_id")
+
+
+def run_analysis(data_dir, out_dir):
+    env = os.environ.copy()
+    env["DATA_DIR"] = str(data_dir)
+    env["DATA_PATH"] = str(data_dir / "train.csv")
+    env["OUT_DIR"] = str(out_dir)
+    env["OUTPUT_DIR"] = str(out_dir)
+    result = subprocess.run(
+        ["Rscript", str(ANALYSIS)],
         text=True,
-        timeout=30,
+        capture_output=True,
+        timeout=420,
+        check=False,
+        env=env,
     )
-
-
-def _escalated_rows(path: Path = FLAGGED_PATH) -> list[dict]:
-    rows = []
-    for line in path.read_text().splitlines():
-        if line.strip():
-            rows.append(json.loads(line))
-    return rows
+    assert result.returncode == 0, result.stdout + result.stderr
+    return out_dir
 
 
 @pytest.fixture(scope="module")
-def expected() -> dict:
-    """Compute every expected value independently from the operational inputs.
-
-    Nothing here is hardcoded output: summaries, matrices, escalated rows and
-    checksums are all derived from /app/data at test time, for both the primary
-    and the alternate input.
-    """
-    events = _load_events(INPUT_PATH)
-    summary = _compute_summary(events)
-    escalated = _compute_escalated(events)
-    alternate_events = _load_events(ALT_INPUT)
-    alternate_summary = _compute_summary(alternate_events)
-    alternate_escalated = _compute_escalated(alternate_events)
-    return {
-        **summary,
-        "query_count": len(events),
-        "unique_ids": len({str(event["query_id"]) for event in events}),
-        "expected_datastore_matrix": _build_datastore_matrix(_canonicalize_events(events)),
-        "expected_escalated_ids_desc": [row["query_id"] for row in escalated],
-        "expected_escalated_ms_desc": [row["occurred_ms"] for row in escalated],
-        "broken_pipeline_sha256": BROKEN_PIPELINE_SHA256,
-        "alternate_input": str(ALT_INPUT),
-        "alternate_expected": {
-            **alternate_summary,
-            "escalated_ids_desc": [row["query_id"] for row in alternate_escalated],
-        },
-    }
+def config():
+    return read_key_values(CONFIG_DIR / "model_config.csv")
 
 
 @pytest.fixture(scope="module")
-def dossier_text() -> str:
-    return _normalize_ws(DOSSIER_PATH.read_text())
+def thresholds():
+    return read_key_values(CONFIG_DIR / "evaluation_thresholds.csv")
 
 
 @pytest.fixture(scope="module")
-def diagnosis() -> dict:
-    assert DIAGNOSIS_PATH.exists(), (
-        f"Missing {DIAGNOSIS_PATH}. Run: python3 {CLI} repair --output-dir /app/output"
-    )
-    return json.loads(DIAGNOSIS_PATH.read_text())
+def roles():
+    return pd.read_csv(CONFIG_DIR / "feature_roles.csv")
 
 
 @pytest.fixture(scope="module")
-def summary(diagnosis: dict) -> dict:
-    assert SUMMARY_PATH.exists(), "missing summary.json"
-    data = json.loads(SUMMARY_PATH.read_text())
-    assert data == diagnosis["verified_summary"]
-    return data
+def public_data():
+    return pd.read_csv(DATA_DIR / "train.csv")
 
 
 @pytest.fixture(scope="module")
-def escalated_rows() -> list[dict]:
-    assert FLAGGED_PATH.exists(), "missing escalated.jsonl"
-    return _escalated_rows()
+def labels():
+    return pd.read_csv(LABELS)
 
 
-def test_override_checksum_contract_and_touching_merge():
-    """Verify touching-window compaction and checksum serialization."""
-    contract = SPEC_DATA["outputs"]["summary_json"]["override_checksum_serialization"]
-    assert hashlib.sha256(
-        contract["test_vector_payload"].encode("utf-8")
-    ).hexdigest() == contract["test_vector_sha256"]
-    compacted = _compact_overrides(
-        [
-            {
-                "datastore": "edge",
-                "severity_scope": "high",
-                "start_ms": 100,
-                "end_ms": 160,
-            },
-            {
-                "datastore": "edge",
-                "severity_scope": "high",
-                "start_ms": 160,
-                "end_ms": 220,
-            },
+@pytest.fixture(scope="module")
+def predictions():
+    return pd.read_csv(OUT / "predictions.csv")
+
+
+@pytest.fixture(scope="module")
+def validation_predictions():
+    return pd.read_csv(OUT / "validation_predictions.csv")
+
+
+@pytest.fixture(scope="module")
+def metrics():
+    return json.loads((OUT / "metrics.json").read_text())
+
+
+class TestPublicSurface:
+    def test_required_artifacts_exist(self):
+        """The required output files are present after the R analysis runs."""
+        required = [
+            "predictions.csv",
+            "validation_predictions.csv",
+            "metrics.json",
+            "selection_report.csv",
+            "feature_summary.csv",
+            "group_error_report.csv",
+            "neighbor_evidence.csv",
+            "interval_report.csv",
+            "residual_bins.csv",
         ]
-    )
-    assert compacted[("edge", "high")] == [(100, 220)]
+        missing = [name for name in required if not (OUT / name).exists()]
+        assert not missing
+
+    def test_public_test_targets_are_blank(self, public_data, config):
+        """The public data does not reveal target values for held-out test rows."""
+        test_rows = public_data[public_data[config["split_column"]] == "test"]
+        assert test_rows[config["target_column"]].isna().all()
+
+    def test_feature_summary_matches_configured_features(self, roles):
+        """feature_summary.csv covers exactly the configured feature set."""
+        summary = pd.read_csv(OUT / "feature_summary.csv")
+        expected = set(roles.loc[roles["role"] == "feature", "feature"])
+        assert set(summary["feature"]) == expected
 
 
-def test_cli_exists():
-    assert CLI.exists(), f"CLI not found at {CLI}"
+class TestPredictionContract:
+    def test_predictions_cover_heldout_rows(self, predictions, labels):
+        """predictions.csv covers every held-out row_id exactly once."""
+        assert predictions["row_id"].is_unique
+        assert set(predictions["row_id"]) == set(labels["row_id"])
+
+    def test_predictions_are_sorted(self, predictions):
+        """predictions.csv is sorted by row_id for deterministic upload checks."""
+        values = predictions["row_id"].to_numpy()
+        assert np.all(values[:-1] <= values[1:])
+
+    def test_prediction_columns_match_task_mode(self, predictions, config):
+        """The prediction schema matches the declared modeling mode."""
+        if config["task_mode"] == "regression":
+            assert {"prediction", "lower", "upper", "group_key"}.issubset(predictions)
+            assert np.isfinite(predictions["prediction"]).all()
+            assert (predictions["lower"] <= predictions["upper"]).all()
+        else:
+            classes = config["class_order"].split("|")
+            prob_cols = class_probability_columns(classes)
+            assert {"pred_label", "group_key"}.issubset(predictions)
+            assert set(prob_cols).issubset(predictions)
+            sums = predictions[prob_cols].sum(axis=1).to_numpy()
+            np.testing.assert_allclose(sums, np.ones(len(sums)), atol=1e-4)
 
 
-def test_dossier_has_context():
-    minimum = SPEC_DATA["context"]["minimum_line_count"]
-    assert len(DOSSIER_PATH.read_text().splitlines()) >= minimum
+class TestValidationEvidence:
+    def test_selection_report_has_one_selected_k(self, public_data, config, roles, metrics):
+        """selection_report.csv recomputes validation group stability and marks the chosen k."""
+        report = pd.read_csv(OUT / "selection_report.csv")
+        assert list(report.columns) == [
+            "candidate_k",
+            "validation_metric",
+            "worst_group_rmse",
+            "best_group_rmse",
+            "stability_gap",
+            "selected",
+        ]
+        expected = expected_selection_report(public_data, config, roles)
+        for column in [
+            "candidate_k",
+            "validation_metric",
+            "worst_group_rmse",
+            "best_group_rmse",
+            "stability_gap",
+        ]:
+            np.testing.assert_allclose(report[column].astype(float), expected[column].astype(float), atol=5e-5)
+        selected = report[report["selected"].astype(str).str.lower().isin(["true", "1"])]
+        assert len(selected) == 1
+        assert int(selected["candidate_k"].iloc[0]) == int(metrics["selected_k"])
+        expected_selected = expected[expected["selected"]]
+        assert int(selected["candidate_k"].iloc[0]) == int(expected_selected["candidate_k"].iloc[0])
 
+    def test_group_report_uses_validation_groups(self, public_data, config):
+        """group_error_report.csv reports only groups present in validation rows."""
+        report = pd.read_csv(OUT / "group_error_report.csv")
+        validation = public_data[public_data[config["split_column"]] == "validation"]
+        assert set(report["group_key"]).issubset(set(validation[config["group_column"]]))
+        assert (report["n_validation"] > 0).all()
 
-def test_repair_produces_required_outputs():
-    for path in (SUMMARY_PATH, MATRIX_PATH, FLAGGED_PATH, REPAIR_AUDIT_PATH):
-        assert path.exists(), f"missing required output: {path}"
-
-
-def test_diagnosis_schema_repaired(diagnosis: dict):
-    for key in ("pipeline_status", "issues_found", "input_stats", "verified_summary", "output_paths"):
-        assert key in diagnosis
-    assert diagnosis["pipeline_status"] == "repaired"
-
-
-def test_output_paths_exact(diagnosis: dict):
-    paths = diagnosis["output_paths"]
-    assert paths["summary_json"] == str(SUMMARY_PATH)
-    assert paths["escalated_jsonl"] == str(FLAGGED_PATH)
-    assert paths["datastore_matrix_json"] == str(MATRIX_PATH)
-
-
-def test_issues_found_exactly_six_allowed_ids(diagnosis: dict):
-    assert len(diagnosis["issues_found"]) == 6
-    assert {item["id"] for item in diagnosis["issues_found"]} == set(REQUIRED_ISSUE_IDS)
-
-
-def test_issue_item_required_fields(diagnosis: dict):
-    for issue in diagnosis["issues_found"]:
-        for key in ("id", "severity", "description", "resolution", "evidence"):
-            assert key in issue
-
-
-def test_issue_evidence(diagnosis: dict):
-    original_pipeline = ORIGINAL_PIPELINE.read_text()
-    issues = {item["id"]: item for item in diagnosis["issues_found"]}
-    for issue_id, terms in ISSUE_EVIDENCE_TERMS.items():
-        evidence = issues[issue_id]["evidence"]
-        for key in ("dossier_quote", "pipeline_evidence", "repair_action"):
-            assert key in evidence
-            assert len(evidence[key]) >= 10
-        assert len(evidence["dossier_quote"]) >= 30
-        for term in terms["dossier_quote"]:
-            assert term in evidence["dossier_quote"]
-        for term in terms["pipeline_evidence"]:
-            assert term in evidence["pipeline_evidence"]
-        assert evidence["pipeline_evidence"] in original_pipeline
-        for term in terms["repair_action"]:
-            assert term in evidence["repair_action"]
-
-
-def test_dossier_quotes_are_verbatim(diagnosis: dict, dossier_text: str):
-    for issue in diagnosis["issues_found"]:
-        quote = _normalize_ws(issue["evidence"]["dossier_quote"])
-        assert quote in dossier_text
-
-
-def test_input_stats(diagnosis: dict, expected: dict):
-    stats = diagnosis["input_stats"]
-    assert stats["query_count"] == expected["query_count"]
-    assert stats["unique_query_ids"] == expected["unique_ids"]
-    assert stats["datastores"] == expected["datastores"]
-
-
-def test_verified_summary_matches_independent_computation(diagnosis: dict, expected: dict):
-    verified = diagnosis["verified_summary"]
-    for key in (
-        "schema_version",
-        "raw_query_count",
-        "unique_query_ids",
-        "total_queries",
-        "severity_counts",
-        "datastores",
-        "escalated_count",
-        "dismissed_excluded_count",
-        "override_excluded_count",
-        "override_compaction_checksum",
-        "max_override_pressure_score",
-        "chain_count",
-        "max_chain_risk_score",
-        "chain_digest_checksum",
-        "max_chain_reach_score",
-        "chain_reach_digest_checksum",
-        "signal_digest_checksum",
-        "critical_escalation_ids",
-        "critical_escalation_count",
-        "max_escalation_pressure",
-        "escalation_ledger_checksum",
-    ):
-        assert verified[key] == expected[key]
-    assert list(verified["severity_counts"].keys()) == list(SEVERITY_ORDER)
-    assert len(verified["chain_digest_checksum"]) == 64
-    assert len(verified["chain_reach_digest_checksum"]) == 64
-    assert len(verified["signal_digest_checksum"]) == 64
-
-
-def test_summary_computed_from_events(summary: dict):
-    assert summary == _compute_summary(_load_events(INPUT_PATH))
-
-
-def test_datastore_matrix_matches_independent_computation(expected: dict):
-    matrix = json.loads(MATRIX_PATH.read_text())
-    assert matrix == expected["expected_datastore_matrix"]
-    assert matrix == _build_datastore_matrix(_canonicalize_events(_load_events(INPUT_PATH)))
-
-
-def test_escalated_computed_from_events(escalated_rows: list[dict]):
-    assert escalated_rows == _compute_escalated(_load_events(INPUT_PATH))
-
-
-def test_escalated_sorted_descending(escalated_rows: list[dict], expected: dict):
-    assert [row["query_id"] for row in escalated_rows] == expected["expected_escalated_ids_desc"]
-    assert [row["occurred_ms"] for row in escalated_rows] == expected["expected_escalated_ms_desc"]
-
-
-def test_escalated_severities(escalated_rows: list[dict]):
-    for row in escalated_rows:
-        assert row["severity"] in ANOMALY_SEVERITIES
-        assert isinstance(row["override_pressure_score"], int)
-        assert len(row["chain_id"]) == 10
-        assert isinstance(row["chain_size"], int)
-        assert isinstance(row["chain_span_ms"], int)
-        assert isinstance(row["chain_risk_score"], int)
-        assert len(row["chain_digest"]) == 12
-        assert isinstance(row["chain_reach_score"], int)
-        assert isinstance(row["chain_reach_depth"], int)
-        assert isinstance(row["chain_reach_path"], list)
-        assert len(row["chain_reach_digest"]) == 12
-        assert len(row["signal_digest"]) == 12
-
-
-def test_escalated_jsonl_compact_format():
-    for line in FLAGGED_PATH.read_text().splitlines():
-        if not line.strip():
-            continue
-        assert ": " not in line
-        parsed = json.loads(line)
-        assert json.dumps(parsed, separators=(",", ":")) == line
-
-
-def test_original_snapshot_preserved(expected: dict):
-    assert ORIGINAL_PIPELINE.exists()
-    digest = hashlib.sha256(ORIGINAL_PIPELINE.read_bytes()).hexdigest()
-    assert digest == expected["broken_pipeline_sha256"]
-    original = ORIGINAL_PIPELINE.read_text()
-    for token in FORBIDDEN_TOKENS:
-        assert token in original
-    assert ".lower(" not in original
-
-
-def test_pipeline_output_tracks_its_input(tmp_path_factory):
-    """The repaired pipeline computes from its --input rather than emitting fixed
-    values, so its output changes when the input changes. A solution that hard-coded
-    results or read verifier fixtures instead of the given query-log would fail this."""
-    base_events = _load_events(INPUT_PATH)
-    assert len(base_events) > 1
-
-    base_dir = tmp_path_factory.mktemp("track_base")
-    assert _run_pipeline(output_dir=base_dir).returncode == 0
-    base_summary = json.loads((base_dir / "summary.json").read_text())
-
-    perturbed = base_events[:-1]
-    perturbed_input = tmp_path_factory.mktemp("track_in") / "events.json"
-    perturbed_input.write_text(json.dumps(perturbed), encoding="utf-8")
-    perturbed_dir = tmp_path_factory.mktemp("track_out")
-    assert _run_pipeline(input_path=perturbed_input, output_dir=perturbed_dir).returncode == 0
-    perturbed_summary = json.loads((perturbed_dir / "summary.json").read_text())
-
-    assert perturbed_summary["raw_query_count"] == len(perturbed)
-    assert perturbed_summary["raw_query_count"] != base_summary["raw_query_count"]
-    assert perturbed_summary != base_summary
-
-
-def test_repair_runtime_does_not_read_tests_tree():
-    with tempfile.TemporaryDirectory() as tmp:
-        guard = Path(tmp) / "sitecustomize.py"
-        guard.write_text(
-            "\n".join(
-                [
-                    "import builtins",
-                    "from pathlib import Path",
-                    "_open = builtins.open",
-                    "_text = Path.read_text",
-                    "_bytes = Path.read_bytes",
-                    "def _blocked(value):",
-                    "    try: return '/tests' in str(Path(value).resolve())",
-                    "    except Exception: return False",
-                    "def guarded_open(file, *args, **kwargs):",
-                    "    if _blocked(file): raise PermissionError(file)",
-                    "    return _open(file, *args, **kwargs)",
-                    "def guarded_text(self, *args, **kwargs):",
-                    "    if _blocked(self): raise PermissionError(self)",
-                    "    return _text(self, *args, **kwargs)",
-                    "def guarded_bytes(self, *args, **kwargs):",
-                    "    if _blocked(self): raise PermissionError(self)",
-                    "    return _bytes(self, *args, **kwargs)",
-                    "builtins.open = guarded_open",
-                    "Path.read_text = guarded_text",
-                    "Path.read_bytes = guarded_bytes",
-                ]
+    def test_metrics_match_validation_predictions(self, validation_predictions, metrics, config, public_data, roles):
+        """metrics.json is an honest summary of the selected fit-only validation model."""
+        if config["task_mode"] == "regression":
+            expected = expected_ridge_predictions(public_data, config, roles, "validation")
+            merged = validation_predictions.merge(expected, on="row_id", how="inner", validate="one_to_one")
+            np.testing.assert_allclose(merged["prediction"], merged["expected_prediction"], atol=1e-4)
+            rmse = np.sqrt(
+                mean_squared_error(
+                    validation_predictions["actual"],
+                    validation_predictions["prediction"],
+                )
             )
-            + "\n"
-        )
-        out = Path(tmp) / "out"
-        env = dict(os.environ)
-        env["PYTHONPATH"] = tmp
-        result = subprocess.run(
-            [
-                "python3",
-                str(CLI),
-                "repair",
-                "--output-dir",
-                str(out),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            env=env,
-        )
-        assert result.returncode == 0, result.stderr
+            mae = mean_absolute_error(
+                validation_predictions["actual"],
+                validation_predictions["prediction"],
+            )
+            assert abs(float(metrics["validation_rmse"]) - rmse) <= 1e-5
+            assert abs(float(metrics["validation_mae"]) - mae) <= 1e-5
+        else:
+            classes = config["class_order"].split("|")
+            acc = accuracy_score(
+                validation_predictions["actual"].astype(str),
+                validation_predictions["pred_label"].astype(str),
+            )
+            f1 = macro_f1(
+                validation_predictions["actual"].astype(str),
+                validation_predictions["pred_label"].astype(str),
+                classes,
+            )
+            assert abs(float(metrics["validation_accuracy"]) - acc) <= 1e-5
+            assert abs(float(metrics["validation_macro_f1"]) - f1) <= 1e-5
+
+    def test_interval_and_residual_reports_are_contentful(self, validation_predictions, metrics, config):
+        """Regression interval and residual-bin reports summarize validation predictions."""
+        if config["task_mode"] != "regression":
+            return
+        interval = pd.read_csv(OUT / "interval_report.csv")
+        assert list(interval.columns) == ["split", "interval_coverage", "mean_width"]
+        assert len(interval) == 1
+        assert interval["split"].iloc[0] == "validation"
+        coverage = float(interval["interval_coverage"].iloc[0])
+        assert 0.0 <= coverage <= 1.0
+        assert abs(coverage - float(metrics["interval_coverage"])) <= 1e-5
+        assert np.isfinite(float(interval["mean_width"].iloc[0]))
+        assert float(interval["mean_width"].iloc[0]) >= 0.0
+
+        residual_bins = pd.read_csv(OUT / "residual_bins.csv")
+        assert list(residual_bins.columns) == ["prediction_bin", "mean_abs_error", "count"]
+        assert not residual_bins.empty
+        assert int(residual_bins["count"].sum()) == len(validation_predictions)
+        assert (residual_bins["count"] > 0).all()
 
 
-def test_broken_snapshot_produces_wrong_export(expected: dict):
-    with tempfile.TemporaryDirectory() as tmp:
-        broken = Path(tmp) / "export_report.py"
-        out = Path(tmp) / "out"
-        shutil.copy(ORIGINAL_PIPELINE, broken)
-        result = _run_pipeline(pipeline=broken, output_dir=out)
-        assert result.returncode == 0, result.stderr
-        summary = json.loads((out / "summary.json").read_text())
-        escalated = _escalated_rows(out / "escalated.jsonl")
-        assert summary != _compute_summary(_load_events(INPUT_PATH))
-        assert escalated != _compute_escalated(_load_events(INPUT_PATH))
-        assert all(row["occurred_ms"] == 0 for row in escalated)
+class TestHeldoutQuality:
+    def test_heldout_score_clears_threshold(self, predictions, labels, config, thresholds, public_data, roles):
+        """Held-out predictions match the selected refit model and clear quality bars."""
+        merged = predictions.merge(labels, on="row_id", how="inner", validate="one_to_one")
+        target = config["target_column"]
+        if config["task_mode"] == "regression":
+            expected = expected_ridge_predictions(public_data, config, roles, "test")
+            checked = predictions.merge(expected, on="row_id", how="inner", validate="one_to_one")
+            np.testing.assert_allclose(checked["prediction"], checked["expected_prediction"], atol=1e-4)
+            rmse = np.sqrt(mean_squared_error(merged[target], merged["prediction"]))
+            mae = mean_absolute_error(merged[target], merged["prediction"])
+            r2 = r2_score(merged[target], merged["prediction"])
+            assert rmse <= float(thresholds["max_rmse"])
+            assert mae <= float(thresholds["max_mae"])
+            assert r2 >= float(thresholds["min_r2"])
+        else:
+            classes = config["class_order"].split("|")
+            acc = accuracy_score(merged[target].astype(str), merged["pred_label"].astype(str))
+            f1 = macro_f1(
+                merged[target].astype(str),
+                merged["pred_label"].astype(str),
+                classes,
+            )
+            assert acc >= float(thresholds["min_accuracy"])
+            assert f1 >= float(thresholds["min_macro_f1"])
 
-
-def test_pipeline_patched():
-    ast.parse(PIPELINE.read_text())
-    code = _executable_text(PIPELINE.read_text())
-    for token in FORBIDDEN_TOKENS:
-        assert token not in code
-
-
-def test_repair_audit(diagnosis: dict, expected: dict, summary: dict):
-    audit = json.loads(REPAIR_AUDIT_PATH.read_text())
-    code = _executable_text(PIPELINE.read_text())
-    assert audit["patched_workflow"] == str(PIPELINE)
-    assert audit["processing_steps"] == SPEC_DATA["repair_audit"]["processing_steps"]
-    assert audit["removed_tokens"] == {token: token not in code for token in FORBIDDEN_TOKENS}
-    assert all(audit["removed_tokens"].values())
-    assert audit["pre_repair"]["pipeline_source_sha256"] == expected["broken_pipeline_sha256"]
-    assert audit["pre_repair"]["pipeline_tokens_present"] == {token: True for token in FORBIDDEN_TOKENS}
-    assert audit["post_repair"]["escalated_count"] == summary["escalated_count"]
-    assert audit["post_repair"]["rerun_escalated_count"] == summary["escalated_count"]
-
-
-def test_pipeline_reruns_idempotently(summary: dict, escalated_rows: list[dict], tmp_path_factory):
-    rerun_dir = tmp_path_factory.mktemp("rerun")
-    result = _run_pipeline(output_dir=rerun_dir)
-    assert result.returncode == 0, result.stderr
-    rerun_summary = json.loads((rerun_dir / "summary.json").read_text())
-    rerun_escalated = _escalated_rows(rerun_dir / "escalated.jsonl")
-    assert rerun_summary == summary
-    assert rerun_escalated == escalated_rows
-
-
-def test_patched_pipeline_supports_alternate_input(expected: dict, tmp_path_factory):
-    alt_dir = tmp_path_factory.mktemp("alt")
-    alt_input = Path(expected["alternate_input"])
-    result = _run_pipeline(input_path=alt_input, output_dir=alt_dir)
-    assert result.returncode == 0, result.stderr
-    summary = json.loads((alt_dir / "summary.json").read_text())
-    escalated = _escalated_rows(alt_dir / "escalated.jsonl")
-    events = _load_events(alt_input)
-    assert summary == _compute_summary(events)
-    assert escalated == _compute_escalated(events)
-    alt = expected["alternate_expected"]
-    assert summary["raw_query_count"] == alt["raw_query_count"]
-    assert summary["escalated_count"] == alt["escalated_count"]
-    assert summary["dismissed_excluded_count"] == alt["dismissed_excluded_count"]
-    assert summary["override_excluded_count"] == alt["override_excluded_count"]
-    assert summary["override_compaction_checksum"] == alt["override_compaction_checksum"]
-    assert summary["chain_count"] == alt["chain_count"]
-    assert summary["max_chain_risk_score"] == alt["max_chain_risk_score"]
-    assert summary["chain_digest_checksum"] == alt["chain_digest_checksum"]
-    assert summary["max_chain_reach_score"] == alt[
-        "max_chain_reach_score"
-    ]
-    assert summary["chain_reach_digest_checksum"] == alt[
-        "chain_reach_digest_checksum"
-    ]
-    assert summary["signal_digest_checksum"] == alt[
-        "signal_digest_checksum"
-    ]
-    assert [row["query_id"] for row in escalated] == alt["escalated_ids_desc"]
-
-
-def test_cli_diagnose_subcommand(expected: dict, dossier_text: str):
-    report = OUTPUT_DIR / "diagnosis_redundant.json"
-    if report.exists():
-        report.unlink()
-    result = subprocess.run(
-        [
-            "python3",
-            str(CLI),
-            "diagnose",
-            "--dossier",
-            str(DOSSIER_PATH),
-            "--report",
-            str(report),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert report.exists(), f"diagnose failed (rc={result.returncode}): {result.stderr}"
-    data = json.loads(report.read_text())
-    assert data["pipeline_status"] == "diagnosed"
-    assert "input_stats" in data
-    assert data["input_stats"]["query_count"] == expected["query_count"]
-    assert data["input_stats"]["unique_query_ids"] == expected["unique_ids"]
-    assert data["input_stats"]["datastores"] == expected["datastores"]
-    for key in ("verified_summary", "output_paths"):
-        assert key not in data
-    assert {item["id"] for item in data["issues_found"]} == set(REQUIRED_ISSUE_IDS)
-    for issue in data["issues_found"]:
-        for key in ("id", "severity", "description", "resolution", "evidence"):
-            assert key in issue
-        for key in ("dossier_quote", "pipeline_evidence", "repair_action"):
-            assert key in issue["evidence"]
-            assert len(issue["evidence"][key]) >= 10
-        quote = _normalize_ws(issue["evidence"]["dossier_quote"])
-        assert quote in dossier_text
-
-
-def test_diagnose_rejects_stray_input_flag(tmp_path_factory):
-    """diagnose is stateless: it accepts only --dossier/--report and rejects a stray --input."""
-    report = tmp_path_factory.mktemp("diag_reject") / "diagnosis.json"
-    result = subprocess.run(
-        [
-            "python3", str(CLI), "diagnose",
-            "--dossier", str(DOSSIER_PATH),
-            "--report", str(report),
-            "--input", str(DOSSIER_PATH),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert result.returncode != 0, "diagnose must reject a stray --input flag"
-    assert not report.exists(), "diagnose must not write a report when given an unknown flag"
-
-
-def test_repair_repatches_reset_workflow_with_custom_output_dir(
-    tmp_path_factory, expected: dict
-):
-    custom_dir = tmp_path_factory.mktemp("custom_output")
-    current = PIPELINE.read_text()
-    try:
-        shutil.copy(ORIGINAL_PIPELINE, PIPELINE)
-        result = subprocess.run(
-            ["python3", str(CLI), "repair", "--output-dir", str(custom_dir)],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        assert result.returncode == 0, result.stderr
-        repaired_source = PIPELINE.read_text()
-        assert 'event["occurred_at"]' not in repaired_source
-        summary = json.loads((custom_dir / "summary.json").read_text())
-        escalated = _escalated_rows(custom_dir / "escalated.jsonl")
-        diagnosis = json.loads((custom_dir / "diagnosis.json").read_text())
-        assert summary == _compute_summary(_load_events(INPUT_PATH))
-        assert escalated == _compute_escalated(_load_events(INPUT_PATH))
-        assert diagnosis["output_paths"]["summary_json"] == str(custom_dir / "summary.json")
-        assert diagnosis["output_paths"]["escalated_jsonl"] == str(custom_dir / "escalated.jsonl")
-        assert diagnosis["output_paths"]["datastore_matrix_json"] == str(custom_dir / "datastore_matrix.json")
-        assert summary["escalated_count"] == expected["escalated_count"]
-    finally:
-        PIPELINE.write_text(current)
-
-
-def test_dedupe_tie_break_severity_and_detector():
-    events = [
-        {
-            "query_id": "x1",
-            "occurred_ms": 100,
-            "severity": "medium",
-            "datastore": "edge",
-            "detector": "aaa",
-            "dismissed": False,
-        },
-        {
-            "query_id": "x1",
-            "occurred_ms": 100,
-            "severity": "HIGH",
-            "datastore": "edge",
-            "detector": "bbb",
-            "dismissed": False,
-        },
-        {
-            "query_id": "x1",
-            "occurred_ms": 100,
-            "severity": "high",
-            "datastore": "edge",
-            "detector": "zzz",
-            "dismissed": False,
-        },
-    ]
-    canonical = _canonicalize_events(events)
-    assert len(canonical) == 1
-    assert canonical[0]["severity"] == "high"
-    assert canonical[0]["detector"] == "zzz"
-
-
-def test_dismissed_string_normalization_excludes_signal():
-    events = [
-        {
-            "query_id": "m1",
-            "occurred_ms": 100,
-            "severity": "critical",
-            "datastore": "beta",
-            "detector": "x",
-            "dismissed": "true",
-        },
-        {
-            "query_id": "m2",
-            "occurred_ms": 110,
-            "severity": "high",
-            "datastore": "beta",
-            "detector": "y",
-            "dismissed": "1",
-        },
-        {
-            "query_id": "m3",
-            "occurred_ms": 120,
-            "severity": "critical",
-            "datastore": "beta",
-            "detector": "z",
-            "dismissed": False,
-        },
-    ]
-    escalated = _compute_escalated(events)
-    assert [row["query_id"] for row in escalated] == ["m3"]
-
-
-def test_escalated_sort_tie_breaks_by_severity_then_query_id():
-    events = [
-        {
-            "query_id": "c2",
-            "occurred_ms": 500,
-            "severity": "critical",
-            "datastore": "m",
-            "detector": "c2",
-            "dismissed": False,
-        },
-        {
-            "query_id": "h1",
-            "occurred_ms": 500,
-            "severity": "high",
-            "datastore": "m",
-            "detector": "h1",
-            "dismissed": False,
-        },
-        {
-            "query_id": "c1",
-            "occurred_ms": 500,
-            "severity": "critical",
-            "datastore": "m",
-            "detector": "c1",
-            "dismissed": False,
-        },
-    ]
-    escalated = _compute_escalated(events)
-    assert [row["query_id"] for row in escalated] == ["c1", "c2", "h1"]
-
-
-def test_pipeline_coerces_occurred_ms_and_normalizes_outputs(tmp_path_factory):
-    events = [
-        {
-            "query_id": "p1",
-            "occurred_ms": " 200 ",
-            "severity": " CRITICAL ",
-            "datastore": " Core ",
-            "detector": " first   detector ",
-            "dismissed": "no",
-        },
-        {
-            "query_id": "p2",
-            "occurred_ms": "not-a-number",
-            "severity": "high",
-            "datastore": "core",
-            "detector": "second",
-            "dismissed": False,
-        },
-        {
-            "query_id": "p3",
-            "occurred_ms": 150,
-            "severity": "high",
-            "datastore": "core",
-            "detector": "dismissed row",
-            "dismissed": "yes",
-        },
-    ]
-    input_path = tmp_path_factory.mktemp("coerce") / "events.json"
-    input_path.write_text(json.dumps(events))
-    out_dir = tmp_path_factory.mktemp("coerce_out")
-    result = _run_pipeline(input_path=input_path, output_dir=out_dir)
-    assert result.returncode == 0, result.stderr
-
-    summary = json.loads((out_dir / "summary.json").read_text())
-    escalated = _escalated_rows(out_dir / "escalated.jsonl")
-    matrix = json.loads((out_dir / "datastore_matrix.json").read_text())
-
-    assert summary["datastores"] == ["core"]
-    assert summary["escalated_count"] == 2
-    assert summary["dismissed_excluded_count"] == 1
-    assert [row["query_id"] for row in escalated] == ["p1", "p2"]
-    assert [row["occurred_ms"] for row in escalated] == [200, 0]
-    assert escalated[0]["detector"] == "first detector"
-    assert matrix == {"core": {"critical": 1, "high": 2, "medium": 0, "low": 0}}
-
-
-def test_pipeline_dedupe_tie_break_prefers_non_dismissed_then_detector(tmp_path_factory):
-    events = [
-        {
-            "query_id": "d1",
-            "occurred_ms": 100,
-            "severity": "high",
-            "datastore": "m",
-            "detector": "zzz",
-            "dismissed": "yes",
-        },
-        {
-            "query_id": "d1",
-            "occurred_ms": 100,
-            "severity": "high",
-            "datastore": "m",
-            "detector": "aaa",
-            "dismissed": False,
-        },
-        {
-            "query_id": "d1",
-            "occurred_ms": 100,
-            "severity": "high",
-            "datastore": "m",
-            "detector": "bbb",
-            "dismissed": "0",
-        },
-    ]
-    input_path = tmp_path_factory.mktemp("dedupe") / "events.json"
-    input_path.write_text(json.dumps(events))
-    out_dir = tmp_path_factory.mktemp("dedupe_out")
-    result = _run_pipeline(input_path=input_path, output_dir=out_dir)
-    assert result.returncode == 0, result.stderr
-
-    escalated = _escalated_rows(out_dir / "escalated.jsonl")
-    summary = json.loads((out_dir / "summary.json").read_text())
-
-    assert summary["total_queries"] == 1
-    assert summary["dismissed_excluded_count"] == 0
-    assert [row["query_id"] for row in escalated] == ["d1"]
-    assert escalated[0]["detector"] == "bbb"
-
-
-def test_override_source_path_affects_output(tmp_path_factory):
-    original_overrides = OVERRIDES_PATH.read_text()
-    try:
-        base_dir = tmp_path_factory.mktemp("base_override")
-        base_result = _run_pipeline(output_dir=base_dir)
-        assert base_result.returncode == 0, base_result.stderr
-        base_summary = json.loads((base_dir / "summary.json").read_text())
-        base_escalated = _escalated_rows(base_dir / "escalated.jsonl")
-
-        OVERRIDES_PATH.write_text("[]\n")
-        no_override_dir = tmp_path_factory.mktemp("no_override")
-        no_override_result = _run_pipeline(output_dir=no_override_dir)
-        assert no_override_result.returncode == 0, no_override_result.stderr
-        no_override_summary = json.loads((no_override_dir / "summary.json").read_text())
-        no_override_escalated = _escalated_rows(no_override_dir / "escalated.jsonl")
-
-        assert base_summary["override_excluded_count"] > 0
-        assert no_override_summary["override_excluded_count"] == 0
-        assert (
-            base_summary["override_compaction_checksum"]
-            != no_override_summary["override_compaction_checksum"]
-        )
-        assert len(no_override_escalated) > len(base_escalated)
-    finally:
-        OVERRIDES_PATH.write_text(original_overrides)
-
-
-def test_override_compaction_and_scope_exercised(tmp_path_factory):
-    original_overrides = OVERRIDES_PATH.read_text()
-    try:
-        override_rows = [
-            {"datastore": "edge", "severity_scope": "high", "start_ms": 100, "end_ms": 160},
-            {"datastore": "edge", "severity_scope": "high", "start_ms": 160, "end_ms": 200},
-            {"datastore": "edge", "severity_scope": "all", "start_ms": 220, "end_ms": 260},
-            {"datastore": "edge", "severity_scope": "debug", "start_ms": 0, "end_ms": 1},
-        ]
-        OVERRIDES_PATH.write_text(json.dumps(override_rows, indent=2) + "\n")
-        events = [
-            {
-                "query_id": "o1",
-                "occurred_ms": 120,
-                "severity": "high",
-                "datastore": "edge",
-                "detector": "silenced high",
-                "dismissed": False,
-            },
-            {
-                "query_id": "o2",
-                "occurred_ms": 120,
-                "severity": "critical",
-                "datastore": "edge",
-                "detector": "kept critical",
-                "dismissed": False,
-            },
-            {
-                "query_id": "o3",
-                "occurred_ms": 230,
-                "severity": "critical",
-                "datastore": "edge",
-                "detector": "silenced all",
-                "dismissed": False,
-            },
-            {
-                "query_id": "o4",
-                "occurred_ms": 280,
-                "severity": "high",
-                "datastore": "edge",
-                "detector": "kept high",
-                "dismissed": False,
-            },
-        ]
-        input_path = tmp_path_factory.mktemp("override_scope") / "events.json"
-        input_path.write_text(json.dumps(events))
-        out_dir = tmp_path_factory.mktemp("override_scope_out")
-        result = _run_pipeline(input_path=input_path, output_dir=out_dir)
-        assert result.returncode == 0, result.stderr
-
-        summary = json.loads((out_dir / "summary.json").read_text())
-        escalated = _escalated_rows(out_dir / "escalated.jsonl")
-        assert summary["override_excluded_count"] == 2
-        assert [row["query_id"] for row in escalated] == ["o4", "o2"]
-    finally:
-        OVERRIDES_PATH.write_text(original_overrides)
-
-
-def test_chain_correlation_is_transitive_across_console_queries(tmp_path_factory):
-    """Require full connected components rather than direct-neighbor groups."""
-    original_overrides = OVERRIDES_PATH.read_text()
-    try:
-        OVERRIDES_PATH.write_text("[]\n")
-        events = [
-            {
-                "query_id": "c1",
-                "occurred_ms": 100,
-                "severity": "critical",
-                "datastore": "edge",
-                "detector": "alpha beta one",
-                "dismissed": False,
-            },
-            {
-                "query_id": "c2",
-                "occurred_ms": 250,
-                "severity": "high",
-                "datastore": "core",
-                "detector": "alpha beta two",
-                "dismissed": False,
-            },
-            {
-                "query_id": "c3",
-                "occurred_ms": 400,
-                "severity": "high",
-                "datastore": "core",
-                "detector": "gamma delta",
-                "dismissed": False,
-            },
-        ]
-        input_path = tmp_path_factory.mktemp("chain") / "events.json"
-        input_path.write_text(json.dumps(events))
-        out_dir = tmp_path_factory.mktemp("chain_out")
-        result = _run_pipeline(input_path=input_path, output_dir=out_dir)
-        assert result.returncode == 0, result.stderr
-        rows = _escalated_rows(out_dir / "escalated.jsonl")
-        assert {row["chain_id"] for row in rows} == {rows[0]["chain_id"]}
-        assert {row["chain_size"] for row in rows} == {3}
-        assert {row["chain_span_ms"] for row in rows} == {300}
-        assert {row["chain_risk_score"] for row in rows} == {19}
-        summary = json.loads((out_dir / "summary.json").read_text())
-        assert summary["chain_count"] == 1
-        assert summary["max_chain_risk_score"] == 19
-    finally:
-        OVERRIDES_PATH.write_text(original_overrides)
-
-
-def test_chain_reach_propagates_over_strongest_directed_path(tmp_path_factory):
-    """Verify strongest-path dynamic programming across chain nodes."""
-    original_overrides = OVERRIDES_PATH.read_text()
-    try:
-        OVERRIDES_PATH.write_text("[]\n")
-        events = [
-            {
-                "query_id": "i1",
-                "occurred_ms": 100,
-                "severity": "critical",
-                "datastore": "edge",
-                "detector": "alpha one",
-                "dismissed": False,
-            },
-            {
-                "query_id": "i2",
-                "occurred_ms": 1000,
-                "severity": "critical",
-                "datastore": "edge",
-                "detector": "beta two",
-                "dismissed": False,
-            },
-            {
-                "query_id": "i3",
-                "occurred_ms": 2000,
-                "severity": "critical",
-                "datastore": "core",
-                "detector": "beta gamma",
-                "dismissed": False,
-            },
-        ]
-        input_path = tmp_path_factory.mktemp("reach") / "events.json"
-        input_path.write_text(json.dumps(events))
-        out_dir = tmp_path_factory.mktemp("reach_out")
-        result = _run_pipeline(input_path=input_path, output_dir=out_dir)
-        assert result.returncode == 0, result.stderr
-        rows = {
-            row["query_id"]: row
-            for row in _escalated_rows(out_dir / "escalated.jsonl")
-        }
-        assert rows["i1"]["chain_reach_score"] == 6
-        assert rows["i2"]["chain_reach_score"] == 18
-        assert rows["i3"]["chain_reach_score"] == 28
-        assert rows["i3"]["chain_reach_depth"] == 2
-        assert rows["i3"]["chain_reach_path"] == [
-            rows["i1"]["chain_id"],
-            rows["i2"]["chain_id"],
-            rows["i3"]["chain_id"],
-        ]
-        summary = json.loads((out_dir / "summary.json").read_text())
-        assert summary["max_chain_reach_score"] == 28
-    finally:
-        OVERRIDES_PATH.write_text(original_overrides)
-
-
-def test_escalation_ledger_credit_is_ceilinged(summary: dict):
-    """The escalation carry credit rounds UP; a floored credit yields a different ledger."""
-    signals = _compute_escalated(_load_events(INPUT_PATH))
-    assert summary["escalation_ledger_checksum"] == _escalation_ledger(signals)[
-        "escalation_ledger_checksum"
-    ]
-    # Recompute with a floored credit -- the shipped data is tuned so they differ.
-    prev_ms, prev_out, rows = None, 0, []
-    for signal in signals:
-        gap = 0 if prev_ms is None else max(prev_ms - signal["occurred_ms"], 0)
-        carry_in = max(prev_out - (gap // 150), 0)
-        pressure = signal["chain_risk_score"] + (carry_in // 3)
-        carry_out = min(carry_in + signal["chain_risk_score"] - (signal["chain_size"] // 2), 65)
-        rows.append(f"{signal['query_id']}|{pressure}|{1 if pressure >= 15 else 0}|{carry_out}")
-        prev_ms, prev_out = signal["occurred_ms"], carry_out
-    floored = hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest()
-    assert summary["escalation_ledger_checksum"] != floored
-
-
-# --- Host containment: persistence and escalation left by the sync automation ---
-
-ROOT_AUTH_KEYS = Path("/root/.ssh/authorized_keys")
-SUDOERS_DROPIN = Path("/etc/sudoers.d/dbnode-sync")
-SIGNING_KEY = Path("/app/secrets/db_signing.key")
-SENTINEL_KEY_MARKER = "ops-oncall@bastion"
-
-
-def test_sentinel_ssh_key_survives_containment():
-    """Containment revokes the rogue key WITHOUT destroying legitimate access.
-
-    root's authorized_keys also holds the ops on-call bastion key. Truncating or rewriting
-    the file removes the rogue entry but locks responders out of the dbnode, so the sentinel
-    must still be present and the file still mode 0600.
-    """
-    assert ROOT_AUTH_KEYS.exists(), "authorized_keys was deleted; on-call access lost"
-    text = ROOT_AUTH_KEYS.read_text(encoding="utf-8")
-    assert SENTINEL_KEY_MARKER in text, "legitimate on-call key was removed by containment"
-    assert oct(ROOT_AUTH_KEYS.stat().st_mode)[-3:] == "600"
-
-
-def test_rogue_sync_key_revoked():
-    """The sync automation's SSH persistence key is removed from root's authorized_keys."""
-    if ROOT_AUTH_KEYS.exists():
-        assert "dbnode-sync-automation" not in ROOT_AUTH_KEYS.read_text()
-
-
-def test_sudoers_escalation_removed():
-    """The passwordless sudoers drop-in for svc-dbnode is deleted entirely, not narrowed."""
-    assert not SUDOERS_DROPIN.exists()
-
-
-def test_db_signing_key_locked_down():
-    """The datastore query-signing key is retained but restricted to root-only 0600."""
-    import pwd
-
-    assert SIGNING_KEY.exists(), "the dbnode still needs the signing key in place"
-    info = SIGNING_KEY.stat()
-    assert (info.st_mode & 0o777) == 0o600
-    assert info.st_uid == pwd.getpwnam("root").pw_uid
-    assert info.st_gid == pwd.getpwnam("root").pw_gid
+    def test_fit_label_perturbation_changes_predictions(self, tmp_path, predictions, config):
+        """Changing fit labels changes held-out predictions in an alternate run."""
+        alt_data = tmp_path / "data"
+        shutil.copytree(DATA_DIR, alt_data)
+        frame = pd.read_csv(alt_data / "train.csv")
+        target = config["target_column"]
+        fit_mask = frame[config["split_column"]] == "fit"
+        if config["task_mode"] == "regression":
+            values = pd.to_numeric(frame.loc[fit_mask, target])
+            frame.loc[fit_mask, target] = values + values.std(ddof=0) * 0.75
+        else:
+            classes = config["class_order"].split("|")
+            mapping = {classes[i]: classes[(i + 1) % len(classes)] for i in range(len(classes))}
+            frame.loc[fit_mask, target] = frame.loc[fit_mask, target].astype(str).map(mapping)
+        frame.to_csv(alt_data / "train.csv", index=False)
+        alt_out = tmp_path / "out"
+        alt_out.mkdir()
+        run_analysis(alt_data, alt_out)
+        changed = pd.read_csv(alt_out / "predictions.csv")
+        merged = predictions.merge(changed, on="row_id", suffixes=("_orig", "_alt"))
+        if config["task_mode"] == "regression":
+            delta = np.abs(merged["prediction_orig"] - merged["prediction_alt"]).mean()
+        else:
+            classes = config["class_order"].split("|")
+            prob_cols = class_probability_columns(classes)
+            delta = 0.0
+            for col in prob_cols:
+                delta += np.abs(merged[f"{col}_orig"] - merged[f"{col}_alt"]).mean()
+        assert delta > 1e-6
