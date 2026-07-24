@@ -1,7 +1,0 @@
-lane,prefix,block_match
-edge,ban,spine:
-edge,remote,spine:
-edge,xor,spine:
-edge,provcollide,spine:
-edge,cap,mid:
-gate,xor,relay:b
