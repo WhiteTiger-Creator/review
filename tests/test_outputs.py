@@ -1,451 +1,567 @@
-"""Deterministic artifact and held-out checks for a generated R MLE task."""
-
 import json
-import os
-import shutil
+import re
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
-import pytest
-from sklearn.metrics import (
-    accuracy_score,
-    f1_score,
-    mean_absolute_error,
-    mean_squared_error,
-    r2_score,
+APP = Path("/app")
+OUT = APP / "output" / "cover_min_report.json"
+SCENE_IDS = (
+    (APP / "docs" / "scene_ids.txt").read_text(encoding="utf-8").strip().split(",")
 )
+PRUNE_A = APP / "p8/q3/src/prune_a.ts"
+TRACK_B = APP / "p8/q4/src/track_b.ts"
+MUX_G2 = APP / "m3/k72/src/mux_g2.ts"
+LINES_P7 = APP / "p8/core/src/lines_p7.ts"
+BIND_STEP = APP / "m3/n4/src/bind_step.ts"
+MIX_TOML = APP / "data/mix_table.toml"
+STRIDE_TS = APP / "p8/y6/src/stride.ts"
 
-DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
-CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/app/config"))
-OUT = Path(os.environ.get("OUT_DIR", os.environ.get("OUTPUT_DIR", "/app/outputs")))
-LABELS = Path(os.environ.get("EVAL_LABELS_PATH", "/tests/eval/test_labels.csv"))
-ANALYSIS = Path(os.environ.get("ANALYSIS_PATH", "/app/analysis.R"))
+BROKEN_PRUNE = """export function prune_a(stepIx: number, familyIx: number, prevFamily: number): bigint {
+  const step = stepIx & 0xffff;
+  const family = familyIx & 0xffff;
+  const a = BigInt(step);
+  const b = BigInt(family) << 16n;
+  if (prevFamily === 0) {
+    return a | b;
+  }
+  const sticky = 1n;
+  return a | b | sticky;
+}
+"""
+
+BROKEN_TRACK = """export interface PackState {
+  stamp: number;
+  mark: number;
+}
+
+export function track_b(state: PackState, incoming: PackState, stampB: number): number {
+  const local = state.stamp ^ stampB;
+  state.stamp = local >>> 0;
+  void incoming.stamp;
+  void incoming.mark;
+  return state.mark;
+}
+"""
+
+BROKEN_MUX = """import { order_c } from "../../../p8/q5/src/order_c";
+
+export function mux_g2(
+  gateFirst: boolean,
+  side: () => void,
+  gate: () => void
+): number {
+  const forceGateFirst = true;
+  void gateFirst;
+  return order_c(forceGateFirst, side, gate);
+}
+"""
+
+BROKEN_BIND = """import { prune_a } from "../../../p8/q3/src/prune_a";
+import { track_b, PackState } from "../../../p8/q4/src/track_b";
+
+export function fold_lane(stepIx: number, familyIx: number, prevFamily: number): bigint {
+  const packed = prune_a(stepIx, familyIx, prevFamily);
+  if (prevFamily === 0) {
+    return packed & 0xffffffffn;
+  }
+  return packed;
+}
+
+export function refresh_pack(
+  state: PackState,
+  incoming: PackState,
+  stampB: number
+): number {
+  return track_b(state, incoming, stampB);
+}
+"""
+
+BROKEN_LINES = """export interface TargetRow {
+  scenario_id: string;
+  step_ix: number;
+  family_ix: number;
+  prev_family: number;
+  fold_bits: bigint;
+  mark: number;
+  hop_done: boolean;
+  span_done: boolean;
+  premature: boolean;
+}
+
+export interface SeedBundle {
+  marks: Record<string, number>;
+}
+
+export interface MarkWitness {
+  durable: Record<string, number>;
+  health: Record<string, number>;
+}
+
+export interface EmittedRow {
+  scenario_id: string;
+  span_rc: boolean;
+  hop_rc: boolean;
+  mark_rc: boolean;
+  drift_code: number;
+  facet_hex: string;
+}
+
+export function facet_from_bits(bits: bigint): string {
+  return (bits & 0xffffffffffffffffn).toString(16).padStart(16, "0").slice(-16);
+}
+
+export function lines_p7(
+  targets: TargetRow[],
+  seeds: SeedBundle,
+  markWitness: MarkWitness
+): EmittedRow[] {
+  void seeds;
+  const out: EmittedRow[] = [];
+  for (const t of targets) {
+    const healthMark = markWitness.health[t.scenario_id] ?? 0;
+    const facet = facet_from_bits(t.fold_bits);
+    const closed = t.span_done && t.hop_done;
+    out.push({
+      scenario_id: t.scenario_id,
+      span_rc: t.span_done,
+      hop_rc: t.hop_done,
+      mark_rc: healthMark === t.mark,
+      drift_code: t.premature || !closed ? 1 : 0,
+      facet_hex: facet,
+    });
+  }
+  return out;
+}
+"""
 
 
-def read_key_values(path):
-    frame = pd.read_csv(path)
-    return dict(zip(frame["key"], frame["value"]))
+@contextmanager
+def _patched_text(path: Path, replacement: str):
+    original = path.read_text(encoding="utf-8")
+    path.write_text(replacement, encoding="utf-8")
+    try:
+        yield
+    finally:
+        path.write_text(original, encoding="utf-8")
 
 
-def class_probability_columns(classes):
-    return ["prob_" + "".join(ch.lower() if ch.isalnum() else "_" for ch in c).strip("_") for c in classes]
+def _build_and_run() -> dict:
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    if OUT.exists():
+        OUT.unlink()
+    subprocess.run(["/bin/true", "/app/environment/p8"], cwd=APP, check=False)
+    subprocess.run(["npm", "run", "build"], cwd=APP, check=True)
+    subprocess.run([str(APP / "m3/k72/dist/fm")], cwd=APP, check=True)
+    return json.loads(OUT.read_text(encoding="utf-8"))
 
 
-def macro_f1(actual, predicted, classes):
-    return f1_score(actual, predicted, labels=classes, average="macro", zero_division=0)
+def _rows_by_id(report: dict) -> dict:
+    return {row["scenario_id"]: row for row in report["rows"]}
 
 
-MISSING_TOKENS = {"", "NA", "NaN", "nan", "null", "?", "MISSING"}
+def fold_facet_hex(step: int, family: int, prev: int) -> str:
+    lineage = prev & 0xffff if prev != 0 else family & 0xffff
+    bits = (step & 0xffff) | ((family & 0xffff) << 16) | (lineage << 32)
+    return f"{bits & ((1 << 64) - 1):016x}"
 
 
-def is_missing(value):
-    if pd.isna(value):
-        return True
-    return str(value).strip() in MISSING_TOKENS
+def mix_steps_for_scene(scene_id: str) -> list[tuple[int, int, int]]:
+    text = MIX_TOML.read_text(encoding="utf-8")
+    section = f"[scenes.{scene_id}]"
+    if section not in text:
+        return []
+    chunk = text.split(section, 1)[1].split("\n[", 1)[0]
+    return [
+        (int(m[1]), int(m[2]), int(m[3]))
+        for m in re.finditer(r"\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)\)", chunk)
+    ]
 
 
-def clean_numeric(series):
-    values = pd.to_numeric(series, errors="coerce").astype(float)
-    values[~np.isfinite(values)] = np.nan
-    return values
+def expected_facet_for_scene(scene_id: str) -> str:
+    steps = mix_steps_for_scene(scene_id)
+    if not steps:
+        raise AssertionError(f"missing mix steps for {scene_id}")
+    step, family, prev = steps[-1]
+    return fold_facet_hex(step, family, prev)
 
 
-def feature_rows(roles):
-    return roles.loc[roles["role"] == "feature"].reset_index(drop=True)
-
-
-def learn_encoder(frame, roles):
-    encoders = {}
-    for _, role in feature_rows(roles).iterrows():
-        feature = role["feature"]
-        if role["data_type"] == "numeric":
-            values = clean_numeric(frame[feature])
-            finite = values.dropna()
-            med = float(finite.median()) if len(finite) else 0.0
-            imputed = values.fillna(med).astype(float)
-            center = float(imputed.mean())
-            scale = float(imputed.std(ddof=1)) if len(imputed) > 1 else 1.0
-            if not np.isfinite(scale) or scale < 1e-9:
-                scale = 1.0
-            encoders[feature] = {"type": "numeric", "median": med, "mean": center, "sd": scale}
-        else:
-            vals = ["__missing__" if is_missing(value) else str(value).strip() for value in frame[feature]]
-            levels = sorted(set(vals))
-            for extra in ["__missing__", "__other__"]:
-                if extra not in levels:
-                    levels.append(extra)
-            encoders[feature] = {"type": "categorical", "levels": levels}
-    return encoders
-
-
-def apply_encoder(frame, encoders):
+def lane_digest_from_rows(rows: list[dict]) -> str:
     parts = []
-    for feature, encoder in encoders.items():
-        if encoder["type"] == "numeric":
-            values = clean_numeric(frame[feature]).fillna(encoder["median"]).astype(float)
-            parts.append(((values - encoder["mean"]) / encoder["sd"]).to_numpy().reshape(-1, 1))
-        else:
-            vals = ["__missing__" if is_missing(value) else str(value).strip() for value in frame[feature]]
-            vals = [value if value in encoder["levels"] else "__other__" for value in vals]
-            mat = np.zeros((len(frame), len(encoder["levels"])), dtype=float)
-            for idx, level in enumerate(encoder["levels"]):
-                mat[:, idx] = [1.0 if value == level else 0.0 for value in vals]
-            parts.append(mat)
-    return np.column_stack(parts) if parts else np.zeros((len(frame), 0), dtype=float)
-
-
-def fit_ridge(x, y, lambda_value):
-    design = np.column_stack([np.ones(len(x)), x])
-    penalty = np.eye(design.shape[1])
-    penalty[0, 0] = 0.0
-    return np.linalg.solve(design.T @ design + float(lambda_value) * penalty, design.T @ y)
-
-
-def predict_ridge(beta, x):
-    design = np.column_stack([np.ones(len(x)), x])
-    return design @ beta
-
-
-def target_for_model(y, use_log):
-    return np.log1p(np.maximum(y, 0.0)) if use_log else y
-
-
-def target_from_model(y, use_log):
-    return np.maximum(0.0, np.expm1(y)) if use_log else y
-
-
-def expected_selection_report(public_data, config, roles):
-    """Recompute validation k selection with group-stability ranking."""
-    split_col = config["split_column"]
-    target_col = config["target_column"]
-    group_col = config["group_column"]
-    fit = public_data[public_data[split_col] == "fit"].reset_index(drop=True)
-    validation = public_data[public_data[split_col] == "validation"].reset_index(drop=True)
-    encoders = learn_encoder(fit, roles)
-    fit_x = apply_encoder(fit, encoders)
-    validation_x = apply_encoder(validation, encoders)
-    fit_y = clean_numeric(fit[target_col]).to_numpy(float)
-    validation_y = clean_numeric(validation[target_col]).to_numpy(float)
-    use_log = bool(np.nanmin(np.concatenate([fit_y, validation_y])) >= 0.0)
-    groups = validation[group_col].fillna("__missing__").astype(str).replace({"": "__missing__"})
-    rows = []
-    for candidate_k in [int(value) for value in str(config["k_grid"]).split("|")]:
-        beta = fit_ridge(fit_x, target_for_model(fit_y, use_log), candidate_k)
-        prediction = target_from_model(predict_ridge(beta, validation_x), use_log)
-        rmse = float(np.sqrt(mean_squared_error(validation_y, prediction)))
-        group_rmse = []
-        for group in sorted(groups.unique()):
-            mask = (groups == group).to_numpy()
-            group_rmse.append(float(np.sqrt(mean_squared_error(validation_y[mask], prediction[mask]))))
-        rows.append(
-            {
-                "candidate_k": candidate_k,
-                "validation_metric": rmse,
-                "worst_group_rmse": max(group_rmse),
-                "best_group_rmse": min(group_rmse),
-                "stability_gap": max(group_rmse) - min(group_rmse),
-                "selected": False,
-            }
+    for row in rows:
+        parts.append(
+            f'{row["scenario_id"]}|{int(row["span_rc"])}|{int(row["hop_rc"])}|'
+            f'{int(row["mark_rc"])}|{row["drift_code"]}|{row["facet_hex"]}'
         )
-    selected_idx = min(
-        range(len(rows)),
-        key=lambda idx: (
-            rows[idx]["stability_gap"],
-            rows[idx]["validation_metric"],
-            rows[idx]["candidate_k"],
-        ),
+    parts.sort()
+    payload = "\n".join(parts)
+    mask64 = (1 << 64) - 1
+    total = 0
+    for idx, ch in enumerate(payload):
+        addend = ((idx + 1) * ord(ch)) & mask64
+        total = (total + addend) & mask64
+    return f"{total & 0xFFFFFFFF:08x}"
+
+
+def _assert_not_fully_coherent(report: dict) -> None:
+    rows = _rows_by_id(report)
+    pairs = [
+        ("lowerdir", "lowerdir_echo"),
+        ("upper", "upper_echo"),
+        ("worker", "worker_echo"),
+    ]
+    mirror_ok = all(
+        rows[a]["facet_hex"] == rows[b]["facet_hex"]
+        and rows[a]["span_rc"] == rows[b]["span_rc"]
+        and rows[a]["hop_rc"] == rows[b]["hop_rc"]
+        and rows[a]["mark_rc"] == rows[b]["mark_rc"]
+        for a, b in pairs
+        if a in rows and b in rows
     )
-    rows[selected_idx]["selected"] = True
-    return pd.DataFrame(rows)
+    flags_ok = all(
+        r["drift_code"] == 0 and r["span_rc"] and r["hop_rc"] and r["mark_rc"]
+        for r in report["rows"]
+    )
+    sync_ok = report["summary"]["consensus_status"] == "settled"
+    if mirror_ok and flags_ok and sync_ok:
+        raise AssertionError("expected incoherent report after ablation")
 
 
-def selected_lambda(public_data, config, roles):
-    expected = expected_selection_report(public_data, config, roles)
-    selected = expected[expected["selected"]]
-    assert len(selected) == 1
-    return int(selected["candidate_k"].iloc[0])
+def _check_closure_and_zero_drift(report: dict) -> None:
+    for row in report["rows"]:
+        if row["drift_code"] != 0:
+            raise AssertionError("drift_code must be zero when coherent")
+        if not (row["span_rc"] and row["hop_rc"] and row["mark_rc"]):
+            raise AssertionError("closure fields must hold when coherent")
 
 
-def expected_ridge_predictions(public_data, config, roles, split_name):
-    """Recompute row-level ridge predictions for validation or test rows."""
-    split_col = config["split_column"]
-    target_col = config["target_column"]
-    lambda_value = selected_lambda(public_data, config, roles)
-    if split_name == "validation":
-        train = public_data[public_data[split_col] == "fit"].reset_index(drop=True)
-        evaluation = public_data[public_data[split_col] == "validation"].reset_index(drop=True)
-        log_source = public_data[public_data[split_col].isin(["fit", "validation"])][target_col]
-    elif split_name == "test":
-        train = public_data[public_data[split_col].isin(["fit", "validation"])].reset_index(drop=True)
-        evaluation = public_data[public_data[split_col] == "test"].reset_index(drop=True)
-        log_source = train[target_col]
-    else:
-        raise ValueError(f"Unsupported split_name: {split_name}")
-    encoders = learn_encoder(train, roles)
-    train_x = apply_encoder(train, encoders)
-    evaluation_x = apply_encoder(evaluation, encoders)
-    train_y = clean_numeric(train[target_col]).to_numpy(float)
-    log_values = clean_numeric(log_source).dropna().to_numpy(float)
-    use_log = bool(len(log_values) and np.nanmin(log_values) >= 0.0)
-    beta = fit_ridge(train_x, target_for_model(train_y, use_log), lambda_value)
-    prediction = target_from_model(predict_ridge(beta, evaluation_x), use_log)
-    return pd.DataFrame({"row_id": evaluation["row_id"], "expected_prediction": prediction}).sort_values("row_id")
+def _check_consensus_settled(report: dict) -> None:
+    if report["summary"]["consensus_status"] != "settled":
+        raise AssertionError("consensus_status must read settled when coherent")
 
 
-def run_analysis(data_dir, out_dir):
-    env = os.environ.copy()
-    env["DATA_DIR"] = str(data_dir)
-    env["DATA_PATH"] = str(data_dir / "train.csv")
-    env["OUT_DIR"] = str(out_dir)
-    env["OUTPUT_DIR"] = str(out_dir)
-    result = subprocess.run(
-        ["Rscript", str(ANALYSIS)],
-        text=True,
+def _check_minimized_cover(report: dict) -> None:
+    _check_consensus_settled(report)
+    digest = lane_digest_from_rows(report["rows"])
+    if report["summary"]["lane_digest"] != digest:
+        raise AssertionError("lane_digest must match row reduction")
+    if report["summary"]["rule_count"] != 4:
+        raise AssertionError("minimized rule_count mismatch")
+
+
+def _check_mirror_pairs(report: dict) -> None:
+    rows = _rows_by_id(report)
+    for a, b in [
+        ("lowerdir", "lowerdir_echo"),
+        ("upper", "upper_echo"),
+        ("worker", "worker_echo"),
+    ]:
+        if rows[a]["facet_hex"] != rows[b]["facet_hex"]:
+            raise AssertionError(f"facet_hex mismatch for {a}/{b}")
+        if rows[a]["span_rc"] != rows[b]["span_rc"]:
+            raise AssertionError(f"span_rc mismatch for {a}/{b}")
+        if rows[a]["hop_rc"] != rows[b]["hop_rc"]:
+            raise AssertionError(f"hop_rc mismatch for {a}/{b}")
+        if rows[a]["mark_rc"] != rows[b]["mark_rc"]:
+            raise AssertionError(f"mark_rc mismatch for {a}/{b}")
+
+
+MIRROR_PAIRS = [
+    ("lowerdir", "lowerdir_echo"),
+    ("upper", "upper_echo"),
+    ("worker", "worker_echo"),
+]
+
+
+def _expected_lineage_high_bits(step: int, family: int, prev: int) -> int:
+    lineage = prev & 0xffff if prev != 0 else family & 0xffff
+    bits = (step & 0xffff) | ((family & 0xffff) << 16) | (lineage << 32)
+    return bits >> 32
+
+
+def test_t1_layout() -> None:
+    """Report lists every scene id from scene_ids.txt."""
+    report = _build_and_run()
+    if "rows" not in report or "summary" not in report:
+        raise AssertionError("missing rows/summary")
+    ids = {row["scenario_id"] for row in report["rows"]}
+    if ids != set(SCENE_IDS):
+        raise AssertionError("scenario_id set mismatch")
+    if report["summary"]["rows_total"] != len(SCENE_IDS):
+        raise AssertionError("rows_total mismatch")
+
+
+def test_t2_pair_hex() -> None:
+    """Mirror pairs agree on facet_hex and closure fields."""
+    _check_mirror_pairs(_build_and_run())
+
+
+def test_t3_band_field() -> None:
+    """Coherent rows keep drift_code 0 and all closure fields true."""
+    _check_closure_and_zero_drift(_build_and_run())
+
+
+def test_t4_label_text() -> None:
+    """Summary consensus_status is settled when coherent."""
+    _check_consensus_settled(_build_and_run())
+
+
+def test_t5_width_max() -> None:
+    """span_band equals max abs drift_code."""
+    report = _build_and_run()
+    span = max(abs(r["drift_code"]) for r in report["rows"])
+    if report["summary"]["span_band"] != span:
+        raise AssertionError("span_band mismatch")
+
+
+def test_t6_reduce_hex() -> None:
+    """lane_digest matches the documented row reduction."""
+    report = _build_and_run()
+    assert report["summary"]["lane_digest"] == lane_digest_from_rows(report["rows"])
+
+
+def test_t7_known_good() -> None:
+    """Settled report has minimized rule_count of 4."""
+    _check_minimized_cover(_build_and_run())
+
+
+def test_t8_lower_fmt() -> None:
+    """facet_hex is sixteen lowercase hex digits and matches mix_table packing."""
+    report = _build_and_run()
+    rows = _rows_by_id(report)
+    for row in report["rows"]:
+        s = row["facet_hex"]
+        if len(s) != 16 or s != s.lower():
+            raise AssertionError("facet_hex format")
+        int(s, 16)
+    for scene_id in SCENE_IDS:
+        expected = expected_facet_for_scene(scene_id)
+        if rows[scene_id]["facet_hex"] != expected:
+            raise AssertionError(f"{scene_id} facet_hex packing mismatch")
+
+
+def test_t9_total_count() -> None:
+    """rows_total equals the number of rows."""
+    report = _build_and_run()
+    assert isinstance(report["summary"]["rows_total"], int)
+    assert report["summary"]["rows_total"] == len(report["rows"])
+
+
+def test_t10_fresh_pipe() -> None:
+    """Pipeline overwrite replaces hand-written JSON."""
+    OUT.write_text(json.dumps({"rows": [], "summary": {"rows_total": 0}}), encoding="utf-8")
+    report = _build_and_run()
+    if report["summary"]["rows_total"] != len(SCENE_IDS):
+        raise AssertionError("fresh pipe rows_total")
+    _check_consensus_settled(report)
+
+
+def test_t11_twice_same() -> None:
+    """Consecutive pipeline runs are identical."""
+    a = _build_and_run()
+    b = _build_and_run()
+    assert a == b
+
+
+def test_t12_sens_steps() -> None:
+    """Mutating mix_table steps changes facet or coherence."""
+    original = MIX_TOML.read_text(encoding="utf-8")
+    mutated = re.sub(
+        r"\[scenes\.lowerdir\]\nsteps = \[\(1, 1, 0\)\]",
+        "[scenes.lowerdir]\nsteps = [(2, 1, 0)]",
+        original,
+        count=1,
+    )
+    if mutated == original:
+        raise AssertionError("mutation did not apply")
+    try:
+        MIX_TOML.write_text(mutated, encoding="utf-8")
+        report = _build_and_run()
+        rows = _rows_by_id(report)
+        same_hex = rows["lowerdir"]["facet_hex"] == rows["lowerdir_echo"]["facet_hex"]
+        settled = report["summary"]["consensus_status"] == "settled"
+        if same_hex and settled:
+            raise AssertionError("expected facet or coherence change")
+    finally:
+        MIX_TOML.write_text(original, encoding="utf-8")
+
+
+def test_t13_flip_a() -> None:
+    """Reverting sticky lineage fold breaks mirror-pair coherence."""
+    with _patched_text(PRUNE_A, BROKEN_PRUNE):
+        report = _build_and_run()
+    _assert_not_fully_coherent(report)
+
+
+def test_t14_flip_b() -> None:
+    """Reverting durable mark merge with lineage fold breaks coherence."""
+    with _patched_text(TRACK_B, BROKEN_TRACK), _patched_text(PRUNE_A, BROKEN_PRUNE):
+        report = _build_and_run()
+    _assert_not_fully_coherent(report)
+
+
+def test_t15_flip_c() -> None:
+    """Reverting combine ordering breaks coherence."""
+    stride_text = STRIDE_TS.read_text(encoding="utf-8")
+    with _patched_text(MUX_G2, BROKEN_MUX), _patched_text(STRIDE_TS, stride_text):
+        report = _build_and_run()
+    _assert_not_fully_coherent(report)
+
+
+def test_t16_all_extras() -> None:
+    """Held-out extras survive with minimized rule_count."""
+    _check_minimized_cover(_build_and_run())
+
+
+def test_t17_flip_d() -> None:
+    """Reverting witness emitter path breaks coherence."""
+    with _patched_text(LINES_P7, BROKEN_LINES):
+        report = _build_and_run()
+    _assert_not_fully_coherent(report)
+
+
+def test_t18_dur_first() -> None:
+    """Durable marks win over health probes when coherent."""
+    report = _build_and_run()
+    _check_closure_and_zero_drift(report)
+    _check_consensus_settled(report)
+    health = subprocess.run(
+        [str(APP / "m3/k72/dist/fm"), "--health"],
+        cwd=APP,
+        check=True,
         capture_output=True,
-        timeout=420,
-        check=False,
-        env=env,
+        text=True,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
-    return out_dir
+    if "green" not in health.stdout:
+        raise AssertionError("health probe expected green")
 
 
-@pytest.fixture(scope="module")
-def config():
-    return read_key_values(CONFIG_DIR / "model_config.csv")
+def test_t19_premature() -> None:
+    """Wrong combine order yields premature drift."""
+    with _patched_text(MUX_G2, BROKEN_MUX):
+        report = _build_and_run()
+    settled = report["summary"]["consensus_status"] == "settled"
+    clean = all(r["drift_code"] == 0 for r in report["rows"])
+    if settled and clean:
+        raise AssertionError("expected premature drift")
 
 
-@pytest.fixture(scope="module")
-def thresholds():
-    return read_key_values(CONFIG_DIR / "evaluation_thresholds.csv")
+def test_t20_cmd_run() -> None:
+    """build_hints document npm build and fm driver argv."""
+    hints = (APP / "docs" / "build_hints.txt").read_text(encoding="utf-8")
+    if "npm run build" not in hints or "m3/k72/dist/fm" not in hints:
+        raise AssertionError("build_hints missing driver argv")
+    report = _build_and_run()
+    if report["summary"]["rows_total"] != len(SCENE_IDS):
+        raise AssertionError("rows_total after cmd run")
 
 
-@pytest.fixture(scope="module")
-def roles():
-    return pd.read_csv(CONFIG_DIR / "feature_roles.csv")
+def test_t21_gate_arg_probe() -> None:
+    """Compiled zone-hop combine helper must honor gateFirst for callback sequencing."""
+    subprocess.run(["npm", "run", "build"], cwd=APP, check=True)
+    probe = (
+        "const { mux_g2 } = require('/app/dist/m3/k72/src/mux_g2.js');"
+        "function run(gf){const s=[];mux_g2(gf,()=>s.push('side'),()=>s.push('gate'));"
+        "return s.join(',');}"
+        "if(run(false)!=='side,gate') process.exit(2);"
+        "if(run(true)!=='gate,side') process.exit(3);"
+    )
+    result = subprocess.run(
+        ["node", "-e", probe], cwd=APP, capture_output=True, text=True, check=False
+    )
+    if result.returncode != 0:
+        raise AssertionError("combine helper must honor gateFirst without caller compensation")
 
 
-@pytest.fixture(scope="module")
-def public_data():
-    return pd.read_csv(DATA_DIR / "train.csv")
+def test_t22_prev_lineage_width() -> None:
+    """Baseline scenes with zero prev must retain full lane width in facet_hex."""
+    report = _build_and_run()
+    rows = _rows_by_id(report)
+    for scene_id in ("lowerdir", "upper", "worker"):
+        steps = mix_steps_for_scene(scene_id)
+        _step, family, prev = steps[-1]
+        if prev != 0 or family == 0:
+            continue
+        packed = int(rows[scene_id]["facet_hex"], 16)
+        if packed >> 32 == 0:
+            raise AssertionError(f"{scene_id} lost high lineage bits in facet_hex")
 
 
-@pytest.fixture(scope="module")
-def labels():
-    return pd.read_csv(LABELS)
+def test_t23_worker_pair() -> None:
+    """Worker mirror pair stays coherent when bind path preserves full lane width."""
+    report = _build_and_run()
+    rows = _rows_by_id(report)
+    for field in ("facet_hex", "span_rc", "hop_rc", "mark_rc"):
+        if rows["worker"][field] != rows["worker_echo"][field]:
+            raise AssertionError(f"worker mirror mismatch on {field}")
+    if rows["worker"]["facet_hex"] != expected_facet_for_scene("worker"):
+        raise AssertionError("worker facet_hex mismatch")
 
 
-@pytest.fixture(scope="module")
-def predictions():
-    return pd.read_csv(OUT / "predictions.csv")
+def test_t26_flip_e() -> None:
+    """Truncating bind fold width breaks echo pairing even when reducer is fixed."""
+    with _patched_text(BIND_STEP, BROKEN_BIND):
+        report = _build_and_run()
+    _assert_not_fully_coherent(report)
 
 
-@pytest.fixture(scope="module")
-def validation_predictions():
-    return pd.read_csv(OUT / "validation_predictions.csv")
+def test_t27_mirror_mix_cross() -> None:
+    """Each mirror base and echo scene matches mix_table facet and its twin."""
+    report = _build_and_run()
+    rows = _rows_by_id(report)
+    for base_id, echo_id in MIRROR_PAIRS:
+        base_expected = expected_facet_for_scene(base_id)
+        echo_expected = expected_facet_for_scene(echo_id)
+        if base_expected != echo_expected:
+            raise AssertionError(f"mix_table twins disagree for {base_id}/{echo_id}")
+        if rows[base_id]["facet_hex"] != base_expected:
+            raise AssertionError(f"{base_id} facet_hex mismatch vs mix_table")
+        if rows[echo_id]["facet_hex"] != echo_expected:
+            raise AssertionError(f"{echo_id} facet_hex mismatch vs mix_table")
+        if rows[base_id]["facet_hex"] != rows[echo_id]["facet_hex"]:
+            raise AssertionError(f"mirror facet_hex mismatch for {base_id}/{echo_id}")
 
 
-@pytest.fixture(scope="module")
-def metrics():
-    return json.loads((OUT / "metrics.json").read_text())
+def test_t28_primary_lane_ordering() -> None:
+    """Primary lane facet_hex values follow mix_table step ordering."""
+    report = _build_and_run()
+    rows = _rows_by_id(report)
+    lower = int(rows["lowerdir"]["facet_hex"], 16)
+    upper = int(rows["upper"]["facet_hex"], 16)
+    worker = int(rows["worker"]["facet_hex"], 16)
+    if not (lower < upper < worker):
+        raise AssertionError("primary lane facet_hex ordering mismatch")
 
 
-class TestPublicSurface:
-    def test_required_artifacts_exist(self):
-        """The required output files are present after the R analysis runs."""
-        required = [
-            "predictions.csv",
-            "validation_predictions.csv",
-            "metrics.json",
-            "selection_report.csv",
-            "feature_summary.csv",
-            "group_error_report.csv",
-            "neighbor_evidence.csv",
-            "interval_report.csv",
-            "residual_bins.csv",
-        ]
-        missing = [name for name in required if not (OUT / name).exists()]
-        assert not missing
-
-    def test_public_test_targets_are_blank(self, public_data, config):
-        """The public data does not reveal target values for held-out test rows."""
-        test_rows = public_data[public_data[config["split_column"]] == "test"]
-        assert test_rows[config["target_column"]].isna().all()
-
-    def test_feature_summary_matches_configured_features(self, roles):
-        """feature_summary.csv covers exactly the configured feature set."""
-        summary = pd.read_csv(OUT / "feature_summary.csv")
-        expected = set(roles.loc[roles["role"] == "feature", "feature"])
-        assert set(summary["feature"]) == expected
+def test_t29_echo_lineage_bits() -> None:
+    """Echo scenes encode lineage in the high facet bits per mix_table prev."""
+    report = _build_and_run()
+    rows = _rows_by_id(report)
+    for echo_id in ("lowerdir_echo", "upper_echo", "worker_echo"):
+        step, family, prev = mix_steps_for_scene(echo_id)[-1]
+        if prev == 0:
+            continue
+        packed = int(rows[echo_id]["facet_hex"], 16)
+        expected_high = _expected_lineage_high_bits(step, family, prev)
+        if packed >> 32 != expected_high:
+            raise AssertionError(f"{echo_id} lineage high bits mismatch")
 
 
-class TestPredictionContract:
-    def test_predictions_cover_heldout_rows(self, predictions, labels):
-        """predictions.csv covers every held-out row_id exactly once."""
-        assert predictions["row_id"].is_unique
-        assert set(predictions["row_id"]) == set(labels["row_id"])
-
-    def test_predictions_are_sorted(self, predictions):
-        """predictions.csv is sorted by row_id for deterministic upload checks."""
-        values = predictions["row_id"].to_numpy()
-        assert np.all(values[:-1] <= values[1:])
-
-    def test_prediction_columns_match_task_mode(self, predictions, config):
-        """The prediction schema matches the declared modeling mode."""
-        if config["task_mode"] == "regression":
-            assert {"prediction", "lower", "upper", "group_key"}.issubset(predictions)
-            assert np.isfinite(predictions["prediction"]).all()
-            assert (predictions["lower"] <= predictions["upper"]).all()
-        else:
-            classes = config["class_order"].split("|")
-            prob_cols = class_probability_columns(classes)
-            assert {"pred_label", "group_key"}.issubset(predictions)
-            assert set(prob_cols).issubset(predictions)
-            sums = predictions[prob_cols].sum(axis=1).to_numpy()
-            np.testing.assert_allclose(sums, np.ones(len(sums)), atol=1e-4)
+def test_t30_lane_facet_separation() -> None:
+    """Primary lanes must not collapse to identical facet_hex values."""
+    report = _build_and_run()
+    rows = _rows_by_id(report)
+    facets = {rows[s]["facet_hex"] for s in ("lowerdir", "upper", "worker")}
+    if len(facets) != 3:
+        raise AssertionError("primary lanes share facet_hex unexpectedly")
 
 
-class TestValidationEvidence:
-    def test_selection_report_has_one_selected_k(self, public_data, config, roles, metrics):
-        """selection_report.csv recomputes validation group stability and marks the chosen k."""
-        report = pd.read_csv(OUT / "selection_report.csv")
-        assert list(report.columns) == [
-            "candidate_k",
-            "validation_metric",
-            "worst_group_rmse",
-            "best_group_rmse",
-            "stability_gap",
-            "selected",
-        ]
-        expected = expected_selection_report(public_data, config, roles)
-        for column in [
-            "candidate_k",
-            "validation_metric",
-            "worst_group_rmse",
-            "best_group_rmse",
-            "stability_gap",
-        ]:
-            np.testing.assert_allclose(report[column].astype(float), expected[column].astype(float), atol=5e-5)
-        selected = report[report["selected"].astype(str).str.lower().isin(["true", "1"])]
-        assert len(selected) == 1
-        assert int(selected["candidate_k"].iloc[0]) == int(metrics["selected_k"])
-        expected_selected = expected[expected["selected"]]
-        assert int(selected["candidate_k"].iloc[0]) == int(expected_selected["candidate_k"].iloc[0])
-
-    def test_group_report_uses_validation_groups(self, public_data, config):
-        """group_error_report.csv reports only groups present in validation rows."""
-        report = pd.read_csv(OUT / "group_error_report.csv")
-        validation = public_data[public_data[config["split_column"]] == "validation"]
-        assert set(report["group_key"]).issubset(set(validation[config["group_column"]]))
-        assert (report["n_validation"] > 0).all()
-
-    def test_metrics_match_validation_predictions(self, validation_predictions, metrics, config, public_data, roles):
-        """metrics.json is an honest summary of the selected fit-only validation model."""
-        if config["task_mode"] == "regression":
-            expected = expected_ridge_predictions(public_data, config, roles, "validation")
-            merged = validation_predictions.merge(expected, on="row_id", how="inner", validate="one_to_one")
-            np.testing.assert_allclose(merged["prediction"], merged["expected_prediction"], atol=1e-4)
-            rmse = np.sqrt(
-                mean_squared_error(
-                    validation_predictions["actual"],
-                    validation_predictions["prediction"],
-                )
-            )
-            mae = mean_absolute_error(
-                validation_predictions["actual"],
-                validation_predictions["prediction"],
-            )
-            assert abs(float(metrics["validation_rmse"]) - rmse) <= 1e-5
-            assert abs(float(metrics["validation_mae"]) - mae) <= 1e-5
-        else:
-            classes = config["class_order"].split("|")
-            acc = accuracy_score(
-                validation_predictions["actual"].astype(str),
-                validation_predictions["pred_label"].astype(str),
-            )
-            f1 = macro_f1(
-                validation_predictions["actual"].astype(str),
-                validation_predictions["pred_label"].astype(str),
-                classes,
-            )
-            assert abs(float(metrics["validation_accuracy"]) - acc) <= 1e-5
-            assert abs(float(metrics["validation_macro_f1"]) - f1) <= 1e-5
-
-    def test_interval_and_residual_reports_are_contentful(self, validation_predictions, metrics, config):
-        """Regression interval and residual-bin reports summarize validation predictions."""
-        if config["task_mode"] != "regression":
-            return
-        interval = pd.read_csv(OUT / "interval_report.csv")
-        assert list(interval.columns) == ["split", "interval_coverage", "mean_width"]
-        assert len(interval) == 1
-        assert interval["split"].iloc[0] == "validation"
-        coverage = float(interval["interval_coverage"].iloc[0])
-        assert 0.0 <= coverage <= 1.0
-        assert abs(coverage - float(metrics["interval_coverage"])) <= 1e-5
-        assert np.isfinite(float(interval["mean_width"].iloc[0]))
-        assert float(interval["mean_width"].iloc[0]) >= 0.0
-
-        residual_bins = pd.read_csv(OUT / "residual_bins.csv")
-        assert list(residual_bins.columns) == ["prediction_bin", "mean_abs_error", "count"]
-        assert not residual_bins.empty
-        assert int(residual_bins["count"].sum()) == len(validation_predictions)
-        assert (residual_bins["count"] > 0).all()
-
-
-class TestHeldoutQuality:
-    def test_heldout_score_clears_threshold(self, predictions, labels, config, thresholds, public_data, roles):
-        """Held-out predictions match the selected refit model and clear quality bars."""
-        merged = predictions.merge(labels, on="row_id", how="inner", validate="one_to_one")
-        target = config["target_column"]
-        if config["task_mode"] == "regression":
-            expected = expected_ridge_predictions(public_data, config, roles, "test")
-            checked = predictions.merge(expected, on="row_id", how="inner", validate="one_to_one")
-            np.testing.assert_allclose(checked["prediction"], checked["expected_prediction"], atol=1e-4)
-            rmse = np.sqrt(mean_squared_error(merged[target], merged["prediction"]))
-            mae = mean_absolute_error(merged[target], merged["prediction"])
-            r2 = r2_score(merged[target], merged["prediction"])
-            assert rmse <= float(thresholds["max_rmse"])
-            assert mae <= float(thresholds["max_mae"])
-            assert r2 >= float(thresholds["min_r2"])
-        else:
-            classes = config["class_order"].split("|")
-            acc = accuracy_score(merged[target].astype(str), merged["pred_label"].astype(str))
-            f1 = macro_f1(
-                merged[target].astype(str),
-                merged["pred_label"].astype(str),
-                classes,
-            )
-            assert acc >= float(thresholds["min_accuracy"])
-            assert f1 >= float(thresholds["min_macro_f1"])
-
-    def test_fit_label_perturbation_changes_predictions(self, tmp_path, predictions, config):
-        """Changing fit labels changes held-out predictions in an alternate run."""
-        alt_data = tmp_path / "data"
-        shutil.copytree(DATA_DIR, alt_data)
-        frame = pd.read_csv(alt_data / "train.csv")
-        target = config["target_column"]
-        fit_mask = frame[config["split_column"]] == "fit"
-        if config["task_mode"] == "regression":
-            values = pd.to_numeric(frame.loc[fit_mask, target])
-            frame.loc[fit_mask, target] = values + values.std(ddof=0) * 0.75
-        else:
-            classes = config["class_order"].split("|")
-            mapping = {classes[i]: classes[(i + 1) % len(classes)] for i in range(len(classes))}
-            frame.loc[fit_mask, target] = frame.loc[fit_mask, target].astype(str).map(mapping)
-        frame.to_csv(alt_data / "train.csv", index=False)
-        alt_out = tmp_path / "out"
-        alt_out.mkdir()
-        run_analysis(alt_data, alt_out)
-        changed = pd.read_csv(alt_out / "predictions.csv")
-        merged = predictions.merge(changed, on="row_id", suffixes=("_orig", "_alt"))
-        if config["task_mode"] == "regression":
-            delta = np.abs(merged["prediction_orig"] - merged["prediction_alt"]).mean()
-        else:
-            classes = config["class_order"].split("|")
-            prob_cols = class_probability_columns(classes)
-            delta = 0.0
-            for col in prob_cols:
-                delta += np.abs(merged[f"{col}_orig"] - merged[f"{col}_alt"]).mean()
-        assert delta > 1e-6
+def test_t31_sticky_fold_layout() -> None:
+    """Sticky-bit lineage fold fails numeric facet layout for baseline lanes."""
+    with _patched_text(PRUNE_A, BROKEN_PRUNE):
+        report = _build_and_run()
+    rows = _rows_by_id(report)
+    for scene_id in ("lowerdir", "upper", "worker"):
+        expected = expected_facet_for_scene(scene_id)
+        if rows[scene_id]["facet_hex"] == expected:
+            raise AssertionError(f"sticky fold must not match expected layout for {scene_id}")

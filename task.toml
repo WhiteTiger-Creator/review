@@ -4,31 +4,28 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "machine-learning"
+category = "security"
+category_profile = "security_authority_split"
+tags = ["security", "firewall", "shadow-rules", "conntrack", "zone-policy", "optimization"]
+languages = ["typescript", "bash"]
 codebase_size = "small"
-subcategories = ["tool_specific"]
 number_of_milestones = 0
-languages = ["r"]
-tags = [
-  "r",
-  "regression",
-  "ecology",
-  "counts",
-  "tabular"
-]
-expert_time_estimate_min = 120
-junior_time_estimate_min = 340
+subcategories = []
+expert_time_estimate_min = 90
+junior_time_estimate_min = 240
+
+[reference_pattern]
+justification_if_none = "No promoted reference in docs/reference_tasks/index.json for firewall shadow rule minimize; construction follows overlay mold verifier shape reframed to security + optimization_under_constraints + TypeScript orchestrator/worker split."
+
+[agent]
+timeout_sec = 1800
 
 [verifier]
 timeout_sec = 900
 
-[agent]
-timeout_sec = 1200
-user = 65534
-
 [environment]
+allow_internet = false
 build_timeout_sec = 900
 cpus = 2
 memory_mb = 4096
-storage_mb = 8192
-allow_internet = false
+storage_mb = 10240
