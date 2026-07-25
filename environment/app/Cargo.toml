@@ -1,0 +1,13 @@
+[package]
+name = "msrv-lock-recovery-planner"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "msrv-lock-recovery-planner"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "=4.6.2", features = ["derive"] }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = { version = "=1.0.150", features = ["preserve_order"] }

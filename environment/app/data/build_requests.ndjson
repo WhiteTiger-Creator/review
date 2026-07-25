@@ -1,0 +1,4 @@
+{"request_id":"req-yanked-reuse","lock_id":"lock-yanked","patch_set_id":"ps-empty","replacement_set_id":"rs-equiv","lockfile_mode":"update","member_ids":["mem-app","mem-transport","mem-diagnostics"]}
+{"request_id":"req-patch-update","lock_id":"lock-baseline","patch_set_id":"ps-codec","replacement_set_id":"rs-equiv","lockfile_mode":"update","member_ids":["mem-app","mem-transport","mem-diagnostics"]}
+{"request_id":"req-patch-frozen","lock_id":"lock-baseline","patch_set_id":"ps-codec","replacement_set_id":"rs-equiv","lockfile_mode":"frozen","member_ids":["mem-app","mem-transport","mem-diagnostics"]}
+{"request_id":"req-replace-bad","lock_id":"lock-yanked","patch_set_id":"ps-empty","replacement_set_id":"rs-mismatch","lockfile_mode":"update","member_ids":["mem-app","mem-transport","mem-diagnostics"]}

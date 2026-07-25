@@ -1,0 +1,7 @@
+{
+  "maximum_packages": 64,
+  "maximum_dependency_edges": 256,
+  "maximum_resolution_rounds": 32,
+  "maximum_requests": 16,
+  "maximum_workspace_members_per_request": 8
+}

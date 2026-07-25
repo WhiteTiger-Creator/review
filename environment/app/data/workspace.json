@@ -1,0 +1,50 @@
+{
+  "workspace_name": "recovery-workspace",
+  "resolver_mode": "fallback",
+  "members": [
+    {
+      "member_id": "mem-app",
+      "package_name": "app",
+      "package_version": "0.1.0",
+      "rust_version": "1.70.0",
+      "dependencies": [
+        {
+          "package_name": "utility",
+          "source_id": "crates-io",
+          "requirement": "=1.0.0"
+        },
+        {
+          "package_name": "logger",
+          "source_id": "crates-io",
+          "requirement": "^1.0.0"
+        }
+      ]
+    },
+    {
+      "member_id": "mem-transport",
+      "package_name": "transport",
+      "package_version": "0.1.0",
+      "rust_version": "1.65.0",
+      "dependencies": [
+        {
+          "package_name": "codec",
+          "source_id": "crates-io",
+          "requirement": "^1.0.0"
+        }
+      ]
+    },
+    {
+      "member_id": "mem-diagnostics",
+      "package_name": "diagnostics",
+      "package_version": "0.1.0",
+      "rust_version": "1.68.0",
+      "dependencies": [
+        {
+          "package_name": "codec",
+          "source_id": "crates-io",
+          "requirement": "^1.1.0"
+        }
+      ]
+    }
+  ]
+}
