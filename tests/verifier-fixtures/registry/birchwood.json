@@ -1,0 +1,33 @@
+{
+  "name": "birchwood",
+  "releases": [
+    {
+      "version": "1.1.0",
+      "yanked": false,
+      "requires": [
+        {
+          "name": "amberite",
+          "range": "^3.0.0"
+        }
+      ],
+      "features": {
+        "probe": [
+          {
+            "name": "dunite",
+            "range": "^0.5.0"
+          }
+        ]
+      }
+    },
+    {
+      "version": "1.0.2",
+      "yanked": false,
+      "requires": [
+        {
+          "name": "amberite",
+          "range": "^2.4.0"
+        }
+      ]
+    }
+  ]
+}

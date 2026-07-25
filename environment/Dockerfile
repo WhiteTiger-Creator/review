@@ -1,23 +1,33 @@
-FROM rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
-
-ENV PATH="/usr/local/cargo/bin:${PATH}"
-ENV CARGO_NET_OFFLINE=true
-ENV CARGO_TERM_COLOR=never
+FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        golang-go \
+        make \
+        patch \
         tmux \
         asciinema \
-        python3 \
-        python3-pip \
-    && rm -rf /var/lib/apt/lists/* \
-    && pip3 install --no-cache-dir --break-system-packages pytest==8.3.4
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m pip install --no-cache-dir \
+    pytest==8.4.1 \
+    pytest-json-ctrf==0.3.5
+
+ENV GOPATH=/go \
+    GOCACHE=/go/cache \
+    GOFLAGS=-mod=mod \
+    GO111MODULE=on \
+    CGO_ENABLED=0
 
 WORKDIR /app
 
-COPY Cargo.toml Cargo.lock README.md check_build.sh ./
-COPY src ./src
-COPY docs ./docs
-COPY data ./data
+COPY --chmod=0755 build.sh /app/build.sh
+COPY Makefile go.mod /app/
+COPY cmd/ /app/cmd/
+COPY internal/ /app/internal/
+COPY docs/ /app/docs/
+COPY registry/ /app/registry/
+COPY manifests/ /app/manifests/
+COPY --chmod=0755 tools/ /app/tools/
 
-RUN chmod +x check_build.sh
+RUN make all && ./tools/slate-selftest.sh

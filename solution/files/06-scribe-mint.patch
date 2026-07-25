@@ -1,0 +1,67 @@
+--- /dev/null
++++ b/internal/scribe/mint.go
+@@ -0,0 +1,64 @@
++package scribe
++
++import (
++	"os"
++	"path/filepath"
++
++	"slate/internal/canon"
++)
++
++// LockPath is where a project's lock lands.
++func LockPath(outDir, project string) string {
++	return filepath.Join(outDir, project+".lock.json")
++}
++
++// TrailPath is where a project's search trail lands.
++func TrailPath(outDir, project string) string {
++	return filepath.Join(outDir, "staging", project+".trail.json")
++}
++
++// ConflictPath is where a project's conflict document lands.
++func ConflictPath(outDir, project string) string {
++	return filepath.Join(outDir, project+".conflict.json")
++}
++
++// IndexPath is where the --all index lands.
++func IndexPath(outDir string) string {
++	return filepath.Join(outDir, "index.json")
++}
++
++// WriteLocked publishes the lock and the trail, and clears a stale conflict.
++func WriteLocked(outDir string, lock Lock, trail Trail) error {
++	if err := canon.Write(LockPath(outDir, lock.Project), lock); err != nil {
++		return err
++	}
++	if err := canon.Write(TrailPath(outDir, trail.Project), trail); err != nil {
++		return err
++	}
++	return remove(ConflictPath(outDir, lock.Project))
++}
++
++// WriteConflict publishes the conflict document and clears a stale lock and
++// trail.
++func WriteConflict(outDir string, conflict Conflict) error {
++	if err := canon.Write(ConflictPath(outDir, conflict.Project), conflict); err != nil {
++		return err
++	}
++	if err := remove(LockPath(outDir, conflict.Project)); err != nil {
++		return err
++	}
++	return remove(TrailPath(outDir, conflict.Project))
++}
++
++// WriteIndex publishes the index.
++func WriteIndex(outDir string, index Index) error {
++	return canon.Write(IndexPath(outDir), index)
++}
++
++func remove(path string) error {
++	err := os.Remove(path)
++	if err != nil && !os.IsNotExist(err) {
++		return err
++	}
++	return nil
++}

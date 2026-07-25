@@ -1,0 +1,35 @@
+{
+  "name": "amberite",
+  "releases": [
+    {
+      "version": "3.0.0",
+      "yanked": false,
+      "requires": [
+        {
+          "name": "cobalt",
+          "range": "^1.2.0"
+        }
+      ]
+    },
+    {
+      "version": "2.4.1",
+      "yanked": false,
+      "requires": [
+        {
+          "name": "cobalt",
+          "range": "~1.1.0"
+        }
+      ]
+    },
+    {
+      "version": "2.4.0",
+      "yanked": true,
+      "requires": [
+        {
+          "name": "cobalt",
+          "range": "~1.1.0"
+        }
+      ]
+    }
+  ]
+}

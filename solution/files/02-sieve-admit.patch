@@ -1,0 +1,45 @@
+--- /dev/null
++++ b/internal/sieve/admit.go
+@@ -0,0 +1,42 @@
++package sieve
++
++import "slate/internal/semver"
++
++// Matches reports whether v satisfies the range.
++func (r Range) Matches(v semver.Version) bool {
++	if v.IsPrerelease() && !r.admitsPrerelease(v) {
++		return false
++	}
++	switch r.kind {
++	case kindAny:
++		return true
++	case kindExact:
++		return semver.Compare(v, r.exact) == 0
++	}
++	return semver.Compare(v, r.lower) >= 0 && semver.Compare(v, r.upper) < 0
++}
++
++// admitsPrerelease reports whether the range text names a prerelease sharing
++// the core fields of v.
++func (r Range) admitsPrerelease(v semver.Version) bool {
++	core := v.Core()
++	for _, c := range r.preCores {
++		if semver.Compare(c, core) == 0 {
++			return true
++		}
++	}
++	return false
++}
++
++// MatchesText parses a range and applies it to a version string.
++func MatchesText(rangeText, version string) (bool, error) {
++	r, err := Parse(rangeText)
++	if err != nil {
++		return false, err
++	}
++	v, err := semver.Parse(version)
++	if err != nil {
++		return false, err
++	}
++	return r.Matches(v), nil
++}
