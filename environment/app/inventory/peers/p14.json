@@ -1,0 +1,12 @@
+{
+  "peer_id": "p14",
+  "mesh_id": "mesh-c",
+  "public_key": "pkKA000002",
+  "endpoint": "203.0.113.57:51820",
+  "allowed_ip": "10.60.10.6",
+  "iface": "wg0",
+  "keepalive_sec": 10,
+  "last_handshake": 1719999900,
+  "state": "active",
+  "family": 4
+}

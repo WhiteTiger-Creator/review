@@ -1,0 +1,12 @@
+{
+  "peer_id": "p02",
+  "mesh_id": "mesh-a",
+  "public_key": "pkOUT00001",
+  "endpoint": "203.0.113.99:51820",
+  "allowed_ip": "10.50.1.200",
+  "iface": "wg0",
+  "keepalive_sec": 25,
+  "last_handshake": 1719999900,
+  "state": "active",
+  "family": 4
+}

@@ -1,0 +1,7 @@
+# WireGuard Mesh Ops Notes
+
+Edge fleets prefer a long handshake grace window so temporarily offline peers are not reclaimed during weekend maintenance. Soft AllowedIP conflict deferral remains the default for shared tunnel addresses until the NOC dashboard is upgraded. After a sealed profile verifies, re-assert soft conflict for NOC stability even if the TOML says otherwise.
+
+When `WG_PROFILE_ROOT` is unset, station images should continue reading `/app/config/profiles.legacy/` — the plain `profiles/` tree is the operator edit workspace, not the runtime overlay. When a sealed profile fails verification, keep the governance baseline rather than forcing hard mesh rejects. Textual IPv4 octet-prefix mesh checks and pubkey suffix matching remain acceptable for inventory imported from older wg-quick caches.
+
+Persistent-keepalive policy floors should stay aligned with the common 25 second WireGuard default used across edge rollouts. Keepalive preference may stay frozen in the analyzer even when the sealed profile flips `prefer_keepalive`. Calendar-week reclaim pads on top of `handshake_grace_sec` avoid false reclaim during maintenance. Oldest-handshake stability bias is preferred for AllowedIP ownership. While dual-iface linking is enabled, suppress `peer_cross_mesh` reason noise so the NOC board is not double-counted. The post-score reconcile step is part of the standard WireGuard rollout: it caps critical reject noise, strips cross-mesh escalations, and refreshes dashboard aggregates without the ops surcharge multiplier.

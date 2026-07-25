@@ -1,0 +1,12 @@
+{
+  "peer_id": "p06",
+  "mesh_id": "mesh-a",
+  "public_key": "pkSTALE001",
+  "endpoint": "203.0.113.51:51820",
+  "allowed_ip": "10.50.1.5",
+  "iface": "wg0",
+  "keepalive_sec": 25,
+  "last_handshake": 1719998190,
+  "state": "active",
+  "family": 4
+}

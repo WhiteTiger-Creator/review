@@ -1,23 +1,27 @@
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        r-base-core \
-        tmux \
-        asciinema \
-        ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
-
-RUN pip install --no-cache-dir \
-        numpy==2.1.3 \
-        pandas==2.2.3 \
-        pytest==8.3.4
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
 
 WORKDIR /app
 
-RUN mkdir -p /app/outputs
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    tmux \
+    asciinema \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY data/sensors.csv /app/data/sensors.csv
-COPY data/PROTOCOL.md /app/data/PROTOCOL.md
+RUN pip3 install --break-system-packages --no-cache-dir \
+    pytest==8.3.5 \
+    pytest-json-ctrf==0.3.5
+
+COPY app/go.mod /app/go.mod
+COPY app/cmd /app/cmd
+COPY app/internal /app/internal
+COPY app/inventory /app/inventory
+COPY app/docs /app/docs
+COPY app/config /app/config
+
+RUN mkdir -p /app/output /app/bin \
+    && go build -o /app/bin/wgmeshd /app/cmd/wgmeshd
+
+ENV PATH="/app/bin:${PATH}"

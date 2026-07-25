@@ -1,9 +1,39 @@
 #!/bin/bash
-mkdir -p /logs/verifier
-export PYTHONSAFEPATH=1
-python3 -m pytest /tests/test_outputs.py -rA -q --tb=short
-if [ $? -eq 0 ]; then
-    echo 1 > /logs/verifier/reward.txt
+set -uo pipefail
+
+if [ "$PWD" = "/" ]; then
+  echo "Error: No working directory set."
+  mkdir -p /logs/verifier
+  echo 0 > /logs/verifier/reward.txt
+  exit 0
+fi
+
+mkdir -p /logs/verifier /app/output
+
+export PATH="/app/bin:${PATH}"
+
+cd /app
+go build -o /app/bin/wgmeshd /app/cmd/wgmeshd
+rc_build=$?
+if [ "$rc_build" -ne 0 ]; then
+  echo "go build failed"
+  echo 0 > /logs/verifier/reward.txt
+  exit 0
+fi
+
+/app/bin/wgmeshd --inventory /app/inventory --config /app/config --out /app/output
+rc_run=$?
+if [ "$rc_run" -ne 0 ]; then
+  echo "daemon run failed"
+  echo 0 > /logs/verifier/reward.txt
+  exit 0
+fi
+
+python3 -m pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -v -rA
+rc=$?
+
+if [ "$rc" -eq 0 ]; then
+  echo 1 > /logs/verifier/reward.txt
 else
-    echo 0 > /logs/verifier/reward.txt
+  echo 0 > /logs/verifier/reward.txt
 fi
