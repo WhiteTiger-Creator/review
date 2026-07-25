@@ -1,0 +1,19 @@
+--- a/app/services/corpus/lfs_hydrator.rb
++++ b/app/services/corpus/lfs_hydrator.rb
+@@ -1,7 +1,15 @@
+ module Corpus
+   class LfsHydrator
+-    def hydrate(repo_dir)
++    LFS_POINTER = "version https://git-lfs.github.com/spec/v1"
++
++    def hydrate(repo_dir, ref)
++      Command.run("git", "lfs", "fetch", "origin", ref, cwd: repo_dir)
+       Command.run("git", "lfs", "checkout", cwd: repo_dir)
++      Dir.glob(File.join(repo_dir, "**", "*")).each do |path|
++        next unless File.file?(path)
++        head = File.read(path, 64)
++        raise Errors::ReleaseFailure.new("lfs_unresolved", "policy object not hydrated") if head.start_with?(LFS_POINTER)
++      end
+     end
+   end
+ end

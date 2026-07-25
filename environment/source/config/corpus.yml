@@ -1,0 +1,9 @@
+default_release_ref: refs/tags/corpus-v1.0.0
+allowed_signer_fingerprint: 36E25C9B87D5DCA6A16F52B2EB462DAFB2A2B126
+trusted_keyring_path: config/keys/trusted_corpus_signers.gpg
+remote_url: file:///data/remotes/compose-secret-corpus.git
+cache_root: /app/tmp/corpus-cache
+policy_manifest_path: release.json
+command_timeout_sec: 30
+attestor_key_id: attestor-1
+attestor_private_key_path: config/keys/attestor_private.pem

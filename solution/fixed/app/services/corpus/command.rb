@@ -1,0 +1,27 @@
+module Corpus
+  class Command
+    def self.run(*argv, cwd: nil, input: nil, env: nil, timeout: Corpus.fetch_config.command_timeout_sec, raise_on_failure: true)
+      out, err, status = capture(*argv, cwd: cwd, input: input, env: env)
+      raise Errors::ReleaseFailure.new("command_failed", err.strip) if raise_on_failure && !status.success?
+      out
+    end
+
+    def self.capture(*argv, cwd: nil, input: nil, env: nil)
+      dir = cwd ? cwd.to_s : nil
+      spawn_opts = dir ? { chdir: dir } : {}
+      merged_env = { "LC_ALL" => "C" }
+      merged_env.merge!(env) if env
+      if input
+        stdin, stdout, stderr, wait_thr = Open3.popen3(merged_env, *argv, **spawn_opts)
+        stdin.write(input)
+        stdin.close
+        out = stdout.read
+        err = stderr.read
+        status = wait_thr.value
+      else
+        out, err, status = Open3.capture3(merged_env, *argv, **spawn_opts)
+      end
+      [out, err, status]
+    end
+  end
+end
