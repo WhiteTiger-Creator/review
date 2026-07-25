@@ -1,0 +1,6 @@
+{
+  "declared_scale": 64.0,
+  "fields": 8,
+  "sparse_slots": 12,
+  "weights_path": "weights.json"
+}

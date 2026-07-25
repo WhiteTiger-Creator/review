@@ -1,0 +1,52 @@
+--- krel/ops.go
++++ krel/ops.go
+@@ -2,6 +2,7 @@
+ 
+ import (
+ 	"fmt"
++	"strconv"
+ 
+ 	"github.com/local/etaengine/shipkv"
+ 	"github.com/local/etaengine/types"
+@@ -45,10 +46,21 @@
+ 	if !ok {
+ 		return fmt.Errorf("no staged promotion")
+ 	}
++	if staged.Incomplete {
++		return fmt.Errorf("staged promotion still incomplete")
++	}
++	if reg.SettingsByGen == nil {
++		reg.SettingsByGen = map[string]types.InferSettings{}
++	}
+ 	reg.ActiveGen = staged.Generation
++	reg.Settings = staged.Settings
+ 	reg.Lineage = append(reg.Lineage, staged.Generation)
+ 	reg.EpochToken = fmt.Sprintf("epoch-%d", staged.Generation)
+-	return shipkv.SaveRegistry(root, reg)
++	reg.SettingsByGen[strconv.FormatUint(staged.Generation, 10)] = staged.Settings
++	if err := shipkv.SaveRegistry(root, reg); err != nil {
++		return err
++	}
++	return shipkv.ClearStaged(root)
+ }
+ 
+ func Rollback(root string) error {
+@@ -60,10 +72,16 @@
+ 		return fmt.Errorf("nothing to rollback")
+ 	}
+ 	_ = shipkv.ClearStaged(root)
++	parent := reg.ActiveGen - 1
+ 	if len(reg.Lineage) > 0 {
+ 		reg.Lineage = reg.Lineage[:len(reg.Lineage)-1]
+ 	}
+-	reg.ActiveGen = reg.ActiveGen - 1
+-	reg.EpochToken = fmt.Sprintf("epoch-%d", reg.ActiveGen)
++	reg.ActiveGen = parent
++	reg.EpochToken = fmt.Sprintf("epoch-%d", parent)
++	if reg.SettingsByGen != nil {
++		if s, ok := reg.SettingsByGen[strconv.FormatUint(parent, 10)]; ok {
++			reg.Settings = s
++		}
++	}
+ 	return shipkv.SaveRegistry(root, reg)
+ }

@@ -1,2 +1,0 @@
-# Vendored third-party trees are not task-authored Python; keep ruff off them.
-exclude = ["vendor"]

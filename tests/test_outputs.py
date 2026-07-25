@@ -1,244 +1,298 @@
-"""Black-box Project Terminus verifier for signingd."""
+"""Verifier for ETA residual evaluation ledger and promotion."""
 
-from __future__ import annotations
-
-import hashlib
-import re
+import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
-from cryptography.exceptions import InvalidSignature
-from verifier_lib.job_factory import install_job, make_job
-from verifier_lib.output_reader import index, record
-from verifier_lib.process_runner import CURRENT, LEGACY, run
-from verifier_lib.signature_check import PUBLIC, fingerprint, verify
-from verifier_lib.state_factory import write_final, write_journal, write_stage
-from verifier_lib.token_factory import create_ambiguous_legacy_token
 
-APP = Path("/app")
-QUEUE, PAYLOADS, STATE = APP / "queue", APP / "payloads", APP / "state"
-OUTPUT, LOGS = Path("/output/signed"), Path("/var/log/signing")
+ROOT = Path("/app/environment")
+ETAENGINE = "/app/environment/bin/etaengine"
+OUT = Path("/app/output/run_doc.json")
+STATE = ROOT / "state"
+MANIFEST = json.loads((ROOT / "assets" / "manifest.json").read_text())
+DECLARED_SCALE = float(MANIFEST["declared_scale"])
+LIM = 4.0 * DECLARED_SCALE
+D1_MIN = 0.08
+D1_MAX_FLOOR = 0.12
 
-
-def _uri_from_current(key_name: str) -> str:
-    text = CURRENT.read_text()
-    match = re.search(
-        rf'\[keys\.{re.escape(key_name)}\]\s*\nuri\s*=\s*"([^"]+)"',
-        text,
-    )
-    assert match, f"missing URI for {key_name} in {CURRENT}"
-    return match.group(1)
-
-
-KEYS = {
-    "release-primary": (PUBLIC / "release-primary.pem", lambda: _uri_from_current("release-primary")),
-    "release-secondary": (PUBLIC / "release-secondary.pem", lambda: _uri_from_current("release-secondary")),
-    "legacy": (PUBLIC / "legacy.pem", lambda: "legacy:token=legacy-token;object=legacy-signing"),
+HELDOUT = {
+    "unit": [802, 907, 929, 953],
+    "order": [883, 911, 937, 959],
+    "pad": [887, 919, 941, 961],
+}
+FIXTURES = ["batch_00", "batch_01", "batch_02"]
+PROD = {
+    "scale-mode": "peak",
+    "graph-weight": "0.005",
+    "lane-weight": "0.995",
 }
 
 
-@pytest.fixture(autouse=True)
-def clean_runtime() -> None:
-    """Give every scenario fresh queue, durable state, publication, and logs."""
-    for directory in (QUEUE, PAYLOADS, STATE, OUTPUT, LOGS):
-        shutil.rmtree(directory, ignore_errors=True)
-    for directory in (QUEUE, PAYLOADS, STATE, OUTPUT / "jobs", LOGS):
-        directory.mkdir(parents=True, exist_ok=True)
+def _build() -> None:
+    subprocess.run(["/app/environment/scripts/build_workspace.sh"], check=True)
 
 
-def assert_success(result) -> None:
-    assert result.returncode == 0, f"signingd failed:\nstdout={result.stdout}\nstderr={result.stderr}"
+def _bin(args: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run([ETAENGINE, *args], check=True, capture_output=True, text=True)
 
 
-def assert_record(job: dict[str, object], payload: bytes, *, key: str | None = None) -> dict[str, object]:
-    """Assert all signed-record fields, identity data, and cryptographic validity."""
-    chosen = key or str(job["key"])
-    pem, uri_fn = KEYS[chosen]
-    uri = uri_fn() if callable(uri_fn) else uri_fn
-    signed = record(str(job["job_id"]))
-    assert set(signed) == {"schema_version", "job_id", "payload_sha256", "key", "key_uri",
-                           "key_fingerprint_sha256", "mechanism", "signature_base64", "status"}
-    assert signed["schema_version"] == 1
-    assert signed["job_id"] == job["job_id"]
-    assert signed["payload_sha256"] == hashlib.sha256(payload).hexdigest()
-    assert signed["key"] == chosen and signed["key_uri"] == uri
-    assert signed["key_fingerprint_sha256"] == fingerprint(pem)
-    assert signed["mechanism"] == job["mechanism"] and signed["status"] == "signed"
-    verify(signed, payload, pem)
-    return signed
+def _reset_state() -> None:
+    # restore from image-baked copy kept beside assets
+    baked = ROOT / "assets" / "registry_init.json"
+    if baked.exists():
+        STATE.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(baked, STATE / "registry.json")
+    staged = STATE / "staged.json"
+    if staged.exists():
+        staged.unlink()
+    ledger = STATE / "ledger.jsonl"
+    if ledger.exists():
+        ledger.unlink()
 
 
-def assert_index(job_ids: set[str]) -> None:
-    """Assert index completeness, exact set membership, and deterministic ordering."""
-    data = index()
-    assert set(data) == {"schema_version", "jobs"} and data["schema_version"] == 1
-    jobs = data["jobs"]
-    assert {item["job_id"] for item in jobs} == job_ids
-    assert [item["job_id"] for item in jobs] == sorted(job_ids)
-    assert {item["record"] for item in jobs} == {f"jobs/{job_id}.json" for job_id in job_ids}
-    for item in jobs:
-        signed = record(item["job_id"])
-        assert item["payload_sha256"] == signed["payload_sha256"]
-        assert item["key_fingerprint_sha256"] == signed["key_fingerprint_sha256"]
+def _promote_prod() -> None:
+    _bin(["stage", "--root", str(ROOT), "--scale-mode", PROD["scale-mode"],
+          "--graph-weight", PROD["graph-weight"], "--lane-weight", PROD["lane-weight"]])
+    _bin(["finalize", "--root", str(ROOT)])
+    _bin(["commit", "--root", str(ROOT)])
 
 
-def test_current_config_signs_three_canonical_records() -> None:
-    """Current configuration signs three jobs with canonical records and index."""
-    jobs = [
-        make_job("normal-a", b"alpha\x00", mechanism="rsa-pss-sha256"),
-        make_job("normal-b", b"bravo", mechanism="rsa-pkcs1-sha256"),
-        make_job("normal-c", b"charlie", key="release-secondary"),
+def _evaluate(fixture: str, family: str, seed: int, key: str | None = None) -> dict:
+    if OUT.exists():
+        OUT.unlink()
+    args = [
+        "evaluate", "--root", str(ROOT), "--fixture", fixture, "--family", family,
+        "--seed", str(seed), "--out", str(OUT),
     ]
-    for ordinal, job in enumerate(reversed(jobs)):
-        install_job(job, f"{ordinal:03d}-fixture.json")
-    assert_success(run())
-    for job, payload in zip(jobs, (b"alpha\x00", b"bravo", b"charlie")):
-        assert_record(job, payload)
-    assert_index({str(job["job_id"]) for job in jobs})
+    if key:
+        args.extend(["--key", key])
+    _bin(args)
+    return json.loads(OUT.read_text())
 
 
-def test_worker_replacement_preserves_key_identity() -> None:
-    """One-job workers retain configured key identity without leaking handles."""
-    jobs = [make_job(f"replace-{i}", f"payload-{i}".encode()) for i in range(3)]
-    for job in jobs:
-        install_job(job)
-    assert_success(run())
-    for i, job in enumerate(jobs):
-        signed = assert_record(job, f"payload-{i}".encode())
-        assert "handle" not in str(signed).lower()
-        assert signed["key_uri"] == KEYS["release-primary"][1]()
-    assert_index({str(job["job_id"]) for job in jobs})
+def _reg() -> dict:
+    return json.loads((STATE / "registry.json").read_text())
 
 
-def test_full_restart_uses_durable_completion_state() -> None:
-    """A restart preserves completed records and signs only newly queued work."""
-    first = make_job("restart-first", b"first")
-    install_job(first)
-    assert_success(run())
-    before = (OUTPUT / "jobs/restart-first.json").read_bytes()
-    second = make_job("restart-second", b"second", mechanism="rsa-pkcs1-sha256")
-    install_job(second)
-    assert_success(run())
-    assert (OUTPUT / "jobs/restart-first.json").read_bytes() == before
-    assert_record(first, b"first")
-    assert_record(second, b"second")
-    assert_index({"restart-first", "restart-second"})
+def _t1(a: float, b: float) -> float:
+    return max(1e-4, 0.008 * max(abs(a), abs(b), 1.0))
 
 
-def test_current_uri_selects_secondary_not_primary_fallback() -> None:
-    """A secondary URI selects its exact key and cannot verify against primary."""
-    job = make_job("secondary-only", b"secondary", key="release-secondary")
-    install_job(job)
-    assert_success(run())
-    signed = assert_record(job, b"secondary")
-    with pytest.raises(InvalidSignature):
-        verify(signed, b"secondary", KEYS["release-primary"][0])
+def _rows(doc: dict) -> list[dict]:
+    return sorted(doc["runs"], key=lambda r: r["instance_id"])
 
 
-def test_legacy_configuration_is_supported() -> None:
-    """Legacy label selection signs with the documented legacy key URI."""
-    job = make_job("legacy-good", b"legacy payload", key="legacy")
-    install_job(job)
-    assert_success(run(LEGACY))
-    assert_record(job, b"legacy payload")
-    assert_index({"legacy-good"})
+def _assert_t1(base: dict, pert: dict) -> None:
+    bd = [float(r["delta"]) for r in _rows(base)]
+    pd = [float(r["delta"]) for r in _rows(pert)]
+    assert len(bd) == len(pd) >= 2
+    for d0, d1 in zip(bd, pd):
+        assert abs(d0 - d1) <= _t1(d0, d1)
 
 
-def test_ambiguous_legacy_selection_is_rejected(tmp_path: Path) -> None:
-    """Legacy config rejects a token holding two same-label private keys."""
-    conf, _ = create_ambiguous_legacy_token(tmp_path)
-    config = tmp_path / "legacy.toml"
-    config.write_text(
-        '''schema_version = 1
-module = "/usr/lib/softhsm/libsofthsm2.so"
-pin_file = "/app/config/token-user.pin"
-token_label = "legacy-token"
-key_label = "legacy-signing"
-public_key = "/app/config/public/legacy.pem"
-state_dir = "/app/state"
-queue_dir = "/app/queue"
-payload_root = "/app/payloads"
-output_dir = "/output/signed"
-log_dir = "/var/log/signing"
-''')
-    job = make_job("legacy-ambiguous", b"must not sign", key="legacy")
-    install_job(job)
-    result = run(config, softhsm_conf=conf)
-    assert result.returncode != 0
-    assert not (OUTPUT / "jobs/legacy-ambiguous.json").exists()
+def _assert_d1(doc: dict) -> None:
+    mags = [abs(float(r["score"])) for r in doc["runs"]]
+    assert max(mags) > D1_MAX_FLOOR
+    for m in mags:
+        assert m > D1_MIN
+    for r in doc["runs"]:
+        assert abs(float(r["score"])) <= LIM + 1e-3
 
 
-def test_recovers_a_valid_staged_signature() -> None:
-    """Startup publishes a valid staged signed record without re-signing it."""
-    job = make_job("recover-stage", b"staged")
-    install_job(job)
-    assert_success(run())
-    signed = record("recover-stage")
-    shutil.rmtree(OUTPUT)
-    shutil.rmtree(STATE)
-    write_stage(job, signed)
-    write_journal()
-    assert_success(run())
-    assert_record(job, b"staged")
-    assert_index({"recover-stage"})
+def _assert_gen(doc: dict, gen: int) -> None:
+    assert int(doc["summary"]["generation"]) == gen
+    for r in doc["runs"]:
+        assert int(r["generation"]) == gen
 
 
-def test_recovers_final_record_missing_index() -> None:
-    """Startup reconstructs an index when a valid final record already exists."""
-    job = make_job("recover-final", b"final")
-    install_job(job)
-    assert_success(run())
-    signed = record("recover-final")
-    shutil.rmtree(OUTPUT)
-    shutil.rmtree(STATE)
-    write_final(signed)
-    write_journal()
-    assert_success(run())
-    assert_record(job, b"final")
-    assert_index({"recover-final"})
+@pytest.fixture(scope="module", autouse=True)
+def _setup():
+    _build()
+    # bake init snapshot once
+    init = ROOT / "assets" / "registry_init.json"
+    if not init.exists():
+        shutil.copyfile(STATE / "registry.json", init)
 
 
-def test_conflicting_job_id_is_rejected_and_original_survives() -> None:
-    """A reused job ID with a different body fails without replacing output."""
-    first = make_job("conflict-id", b"original")
-    install_job(first, "001-original.json")
-    assert_success(run())
-    original = (OUTPUT / "jobs/conflict-id.json").read_bytes()
-    second = make_job("conflict-id", b"replacement", payload_path=PAYLOADS / "replacement.bin")
-    install_job(second, "999-conflict.json")
-    assert run().returncode != 0
-    assert (OUTPUT / "jobs/conflict-id.json").read_bytes() == original
-    assert_record(first, b"original")
-    assert_index({"conflict-id"})
+def test_g1_prod_settings_unit_t1_d1():
+    """After production cutover, unit family stays inside T1 and D1."""
+    _reset_state()
+    _promote_prod()
+    gen = int(_reg()["active_generation"])
+    for fx in FIXTURES:
+        for seed in HELDOUT["unit"]:
+            base = _evaluate(fx, "base", 0)
+            pert = _evaluate(fx, "unit", seed)
+            _assert_t1(base, pert)
+            _assert_d1(pert)
+            _assert_gen(pert, gen)
 
 
-def test_unsupported_mechanism_has_no_partial_publication() -> None:
-    """An unsupported mechanism exits unsuccessfully and publishes no job record."""
-    job = make_job("unsupported", b"no publication", mechanism="rsa-sha512")
-    install_job(job)
-    assert run().returncode != 0
-    assert not (OUTPUT / "jobs/unsupported.json").exists()
-    if (OUTPUT / "index.json").exists():
-        assert "unsupported" not in {entry["job_id"] for entry in index()["jobs"]}
+def test_g2_order_pad_t1():
+    """Order and pad families stay T1-close to base after production settings activate."""
+    _reset_state()
+    _promote_prod()
+    for fx in FIXTURES:
+        base = _evaluate(fx, "base", 0)
+        for seed in HELDOUT["order"]:
+            pert = _evaluate(fx, "order", seed)
+            _assert_t1(base, pert)
+            _assert_d1(pert)
+        for seed in HELDOUT["pad"]:
+            pert = _evaluate(fx, "pad", seed)
+            _assert_t1(base, pert)
+            _assert_d1(pert)
 
 
-def test_sensitive_material_never_reaches_outputs_or_logs() -> None:
-    """PIN and private-key markers do not appear in published files or logs."""
-    job = make_job("secret-scan", b"secret scan")
-    install_job(job)
-    assert_success(run())
-    haystack = b"".join(path.read_bytes() for root in (OUTPUT, LOGS) for path in root.rglob("*") if path.is_file())
-    assert b"123456" not in haystack
-    assert b"BEGIN PRIVATE KEY" not in haystack
-    assert b"BEGIN RSA PRIVATE KEY" not in haystack
+def test_h3_incomplete_stage_ignored_by_evaluate():
+    """Evaluate ignores incomplete staged settings and keeps active generation."""
+    _reset_state()
+    before = _reg()
+    _bin(["stage", "--root", str(ROOT), "--scale-mode", "peak",
+          "--graph-weight", "0.005", "--lane-weight", "0.995"])
+    assert (STATE / "staged.json").exists()
+    staged = json.loads((STATE / "staged.json").read_text())
+    assert staged["incomplete"] is True
+    doc = _evaluate("batch_02", "base", 0)
+    assert int(doc["summary"]["generation"]) == int(before["active_generation"])
+    assert int(_reg()["active_generation"]) == int(before["active_generation"])
+    # Active gen-0 declared settings must remain in force — D1 must not pass yet.
+    mags = [abs(float(r["score"])) for r in doc["runs"]]
+    assert max(mags) <= D1_MAX_FLOOR
 
 
-def test_generated_scenario_rejects_hardcoded_sample_answers() -> None:
-    """Fresh generated IDs and bytes produce valid independent signatures."""
-    payload = bytes(range(256)) + b"\x00generated-not-sample\xff"
-    job = make_job("generated-z9_42", payload, key="release-secondary", mechanism="rsa-pkcs1-sha256")
-    install_job(job, "777-unrelated-name.json")
-    assert_success(run())
-    assert_record(job, payload)
-    assert_index({"generated-z9_42"})
+def test_h4_commit_requires_finalize():
+    """Commit without finalize must fail and leave registry generation unchanged."""
+    _reset_state()
+    before = int(_reg()["active_generation"])
+    _bin(["stage", "--root", str(ROOT), "--scale-mode", "peak",
+          "--graph-weight", "0.005", "--lane-weight", "0.995"])
+    with pytest.raises(subprocess.CalledProcessError):
+        _bin(["commit", "--root", str(ROOT)])
+    assert int(_reg()["active_generation"]) == before
+
+
+def test_c5_commit_clears_staged_and_records_history():
+    """Successful commit clears staged.json and stores settings_by_gen."""
+    _reset_state()
+    _promote_prod()
+    assert not (STATE / "staged.json").exists()
+    reg = _reg()
+    gen = str(reg["active_generation"])
+    assert gen in reg["settings_by_gen"]
+    assert reg["settings_by_gen"][gen]["scale_mode"] == "peak"
+
+
+def test_c6_rollback_restores_settings():
+    """Rollback restores prior settings from settings_by_gen."""
+    _reset_state()
+    _promote_prod()
+    mid = _reg()
+    assert mid["settings"]["scale_mode"] == "peak"
+    _bin(["rollback", "--root", str(ROOT)])
+    after = _reg()
+    assert int(after["active_generation"]) == int(mid["active_generation"]) - 1
+    assert after["settings"]["scale_mode"] == "declared"
+    assert not (STATE / "staged.json").exists()
+
+
+def test_s7_replay_rescores_after_prod_settings():
+    """Replay after settings activate must not copy stale pre-activate output bytes."""
+    _reset_state()
+    key = "batch_00:base:0"
+    pre_out = Path("/app/output/pre_replay.json")
+    if pre_out.exists():
+        pre_out.unlink()
+    _bin([
+        "evaluate", "--root", str(ROOT), "--fixture", "batch_00", "--family", "base",
+        "--seed", "0", "--out", str(pre_out), "--key", key,
+    ])
+    pre = json.loads(pre_out.read_text())
+    pre_scores = [float(r["score"]) for r in _rows(pre)]
+    assert pre_out.exists()
+    _promote_prod()
+    if OUT.exists():
+        OUT.unlink()
+    _bin(["replay", "--root", str(ROOT), "--key", key, "--out", str(OUT)])
+    post = json.loads(OUT.read_text())
+    post_scores = [float(r["score"]) for r in _rows(post)]
+    assert post_scores != pre_scores
+    _assert_d1(post)
+    _assert_gen(post, int(_reg()["active_generation"]))
+    # Stale bytes at the original out_path must remain untouched by a correct rescore.
+    assert [float(r["score"]) for r in _rows(json.loads(pre_out.read_text()))] == pre_scores
+
+
+def test_s8_schema_and_delta_identity():
+    """Schema fields and delta identity hold under active generation."""
+    _reset_state()
+    _promote_prod()
+    doc = _evaluate("batch_01", "unit", HELDOUT["unit"][1])
+    assert doc["version"] == 1
+    assert len(doc["runs"]) == 2
+    assert doc["summary"]["instance_count"] == 2
+    assert "model_id" in doc["summary"]
+    for row in doc["runs"]:
+        assert abs(float(row["delta"]) - (float(row["score"]) - float(row["observed"]))) <= 1e-5
+        assert row["profile"] == "alpha"
+    _assert_d1(doc)
+
+
+def test_o9_score_ordering():
+    """Score ordering holds for promoted evaluations."""
+    _reset_state()
+    _promote_prod()
+    for fx in FIXTURES:
+        doc = _evaluate(fx, "order", HELDOUT["order"][2])
+        rows = _rows(doc)
+        for i in range(len(rows) - 1):
+            a, b = rows[i], rows[i + 1]
+            if float(b["observed"]) >= float(a["observed"]):
+                assert float(a["score"]) - float(b["score"]) <= 0.05 + 1e-6
+        _assert_d1(doc)
+
+
+def test_x10_idempotent_evaluate_key():
+    """Re-evaluate with same key remains deterministic under active generation."""
+    _reset_state()
+    _promote_prod()
+    key = "batch_01:pad:887"
+    d1 = _evaluate("batch_01", "pad", 887, key=key)
+    d2 = _evaluate("batch_01", "pad", 887, key=key)
+    assert d1 == d2
+    _assert_d1(d1)
+    _assert_gen(d1, int(_reg()["active_generation"]))
+    assert _reg()["settings"]["scale_mode"] == "peak"
+
+def test_x11_authority_after_interrupted_stage():
+    """Decisive: stage without finalize, evaluate stays on old gen; finalize+commit then flips."""
+    _reset_state()
+    old = _evaluate("batch_02", "unit", 802)
+    old_gen = int(old["summary"]["generation"])
+    old_mags = [abs(float(r["score"])) for r in old["runs"]]
+    assert max(old_mags) <= D1_MAX_FLOOR
+    _bin(["stage", "--root", str(ROOT), "--scale-mode", "peak",
+          "--graph-weight", "0.005", "--lane-weight", "0.995"])
+    mid = _evaluate("batch_02", "unit", 802)
+    assert int(mid["summary"]["generation"]) == old_gen
+    mid_mags = [abs(float(r["score"])) for r in mid["runs"]]
+    assert max(mid_mags) <= D1_MAX_FLOOR
+    _bin(["finalize", "--root", str(ROOT)])
+    _bin(["commit", "--root", str(ROOT)])
+    new = _evaluate("batch_02", "unit", 802)
+    assert int(new["summary"]["generation"]) == old_gen + 1
+    _assert_d1(new)
+    base = _evaluate("batch_02", "base", 0)
+    _assert_t1(base, new)
+
+
+def test_x12_fixtures_untouched():
+    """Fixture bytes remain unchanged across settings activate and evaluate."""
+    before = {p.read_bytes() for p in (ROOT / "testsupport" / "fixtures").glob("*.json")}
+    _reset_state()
+    _promote_prod()
+    _evaluate("batch_00", "order", 883)
+    after = {p.read_bytes() for p in (ROOT / "testsupport" / "fixtures").glob("*.json")}
+    assert before == after

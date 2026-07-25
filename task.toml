@@ -4,37 +4,36 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "security"
-subcategories = ["tool_specific"]
-number_of_milestones = 0
+category = "machine-learning"
+subcategories = []
+tags = ["machine-learning", "model-registry", "promotion", "evaluation-ledger", "quantized-inference", "metamorphic-testing"]
+languages = ["go"]
 codebase_size = "large"
-languages = ["rust", "bash"]
-tags = [
-  "pkcs11",
-  "softhsm",
-  "process-lifecycle",
-  "crash-recovery",
-  "release-signing",
-]
-expert_time_estimate_min = 240
-junior_time_estimate_min = 600
-difficulty_explanation = "Hard because correctness spans process-local PKCS #11 session and object handles, duplicate-label key identity via URI attributes, durable journal and staged publication reconciliation across restarts, worker replacement with max_jobs_per_worker, legacy versus current configuration compatibility, and permanent-versus-retryable failure classification. A local reopen-session fix can still select the wrong same-label key or duplicate index entries."
-solution_explanation = "Repair signingd so each worker initializes a fresh Cryptoki context and resolves keys through full current-format URI attributes or strict unique legacy selectors, without trusting persisted numeric handles. Reconcile staged records, final job files, index membership, and journal evidence before signing or publishing. Classify mechanism, selector, and input failures as permanent. Rebuild and atomically install accepted job records and index.json."
-verification_explanation = "Pytest drives /app/bin/signingd through documented CLI modes across clean runs, worker replacement, restarts, legacy and ambiguous selectors, recovery fixtures, conflict and unsupported-mechanism rejection, secret-leakage scans, and generated anti-hardcoding jobs. Signatures are verified cryptographically against configured public keys; index and job records must be canonical and consistent."
+number_of_milestones = 0
+expert_time_estimate_min = 180
+junior_time_estimate_min = 480
+
+[category_profile]
+challenge_family = "model promotion and evaluation lineage"
+profile_name = "ml_model_lifecycle"
+allowed_instruction_disclosures = "registry authority, promotion workflow, ledger replay rules, metamorphic evaluation contracts, CLI"
+forbidden_instruction_leaks = "fix-path symbols, staged-incomplete evaluate shortcut, held-out seeds"
+category_specific_hardness_bar = "promotion authority, generation binding, and metamorphic contracts must be recovered together"
+category_specific_verifier_risks = "settings-only patch, skipping finalize, stale replay copy, fixture overwrite"
+coverage_role = "Adds Go registry-bound quantized evaluation with staged promotion and ledger replay"
+
+[reference_pattern]
+justification_if_none = "docs/reference_tasks/index.json has an empty references list; no promoted ml_model_lifecycle Go reference exists"
 
 [agent]
-timeout_sec = 1800.0
+timeout_sec = 1800
 
 [verifier]
-timeout_sec = 600.0
+timeout_sec = 900
 
 [environment]
-workdir = "/app"
-build_timeout_sec = 900.0
-cpus = 2
-memory_mb = 6144
-storage_mb = 20480
 allow_internet = false
-docker_flags = []
-gpus = 0
-gpu_types = []
+build_timeout_sec = 900
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240
