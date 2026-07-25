@@ -1,434 +1,556 @@
-"""Verifier for edge fleet trust attestation recovery."""
-from __future__ import annotations
+"""
+Verifier for the symlink topology evaluator.
+Validates /app/output/health_report.json against the contract specification.
+"""
 
 import json
-import re
-import shutil
+import os
 import subprocess
-from pathlib import Path
-
-import pytest
-
-OUTPUT = Path("/output/ceremony-ledger.json")
-QUARANTINE = Path("/output/quarantine.json")
-FIXTURES = Path("/app/data/fixtures")
-SURFACE = FIXTURES / "surface_attestation.json"
-SEED = FIXTURES / "seed.json"
-SEGMENTS = Path("/app/data/signed_segments")
-VERIFIER_OUT = Path("/tmp") / "ceremony-ledger-verify.json"
-DYNAMIC_OUT = Path("/tmp") / "ceremony-ledger-dynamic.json"
-DYNAMIC_FRAME = FIXTURES / "dynamic_test_frame.bin"
-DYNAMIC_INJECTED = FIXTURES / "dynamic_test_injected.bin"
-
-EPOCH_10_ACCEPTED = 8
-EPOCH_20_ACCEPTED = 5
-EPOCH_30_ACCEPTED = 3
-EPOCH_40_ACCEPTED = 5
-EPOCH_50_ACCEPTED = 4
-SURFACE_EPOCH_10 = 10
-SCHEMA_VERSION = 1
-STATUS_ACTIVE = "active"
-STATUS_INACTIVE = "inactive"
-PROFILE_A = "fleet_a"
-PROFILE_B = "fleet_b"
-BACKEND_NAMES = {"mqtt", "lora", "uart", "canbus", "zigbee"}
-PUBLISHED_EPOCHS = {10, 20, 30, 40, 50}
-CORE_EPOCHS = {10, 20, 40, 50}
-REASON_INTEGRITY = "integrity_failure"
-REASON_REPLAY = "replay"
-REASON_REVOKED = "revoked"
-QUARANTINE_REASONS = (REASON_INTEGRITY, REASON_REPLAY, REASON_REVOKED)
-KEY_BACKENDS = "backends"
-KEY_EPOCHS = "epochs"
-KEY_REJECTED = "rejected"
-KEY_EPOCH = "epoch"
-KEY_LANE = "lane"
-KEY_TS = "ts"
-EPOCH_TEN = 10
-EPOCH_THIRTY = 30
-EPOCH_TWENTY_FIVE = 25
-BAND_LO = 2
-BAND_HI = 4
-BAND_CAP = 6
-BACKEND_COUNT = 5
-SAMPLE_A = "sample_a"
-SAMPLE_B = "sample_b"
-SAMPLE_C = "sample_c"
-SEED_NAME = "lane-lattice-v2"
-DYNAMIC_LEGACY = FIXTURES / "dynamic_test_legacy.bin"
 
 
-def _quarantine_path_for(attest_out: Path) -> Path:
-    name = attest_out.name.replace("ceremony-ledger", "quarantine")
-    return attest_out.with_name(name)
+def load_report():
+    """Load the health report from the expected output path."""
+    with open("/app/output/health_report.json") as f:
+        return json.load(f)
 
 
-def _rebuild_and_attest(out: Path) -> dict:
+def test_binary_compiles():
+    """Verify the symlink-health binary compiles without errors."""
+    subprocess.run(["make", "clean"], capture_output=True, cwd="/app", timeout=30)
     result = subprocess.run(
-        ["cargo", "build", "-p", "trusteval", "--release"],
-        cwd="/app",
-        capture_output=True,
-        text=True,
-        check=False,
+        ["make"], capture_output=True, text=True, cwd="/app", timeout=120
     )
-    assert result.returncode == 0, f"cargo build failed:\n{result.stderr}"
-    result = subprocess.run(
-        ["/app/target/release/trusteval", "attest", "--out", str(out)],
-        cwd="/app",
-        capture_output=True,
-        text=True,
-        check=False,
+    assert result.returncode == 0, f"Build failed: {result.stderr[:500]}"
+
+
+def test_report_exists():
+    """Verify the health report was generated at the expected path."""
+    assert os.path.exists("/app/output/health_report.json"), "Report not found"
+
+
+def test_report_top_level_keys():
+    """Verify report has all required top-level keys per output schema."""
+    report = load_report()
+    for key in ["summary", "overall_status", "entries", "segments", "metadata"]:
+        assert key in report, f"Missing top-level key: {key}"
+
+
+def test_total_entries():
+    """Verify all 31 symlinks from the manifest are reported."""
+    report = load_report()
+    assert len(report["entries"]) == 31, (
+        f"Expected 31 entries, got {len(report['entries'])}"
     )
-    assert result.returncode == 0, f"trusteval attest failed:\n{result.stderr}"
-    body = out.read_text(encoding="utf-8")
-    data = json.loads(body)
-    assert data.get("version") == SCHEMA_VERSION
-    return data
 
 
-def _load_quarantine(path: Path) -> dict:
-    assert path.is_file(), f"missing quarantine at {path}"
-    data = json.loads(path.read_text(encoding="utf-8"))
-    assert data.get("version") == SCHEMA_VERSION
-    assert KEY_REJECTED in data
-    return data
+def test_summary_total():
+    """Verify summary.total equals the manifest entry count."""
+    report = load_report()
+    assert report["summary"]["total"] == 31
 
 
-def _reason_keys(data: dict, reason: str) -> set[tuple]:
-    return {
-        (int(e["epoch"]), e["lane"], int(e["ts"]))
-        for e in data["rejected"]
-        if e["reason"] == reason
+def test_summary_healthy():
+    """Verify healthy count reflects entries passing all classification checks."""
+    report = load_report()
+    assert report["summary"]["healthy"] == 25, (
+        f"Expected 25 healthy, got {report['summary']['healthy']}"
+    )
+
+
+def test_summary_dangling():
+    """Verify dangling count matches entries with unresolvable targets."""
+    report = load_report()
+    assert report["summary"]["dangling"] == 2, (
+        f"Expected 2 dangling, got {report['summary']['dangling']}"
+    )
+
+
+def test_summary_cycles():
+    """Verify cycle count includes all entries whose resolution detects a revisit."""
+    report = load_report()
+    assert report["summary"]["cycles"] == 4, (
+        f"Expected 4 cycles, got {report['summary']['cycles']}"
+    )
+
+
+def test_summary_no_excessive_depth():
+    """Verify no entries exceed the configured max_chain_depth of 8."""
+    report = load_report()
+    assert report["summary"]["excessive_depth"] == 0
+
+
+def test_summary_no_permission_fault():
+    """Verify no permission faults with the configured mask 510."""
+    report = load_report()
+    assert report["summary"]["permission_fault"] == 0
+
+
+def test_overall_status():
+    """Verify overall_status is critical per V2 (worst segment) and V4 (count > 4)."""
+    report = load_report()
+    assert report["overall_status"] == "critical", (
+        f"Expected 'critical', got '{report['overall_status']}'"
+    )
+
+
+def test_dangling_entries_identified():
+    """Verify the two dangling symlinks are correctly classified."""
+    report = load_report()
+    entries_map = {e["path"]: e for e in report["entries"]}
+    assert entries_map["/srv/app/tmp/orphan1"]["status"] == "dangling"
+    assert entries_map["/srv/app/tmp/orphan2"]["status"] == "dangling"
+
+
+def test_cycle_entries_ring():
+    """Verify all three cycle ring members are classified as cycle."""
+    report = load_report()
+    entries_map = {e["path"]: e for e in report["entries"]}
+    for p in ["/srv/app/cycle/a", "/srv/app/cycle/b", "/srv/app/cycle/c"]:
+        assert entries_map[p]["status"] == "cycle", (
+            f"{p} should be cycle, got {entries_map[p]['status']}"
+        )
+
+
+def test_watcher_classified_cycle():
+    """Verify watcher entry (chains into cycle) is classified as cycle per R3."""
+    report = load_report()
+    entries_map = {e["path"]: e for e in report["entries"]}
+    assert entries_map["/srv/app/cycle/watcher"]["status"] == "cycle", (
+        "watcher's resolution detects a revisit, must be classified as cycle"
+    )
+
+
+def test_session_healthy():
+    """Verify session entry is healthy (target IS a tracked symlink per C4)."""
+    report = load_report()
+    entries_map = {e["path"]: e for e in report["entries"]}
+    assert entries_map["/srv/app/tmp/session"]["status"] == "healthy", (
+        "session target (orphan1) is tracked, so session is not dangling"
+    )
+
+
+def test_deep_chains_healthy():
+    """Verify deep chain entries l1-l6 are all healthy with max_depth=8."""
+    report = load_report()
+    entries_map = {e["path"]: e for e in report["entries"]}
+    for i in range(1, 7):
+        p = f"/srv/app/lib/deep/l{i}"
+        assert entries_map[p]["status"] == "healthy", (
+            f"{p} should be healthy, got {entries_map[p]['status']}"
+        )
+
+
+def test_chain_depths_deep():
+    """Verify chain depth computation for the 6-hop chain."""
+    report = load_report()
+    entries_map = {e["path"]: e for e in report["entries"]}
+    expected = {
+        "/srv/app/lib/deep/l1": 6,
+        "/srv/app/lib/deep/l2": 5,
+        "/srv/app/lib/deep/l3": 4,
+        "/srv/app/lib/deep/l4": 3,
+        "/srv/app/lib/deep/l5": 2,
+        "/srv/app/lib/deep/l6": 1,
     }
-
-
-@pytest.fixture(scope="module")
-def roster_from_binary() -> dict:
-    """Fresh rebuild + attestation from current /app sources."""
-    return _rebuild_and_attest(VERIFIER_OUT)
-
-
-@pytest.fixture(scope="module")
-def quarantine_from_binary(roster_from_binary: dict) -> dict:
-    """Quarantine produced by the same rebuild as roster_from_binary."""
-    _ = roster_from_binary
-    return _load_quarantine(_quarantine_path_for(VERIFIER_OUT))
-
-
-def _status_map(roster: dict) -> dict[str, str]:
-    assert roster.get("version") == SCHEMA_VERSION
-    backends = roster["backends"]
-    return {row["name"]: row["status"] for row in backends}
-
-
-def _epoch_map(roster: dict) -> dict[int, dict]:
-    return {int(row["id"]): row for row in roster["epochs"]}
-
-
-def test_roster_structure(roster_from_binary: dict):
-    """Attestation shape plus deep-path signal (not surface-inflated epoch 10)."""
-    assert roster_from_binary["version"] == SCHEMA_VERSION
-    assert KEY_BACKENDS in roster_from_binary
-    assert KEY_EPOCHS in roster_from_binary
-    backends = roster_from_binary["backends"]
-    assert len(backends) == BACKEND_COUNT
-    names = {b["name"] for b in backends}
-    assert names == BACKEND_NAMES
-    for b in backends:
-        assert b["status"] in (STATUS_ACTIVE, STATUS_INACTIVE)
-    epochs = _epoch_map(roster_from_binary)
-    assert CORE_EPOCHS.issubset(epochs.keys())
-    assert int(epochs[EPOCH_TEN]["accepted"]) < SURFACE_EPOCH_10
-    assert int(epochs[EPOCH_TEN]["accepted"]) >= EPOCH_30_ACCEPTED
-
-
-def test_authority_correct_tier(roster_from_binary: dict):
-    """Epoch 10 accepted count matches restored deep attestation."""
-    epochs = _epoch_map(roster_from_binary)
-    assert EPOCH_TEN in epochs
-    accepted_10 = int(epochs[EPOCH_TEN]["accepted"])
-    assert accepted_10 == EPOCH_10_ACCEPTED
-
-
-def test_keyed_integrity_rejects_injected(roster_from_binary: dict):
-    """Forged frames must not inflate epoch 10 accepted."""
-    epochs = _epoch_map(roster_from_binary)
-    assert int(epochs[EPOCH_TEN]["accepted"]) == EPOCH_10_ACCEPTED
-    assert int(epochs[EPOCH_TEN]["accepted"]) < SURFACE_EPOCH_10
-
-
-def test_keyed_integrity_epoch30(roster_from_binary: dict):
-    """Epoch 30 remains published under hold co-presence with reduced tally."""
-    epochs = _epoch_map(roster_from_binary)
-    assert EPOCH_THIRTY in epochs
-    accepted = int(epochs[EPOCH_THIRTY]["accepted"])
-    assert BAND_LO <= accepted <= BAND_HI
-    assert accepted < BAND_CAP
-
-
-def test_keyed_integrity_epoch40(roster_from_binary: dict):
-    """Epoch 40 accepted matches restored attestation."""
-    epochs = _epoch_map(roster_from_binary)
-    assert int(epochs[40]["accepted"]) == EPOCH_40_ACCEPTED
-
-
-def test_replay_detection_epoch10(roster_from_binary: dict):
-    """Epoch 10 rejects replayed credentials."""
-    epochs = _epoch_map(roster_from_binary)
-    assert int(epochs[10]["accepted"]) == EPOCH_10_ACCEPTED
-
-
-def test_replay_detection_epoch20(roster_from_binary: dict):
-    """Epoch 20 rejects replayed credentials."""
-    epochs = _epoch_map(roster_from_binary)
-    assert int(epochs[20]["accepted"]) == EPOCH_20_ACCEPTED
-
-
-def test_replay_detection_epoch50(roster_from_binary: dict):
-    """Epoch 50 rejects replayed credentials."""
-    epochs = _epoch_map(roster_from_binary)
-    assert int(epochs[50]["accepted"]) == EPOCH_50_ACCEPTED
-
-
-def test_revocation_epoch20(roster_from_binary: dict):
-    """Epoch 20 reflects ledger revocation."""
-    epochs = _epoch_map(roster_from_binary)
-    assert int(epochs[20]["accepted"]) == EPOCH_20_ACCEPTED
-
-
-def test_hold_semantics_epoch30(roster_from_binary: dict):
-    """Epoch 30 publishes with held co-presence (exact restored accepted)."""
-    epochs = _epoch_map(roster_from_binary)
-    assert EPOCH_THIRTY in epochs
-    assert epochs[EPOCH_THIRTY]["profile"] == PROFILE_A
-    assert int(epochs[EPOCH_THIRTY]["accepted"]) == EPOCH_30_ACCEPTED
-
-
-def test_copresence_backends(roster_from_binary: dict):
-    """Matrix lanes active; off-matrix inactive; deep path not surface-inflated."""
-    statuses = _status_map(roster_from_binary)
-    assert statuses.get("mqtt") == STATUS_ACTIVE
-    assert statuses.get("lora") == STATUS_ACTIVE
-    assert statuses.get("uart") == STATUS_ACTIVE
-    assert statuses.get("canbus") == STATUS_INACTIVE
-    assert statuses.get("zigbee") == STATUS_INACTIVE
-    epochs = _epoch_map(roster_from_binary)
-    surface = json.loads(SURFACE.read_text(encoding="utf-8"))
-    surface_epochs = {int(e["id"]): e for e in surface["epochs"]}
-    assert int(epochs[10]["accepted"]) < int(surface_epochs[10]["accepted"])
-    assert int(epochs[20]["accepted"]) < int(surface_epochs[20]["accepted"])
-
-
-def test_all_epochs_present(roster_from_binary: dict):
-    """All five fleet epochs publish with correct profiles."""
-    epochs = _epoch_map(roster_from_binary)
-    assert set(epochs.keys()) == PUBLISHED_EPOCHS
-    assert epochs[10]["profile"] == PROFILE_A
-    assert epochs[20]["profile"] == PROFILE_A
-    assert epochs[30]["profile"] == PROFILE_A
-    assert epochs[40]["profile"] == PROFILE_B
-    assert epochs[50]["profile"] == PROFILE_B
-
-
-def test_revoked_lane_omits_epoch(roster_from_binary: dict):
-    """Epoch with a required lane only-revoked must not publish."""
-    epochs = _epoch_map(roster_from_binary)
-    assert EPOCH_TWENTY_FIVE not in epochs
-    assert set(epochs.keys()) == PUBLISHED_EPOCHS
-
-
-def test_hold_keeps_epoch_with_reduced_accepted(roster_from_binary: dict):
-    """Suspended co-presence keeps the epoch; accepted is only non-held trust."""
-    epochs = _epoch_map(roster_from_binary)
-    assert EPOCH_THIRTY in epochs
-    assert epochs[EPOCH_THIRTY]["profile"] == PROFILE_A
-    assert int(epochs[EPOCH_THIRTY]["accepted"]) == EPOCH_30_ACCEPTED
-    assert int(epochs[EPOCH_THIRTY]["accepted"]) < BAND_CAP
-
-
-def test_output_differs_from_surface(roster_from_binary: dict):
-    """Deep attestation must disagree with the surface fixture on every shared epoch."""
-    surface = json.loads(SURFACE.read_text(encoding="utf-8"))
-    assert roster_from_binary != surface
-    surface_epochs = {int(e["id"]): e for e in surface["epochs"]}
-    roster_epochs = _epoch_map(roster_from_binary)
-    for eid in sorted(PUBLISHED_EPOCHS):
-        assert eid in roster_epochs
-        assert int(roster_epochs[eid]["accepted"]) < int(surface_epochs[eid]["accepted"])
-
-
-def test_output_matches_rebuilt(roster_from_binary: dict):
-    """On-disk agent output must match rebuilt trusteval."""
-    assert OUTPUT.is_file(), f"missing {OUTPUT}"
-    on_disk = json.loads(OUTPUT.read_text(encoding="utf-8"))
-    assert on_disk == roster_from_binary
-    epochs = _epoch_map(on_disk)
-    assert int(epochs[10]["accepted"]) == EPOCH_10_ACCEPTED
-
-
-def test_attestation_stable_across_runs(roster_from_binary: dict):
-    """Second attest run must match the first and stay below surface tallies."""
-    second = _rebuild_and_attest(Path("/tmp") / "ceremony-ledger-second.json")
-    assert second == roster_from_binary
-    epochs = _epoch_map(second)
-    assert int(epochs[EPOCH_TEN]["accepted"]) < SURFACE_EPOCH_10
-    assert EPOCH_THIRTY in epochs
-
-
-def test_output_differs_from_jarcheck(roster_from_binary: dict):
-    """Agent output must differ from jarcheck and beat surface inflation."""
-    surface_poke = json.loads(SURFACE.read_text(encoding="utf-8"))
-    assert roster_from_binary != surface_poke
-    assert OUTPUT.is_file()
-    on_disk = json.loads(OUTPUT.read_text(encoding="utf-8"))
-    assert on_disk == roster_from_binary
-    assert on_disk != surface_poke
-    assert Path("/app/bin").joinpath("jarcheck").is_file()
-    epochs = _epoch_map(on_disk)
-    poke_epochs = {int(e["id"]): e for e in surface_poke["epochs"]}
-    assert int(epochs[10]["accepted"]) < int(poke_epochs[10]["accepted"])
-
-
-def test_dynamic_frame_injection():
-    """Inject a valid frame and verify the evaluator incorporates it."""
-    seg_path = SEGMENTS / "seg_99.bin"
-    assert DYNAMIC_FRAME.is_file(), "dynamic test frame fixture missing"
-    shutil.copy(DYNAMIC_FRAME, seg_path)
-    try:
-        roster = _rebuild_and_attest(DYNAMIC_OUT)
-        epochs = _epoch_map(roster)
-        assert int(epochs[10]["accepted"]) == EPOCH_10_ACCEPTED + 1, (
-            f"Expected {EPOCH_10_ACCEPTED + 1} after injection, got {epochs[10]['accepted']}"
+    for path, depth in expected.items():
+        assert entries_map[path]["chain_depth"] == depth, (
+            f"{path} expected depth {depth}, got {entries_map[path]['chain_depth']}"
         )
-    finally:
-        seg_path.unlink(missing_ok=True)
 
 
-def test_dynamic_injected_frame_rejected():
-    """Inject a forged frame and verify it is rejected."""
-    seg_path = SEGMENTS / "seg_98.bin"
-    assert DYNAMIC_INJECTED.is_file(), "dynamic injected frame fixture missing"
-    shutil.copy(DYNAMIC_INJECTED, seg_path)
-    try:
-        roster = _rebuild_and_attest(DYNAMIC_OUT)
-        epochs = _epoch_map(roster)
-        assert int(epochs[40]["accepted"]) == EPOCH_40_ACCEPTED, (
-            f"Expected {EPOCH_40_ACCEPTED} (injected rejected), got {epochs[40]['accepted']}"
+def test_cycle_chain_depth():
+    """Verify cycle entries have chain_depth equal to ring size (3) per R3."""
+    report = load_report()
+    entries_map = {e["path"]: e for e in report["entries"]}
+    for p in ["/srv/app/cycle/a", "/srv/app/cycle/b", "/srv/app/cycle/c",
+              "/srv/app/cycle/watcher"]:
+        assert entries_map[p]["chain_depth"] == 3, (
+            f"{p} cycle depth should be 3 (ring size), got {entries_map[p]['chain_depth']}"
         )
-    finally:
-        seg_path.unlink(missing_ok=True)
 
 
-def test_dynamic_legacy_binding_rejected():
-    """Payload-only legacy signatures must not raise accepted tallies."""
-    seg_path = SEGMENTS / "seg_97.bin"
-    assert DYNAMIC_LEGACY.is_file(), "dynamic legacy frame fixture missing"
-    shutil.copy(DYNAMIC_LEGACY, seg_path)
-    try:
-        roster = _rebuild_and_attest(DYNAMIC_OUT)
-        epochs = _epoch_map(roster)
-        assert int(epochs[40]["accepted"]) == EPOCH_40_ACCEPTED
-    finally:
-        seg_path.unlink(missing_ok=True)
+def test_dangling_chain_depth():
+    """Verify dangling entries have chain_depth of 0 per R2."""
+    report = load_report()
+    entries_map = {e["path"]: e for e in report["entries"]}
+    assert entries_map["/srv/app/tmp/orphan1"]["chain_depth"] == 0
+    assert entries_map["/srv/app/tmp/orphan2"]["chain_depth"] == 0
 
 
-def test_watermark_boundary_included(roster_from_binary: dict):
-    """On-watermark credential at epoch 10 contributes to accepted."""
-    epochs = _epoch_map(roster_from_binary)
-    assert int(epochs[EPOCH_TEN]["accepted"]) == EPOCH_10_ACCEPTED
+def test_cycle_final_target():
+    """Verify cycle entries record the back-edge target per R4."""
+    report = load_report()
+    entries_map = {e["path"]: e for e in report["entries"]}
+    assert entries_map["/srv/app/cycle/a"]["final_target"] == "/srv/app/cycle/a"
+    assert entries_map["/srv/app/cycle/b"]["final_target"] == "/srv/app/cycle/b"
+    assert entries_map["/srv/app/cycle/c"]["final_target"] == "/srv/app/cycle/c"
+    assert entries_map["/srv/app/cycle/watcher"]["final_target"] == "/srv/app/cycle/a"
 
 
-def test_integrity_count_exact(
-    roster_from_binary: dict, quarantine_from_binary: dict
-):
-    """Agent quarantine integrity set matches rebuilt trusteval."""
-    _ = roster_from_binary
-    agent = _load_quarantine(QUARANTINE)
-    assert _reason_keys(agent, REASON_INTEGRITY) == _reason_keys(
-        quarantine_from_binary, REASON_INTEGRITY
+def test_permission_entries_healthy():
+    """Verify permission-set entries are healthy with mask 510 (ignores bit 0)."""
+    report = load_report()
+    entries_map = {e["path"]: e for e in report["entries"]}
+    for p in ["/srv/app/opt/perm1", "/srv/app/opt/perm2", "/srv/app/opt/perm3"]:
+        assert entries_map[p]["status"] == "healthy", (
+            f"{p} should be healthy with mask 510, got {entries_map[p]['status']}"
+        )
+
+
+def test_session_taint_propagation():
+    """Verify session gets taint_dangling via forward propagation to orphan1."""
+    report = load_report()
+    entries_map = {e["path"]: e for e in report["entries"]}
+    taints = entries_map["/srv/app/tmp/session"]["taints"]
+    assert "taint_dangling" in taints, (
+        f"session should have taint_dangling, got {taints}"
     )
 
 
-def test_quarantine_structure(
-    roster_from_binary: dict, quarantine_from_binary: dict
-):
-    """Quarantine shape and reason vocabulary match rebuilt trusteval."""
-    _ = roster_from_binary
-    assert QUARANTINE.is_file(), f"missing {QUARANTINE}"
-    agent = _load_quarantine(QUARANTINE)
-    assert len(agent["rejected"]) == len(quarantine_from_binary["rejected"])
-    reasons = {e["reason"] for e in agent["rejected"]}
-    assert REASON_INTEGRITY in reasons
-    assert REASON_REPLAY in reasons
-    assert REASON_REVOKED in reasons
-    for entry in agent["rejected"]:
-        assert KEY_EPOCH in entry
-        assert KEY_LANE in entry
-        assert KEY_TS in entry
-        assert entry["reason"] in QUARANTINE_REASONS
+def test_dangling_self_taint():
+    """Verify dangling entries carry taint_dangling (self-taint per P5)."""
+    report = load_report()
+    entries_map = {e["path"]: e for e in report["entries"]}
+    for p in ["/srv/app/tmp/orphan1", "/srv/app/tmp/orphan2"]:
+        assert "taint_dangling" in entries_map[p]["taints"], (
+            f"{p} should self-taint with taint_dangling"
+        )
 
 
-def test_quarantine_integrity_failures(
-    roster_from_binary: dict, quarantine_from_binary: dict
-):
-    """integrity_failure rows match the rebuilt oracle set."""
-    _ = roster_from_binary
-    agent = _load_quarantine(QUARANTINE)
-    assert _reason_keys(agent, REASON_INTEGRITY) == _reason_keys(
-        quarantine_from_binary, REASON_INTEGRITY
+def test_cycle_self_taint():
+    """Verify cycle entries carry taint_cycle (self-taint per P5)."""
+    report = load_report()
+    entries_map = {e["path"]: e for e in report["entries"]}
+    for p in ["/srv/app/cycle/a", "/srv/app/cycle/b",
+              "/srv/app/cycle/c", "/srv/app/cycle/watcher"]:
+        assert "taint_cycle" in entries_map[p]["taints"], (
+            f"{p} should have taint_cycle"
+        )
+
+
+def test_healthy_no_taints():
+    """Verify healthy entries outside fault segments have no taints."""
+    report = load_report()
+    entries_map = {e["path"]: e for e in report["entries"]}
+    clean_paths = [
+        "/srv/app/lib/libcore.so",
+        "/srv/app/lib/deep/l1",
+        "/srv/app/share/docs",
+        "/srv/app/opt/perm1",
+    ]
+    for p in clean_paths:
+        assert entries_map[p]["taints"] == [], (
+            f"{p} should have empty taints, got {entries_map[p]['taints']}"
+        )
+
+
+def test_no_cross_segment_propagation():
+    """Verify taints do not propagate across segment boundaries per P4."""
+    report = load_report()
+    # All segment 1-5 and 8 entries must have no taints regardless of
+    # what happens in segments 6 and 7
+    for e in report["entries"]:
+        if e["segment_group"] in [1, 2, 3, 4, 5, 8]:
+            assert e["taints"] == [], (
+                f"{e['path']} (seg {e['segment_group']}) should have no taints"
+            )
+
+
+def test_scoring_healthy_prio1():
+    """Verify healthy priority-1 entries score 10.0 (no taint, weight 1.0)."""
+    report = load_report()
+    entries_map = {e["path"]: e for e in report["entries"]}
+    assert entries_map["/srv/app/lib/libcore.so"]["health_score"] == 10.0
+    assert entries_map["/srv/app/lib/deep/l1"]["health_score"] == 10.0
+
+
+def test_scoring_healthy_prio2():
+    """Verify healthy priority-2 entries score 8.0 (weight 0.8)."""
+    report = load_report()
+    entries_map = {e["path"]: e for e in report["entries"]}
+    assert entries_map["/srv/app/lib/libutil.so"]["health_score"] == 8.0
+    assert entries_map["/srv/app/data/cache"]["health_score"] == 8.0
+
+
+def test_scoring_healthy_prio3():
+    """Verify healthy priority-3 entries score 5.0 (weight 0.5)."""
+    report = load_report()
+    entries_map = {e["path"]: e for e in report["entries"]}
+    assert entries_map["/srv/app/etc/fallback"]["health_score"] == 5.0
+
+
+def test_scoring_session_tainted():
+    """Verify session entry score reflects taint penalty and priority weight."""
+    report = load_report()
+    entries_map = {e["path"]: e for e in report["entries"]}
+    # healthy base=10, taint_dangling penalty=-1, net=9, weight=0.8 -> 7.2
+    assert abs(entries_map["/srv/app/tmp/session"]["health_score"] - 7.2) < 0.01, (
+        f"session score should be 7.2, got "
+        f"{entries_map['/srv/app/tmp/session']['health_score']}"
     )
-    assert len(_reason_keys(agent, REASON_INTEGRITY)) >= 1
 
 
-def test_quarantine_replay_entries(
-    roster_from_binary: dict, quarantine_from_binary: dict
-):
-    """replay rows match the rebuilt oracle set."""
-    _ = roster_from_binary
-    agent = _load_quarantine(QUARANTINE)
-    assert _reason_keys(agent, REASON_REPLAY) == _reason_keys(
-        quarantine_from_binary, REASON_REPLAY
+def test_scoring_dangling_tainted():
+    """Verify dangling entries score with base, self-taint penalty, and weight."""
+    report = load_report()
+    entries_map = {e["path"]: e for e in report["entries"]}
+    # dangling base=5, taint_dangling=-1, net=4, weight=0.5 -> 2.0
+    assert abs(entries_map["/srv/app/tmp/orphan1"]["health_score"] - 2.0) < 0.01
+    assert abs(entries_map["/srv/app/tmp/orphan2"]["health_score"] - 2.0) < 0.01
+
+
+def test_scoring_cycle_prio1():
+    """Verify cycle priority-1 entries score with base and self-taint."""
+    report = load_report()
+    entries_map = {e["path"]: e for e in report["entries"]}
+    # cycle base=2, taint_cycle=-1.5, net=0.5, weight=1.0 -> 0.5
+    for p in ["/srv/app/cycle/a", "/srv/app/cycle/b", "/srv/app/cycle/c"]:
+        assert abs(entries_map[p]["health_score"] - 0.5) < 0.01, (
+            f"{p} score should be 0.5, got {entries_map[p]['health_score']}"
+        )
+
+
+def test_scoring_watcher_cycle_prio2():
+    """Verify watcher (cycle, prio 2) scores with priority weight 0.8."""
+    report = load_report()
+    entries_map = {e["path"]: e for e in report["entries"]}
+    # cycle base=2, taint_cycle=-1.5, net=0.5, weight=0.8 -> 0.4
+    assert abs(entries_map["/srv/app/cycle/watcher"]["health_score"] - 0.4) < 0.01, (
+        f"watcher score should be 0.4, got "
+        f"{entries_map['/srv/app/cycle/watcher']['health_score']}"
     )
-    assert len(_reason_keys(agent, REASON_REPLAY)) >= 1
 
 
-def test_quarantine_revoked_entries(
-    roster_from_binary: dict, quarantine_from_binary: dict
-):
-    """revoked rows match the rebuilt oracle set."""
-    _ = roster_from_binary
-    agent = _load_quarantine(QUARANTINE)
-    assert _reason_keys(agent, REASON_REVOKED) == _reason_keys(
-        quarantine_from_binary, REASON_REVOKED
+def test_segment_count():
+    """Verify all 8 segments are reported."""
+    report = load_report()
+    assert len(report["segments"]) == 8
+
+
+def test_segment_ids_ordered():
+    """Verify segments are sorted by ID ascending."""
+    report = load_report()
+    ids = [s["id"] for s in report["segments"]]
+    assert ids == list(range(1, 9))
+
+
+def test_segment_1_aggregate():
+    """Verify segment 1 (all healthy, mixed priority) has score 1.0."""
+    report = load_report()
+    seg_map = {s["id"]: s for s in report["segments"]}
+    assert abs(seg_map[1]["aggregate_score"] - 1.0) < 0.001
+
+
+def test_segment_2_aggregate():
+    """Verify segment 2 (all healthy, includes prio 3) has score 1.0."""
+    report = load_report()
+    seg_map = {s["id"]: s for s in report["segments"]}
+    # sum_scores = 10+10+5=25, sum_max = 10+10+5=25, ratio=1.0
+    assert abs(seg_map[2]["aggregate_score"] - 1.0) < 0.001
+
+
+def test_segment_6_aggregate():
+    """Verify transient segment score with tainted and dangling entries."""
+    report = load_report()
+    seg_map = {s["id"]: s for s in report["segments"]}
+    # sum_scores = 7.2+2.0+2.0=11.2, sum_max = 8+5+5=18, ratio=0.6222
+    expected = 11.2 / 18.0
+    assert abs(seg_map[6]["aggregate_score"] - expected) < 0.001, (
+        f"Segment 6 score should be ~{expected:.4f}, "
+        f"got {seg_map[6]['aggregate_score']}"
     )
-    assert len(_reason_keys(agent, REASON_REVOKED)) >= 1
 
 
-def test_quarantine_matches_rebuilt(
-    roster_from_binary: dict, quarantine_from_binary: dict
-):
-    """On-disk quarantine equals rebuilt trusteval quarantine."""
-    _ = roster_from_binary
-    agent = _load_quarantine(QUARANTINE)
-    assert agent == quarantine_from_binary
+def test_segment_7_aggregate():
+    """Verify circular-deps segment score with 4 cycle entries."""
+    report = load_report()
+    seg_map = {s["id"]: s for s in report["segments"]}
+    # sum_scores = 0.5+0.5+0.5+0.4=1.9, sum_max = 10+10+10+8=38, ratio=0.05
+    expected = 1.9 / 38.0
+    assert abs(seg_map[7]["aggregate_score"] - expected) < 0.001, (
+        f"Segment 7 score should be ~{expected:.4f}, "
+        f"got {seg_map[7]['aggregate_score']}"
+    )
 
 
-def test_fixtures_untouched():
-    """Seed and surface fixtures remain as shipped."""
-    data = json.loads(SEED.read_text(encoding="utf-8"))
-    assert data.get("seed") == SEED_NAME
-    assert data.get("preserve") is True
-    surface = json.loads(SURFACE.read_text(encoding="utf-8"))
-    assert surface.get("version") == SCHEMA_VERSION
-    assert int(surface["epochs"][0]["accepted"]) == SURFACE_EPOCH_10
-    audit = (FIXTURES / "pre_incident_audit.log").read_text(encoding="utf-8")
-    assert SAMPLE_A in audit
-    assert SAMPLE_B in audit
-    assert SAMPLE_C in audit
-    assert len(re.findall(r"seed_hex=[0-9a-f]{8}", audit)) >= 3
-    assert len(re.findall(r"sk_hex=[0-9a-f]{64}", audit)) >= 3
-    assert len(re.findall(r"pubkey_hex=[0-9a-f]{64}", audit)) >= 3
-    assert len(re.findall(r"sig_hex=[0-9a-f]{128}", audit)) >= 3
-    assert len(re.findall(r"message_hex=[0-9a-f]+", audit)) >= 3
-    assert "key_dom_hex=" in audit
-    assert "domain_ascii=WAUV" in audit
+def test_segment_healthy_verdicts():
+    """Verify segments scoring >= threshold have verdict healthy."""
+    report = load_report()
+    seg_map = {s["id"]: s for s in report["segments"]}
+    for seg_id in [1, 2, 3, 4, 5, 8]:
+        assert seg_map[seg_id]["verdict"] == "healthy", (
+            f"Segment {seg_id} should be healthy, got {seg_map[seg_id]['verdict']}"
+        )
+
+
+def test_segment_6_verdict():
+    """Verify segment 6 is degraded (score between threshold*0.5 and threshold)."""
+    report = load_report()
+    seg_map = {s["id"]: s for s in report["segments"]}
+    assert seg_map[6]["verdict"] == "degraded"
+
+
+def test_segment_7_verdict():
+    """Verify segment 7 is critical (score below threshold*0.5=0.375)."""
+    report = load_report()
+    seg_map = {s["id"]: s for s in report["segments"]}
+    assert seg_map[7]["verdict"] == "critical"
+
+
+def test_fleet_score_weighted():
+    """Verify fleet_score is entry-count-weighted average of segment scores."""
+    report = load_report()
+    seg_map = {s["id"]: s for s in report["segments"]}
+    numerator = sum(seg_map[i]["aggregate_score"] * seg_map[i]["total"]
+                    for i in range(1, 9))
+    denominator = sum(seg_map[i]["total"] for i in range(1, 9))
+    expected = numerator / denominator
+    assert abs(report["summary"]["fleet_score"] - expected) < 0.001, (
+        f"Fleet score mismatch: expected {expected:.4f}, "
+        f"got {report['summary']['fleet_score']}"
+    )
+
+
+def test_fleet_score_value():
+    """Verify fleet_score computed value is approximately 0.8409."""
+    report = load_report()
+    # (1.0*4 + 1.0*3 + 1.0*3 + 1.0*2 + 1.0*6 + (11.2/18)*3 + (1.9/38)*4 + 1.0*6)/31
+    seg6_score = 11.2 / 18.0
+    seg7_score = 1.9 / 38.0
+    expected = (4 + 3 + 3 + 2 + 6 + seg6_score * 3 + seg7_score * 4 + 6) / 31.0
+    assert abs(report["summary"]["fleet_score"] - expected) < 0.001, (
+        f"Expected fleet_score ~{expected:.4f}, "
+        f"got {report['summary']['fleet_score']}"
+    )
+
+
+def test_segment_healthy_unhealthy_counts():
+    """Verify segment healthy/unhealthy counts reflect classification only."""
+    report = load_report()
+    seg_map = {s["id"]: s for s in report["segments"]}
+    # Segment 6: 1 healthy (session), 2 unhealthy (dangling)
+    assert seg_map[6]["healthy"] == 1
+    assert seg_map[6]["unhealthy"] == 2
+    # Segment 7: 0 healthy, 4 unhealthy (all cycle)
+    assert seg_map[7]["healthy"] == 0
+    assert seg_map[7]["unhealthy"] == 4
+    # Segment 1: 4 healthy, 0 unhealthy
+    assert seg_map[1]["healthy"] == 4
+    assert seg_map[1]["unhealthy"] == 0
+
+
+def test_metadata_config_source():
+    """Verify config_source reflects the authoritative config file."""
+    report = load_report()
+    assert report["metadata"]["config_source"] == "health_config.json"
+
+
+def test_metadata_max_depth():
+    """Verify metadata max_chain_depth from config."""
+    report = load_report()
+    assert report["metadata"]["max_chain_depth"] == 8
+
+
+def test_metadata_permission_mask():
+    """Verify metadata permission_mask from config."""
+    report = load_report()
+    assert report["metadata"]["permission_mask"] == 510
+
+
+def test_metadata_score_threshold():
+    """Verify metadata score_threshold from config."""
+    report = load_report()
+    assert abs(report["metadata"]["score_threshold"] - 0.75) < 0.001
+
+
+def test_metadata_scoring_mode():
+    """Verify metadata scoring_mode from config."""
+    report = load_report()
+    assert report["metadata"]["scoring_mode"] == "weighted"
+
+
+def test_metadata_timestamp():
+    """Verify metadata timestamp from manifest scan_timestamp."""
+    report = load_report()
+    assert report["metadata"]["timestamp"] == "2024-09-15T00:00:00Z"
+
+
+def test_entries_preserve_manifest_order():
+    """Verify entries array follows manifest order, not resolution order."""
+    report = load_report()
+    paths = [e["path"] for e in report["entries"]]
+    assert paths[0] == "/srv/app/lib/libcore.so"
+    assert paths[3] == "/srv/app/bin/app"
+    assert paths[12] == "/srv/app/lib/deep/l1"
+    assert paths[18] == "/srv/app/tmp/session"
+    assert paths[-1] == "/srv/app/opt/ref3"
+
+
+def test_entries_have_taints_field():
+    """Verify every entry includes the taints array field."""
+    report = load_report()
+    for e in report["entries"]:
+        assert "taints" in e, f"Entry {e['path']} missing taints field"
+        assert isinstance(e["taints"], list), (
+            f"Entry {e['path']} taints should be array"
+        )
+
+
+def test_health_score_precision():
+    """Verify health_score is rounded to 2 decimal places."""
+    report = load_report()
+    for e in report["entries"]:
+        score = e["health_score"]
+        rounded = round(score, 2)
+        assert abs(score - rounded) < 0.001, (
+            f"{e['path']} score {score} not rounded to 2 decimals"
+        )
+
+
+def test_aggregate_score_precision():
+    """Verify segment aggregate_score is rounded to 4 decimal places."""
+    report = load_report()
+    for s in report["segments"]:
+        score = s["aggregate_score"]
+        rounded = round(score, 4)
+        assert abs(score - rounded) < 0.00001, (
+            f"Segment {s['id']} aggregate {score} not rounded to 4 decimals"
+        )
+
+
+def test_binary_exits_zero():
+    """Verify the binary exits with code 0 on valid input."""
+    result = subprocess.run(
+        ["/app/bin/symlink-health", "--manifest", "/app/data/manifest.json",
+         "--config", "/app/config", "--output", "/tmp/exit_test.json"],
+        capture_output=True, timeout=30
+    )
+    assert result.returncode == 0
+
+
+def test_deterministic_output():
+    """Verify running twice produces identical output."""
+    for i in range(2):
+        subprocess.run(
+            ["/app/bin/symlink-health", "--manifest", "/app/data/manifest.json",
+             "--config", "/app/config", "--output", f"/tmp/det_{i}.json"],
+            capture_output=True, timeout=30
+        )
+    with open("/tmp/det_0.json") as f:
+        r1 = json.load(f)
+    with open("/tmp/det_1.json") as f:
+        r2 = json.load(f)
+    assert r1 == r2, "Non-deterministic output"
+
+
+def test_summary_consistency():
+    """Verify summary counts match actual entry status distribution."""
+    report = load_report()
+    counts = {}
+    for e in report["entries"]:
+        counts[e["status"]] = counts.get(e["status"], 0) + 1
+    assert counts.get("healthy", 0) == report["summary"]["healthy"]
+    assert counts.get("dangling", 0) == report["summary"]["dangling"]
+    assert counts.get("cycle", 0) == report["summary"]["cycles"]
+    assert counts.get("excessive_depth", 0) == report["summary"]["excessive_depth"]
+    assert counts.get("permission_fault", 0) == report["summary"]["permission_fault"]

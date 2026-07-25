@@ -1,0 +1,55 @@
+{
+    "version": "2.1",
+    "scan_timestamp": "2024-09-15T00:00:00Z",
+    "filesystem": "/srv/app",
+    "segment_names": {
+        "1": "core-libs",
+        "2": "config-chain",
+        "3": "runtime",
+        "4": "shared",
+        "5": "deep-resolve",
+        "6": "transient",
+        "7": "circular-deps",
+        "8": "permission-set"
+    },
+    "symlinks": [
+        {"path": "/srv/app/lib/libcore.so", "target": "/srv/app/lib/libcore.so.3", "permissions": 493, "target_exists": true, "segment_group": 1, "priority": 1},
+        {"path": "/srv/app/lib/libcore.so.3", "target": "/srv/app/lib/libcore.so.3.2.1", "permissions": 493, "target_exists": true, "segment_group": 1, "priority": 1},
+        {"path": "/srv/app/lib/libutil.so", "target": "/srv/app/lib/libutil.so.1", "permissions": 493, "target_exists": true, "segment_group": 1, "priority": 2},
+        {"path": "/srv/app/bin/app", "target": "/srv/app/bin/app-v2.4", "permissions": 493, "target_exists": true, "segment_group": 1, "priority": 2},
+
+        {"path": "/srv/app/etc/config", "target": "/srv/app/etc/config.d/active", "permissions": 420, "target_exists": true, "segment_group": 2, "priority": 1},
+        {"path": "/srv/app/etc/config.d/active", "target": "/srv/app/etc/config.d/v2.4", "permissions": 420, "target_exists": true, "segment_group": 2, "priority": 1},
+        {"path": "/srv/app/etc/fallback", "target": "/srv/app/etc/config.d/v1.0", "permissions": 420, "target_exists": true, "segment_group": 2, "priority": 3},
+
+        {"path": "/srv/app/log/current", "target": "/srv/app/log/2024-09-15", "permissions": 420, "target_exists": true, "segment_group": 3, "priority": 1},
+        {"path": "/srv/app/data/cache", "target": "/srv/app/data/cache-warm", "permissions": 448, "target_exists": true, "segment_group": 3, "priority": 2},
+        {"path": "/srv/app/run/socket", "target": "/srv/app/run/app.sock", "permissions": 448, "target_exists": true, "segment_group": 3, "priority": 1},
+
+        {"path": "/srv/app/share/docs", "target": "/srv/app/share/docs-v2", "permissions": 420, "target_exists": true, "segment_group": 4, "priority": 1},
+        {"path": "/srv/app/share/man", "target": "/srv/app/share/man-v2", "permissions": 420, "target_exists": true, "segment_group": 4, "priority": 2},
+
+        {"path": "/srv/app/lib/deep/l1", "target": "/srv/app/lib/deep/l2", "permissions": 493, "target_exists": true, "segment_group": 5, "priority": 1},
+        {"path": "/srv/app/lib/deep/l2", "target": "/srv/app/lib/deep/l3", "permissions": 493, "target_exists": true, "segment_group": 5, "priority": 1},
+        {"path": "/srv/app/lib/deep/l3", "target": "/srv/app/lib/deep/l4", "permissions": 493, "target_exists": true, "segment_group": 5, "priority": 1},
+        {"path": "/srv/app/lib/deep/l4", "target": "/srv/app/lib/deep/l5", "permissions": 493, "target_exists": true, "segment_group": 5, "priority": 1},
+        {"path": "/srv/app/lib/deep/l5", "target": "/srv/app/lib/deep/l6", "permissions": 493, "target_exists": true, "segment_group": 5, "priority": 1},
+        {"path": "/srv/app/lib/deep/l6", "target": "/srv/app/lib/deep/final", "permissions": 493, "target_exists": true, "segment_group": 5, "priority": 1},
+
+        {"path": "/srv/app/tmp/session", "target": "/srv/app/tmp/orphan1", "permissions": 420, "target_exists": true, "segment_group": 6, "priority": 2},
+        {"path": "/srv/app/tmp/orphan1", "target": "/srv/app/tmp/deleted-file", "permissions": 420, "target_exists": false, "segment_group": 6, "priority": 3},
+        {"path": "/srv/app/tmp/orphan2", "target": "/srv/app/tmp/removed-dir/gone", "permissions": 420, "target_exists": false, "segment_group": 6, "priority": 3},
+
+        {"path": "/srv/app/cycle/a", "target": "/srv/app/cycle/b", "permissions": 493, "target_exists": true, "segment_group": 7, "priority": 1},
+        {"path": "/srv/app/cycle/b", "target": "/srv/app/cycle/c", "permissions": 493, "target_exists": true, "segment_group": 7, "priority": 1},
+        {"path": "/srv/app/cycle/c", "target": "/srv/app/cycle/a", "permissions": 493, "target_exists": true, "segment_group": 7, "priority": 1},
+        {"path": "/srv/app/cycle/watcher", "target": "/srv/app/cycle/a", "permissions": 493, "target_exists": true, "segment_group": 7, "priority": 2},
+
+        {"path": "/srv/app/opt/perm1", "target": "/srv/app/opt/ref1", "permissions": 493, "target_exists": true, "segment_group": 8, "priority": 1},
+        {"path": "/srv/app/opt/ref1", "target": "/srv/app/opt/end1", "permissions": 492, "target_exists": true, "segment_group": 8, "priority": 1},
+        {"path": "/srv/app/opt/perm2", "target": "/srv/app/opt/ref2", "permissions": 420, "target_exists": true, "segment_group": 8, "priority": 1},
+        {"path": "/srv/app/opt/ref2", "target": "/srv/app/opt/end2", "permissions": 421, "target_exists": true, "segment_group": 8, "priority": 1},
+        {"path": "/srv/app/opt/perm3", "target": "/srv/app/opt/ref3", "permissions": 448, "target_exists": true, "segment_group": 8, "priority": 1},
+        {"path": "/srv/app/opt/ref3", "target": "/srv/app/opt/end3", "permissions": 449, "target_exists": true, "segment_group": 8, "priority": 1}
+    ]
+}

@@ -3,23 +3,15 @@ version = "2.0"
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
+category = "games"
+subcategories = []
 difficulty = "hard"
-category = "security"
-subcategories = ["tool_specific"]
+codebase_size = "minimal"
 number_of_milestones = 0
-codebase_size = "small"
-languages = ["rust"]
-tags = ["webauthn", "trust-authority", "ed25519", "admission", "revocation", "replay"]
-expert_time_estimate_min = 180
-junior_time_estimate_min = 480
-
-[verifier]
-timeout_sec = 900
-
-[agent]
-timeout_sec = 1800
-# Integer UID (not "65534"): Daytona uses `su` and only resolves numeric UIDs via getent.
-user = 65534
+languages = ["c++", "bash"]
+tags = ["simulation", "scoring-rules", "zone-aggregation", "state-machine"]
+expert_time_estimate_min = 90.0
+junior_time_estimate_min = 180.0
 
 [environment]
 allow_internet = false
@@ -27,6 +19,9 @@ build_timeout_sec = 600
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-gpus = 0
-gpu_types = []
-docker_flags = []
+
+[agent]
+timeout_sec = 1800
+
+[verifier]
+timeout_sec = 900

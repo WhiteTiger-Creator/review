@@ -1,0 +1,9 @@
+{
+    "max_chain_depth": 8,
+    "check_permissions": true,
+    "detect_cycles": true,
+    "permission_mask": 510,
+    "score_threshold": 0.75,
+    "scoring_mode": "weighted",
+    "propagation_enabled": true
+}
