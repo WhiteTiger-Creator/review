@@ -1,0 +1,8 @@
+{
+  "seed": "0x0C1F1A57",
+  "variants": [
+    "supersession",
+    "env-order",
+    "mount-shadow"
+  ]
+}

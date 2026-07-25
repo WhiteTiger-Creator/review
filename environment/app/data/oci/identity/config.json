@@ -1,0 +1,74 @@
+{
+  "ociVersion": "1.0.2",
+  "root": {
+    "path": "rootfs",
+    "readonly": true
+  },
+  "process": {
+    "cwd": "/",
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "HARBORSEAL_SERVICE=identity-api",
+      "OPENSSL_CONF=/etc/ssl/openssl.cnf",
+      "OPENSSL_CONF=/ignored.conf"
+    ],
+    "user": {
+      "uid": 0,
+      "gid": 0,
+      "additionalGids": [
+        100100
+      ]
+    },
+    "noNewPrivileges": true,
+    "capabilities": {}
+  },
+  "mounts": [
+    {
+      "destination": "/etc/ssl/certs/harborseal-ca.pem",
+      "type": "bind",
+      "source": "/app/data/certs/shared-ca/ca.pem",
+      "options": [
+        "rbind",
+        "ro"
+      ]
+    },
+    {
+      "destination": "/etc/ssl/certs/service.pem",
+      "type": "bind",
+      "source": "/app/data/certs/service-certs/identity.crt",
+      "options": [
+        "rbind",
+        "ro"
+      ]
+    }
+  ],
+  "linux": {
+    "namespaces": [
+      {
+        "type": "mount"
+      }
+    ],
+    "uidMappings": [
+      {
+        "containerID": 0,
+        "hostID": 100100,
+        "size": 1
+      }
+    ],
+    "gidMappings": [
+      {
+        "containerID": 0,
+        "hostID": 100100,
+        "size": 1
+      }
+    ],
+    "maskedPaths": [],
+    "readonlyPaths": [
+      "/proc"
+    ]
+  },
+  "annotations": {
+    "io.harborseal.service/id": "identity-api",
+    "io.harborseal.policy/generation": "v2"
+  }
+}

@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SERVICE=""
+ENVIRONMENT="staging"
+HOST_CLASS="harborseal"
+AT="2026-04-01T00:00:00Z"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --service) SERVICE="$2"; shift 2 ;;
+    --environment) ENVIRONMENT="$2"; shift 2 ;;
+    --host-class) HOST_CLASS="$2"; shift 2 ;;
+    --at) AT="$2"; shift 2 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+python3 - <<'PY' "${SERVICE}" "${ENVIRONMENT}" "${HOST_CLASS}" "${AT}"
+import json, sys
+from pathlib import Path
+svc, env, host, at = sys.argv[1:5]
+data = json.loads(Path("/app/data/report/decision-index.json").read_text())
+hits = [e for e in data["events"] if e.get("decision_type") == "provider_profile"
+        and (e.get("environment") in (None, env))
+        and (e.get("host_class") in (None, host))]
+print(json.dumps({"service": svc, "matches": hits[:3]}, indent=2))
+PY
