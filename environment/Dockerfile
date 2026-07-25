@@ -1,18 +1,41 @@
-FROM public.ecr.aws/docker/library/gcc:13-bookworm@sha256:930f2ebe239275fa67226654cb79273ea34eee672ae61c8a39f689c37fb7ac5c
+FROM golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8
+ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update -qq \
-    && apt-get install -y --no-install-recommends \
-         asciinema ca-certificates make python3 python3-pytest tmux \
-    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        asciinema \
+        ca-certificates \
+        g++ \
+        make \
+        python3 \
+        python3-pip \
+        python3-venv \
+        sqlite3 \
+        tmux; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*
+
+ENV TEST_VENV=/opt/test-venv
+ENV PATH="${TEST_VENV}/bin:${PATH}"
+
+RUN set -eux; \
+    python3 -m venv "${TEST_VENV}"; \
+    "${TEST_VENV}/bin/pip" install --no-cache-dir \
+        pytest==8.4.1 \
+        pytest-json-ctrf==0.3.5 \
+        cryptography==43.0.3
+
+ENV GOFLAGS=-mod=mod
+ENV GOTOOLCHAIN=local
 
 WORKDIR /app
-COPY lyap.c /app/lyap.c
-COPY build.sh /app/build.sh
-COPY run.sh /app/run.sh
-COPY docs /app/docs
-COPY data /app/data
-RUN chmod 0755 /app/build.sh /app/run.sh
+
+RUN mkdir -p /app/output /app/trust-remediator/build
+
+COPY data/              /app/data/
+COPY operator_handbook/ /app/operator_handbook/
+COPY trust-remediator/  /app/trust-remediator/
+
+CMD ["/bin/bash"]
