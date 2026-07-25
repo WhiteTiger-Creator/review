@@ -1,31 +1,5 @@
-A build tool resolves a stream of scenarios, one version per queried module.
-`main.go` wires I/O and `make` builds `resolve` (stdin→stdout); complete
-`resolveStream` in `select.go`. `docs/` has the exact grammar. An `INDEX` row
-lists a module's published versions; it is informational, never bounding
-selection.
+Commission and activate the managed `harbor-relay` service under `/app` for the sealed operating window. This is a system configuration and service-publication job: derive the authorized deployment site, Unix socket, route set, and capacity settings from `/app/docs/service-commissioning-corpus.manifest`, the public contracts in `/app/docs`, the request set in `/app/fixtures/requests`, the `strace` and `lsof` operating records in `/app/evidence`, and one catalog snapshot obtained with `/app/bin/catalog-query --batch-file /app/share/deployment-catalog.batch`. The platform-owned relay and catalog-query binaries, their source assets, and `/opt/harbor/operations.db` are immutable and must not be modified or rebuilt.
 
-A module's answer is its selected version, `NONE` if it never joins the main
-module's reachable set, or `CONFLICT` if reachable but over-constrained. Rules
-interact:
+Install one compliant service generation by replacing only `/app/etc/harbor-relay/relay.conf`, `/app/etc/harbor-relay/limits.conf`, `/app/etc/harbor-relay/routes.map`, `/app/var/deployment-audit.db`, and `/app/var/deployment-manifest.json`. Leave `/app/var/harbor-deployment.lock` as an empty regular coordination file with mode `0600`; it is not publication residue and is excluded from the five-entry publication inventory. Follow the exact configuration, SQLite, JSON, ordering, provenance, decision-profile, digest, and mode contracts in `/app/docs/relay-config-format.md`, `/app/docs/audit-database-contract.md`, and `/app/docs/operator-commissioning-contract.md`. Decision rows 2–7 use domain exactly `socket`, and the EACCES rejection row uses evidence exactly `last=EACCES`. Text and JSON files use mode `0640`, the audit database uses `0600`, and no temporary, backup, journal, compiler, or build artifacts may remain.
 
-- **Version-conditioned edges.** A requirement or ceiling on version U of a
-  module applies only once its selection reaches U; the main module's edges
-  always apply.
-- **Floors, not pins.** A `LOCK` and any carried version are floors: each raises
-  a selection, never caps it, inert at or below the otherwise selected version.
-- **Session carry.** Scenarios share tables persisting until a `RESET`. Each
-  module's selected version becomes its floor in every later scenario; a module
-  never built carries nothing.
-- **Ceilings and conflict.** A `CAP` bounds a module from above. Its lowest
-  in-force ceiling is compared with the max of its floors and in-force
-  requirement edges. Exceeding it makes the module over-constrained
-  (`CONFLICT`), contributing no edges, so modules reachable only through it are
-  `NONE`.
-- **Conflict scars.** A conflicted module lifts no floor; its binding ceiling is
-  remembered session-wide, ratcheting only lower and re-imposed every later
-  scenario until `RESET`, even absent a `CAP`. A carried floor above a scar keeps
-  re-conflicting.
-
-Per scenario emit one line per queried module, ascending module order:
-`<scenario-id>|<module>|<version>`, version verbatim (or `NONE`/`CONFLICT`);
-nothing else.
+The installed generation must be accepted by the existing relay and operate as a local Unix-domain service. Startup must bind the selected socket, every request listed in `/app/fixtures/requests/replay-set.manifest` must reach its commissioned route including normalized query strings and dependency-added routes, matched routes must return 200, an unknown route must return 404, and a body above the commissioned limit must return 413. All documents, operating records, fixtures, catalog assets, binaries, and bootstrap configuration fixtures are immutable.

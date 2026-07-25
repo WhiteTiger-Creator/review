@@ -1,0 +1,10 @@
+# snapshot=before captured_at=2026-06-18T03:41:45Z complete=yes
+COMMAND PID USER FD TYPE NAME
+harbor-old 1800 relayops 7u unix /app/run/harbor-relay/recovery.sock (LISTEN)
+harbor-ctl 1912 relayops 7u unix /app/run/harbor-relay/control.sock (LISTEN)
+# snapshot=after captured_at=2026-06-18T03:42:20Z complete=yes
+COMMAND PID USER FD TYPE NAME
+harbor-ctl 1912 relayops 7u unix /app/run/harbor-relay/control.sock (LISTEN)
+quay-watch 1984 relayops 5u IPv4 TCP 127.0.0.1:4818 (LISTEN)
+metricsd 2020 relayops 6u unix /app/run/harbor-relay/metrics.sock (LISTEN)
+relay-log 2091 relayops 3w REG /app/var/relay.log

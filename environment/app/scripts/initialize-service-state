@@ -1,0 +1,8 @@
+#!/bin/bash
+set -euo pipefail
+install -m 0640 /app/fixtures/bootstrap-config/relay.conf /app/etc/harbor-relay/relay.conf
+install -m 0640 /app/fixtures/bootstrap-config/limits.conf /app/etc/harbor-relay/limits.conf
+install -m 0640 /app/fixtures/bootstrap-config/routes.map /app/etc/harbor-relay/routes.map
+rm -f /app/var/deployment-audit.db /app/var/deployment-manifest.json /app/var/harbor-deployment.lock
+rm -f /app/etc/harbor-relay/*.tmp /app/etc/harbor-relay/*.bak /app/var/*.tmp /app/var/*.bak /app/var/*-journal /app/var/*-wal /app/var/*-shm
+rm -f /app/run/harbor-relay/*.sock
