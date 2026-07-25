@@ -4,24 +4,27 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "security"
-subcategories = ["api_integration"]
+category = "system-administration"
+subcategories = []
 number_of_milestones = 0
 codebase_size = "small"
-languages = ["ruby", "shell", "yaml"]
-tags = ["supply-chain-security", "gpg-attestation", "archive-security", "secret-scanning", "json-signatures"]
-expert_time_estimate_min = 180
-junior_time_estimate_min = 420
+languages = ["go"]
+tags = ["go", "restart-budget", "digest", "replay", "convergence"]
+expert_time_estimate_min = 60
+junior_time_estimate_min = 180
+
+[verifier]
+timeout_sec = 1800
 
 [agent]
 timeout_sec = 1800
 
-[verifier]
-timeout_sec = 900
-
 [environment]
-build_timeout_sec = 1200
+allow_internet = false
+build_timeout_sec = 600
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-allow_internet = false
+docker_flags = []
+gpus = 0
+gpu_types = []

@@ -1,10 +1,14 @@
-tests/
-solution/
-.git/
+**/*.orig
+internal/
+.git
 .gitignore
+bin/
+**/bin/wave_sched
 **/__pycache__/
 **/*.pyc
 **/.pytest_cache/
 **/.mypy_cache/
 **/.ruff_cache/
 **/node_modules/
+solution/
+tests/
