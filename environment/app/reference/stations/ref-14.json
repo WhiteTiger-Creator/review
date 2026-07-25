@@ -1,1 +1,0 @@
-{"schema_version":1,"global":{"datum_m":0.14,"scale":1.0},"regions":{},"stations":[{"id":"ref-14","latitude_deg":10,"longitude_deg":12,"constituents":[{"name":"SSA","amplitude_m":0.44,"phase_deg":238,"required":true}]}]}

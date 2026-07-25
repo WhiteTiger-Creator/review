@@ -1,0 +1,453 @@
+[
+ {
+  "id": "pv00",
+  "placement": "8/3r4/m7/h3R3/4E3/8/8/8",
+  "mover": "g",
+  "expected": 9360,
+  "piv_res": true,
+  "piv_shallow": true,
+  "piv_freeze": true,
+  "piv_trap": true
+ },
+ {
+  "id": "pv01",
+  "placement": "8/6r1/6R1/4rC1c/8/8/8/8",
+  "mover": "s",
+  "expected": 18232,
+  "piv_res": true,
+  "piv_shallow": true,
+  "piv_freeze": true,
+  "piv_trap": true
+ },
+ {
+  "id": "pv02",
+  "placement": "8/8/8/1M1r4/8/8/2R5/2h5",
+  "mover": "s",
+  "expected": 9154,
+  "piv_res": true,
+  "piv_shallow": true,
+  "piv_freeze": true,
+  "piv_trap": false
+ },
+ {
+  "id": "pv03",
+  "placement": "2r5/8/4E3/8/1eR5/8/8/8",
+  "mover": "g",
+  "expected": 4837,
+  "piv_res": true,
+  "piv_shallow": true,
+  "piv_freeze": true,
+  "piv_trap": true,
+  "spot": true
+ },
+ {
+  "id": "pv04",
+  "placement": "8/8/8/3c4/4e3/2HR4/r7/8",
+  "mover": "s",
+  "expected": 16557,
+  "piv_res": true,
+  "piv_shallow": true,
+  "piv_freeze": true,
+  "piv_trap": true
+ },
+ {
+  "id": "pv05",
+  "placement": "8/1R6/8/e2r4/4R3/8/8/8",
+  "mover": "s",
+  "expected": 8447,
+  "piv_res": true,
+  "piv_shallow": true,
+  "piv_freeze": false,
+  "piv_trap": true
+ },
+ {
+  "id": "pv06",
+  "placement": "8/8/8/3R4/8/3r4/4d3/7C",
+  "mover": "g",
+  "expected": 7215,
+  "piv_res": true,
+  "piv_shallow": true,
+  "piv_freeze": true,
+  "piv_trap": true
+ },
+ {
+  "id": "pv07",
+  "placement": "8/8/8/3d4/2r5/1R6/R1h5/3H4",
+  "mover": "s",
+  "expected": 25577,
+  "piv_res": true,
+  "piv_shallow": true,
+  "piv_freeze": true,
+  "piv_trap": true
+ },
+ {
+  "id": "pv08",
+  "placement": "8/8/8/4M1R1/8/7r/4r3/6R1",
+  "mover": "g",
+  "expected": 17390,
+  "piv_res": true,
+  "piv_shallow": true,
+  "piv_freeze": false,
+  "piv_trap": true
+ },
+ {
+  "id": "pv09",
+  "placement": "8/8/8/8/r2D4/1H6/4R3/e7",
+  "mover": "g",
+  "expected": 28786,
+  "piv_res": true,
+  "piv_shallow": true,
+  "piv_freeze": true,
+  "piv_trap": true
+ },
+ {
+  "id": "pv10",
+  "placement": "8/8/8/1c6/8/3D4/1R2r3/4e3",
+  "mover": "g",
+  "expected": 8791,
+  "piv_res": true,
+  "piv_shallow": true,
+  "piv_freeze": true,
+  "piv_trap": true
+ },
+ {
+  "id": "pv11",
+  "placement": "8/8/8/5R2/5e1M/7r/8/6R1",
+  "mover": "g",
+  "expected": 8017,
+  "piv_res": true,
+  "piv_shallow": true,
+  "piv_freeze": true,
+  "piv_trap": true
+ },
+ {
+  "id": "pv12",
+  "placement": "8/8/8/1d6/r2RE3/4r3/4H3/8",
+  "mover": "s",
+  "expected": 9579,
+  "piv_res": true,
+  "piv_shallow": true,
+  "piv_freeze": true,
+  "piv_trap": true
+ },
+ {
+  "id": "pv13",
+  "placement": "8/1r6/1RE5/8/cc2C3/8/8/8",
+  "mover": "g",
+  "expected": 14073,
+  "piv_res": true,
+  "piv_shallow": true,
+  "piv_freeze": true,
+  "piv_trap": true
+ },
+ {
+  "id": "pv14",
+  "placement": "8/8/8/4H3/6H1/8/3c3r/5R2",
+  "mover": "g",
+  "expected": 22334,
+  "piv_res": true,
+  "piv_shallow": true,
+  "piv_freeze": true,
+  "piv_trap": true
+ },
+ {
+  "id": "pv15",
+  "placement": "4r3/8/R1D5/2R5/1c6/8/8/8",
+  "mover": "g",
+  "expected": 9944,
+  "piv_res": true,
+  "piv_shallow": true,
+  "piv_freeze": true,
+  "piv_trap": true
+ },
+ {
+  "id": "pv16",
+  "placement": "8/8/8/4M3/4R3/3h4/1r6/8",
+  "mover": "s",
+  "expected": 9324,
+  "piv_res": true,
+  "piv_shallow": true,
+  "piv_freeze": true,
+  "piv_trap": true
+ },
+ {
+  "id": "pv17",
+  "placement": "8/8/8/3RR3/8/r2r4/8/1R6",
+  "mover": "s",
+  "expected": 5305,
+  "piv_res": true,
+  "piv_shallow": true,
+  "piv_freeze": false,
+  "piv_trap": true
+ },
+ {
+  "id": "md00",
+  "placement": "2dc3r/2H1H3/8/4R1R1/2M5/2Ce3m/2r5/8",
+  "mover": "s",
+  "expected": 15678
+ },
+ {
+  "id": "md01",
+  "placement": "8/2C1MR2/6D1/1d2E3/2r5/6e1/1h2cH1r/8",
+  "mover": "s",
+  "expected": 57659
+ },
+ {
+  "id": "md02",
+  "placement": "2h5/1RC5/reD5/1Dr5/1d1E4/8/8/8",
+  "mover": "g",
+  "expected": 13090
+ },
+ {
+  "id": "md03",
+  "placement": "8/4HR2/4rrm1/3RcH2/2r2D2/6c1/8/8",
+  "mover": "s",
+  "expected": 13177
+ },
+ {
+  "id": "md04",
+  "placement": "8/4D3/7C/5h2/3m1R1r/3cH3/8/8",
+  "mover": "s",
+  "expected": 18557
+ },
+ {
+  "id": "md05",
+  "placement": "8/5rRc/4h1Ce/6R1/6r1/4RDH1/8/8",
+  "mover": "s",
+  "expected": 13528
+ },
+ {
+  "id": "md06",
+  "placement": "8/C7/1r1D4/1m1e4/Hd2r3/8/R3R3/8",
+  "mover": "s",
+  "expected": 25638
+ },
+ {
+  "id": "md07",
+  "placement": "8/re6/1R6/2HC4/ECdd4/Mc6/8/8",
+  "mover": "g",
+  "expected": 17242
+ },
+ {
+  "id": "md08",
+  "placement": "8/8/8/1dHCH3/1c3C2/3m4/1r2R3/8",
+  "mover": "g",
+  "expected": 31349
+ },
+ {
+  "id": "md09",
+  "placement": "8/6He/8/5h2/3dR1R1/3r4/5c2/4dR2",
+  "mover": "s",
+  "expected": 42094
+ },
+ {
+  "id": "md10",
+  "placement": "8/8/4r3/3r4/3HmR2/8/3dC3/4R2R",
+  "mover": "g",
+  "expected": 18760
+ },
+ {
+  "id": "md11",
+  "placement": "r1E5/8/8/4M3/H2R1dR1/1rm2r2/8/8",
+  "mover": "g",
+  "expected": 22166
+ },
+ {
+  "id": "md12",
+  "placement": "8/2HrDM2/4h1D1/2c2ed1/8/3RE3/8/8",
+  "mover": "g",
+  "expected": 13596
+ },
+ {
+  "id": "md13",
+  "placement": "8/8/8/1m1E4/h2r4/2Hd4/H1C5/1c1RR3",
+  "mover": "g",
+  "expected": 26047
+ },
+ {
+  "id": "md14",
+  "placement": "8/8/4h1e1/5HR1/5DM1/5Dc1/4d2r/8",
+  "mover": "g",
+  "expected": 8831
+ },
+ {
+  "id": "md15",
+  "placement": "8/4R3/8/2rHr3/3dhREm/8/8/8",
+  "mover": "s",
+  "expected": 20543
+ },
+ {
+  "id": "md16",
+  "placement": "3cE3/4R3/6r1/5M1e/4mHH1/8/8/8",
+  "mover": "s",
+  "expected": 18488
+ },
+ {
+  "id": "md17",
+  "placement": "c7/D2e4/4m3/R7/M3R3/r2d4/8/8",
+  "mover": "g",
+  "expected": 14235
+ },
+ {
+  "id": "fi00",
+  "placement": "crrrrhrr/dcrmhder/8/8/8/7H/CDERRRC1/MRRRHRRD",
+  "mover": "g",
+  "expected": 890
+ },
+ {
+  "id": "fi02",
+  "placement": "rrhcdrdm/recrrrhr/8/8/3R4/8/MHHC1CRR/RDRRDRRE",
+  "mover": "s",
+  "expected": 229
+ },
+ {
+  "id": "fi03",
+  "placement": "rrmrdrrr/rhhcrdce/8/8/8/4C3/RMRDD1RR/HRRERRHC",
+  "mover": "g",
+  "expected": 799
+ },
+ {
+  "id": "fi04",
+  "placement": "dcrdhhrc/mrrrerrr/8/8/7R/8/RHRDRE1R/CHRRRMDC",
+  "mover": "s",
+  "expected": 186,
+  "spot": true
+ },
+ {
+  "id": "fi05",
+  "placement": "mcerdrhr/rdrrrhrc/8/8/8/4D3/HRMR1HRD/RRECRCRR",
+  "mover": "g",
+  "expected": 1017
+ },
+ {
+  "id": "fi06",
+  "placement": "drmrrrhr/ccrdrhre/8/8/3H4/8/CR1CRRRD/MRDHERRR",
+  "mover": "s",
+  "expected": 385
+ },
+ {
+  "id": "fi07",
+  "placement": "hrcmhrrr/crdrrred/8/7H/8/8/MDERRRR1/RDCRCHRR",
+  "mover": "g",
+  "expected": 544
+ },
+ {
+  "id": "fi08",
+  "placement": "rrderrcr/rrmdhrch/8/8/6C1/8/RHDERR1R/MRRHRRCD",
+  "mover": "s",
+  "expected": 665
+ },
+ {
+  "id": "fi09",
+  "placement": "rrrrdmer/hrrcrdhc/8/8/8/3R4/DRE1RHCM/CHRRRRDR",
+  "mover": "g",
+  "expected": 1338
+ },
+ {
+  "id": "orph01",
+  "placement": "cmddechh/rrrrrrrr/2R5/2R1R3/8/3H4/8/8",
+  "mover": "s",
+  "expected": 0
+ },
+ {
+  "id": "orph02",
+  "placement": "hhdmcdec/rrrrrrrr/4D3/8/2R5/4R3/8/8",
+  "mover": "s",
+  "expected": 0
+ },
+ {
+  "id": "orph03",
+  "placement": "demchhdc/rrrrrrrr/8/1R6/4D3/1R1H4/8/8",
+  "mover": "s",
+  "expected": 0
+ },
+ {
+  "id": "orph04",
+  "placement": "edhccdhm/rrrrrrrr/8/8/2R5/2C5/8/8",
+  "mover": "s",
+  "expected": 0
+ },
+ {
+  "id": "orph05",
+  "placement": "8/8/6c1/4r3/8/8/RRRRRRRR/CHHCDMDE",
+  "mover": "g",
+  "expected": 0
+ },
+ {
+  "id": "fin00",
+  "placement": "6R1/8/4R3/8/8/3C4/h1r5/8",
+  "mover": "g",
+  "expected": 4361,
+  "spot": true
+ },
+ {
+  "id": "fin01",
+  "placement": "8/8/1r2R3/8/4Rr2/8/8/5r2",
+  "mover": "s",
+  "expected": 3316,
+  "spot": true
+ },
+ {
+  "id": "fin02",
+  "placement": "8/8/1r6/8/8/1R6/2Hr4/r7",
+  "mover": "s",
+  "expected": 2591,
+  "spot": true
+ },
+ {
+  "id": "fin03",
+  "placement": "8/8/8/4R3/8/rD6/2r5/7r",
+  "mover": "s",
+  "expected": 1999,
+  "spot": true
+ },
+ {
+  "id": "fin04",
+  "placement": "8/4D3/3r4/4c3/8/1R6/8/7r",
+  "mover": "s",
+  "expected": 3281,
+  "spot": true
+ },
+ {
+  "id": "fin05",
+  "placement": "8/8/8/2r1d3/4RC2/8/8/2r5",
+  "mover": "s",
+  "expected": 4774,
+  "spot": true
+ },
+ {
+  "id": "mr_pv00",
+  "placement": "8/4r3/7m/3R3h/3E4/8/8/8",
+  "mover": "g",
+  "expected": 9360,
+  "twin_of": "pv00"
+ },
+ {
+  "id": "mr_md00",
+  "placement": "r3cd2/3H1H2/8/1R1R4/5M2/m3eC2/5r2/8",
+  "mover": "s",
+  "expected": 15678,
+  "twin_of": "md00"
+ },
+ {
+  "id": "mr_fi00",
+  "placement": "rrhrrrrc/redhmrcd/8/8/8/H7/1CRRREDC/DRRHRRRM",
+  "mover": "g",
+  "expected": 890,
+  "twin_of": "fi00"
+ },
+ {
+  "id": "cs_pv01",
+  "placement": "8/8/8/8/4Rc1C/6r1/6R1/8",
+  "mover": "g",
+  "expected": 18232,
+  "twin_of": "pv01"
+ },
+ {
+  "id": "cs_md01",
+  "placement": "8/1H2Ch1R/6E1/2R5/1D2e3/6d1/2c1mr2/8",
+  "mover": "g",
+  "expected": 57659,
+  "twin_of": "md01"
+ }
+]
