@@ -1,0 +1,13 @@
+{
+  "allowed_provider_ids": ["cpu", "gpu", "cloud"],
+  "minimum_trust": {"public": 0, "restricted": 2, "secret": 3},
+  "minimum_attestation_epoch": 10,
+  "max_path_exposure_ppm": 27,
+  "max_remote_nodes": 3,
+  "max_transfers": 4,
+  "max_conversions": 4,
+  "placement_rules": [
+    {"node_id": "decode", "allowed_provider_ids": ["cpu"], "allowed_modes": ["fp32"]},
+    {"node_id": "scores", "allowed_provider_ids": ["cpu", "gpu"], "allowed_modes": ["fp32"]}
+  ]
+}

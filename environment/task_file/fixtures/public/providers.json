@@ -1,0 +1,53 @@
+{
+  "providers": [
+    {
+      "id": "cpu", "memory_bytes": 2600, "startup_us": 8, "remote": false, "trust_level": 3, "attestation_epoch": 12, "key_slots": 4,
+      "capabilities": [
+        {"op": "Decode", "modes": [{"name": "fp32", "latency_us": 28, "workspace_bytes": 30, "exposure_ppm": 0}]},
+        {"op": "Conv", "modes": [{"name": "fp32", "latency_us": 48, "workspace_bytes": 100, "exposure_ppm": 0}, {"name": "int8", "latency_us": 25, "workspace_bytes": 70, "exposure_ppm": 9}]},
+        {"op": "Relu", "modes": [{"name": "fp32", "latency_us": 12, "workspace_bytes": 20, "exposure_ppm": 0}, {"name": "int8", "latency_us": 7, "workspace_bytes": 15, "exposure_ppm": 2}]},
+        {"op": "Attention", "modes": [{"name": "fp32", "latency_us": 90, "workspace_bytes": 220, "exposure_ppm": 0}, {"name": "fp16", "latency_us": 58, "workspace_bytes": 180, "exposure_ppm": 5}]},
+        {"op": "MatMul", "modes": [{"name": "fp32", "latency_us": 64, "workspace_bytes": 180, "exposure_ppm": 0}, {"name": "fp16", "latency_us": 38, "workspace_bytes": 130, "exposure_ppm": 5}]},
+        {"op": "Add", "modes": [{"name": "fp32", "latency_us": 14, "workspace_bytes": 30, "exposure_ppm": 0}, {"name": "fp16", "latency_us": 9, "workspace_bytes": 25, "exposure_ppm": 2}]},
+        {"op": "Softmax", "modes": [{"name": "fp32", "latency_us": 24, "workspace_bytes": 40, "exposure_ppm": 0}]}
+      ]
+    },
+    {
+      "id": "gpu", "memory_bytes": 1900, "startup_us": 70, "remote": false, "trust_level": 2, "attestation_epoch": 12, "key_slots": 3,
+      "capabilities": [
+        {"op": "Conv", "modes": [{"name": "fp16", "latency_us": 10, "workspace_bytes": 240, "exposure_ppm": 4}]},
+        {"op": "Relu", "modes": [{"name": "fp16", "latency_us": 3, "workspace_bytes": 40, "exposure_ppm": 1}]},
+        {"op": "Attention", "modes": [{"name": "fp16", "latency_us": 18, "workspace_bytes": 430, "exposure_ppm": 5}]},
+        {"op": "MatMul", "modes": [{"name": "fp16", "latency_us": 12, "workspace_bytes": 300, "exposure_ppm": 4}]},
+        {"op": "Add", "modes": [{"name": "fp16", "latency_us": 4, "workspace_bytes": 55, "exposure_ppm": 2}]},
+        {"op": "Softmax", "modes": [{"name": "fp32", "latency_us": 9, "workspace_bytes": 70, "exposure_ppm": 0}]}
+      ]
+    },
+    {
+      "id": "cloud", "memory_bytes": 3200, "startup_us": 35, "remote": true, "trust_level": 2, "attestation_epoch": 11, "key_slots": 2,
+      "capabilities": [
+        {"op": "Conv", "modes": [{"name": "int8", "latency_us": 5, "workspace_bytes": 100, "exposure_ppm": 8}]},
+        {"op": "Relu", "modes": [{"name": "int8", "latency_us": 2, "workspace_bytes": 20, "exposure_ppm": 2}]},
+        {"op": "Attention", "modes": [{"name": "fp16", "latency_us": 10, "workspace_bytes": 180, "exposure_ppm": 6}]},
+        {"op": "MatMul", "modes": [{"name": "fp16", "latency_us": 7, "workspace_bytes": 140, "exposure_ppm": 5}]},
+        {"op": "Add", "modes": [{"name": "fp16", "latency_us": 3, "workspace_bytes": 20, "exposure_ppm": 2}]}
+      ]
+    }
+  ],
+  "transfers": [
+    {"from_provider": "cpu", "to_provider": "gpu", "encrypted": true, "fixed_us": 15, "per_kib_us": 4, "exposure_ppm": 1},
+    {"from_provider": "gpu", "to_provider": "cpu", "encrypted": true, "fixed_us": 16, "per_kib_us": 4, "exposure_ppm": 1},
+    {"from_provider": "cpu", "to_provider": "cloud", "encrypted": true, "fixed_us": 45, "per_kib_us": 10, "exposure_ppm": 2},
+    {"from_provider": "cloud", "to_provider": "cpu", "encrypted": true, "fixed_us": 48, "per_kib_us": 10, "exposure_ppm": 2},
+    {"from_provider": "gpu", "to_provider": "cloud", "encrypted": false, "fixed_us": 38, "per_kib_us": 8, "exposure_ppm": 5},
+    {"from_provider": "cloud", "to_provider": "gpu", "encrypted": false, "fixed_us": 40, "per_kib_us": 8, "exposure_ppm": 5}
+  ],
+  "conversions": [
+    {"from_mode": "fp32", "to_mode": "fp16", "latency_us": 7, "exposure_ppm": 3},
+    {"from_mode": "fp16", "to_mode": "fp32", "latency_us": 9, "exposure_ppm": 1},
+    {"from_mode": "fp32", "to_mode": "int8", "latency_us": 11, "exposure_ppm": 7},
+    {"from_mode": "int8", "to_mode": "fp32", "latency_us": 13, "exposure_ppm": 2},
+    {"from_mode": "fp16", "to_mode": "int8", "latency_us": 8, "exposure_ppm": 5},
+    {"from_mode": "int8", "to_mode": "fp16", "latency_us": 8, "exposure_ppm": 3}
+  ]
+}

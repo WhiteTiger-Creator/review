@@ -1,765 +1,737 @@
-"""Behavioral checks for the powder TOF lattice refinement binary."""
+"""Behavioral verifier for the confidential inference attestation planner."""
 
 from __future__ import annotations
 
-import csv
+import copy
 import hashlib
 import json
-import math
-import re
+import os
+import signal
 import subprocess
+import tempfile
 from pathlib import Path
-from typing import Any
 
-BIN = Path("/app/bin/ndref")
-CFG = Path("/app/config/refine_policy.toml")
-SEALED = Path("/app/data/sealed/production_policy.toml")
-PEAKS = Path("/app/data/sample/peaks.csv")
-INSTR = Path("/app/data/sample/instrument.json")
-STRUCT = Path("/app/data/sample/reference_structure.json")
+import pytest
 
-SAMPLE_SHA256 = {
-    "peaks.csv": "eeb08162dc053b0c400d55135c0f7a7c519e3ed38ad84d4e786f00eb384a706d",
-    "instrument.json": "95a97c5c5a71e5479924d481f45a010cd6a3360e9b08ebe0f88ee6fa8b128cb4",
-    "reference_structure.json": "efa09368d33aeec7145fc980a99692f319fc4c3fa6edabeeb2cbd463722fe21c",
-}
-SEALED_SHA256 = "4a341fd52cfdb0cfd57dea613b5550732c97b9b64c132c18a8bad2b9734f3cb0"
 
-SHIPPED: dict[str, Any] = {
-    "schema_version": 2,
-    "h_js": 6.62607015e-34,
-    "m_n_kg": 1.67492749804e-27,
-    "intensity_floor": 25.0,
-    "residual_sigma_max": 4.0,
-    "min_admitted_peaks": 4,
-    "admit_mode": "intensity_and_extinction",
-    "extinction_mode": "skip",
-    "extinction_scale": 0.2,
-    "policy_revision": "nd-desk-2026.07",
+TASK_ROOT = Path(os.environ.get("TASK_FILE_DIR", "/app/task_file"))
+PUBLIC = TASK_ROOT / "fixtures" / "public"
+PUBLIC_HASHES = {
+    "graph.json": "334ef268561593333a40f06411e7f0be1274df6132f90dabd8ef49c8f62612f4",
+    "policy.json": "184bd86bfc7f79074e330d30d40878d6aa44691d8bd3d245f13d692bab0bb44e",
+    "providers.json": "e841bbf35bdc9ce2871cb17cc607c530384a9e8d29f86cfbf854da74c2f1ade1",
 }
 
-REPORT_KEYS = [
-    "schema_version",
-    "policy_revision",
-    "crystal_system",
-    "peak_count",
-    "admitted_count",
-    "rejected_count",
-    "chi2",
-    "rms_resid_A",
-    "a_A",
-    "b_A",
-    "c_A",
-    "alpha_deg",
-    "beta_deg",
-    "gamma_deg",
-    "rejected_ids",
-    "residuals",
-    "refine_digest",
-]
 
-RESIDUAL_KEYS = [
-    "peak_id",
-    "h",
-    "k",
-    "l",
-    "d_obs_A",
-    "d_calc_A",
-    "resid_sigma",
-    "rejected",
-]
-
-STRUCT_KEYS = [
-    "a_A",
-    "b_A",
-    "c_A",
-    "alpha_deg",
-    "beta_deg",
-    "gamma_deg",
-    "crystal_system",
-]
-
-PEAK_FIELDS = [
-    "peak_id",
-    "h",
-    "k",
-    "l",
-    "tof_us",
-    "intensity",
-    "sigma_tof",
-    "extinct_flag",
-]
+def load_bundle(root: Path) -> tuple[dict, dict, dict]:
+    return tuple(json.loads((root / name).read_text()) for name in ("graph.json", "providers.json", "policy.json"))
 
 
-def fmt10(x: float) -> str:
-    y = 0.0 if x == 0.0 else x
-    text = f"{y:.10f}"
-    return "0.0000000000" if text == "-0.0000000000" else text
+def write_bundle(root: Path, bundle: tuple[dict, dict, dict]) -> None:
+    root.mkdir(parents=True)
+    for name, value in zip(("graph.json", "providers.json", "policy.json"), bundle):
+        (root / name).write_text(json.dumps(value, indent=2) + "\n")
 
 
-def fmt8(x: float) -> str:
-    y = 0.0 if x == 0.0 else x
-    text = f"{y:.8f}"
-    return "0.00000000" if text == "-0.00000000" else text
+def make_accessible(root: Path) -> None:
+    """Allow the unprivileged candidate identity to traverse one fresh case tree."""
+    root.mkdir(parents=True, exist_ok=True)
+    current = root
+    while current != Path("/tmp") and current != current.parent:
+        current.chmod(current.stat().st_mode | 0o111)
+        current = current.parent
+    root.chmod(0o777)
+    for path in root.rglob("*"):
+        path.chmod(path.stat().st_mode | (0o055 if path.is_dir() else 0o044))
 
 
-def _toml(pol: dict[str, Any]) -> str:
-    lines: list[str] = []
-    for k, v in pol.items():
-        if isinstance(v, str):
-            lines.append(f'{k} = "{v}"')
-        else:
-            lines.append(f"{k} = {v}")
-    return "\n".join(lines) + "\n"
-
-
-def _sha(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [str(BIN), *args],
-        capture_output=True,
+def run_candidate(binary: Path, args: list[str], cwd: Path, timeout: int = 30) -> subprocess.CompletedProcess:
+    """Run one candidate invocation with a private process group and sanitized identity."""
+    make_accessible(cwd)
+    process = subprocess.Popen(
+        [str(binary), *args],
+        cwd=str(cwd),
+        env={"PATH": "/usr/local/go/bin:/usr/bin:/bin", "HOME": "/tmp", "LANG": "C.UTF-8"},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        check=False,
+        user=65534,
+        group=65534,
+        extra_groups=[],
+        start_new_session=True,
     )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.communicate()
+        raise
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
 
 
-def _rebuild() -> None:
-    subprocess.run(["bash", "/app/build.sh"], check=True, capture_output=True, text=True)
+def reference_plan(bundle: tuple[dict, dict, dict]) -> dict:
+    graph, provider_doc, policy = copy.deepcopy(bundle)
+    nodes, edges, providers = graph["nodes"], graph["edges"], provider_doc["providers"]
+    node_pos = {node["id"]: i for i, node in enumerate(nodes)}
+    rules = {rule["node_id"]: rule for rule in policy["placement_rules"]}
+    transfers = {(row["from_provider"], row["to_provider"]): row for row in provider_doc["transfers"]}
+    conversions = {(row["from_mode"], row["to_mode"]): row for row in provider_doc["conversions"]}
+    incoming = [[] for _ in nodes]
+    for edge_index, edge in enumerate(edges):
+        incoming[node_pos[edge["to"]]].append(edge_index)
 
+    group_of = [-1] * len(nodes)
+    for group_index, group in enumerate(graph["enclave_groups"]):
+        for node_id in group:
+            group_of[node_pos[node_id]] = group_index
 
-def _restore_live_policy() -> None:
-    CFG.write_text(SEALED.read_text(encoding="utf-8"), encoding="utf-8")
-
-
-def _write_peaks(path: Path, peaks: list[dict[str, Any]]) -> None:
-    with path.open("w", encoding="utf-8", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=PEAK_FIELDS)
-        writer.writeheader()
-        for peak in peaks:
-            writer.writerow(peak)
-
-
-def load_peaks(text: str) -> list[dict[str, Any]]:
-    rows = list(csv.DictReader(text.splitlines()))
-    out: list[dict[str, Any]] = []
-    for row in rows:
-        out.append(
-            {
-                "peak_id": row["peak_id"],
-                "h": int(row["h"]),
-                "k": int(row["k"]),
-                "l": int(row["l"]),
-                "tof_us": float(row["tof_us"]),
-                "intensity": float(row["intensity"]),
-                "sigma_tof": float(row["sigma_tof"]),
-                "extinct_flag": int(row["extinct_flag"]),
-            }
-        )
-    return out
-
-
-def expect_pack(
-    peaks: list[dict[str, Any]],
-    instr: dict[str, float],
-    crystal_system: str,
-    pol: dict[str, Any],
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    h_js = float(pol["h_js"])
-    m_n = float(pol["m_n_kg"])
-    path_m = float(instr["L1_m"]) + float(instr["L2_m"])
-    sin_theta = math.sin(math.radians(float(instr["two_theta_deg"]) / 2.0))
-    offset = float(instr["pulse_offset_us"])
-
-    states: list[dict[str, Any]] = []
-    for peak in peaks:
-        t_s = (peak["tof_us"] - offset) * 1e-6
-        sigma_t = peak["sigma_tof"] * 1e-6
-        d_m = h_js * t_s / (2.0 * path_m * sin_theta * m_n)
-        sd_m = h_js * sigma_t / (2.0 * path_m * sin_theta * m_n)
-        d_obs = d_m * 1e10
-        sigma_d = sd_m * 1e10
-        primary = peak["intensity"] < float(pol["intensity_floor"])
-        if (
-            pol["admit_mode"] == "intensity_and_extinction"
-            and peak["extinct_flag"] == 1
-            and pol["extinction_mode"] == "skip"
-        ):
-            primary = True
-        sigma_q = 2.0 * sigma_d / (d_obs**3)
-        weight = 1.0 / (sigma_q * sigma_q)
-        if peak["extinct_flag"] == 1 and pol["extinction_mode"] == "downweight":
-            weight *= float(pol["extinction_scale"])
-        states.append(
-            {
-                **peak,
-                "d_obs_A": d_obs,
-                "sigma_d_A": sigma_d,
-                "weight": 0.0 if primary else weight,
-                "primary_reject": primary,
-                "rejected": primary,
-                "residual_reject": False,
-                "d_calc_A": 0.0,
-                "resid_sigma": 0.0,
-            }
-        )
-
-    def design_row(h: int, k: int, ell: int) -> list[float]:
-        if crystal_system == "cubic":
-            return [float(h * h + k * k + ell * ell)]
-        if crystal_system == "tetragonal":
-            return [float(h * h + k * k), float(ell * ell)]
-        if crystal_system == "orthorhombic":
-            return [float(h * h), float(k * k), float(ell * ell)]
-        if crystal_system == "hexagonal":
-            return [(4.0 / 3.0) * (h * h + h * k + k * k), float(ell * ell)]
-        raise AssertionError("unsupported")
-
-    def fit(active: list[dict[str, Any]]) -> dict[str, float]:
-        assert len(active) >= int(pol["min_admitted_peaks"])
-        ncols = len(design_row(active[0]["h"], active[0]["k"], active[0]["l"]))
-        ata = [[0.0] * ncols for _ in range(ncols)]
-        atq = [0.0] * ncols
-        for st in active:
-            row = design_row(st["h"], st["k"], st["l"])
-            q_obs = 1.0 / (st["d_obs_A"] ** 2)
-            weight = st["weight"]
-            for col in range(ncols):
-                atq[col] += weight * row[col] * q_obs
-                for row_i in range(ncols):
-                    ata[row_i][col] += weight * row[row_i] * row[col]
-        aug = [ata[r][:] + [atq[r]] for r in range(ncols)]
-        for col in range(ncols):
-            pivot = max(range(col, ncols), key=lambda r: abs(aug[r][col]))
-            assert abs(aug[pivot][col]) > 0
-            aug[col], aug[pivot] = aug[pivot], aug[col]
-            piv = aug[col][col]
-            for c in range(col, ncols + 1):
-                aug[col][c] /= piv
-            for r in range(ncols):
-                if r == col:
+    candidates: list[list[dict]] = []
+    for node in nodes:
+        choices = []
+        rule = rules.get(node["id"])
+        for provider_index, provider in enumerate(providers):
+            if provider["id"] not in policy["allowed_provider_ids"]:
+                continue
+            if provider["attestation_epoch"] < policy["minimum_attestation_epoch"]:
+                continue
+            if provider["trust_level"] < policy["minimum_trust"][node["classification"]]:
+                continue
+            if rule and provider["id"] not in rule["allowed_provider_ids"]:
+                continue
+            for capability in provider["capabilities"]:
+                if capability["op"] != node["op"]:
                     continue
-                factor = aug[r][col]
-                for c in range(col, ncols + 1):
-                    aug[r][c] -= factor * aug[col][c]
-        x = [aug[r][ncols] for r in range(ncols)]
-        if crystal_system == "cubic":
-            a = 1.0 / math.sqrt(x[0])
-            return {
-                "a_A": a,
-                "b_A": a,
-                "c_A": a,
-                "alpha_deg": 90.0,
-                "beta_deg": 90.0,
-                "gamma_deg": 90.0,
-            }
-        if crystal_system == "tetragonal":
-            a = 1.0 / math.sqrt(x[0])
-            c = 1.0 / math.sqrt(x[1])
-            return {
-                "a_A": a,
-                "b_A": a,
-                "c_A": c,
-                "alpha_deg": 90.0,
-                "beta_deg": 90.0,
-                "gamma_deg": 90.0,
-            }
-        if crystal_system == "orthorhombic":
-            return {
-                "a_A": 1.0 / math.sqrt(x[0]),
-                "b_A": 1.0 / math.sqrt(x[1]),
-                "c_A": 1.0 / math.sqrt(x[2]),
-                "alpha_deg": 90.0,
-                "beta_deg": 90.0,
-                "gamma_deg": 90.0,
-            }
-        a = 1.0 / math.sqrt(x[0])
-        c = 1.0 / math.sqrt(x[1])
-        return {
-            "a_A": a,
-            "b_A": a,
-            "c_A": c,
-            "alpha_deg": 90.0,
-            "beta_deg": 90.0,
-            "gamma_deg": 120.0,
-        }
+                for mode in capability["modes"]:
+                    if rule and mode["name"] not in rule["allowed_modes"]:
+                        continue
+                    choices.append({"provider": provider_index, "mode": mode, "key": f'{provider["id"]}/{mode["name"]}'})
+        candidates.append(sorted(choices, key=lambda choice: choice["key"]))
 
-    def d_calc(cell: dict[str, float], h: int, k: int, ell: int) -> float:
-        if crystal_system == "hexagonal":
-            q = (4.0 / 3.0) * (h * h + h * k + k * k) / (cell["a_A"] ** 2) + (ell * ell) / (
-                cell["c_A"] ** 2
+    suffix_min_latency = [0] * (len(nodes) + 1)
+    suffix_min_memory = [0] * (len(nodes) + 1)
+    for index in range(len(nodes) - 1, -1, -1):
+        suffix_min_latency[index] = suffix_min_latency[index + 1]
+        suffix_min_memory[index] = suffix_min_memory[index + 1]
+        if candidates[index]:
+            suffix_min_latency[index] += min(choice["mode"]["latency_us"] for choice in candidates[index])
+            suffix_min_memory[index] += min(
+                nodes[index]["output_bytes"] + choice["mode"]["workspace_bytes"]
+                for choice in candidates[index]
             )
-        else:
-            q = (h / cell["a_A"]) ** 2 + (k / cell["b_A"]) ** 2 + (ell / cell["c_A"]) ** 2
-        return 1.0 / math.sqrt(q)
 
-    def apply_residuals(cell: dict[str, float]) -> None:
-        for st in states:
-            st["d_calc_A"] = d_calc(cell, st["h"], st["k"], st["l"])
-            st["resid_sigma"] = (st["d_obs_A"] - st["d_calc_A"]) / st["sigma_d_A"]
+    chosen: list[dict | None] = [None] * len(nodes)
+    path_exposure = [0] * len(nodes)
+    memory = [0] * len(providers)
+    key_use = [0] * len(providers)
+    provider_use = [0] * len(providers)
+    group_choice: list[str | None] = [None] * len(graph["enclave_groups"])
+    boundary_rows: list[dict | None] = [None] * len(edges)
+    best_key = None
+    best_output = None
 
-    def refresh_residual_flags() -> None:
-        for st in states:
-            st["residual_reject"] = (not st["primary_reject"]) and abs(st["resid_sigma"]) > float(
-                pol["residual_sigma_max"]
+    def visit(index: int, node_latency: int, boundary_latency: int, transfer_count: int, conversion_count: int, encrypted_count: int, remote_count: int) -> None:
+        nonlocal best_key, best_output
+        if transfer_count > policy["max_transfers"] or conversion_count > policy["max_conversions"] or remote_count > policy["max_remote_nodes"]:
+            return
+        if best_key is not None:
+            startup = sum(provider["startup_us"] for i, provider in enumerate(providers) if provider_use[i])
+            lower_total = node_latency + boundary_latency + startup + suffix_min_latency[index]
+            if any(not choices for choices in candidates[index:]):
+                return
+            lower_sequence = tuple(
+                chosen[i]["key"] if i < index else candidates[i][0]["key"]
+                for i in range(len(nodes))
             )
-            st["rejected"] = st["primary_reject"] or st["residual_reject"]
-
-    cell = fit([st for st in states if not st["rejected"]])
-    apply_residuals(cell)
-    any_resid = False
-    for st in states:
-        if (not st["primary_reject"]) and abs(st["resid_sigma"]) > float(pol["residual_sigma_max"]):
-            st["residual_reject"] = True
-            st["rejected"] = True
-            any_resid = True
-    if any_resid:
-        cell = fit([st for st in states if not st["rejected"]])
-        apply_residuals(cell)
-        refresh_residual_flags()
-
-    admitted = [st for st in states if not st["rejected"]]
-    assert admitted
-    chi2 = sum(st["resid_sigma"] ** 2 for st in admitted)
-    rms = math.sqrt(
-        sum((st["d_obs_A"] - st["d_calc_A"]) ** 2 for st in admitted) / len(admitted)
-    )
-    states.sort(key=lambda st: st["peak_id"])
-    rejected_ids = [st["peak_id"] for st in states if st["rejected"]]
-
-    lines = [f"rev:{pol['policy_revision']}"]
-    for st in states:
-        rej = "1" if st["rejected"] else "0"
-        lines.append(
-            f"{st['peak_id']}:{fmt10(st['d_obs_A'])}:{fmt10(st['d_calc_A'])}:{fmt10(st['resid_sigma'])}:{rej}"
-        )
-    lines.append(
-        f"a:{fmt10(cell['a_A'])}:b:{fmt10(cell['b_A'])}:c:{fmt10(cell['c_A'])}:chi2:{fmt10(chi2)}:rms:{fmt10(rms)}"
-    )
-    digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()
-
-    report = {
-        "schema_version": int(pol["schema_version"]),
-        "policy_revision": pol["policy_revision"],
-        "crystal_system": crystal_system,
-        "peak_count": len(states),
-        "admitted_count": len(admitted),
-        "rejected_count": len(rejected_ids),
-        "chi2": chi2,
-        "rms_resid_A": rms,
-        "a_A": cell["a_A"],
-        "b_A": cell["b_A"],
-        "c_A": cell["c_A"],
-        "alpha_deg": cell["alpha_deg"],
-        "beta_deg": cell["beta_deg"],
-        "gamma_deg": cell["gamma_deg"],
-        "rejected_ids": rejected_ids,
-        "refine_digest": digest,
-        "residuals": [
-            {
-                "peak_id": st["peak_id"],
-                "h": st["h"],
-                "k": st["k"],
-                "l": st["l"],
-                "d_obs_A": st["d_obs_A"],
-                "d_calc_A": st["d_calc_A"],
-                "resid_sigma": st["resid_sigma"],
-                "rejected": st["rejected"],
+            total_minimum_memory = sum(memory) + suffix_min_memory[index]
+            average_memory_lower_bound = (total_minimum_memory + len(providers) - 1) // len(providers)
+            lower_objective = (
+                lower_total,
+                max(path_exposure[:index], default=0),
+                max(max(memory, default=0), average_memory_lower_bound),
+                max(key_use, default=0),
+                transfer_count,
+                conversion_count,
+                lower_sequence,
+            )
+            if lower_objective >= best_key:
+                return
+        if index == len(nodes):
+            startup = sum(provider["startup_us"] for i, provider in enumerate(providers) if provider_use[i])
+            maximum_memory = max(memory, default=0)
+            maximum_exposure = max(path_exposure, default=0)
+            maximum_keys = max(key_use, default=0)
+            total = node_latency + boundary_latency + startup
+            sequence = tuple(choice["key"] for choice in chosen)
+            objective = (total, maximum_exposure, maximum_memory, maximum_keys, transfer_count, conversion_count, sequence)
+            if best_key is not None and objective >= best_key:
+                return
+            placements = [
+                {"node_id": node["id"], "provider_id": providers[choice["provider"]]["id"], "mode": choice["mode"]["name"]}
+                for node, choice in zip(nodes, chosen)
+            ]
+            best_key = objective
+            best_output = {
+                "workload_id": graph["workload_id"],
+                "status": "ok",
+                "placements": placements,
+                "boundaries": copy.deepcopy(boundary_rows),
+                "provider_resources": [
+                    {"provider_id": provider["id"], "used_bytes": memory[i], "used_key_slots": key_use[i]}
+                    for i, provider in enumerate(providers)
+                ],
+                "metrics": {
+                    "node_latency_us": node_latency,
+                    "boundary_latency_us": boundary_latency,
+                    "startup_latency_us": startup,
+                    "total_latency_us": total,
+                    "path_exposure_ppm": maximum_exposure,
+                    "max_provider_memory_bytes": maximum_memory,
+                    "max_provider_key_slots_used": maximum_keys,
+                    "transfer_count": transfer_count,
+                    "conversion_count": conversion_count,
+                    "encrypted_transfer_count": encrypted_count,
+                    "remote_node_count": remote_count,
+                },
             }
-            for st in states
+            return
+
+        node = nodes[index]
+        for choice in candidates[index]:
+            group_index = group_of[index]
+            newly_set_group = False
+            if group_index >= 0:
+                if group_choice[group_index] is not None and group_choice[group_index] != choice["key"]:
+                    continue
+                if group_choice[group_index] is None:
+                    group_choice[group_index] = choice["key"]
+                    newly_set_group = True
+
+            provider_index = choice["provider"]
+            added_memory = node["output_bytes"] + choice["mode"]["workspace_bytes"]
+            if memory[provider_index] + added_memory > providers[provider_index]["memory_bytes"]:
+                if newly_set_group:
+                    group_choice[group_index] = None
+                continue
+
+            path_base = 0
+            added_boundary_latency = 0
+            added_transfers = 0
+            added_conversions = 0
+            added_encrypted = 0
+            key_adds = [0] * len(providers)
+            rows = []
+            valid = True
+            for edge_index in incoming[index]:
+                edge = edges[edge_index]
+                predecessor = chosen[node_pos[edge["from"]]]
+                row = {"edge_id": edge["id"], "transfer": False, "conversion": False, "encrypted": False, "latency_us": 0, "exposure_ppm": 0}
+                if predecessor["provider"] != provider_index:
+                    transfer = transfers.get((providers[predecessor["provider"]]["id"], providers[provider_index]["id"]))
+                    if transfer is None:
+                        valid = False
+                        break
+                    row["transfer"] = True
+                    if edge["sensitivity"] != "public" and not transfer["encrypted"]:
+                        valid = False
+                        break
+                    row["encrypted"] = transfer["encrypted"]
+                    row["latency_us"] += transfer["fixed_us"] + ((edge["tensor_bytes"] + 1023) // 1024) * transfer["per_kib_us"]
+                    row["exposure_ppm"] += transfer["exposure_ppm"]
+                    added_transfers += 1
+                    if transfer["encrypted"]:
+                        key_adds[predecessor["provider"]] += 1
+                        key_adds[provider_index] += 1
+                        added_encrypted += 1
+                if predecessor["mode"]["name"] != choice["mode"]["name"]:
+                    conversion = conversions.get((predecessor["mode"]["name"], choice["mode"]["name"]))
+                    if conversion is None:
+                        valid = False
+                        break
+                    row["conversion"] = True
+                    row["latency_us"] += conversion["latency_us"]
+                    row["exposure_ppm"] += conversion["exposure_ppm"]
+                    added_conversions += 1
+                path_base = max(path_base, path_exposure[node_pos[edge["from"]]] + row["exposure_ppm"])
+                added_boundary_latency += row["latency_us"]
+                rows.append((edge_index, row))
+
+            if any(key_use[i] + key_adds[i] > provider["key_slots"] for i, provider in enumerate(providers)):
+                valid = False
+            current_path = path_base + choice["mode"]["exposure_ppm"]
+            if not valid or current_path > policy["max_path_exposure_ppm"]:
+                if newly_set_group:
+                    group_choice[group_index] = None
+                continue
+
+            chosen[index] = choice
+            path_exposure[index] = current_path
+            memory[provider_index] += added_memory
+            for i, added in enumerate(key_adds):
+                key_use[i] += added
+            provider_use[provider_index] += 1
+            for edge_index, row in rows:
+                boundary_rows[edge_index] = row
+            visit(
+                index + 1,
+                node_latency + choice["mode"]["latency_us"],
+                boundary_latency + added_boundary_latency,
+                transfer_count + added_transfers,
+                conversion_count + added_conversions,
+                encrypted_count + added_encrypted,
+                remote_count + int(providers[provider_index]["remote"]),
+            )
+            provider_use[provider_index] -= 1
+            for i, added in enumerate(key_adds):
+                key_use[i] -= added
+            memory[provider_index] -= added_memory
+            chosen[index] = None
+            if newly_set_group:
+                group_choice[group_index] = None
+
+    visit(0, 0, 0, 0, 0, 0, 0)
+    if best_output is None:
+        return {"workload_id": graph["workload_id"], "status": "unsatisfied", "placements": [], "boundaries": [], "provider_resources": [], "metrics": None}
+    return best_output
+
+
+def synthetic_bundle(node_count: int = 6) -> tuple[dict, dict, dict]:
+    nodes = [{"id": f"n{i}", "op": "Block", "classification": "restricted", "output_bytes": 120 + i * 7} for i in range(node_count)]
+    edges = [{"id": f"e{i}", "from": f"n{i}", "to": f"n{i+1}", "sensitivity": "restricted", "tensor_bytes": 900 + i * 350} for i in range(node_count - 1)]
+    graph = {"workload_id": f"synthetic-{node_count}", "nodes": nodes, "edges": edges, "enclave_groups": []}
+    modes_a = [
+        {"name": "fp32", "latency_us": 19, "workspace_bytes": 45, "exposure_ppm": 0},
+        {"name": "fp16", "latency_us": 10, "workspace_bytes": 70, "exposure_ppm": 3},
+    ]
+    modes_b = [
+        {"name": "fp32", "latency_us": 14, "workspace_bytes": 95, "exposure_ppm": 0},
+        {"name": "fp16", "latency_us": 6, "workspace_bytes": 125, "exposure_ppm": 4},
+    ]
+    modes_r = [
+        {"name": "fp16", "latency_us": 2, "workspace_bytes": 35, "exposure_ppm": 5},
+    ]
+    providers = {
+        "providers": [
+            {"id": "alpha", "memory_bytes": 1500, "startup_us": 5, "remote": False, "trust_level": 3, "attestation_epoch": 9, "key_slots": 6, "capabilities": [{"op": "Block", "modes": modes_a}]},
+            {"id": "beta", "memory_bytes": 1500, "startup_us": 35, "remote": False, "trust_level": 2, "attestation_epoch": 9, "key_slots": 6, "capabilities": [{"op": "Block", "modes": modes_b}]},
+            {"id": "remote", "memory_bytes": 2000, "startup_us": 20, "remote": True, "trust_level": 2, "attestation_epoch": 9, "key_slots": 4, "capabilities": [{"op": "Block", "modes": modes_r}]},
+        ],
+        "transfers": [],
+        "conversions": [
+            {"from_mode": "fp32", "to_mode": "fp16", "latency_us": 7, "exposure_ppm": 3},
+            {"from_mode": "fp16", "to_mode": "fp32", "latency_us": 8, "exposure_ppm": 1},
         ],
     }
-    refined = {
-        "a_A": cell["a_A"],
-        "b_A": cell["b_A"],
-        "c_A": cell["c_A"],
-        "alpha_deg": cell["alpha_deg"],
-        "beta_deg": cell["beta_deg"],
-        "gamma_deg": cell["gamma_deg"],
-        "crystal_system": crystal_system,
+    for left in providers["providers"]:
+        for right in providers["providers"]:
+            if left["id"] != right["id"]:
+                providers["transfers"].append({
+                    "from_provider": left["id"], "to_provider": right["id"],
+                    "fixed_us": 11 + (3 if "remote" in (left["id"], right["id"]) else 0),
+                    "per_kib_us": 2, "exposure_ppm": 2, "encrypted": True,
+                })
+    policy = {
+        "allowed_provider_ids": ["alpha", "beta", "remote"],
+        "minimum_trust": {"public": 0, "restricted": 2, "secret": 3},
+        "minimum_attestation_epoch": 8,
+        "max_path_exposure_ppm": 28,
+        "max_remote_nodes": 2,
+        "max_transfers": 4,
+        "max_conversions": 4,
+        "placement_rules": [],
     }
-    return refined, report
+    return graph, providers, policy
 
 
-def _top_keys(raw: str) -> list[str]:
-    return re.findall(r'\n  "([^"]+)":', raw)
+@pytest.fixture(scope="session")
+def binary() -> Path:
+    """Build the submitted Go command once for behavioral invocations."""
+    target = Path(tempfile.mkdtemp(prefix="partitionplan-bin-")) / "partitionplan"
+    subprocess.run(["go", "build", "-o", str(target), "./cmd/partitionplan"], cwd=TASK_ROOT, check=True, timeout=90)
+    target.parent.chmod(0o755)
+    target.chmod(0o755)
+    return target
 
 
-def test_beamline_fixtures_remain_byte_stable():
-    """Shipped sample peaks/instrument/structure and sealed policy must keep verifier hashes."""
-    assert _sha(PEAKS) == SAMPLE_SHA256["peaks.csv"]
-    assert _sha(INSTR) == SAMPLE_SHA256["instrument.json"]
-    assert _sha(STRUCT) == SAMPLE_SHA256["reference_structure.json"]
-    assert _sha(SEALED) == SEALED_SHA256
+def invoke(binary: Path, bundle: tuple[dict, dict, dict], tmp_path: Path) -> dict:
+    bundle_dir = tmp_path / "bundle"
+    output = tmp_path / "nested" / "plan.json"
+    write_bundle(bundle_dir, bundle)
+    before = {path.name: path.read_bytes() for path in bundle_dir.iterdir()}
+    completed = run_candidate(binary, [str(bundle_dir), str(output)], tmp_path)
+    assert completed.returncode == 0, completed.stderr
+    after = {path.name: path.read_bytes() for path in bundle_dir.iterdir()}
+    assert after == before
+    return json.loads(output.read_text())
 
 
-def test_orthorhombic_desk_pack_writes_cell_and_reject_digest():
-    """Default orthorhombic pack exits 1, rejects P09 only, and matches cell/digest contracts."""
-    _restore_live_policy()
-    _rebuild()
-    refined_path = Path("/tmp/ndref-default-refined.json")
-    report_path = Path("/tmp/ndref-default-report.json")
-    for path in (refined_path, report_path):
-        if path.exists():
-            path.unlink()
-    proc = _run(["--refined", str(refined_path), "--report", str(report_path)])
-    assert proc.returncode == 1, proc.stderr
-    assert proc.stdout == ""
-    peaks = load_peaks(PEAKS.read_text(encoding="utf-8"))
-    instr = json.loads(INSTR.read_text(encoding="utf-8"))
-    exp_ref, exp_rep = expect_pack(peaks, instr, "orthorhombic", SHIPPED)
-    got_ref = json.loads(refined_path.read_text(encoding="utf-8"))
-    got_rep = json.loads(report_path.read_text(encoding="utf-8"))
-    for key in ("a_A", "b_A", "c_A"):
-        assert abs(got_ref[key] - exp_ref[key]) < 1e-8
-        assert abs(float(got_rep[key]) - exp_ref[key]) < 1e-8
-    assert got_rep["rejected_ids"] == ["P09"]
-    assert got_rep["rejected_count"] == 1
-    assert got_rep["refine_digest"] == exp_rep["refine_digest"]
-    assert abs(got_rep["chi2"] - exp_rep["chi2"]) < 1e-8
-    raw_rep = report_path.read_text(encoding="utf-8")
-    assert _top_keys(raw_rep) == REPORT_KEYS
-    assert raw_rep.endswith("}\n")
-    raw_ref = refined_path.read_text(encoding="utf-8")
-    assert _top_keys(raw_ref) == STRUCT_KEYS
-    assert raw_ref.endswith("}\n")
-    assert list(got_rep["residuals"][0].keys()) == RESIDUAL_KEYS
+def test_public_inputs_are_unchanged() -> None:
+    """Protect the authoritative public graph, provider matrix, and policy fixtures."""
+    for name, expected in PUBLIC_HASHES.items():
+        assert hashlib.sha256((PUBLIC / name).read_bytes()).hexdigest() == expected
 
 
-def test_default_config_path_requires_sealed_byte_match():
-    """Drifted live `/app/config/refine_policy.toml` is fatal and must not clobber outputs."""
-    _rebuild()
-    CFG.write_text(_toml({**SHIPPED, "policy_revision": "drifted"}), encoding="utf-8")
-    out_r = Path("/tmp/ndref-drift-refined.json")
-    out_p = Path("/tmp/ndref-drift-report.json")
-    marker = '{"keep":true}\n'
-    out_r.write_text(marker, encoding="utf-8")
-    out_p.write_text(marker, encoding="utf-8")
-    proc = _run(["--refined", str(out_r), "--report", str(out_p)])
-    assert proc.returncode == 2
-    assert out_r.read_text(encoding="utf-8") == marker
-    assert out_p.read_text(encoding="utf-8") == marker
-    _restore_live_policy()
-
-
-def test_unknown_flag_exits_fatal_without_touching_artifacts():
-    """Unknown flags exit 2 with stderr diagnostics and leave preexisting artifacts intact."""
-    _restore_live_policy()
-    _rebuild()
-    out_r = Path("/tmp/ndref-badflag-refined.json")
-    out_p = Path("/tmp/ndref-badflag-report.json")
-    marker = '{"keep":true}\n'
-    out_r.write_text(marker, encoding="utf-8")
-    out_p.write_text(marker, encoding="utf-8")
-    proc = _run(["--not-a-flag", "x", "--refined", str(out_r), "--report", str(out_p)])
-    assert proc.returncode == 2
-    assert proc.stderr.strip() != ""
-    assert out_r.read_text(encoding="utf-8") == marker
-    assert out_p.read_text(encoding="utf-8") == marker
-
-
-def test_duplicate_peak_id_is_fatal_before_emit():
-    """Duplicate peak_id values exit 2 and must not create refined/report paths."""
-    _restore_live_policy()
-    _rebuild()
-    lines = PEAKS.read_text(encoding="utf-8").splitlines()
-    cols = lines[2].split(",")
-    cols[0] = lines[1].split(",")[0]
-    lines[2] = ",".join(cols)
-    bad = Path("/tmp/ndref-dup-peaks.csv")
-    bad.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    out_r = Path("/tmp/ndref-dup-refined.json")
-    out_p = Path("/tmp/ndref-dup-report.json")
-    if out_r.exists():
-        out_r.unlink()
-    if out_p.exists():
-        out_p.unlink()
-    proc = _run(
-        [
-            "--peaks",
-            str(bad),
-            "--config",
-            str(SEALED),
-            "--refined",
-            str(out_r),
-            "--report",
-            str(out_p),
-        ]
+def test_candidate_identity_cannot_read_private_verifier(tmp_path: Path) -> None:
+    """Confirm the candidate's runtime identity cannot inspect the private oracle."""
+    make_accessible(tmp_path)
+    probe = subprocess.run(
+        ["/bin/sh", "-c", "test ! -r /tests/test_outputs.py"],
+        cwd=tmp_path,
+        env={"PATH": "/usr/bin:/bin", "HOME": "/tmp", "LANG": "C.UTF-8"},
+        user=65534,
+        group=65534,
+        extra_groups=[],
+        check=False,
     )
-    assert proc.returncode == 2
-    assert not out_r.exists()
-    assert not out_p.exists()
+    assert probe.returncode == 0
 
 
-def test_intensity_floor_admit_keeps_bright_extinct_peak():
-    """Under intensity_floor admit_mode, an extinct peak above the floor stays admitted."""
-    _restore_live_policy()
-    _rebuild()
-    pol = {
-        **SHIPPED,
-        "admit_mode": "intensity_floor",
-        "extinction_mode": "skip",
-        "intensity_floor": 10.0,
-        "policy_revision": "floor-only",
+def test_cli_contract_public_optimum_and_exact_schema(binary: Path, tmp_path: Path) -> None:
+    """Verify argument handling, overwrite behavior, public correctness, ordering, and the documented schema."""
+    assert run_candidate(binary, [], tmp_path / "no-args").returncode != 0
+    assert run_candidate(binary, [str(PUBLIC)], tmp_path / "one-arg").returncode != 0
+    assert run_candidate(binary, [str(PUBLIC), str(tmp_path / "unused.json"), "extra"], tmp_path / "extra-arg").returncode != 0
+    output_path = tmp_path / "public-output" / "partition-plan.json"
+    output_path.parent.mkdir()
+    output_path.parent.chmod(0o777)
+    output_path.write_text('{"stale":true}\n')
+    output_path.chmod(0o666)
+    completed = run_candidate(binary, [str(PUBLIC), str(output_path)], tmp_path)
+    assert completed.returncode == 0, completed.stderr
+    actual = json.loads(output_path.read_text())
+    expected = reference_plan(load_bundle(PUBLIC))
+    assert actual == expected
+    assert set(actual) == {"workload_id", "status", "placements", "boundaries", "provider_resources", "metrics"}
+    assert [row["node_id"] for row in actual["placements"]] == [row["id"] for row in load_bundle(PUBLIC)[0]["nodes"]]
+    assert [row["edge_id"] for row in actual["boundaries"]] == [row["id"] for row in load_bundle(PUBLIC)[0]["edges"]]
+    for name, expected_hash in PUBLIC_HASHES.items():
+        assert hashlib.sha256((PUBLIC / name).read_bytes()).hexdigest() == expected_hash
+
+
+def test_hidden_security_compatibility_matrix(binary: Path, tmp_path: Path) -> None:
+    """Exercise trust, attestation, encryption, key capacity, ordering, resource, and enclave variations."""
+    variants = []
+    for variant_index in range(10):
+        bundle = synthetic_bundle(5 + variant_index % 3)
+        graph, providers, policy = bundle
+        graph["workload_id"] = f"matrix-{variant_index}"
+        if variant_index == 0:
+            graph["enclave_groups"] = [["n1", "n2"]]
+        elif variant_index == 1:
+            graph["nodes"][2]["classification"] = "secret"
+            policy["max_remote_nodes"] = 4
+        elif variant_index == 2:
+            providers["providers"][1]["memory_bytes"] = 480
+        elif variant_index == 3:
+            policy["max_path_exposure_ppm"] = 10
+        elif variant_index == 4:
+            policy["max_transfers"] = 0
+            policy["max_conversions"] = 1
+        elif variant_index == 5:
+            policy["placement_rules"] = [{"node_id": "n3", "allowed_provider_ids": ["alpha"], "allowed_modes": ["fp32"]}]
+        elif variant_index == 6:
+            policy["allowed_provider_ids"] = ["beta", "alpha"]
+        elif variant_index == 7:
+            providers["providers"].reverse()
+        elif variant_index == 8:
+            providers["providers"][1]["attestation_epoch"] = 7
+            providers["providers"][0]["key_slots"] = 1
+        else:
+            graph["edges"][1]["tensor_bytes"] = 4097
+            graph["edges"][0]["sensitivity"] = "public"
+            for transfer in providers["transfers"]:
+                transfer["encrypted"] = False
+        variants.append(bundle)
+    for index, bundle in enumerate(variants):
+        case_dir = tmp_path / f"case-{index}"
+        assert invoke(binary, bundle, case_dir) == reference_plan(bundle)
+
+
+def test_path_exposure_uses_predecessor_max_and_boundary_exposure(binary: Path, tmp_path: Path) -> None:
+    """Distinguish path exposure from global summation across independent graph branches."""
+    graph, providers, policy = synthetic_bundle(5)
+    graph["workload_id"] = "branched-exposure"
+    graph["edges"] = [
+        {"id": "left", "from": "n0", "to": "n2", "sensitivity": "restricted", "tensor_bytes": 1025},
+        {"id": "right", "from": "n1", "to": "n2", "sensitivity": "restricted", "tensor_bytes": 2048},
+        {"id": "tail1", "from": "n2", "to": "n3", "sensitivity": "restricted", "tensor_bytes": 3073},
+        {"id": "tail2", "from": "n3", "to": "n4", "sensitivity": "restricted", "tensor_bytes": 2048},
+    ]
+    policy["max_path_exposure_ppm"] = 14
+    actual = invoke(binary, (graph, providers, policy), tmp_path)
+    assert actual == reference_plan((graph, providers, policy))
+    assert actual["metrics"]["path_exposure_ppm"] <= 14
+
+
+def test_encrypted_boundaries_consume_endpoint_key_slots(binary: Path, tmp_path: Path) -> None:
+    """Prove encrypted restricted-data crossings need capacity at both attested endpoints."""
+    graph, providers, policy = synthetic_bundle(4)
+    graph["workload_id"] = "endpoint-key-accounting"
+    policy["max_remote_nodes"] = 0
+    policy["max_transfers"] = 3
+    policy["max_conversions"] = 0
+    policy["placement_rules"] = [
+        {"node_id": "n0", "allowed_provider_ids": ["alpha"], "allowed_modes": ["fp32"]},
+        {"node_id": "n1", "allowed_provider_ids": ["beta"], "allowed_modes": ["fp32"]},
+        {"node_id": "n2", "allowed_provider_ids": ["alpha"], "allowed_modes": ["fp32"]},
+        {"node_id": "n3", "allowed_provider_ids": ["beta"], "allowed_modes": ["fp32"]},
+    ]
+    providers["providers"][0]["key_slots"] = 2
+    providers["providers"][1]["key_slots"] = 2
+    assert invoke(binary, (graph, providers, policy), tmp_path / "short") == {
+        "workload_id": "endpoint-key-accounting", "status": "unsatisfied", "placements": [],
+        "boundaries": [], "provider_resources": [], "metrics": None,
     }
-    cfg = Path("/tmp/ndref-floor.toml")
-    cfg.write_text(_toml(pol), encoding="utf-8")
-    peaks = load_peaks(PEAKS.read_text(encoding="utf-8"))
-    for peak in peaks:
-        if peak["peak_id"] == "P09":
-            peak["intensity"] = 40.0
-            peak["extinct_flag"] = 1
-    peak_path = Path("/tmp/ndref-floor-peaks.csv")
-    _write_peaks(peak_path, peaks)
-    instr = json.loads(INSTR.read_text(encoding="utf-8"))
-    exp_ref, exp_rep = expect_pack(peaks, instr, "orthorhombic", pol)
-    out_r = Path("/tmp/ndref-floor-refined.json")
-    out_p = Path("/tmp/ndref-floor-report.json")
-    proc = _run(
-        [
-            "--peaks",
-            str(peak_path),
-            "--config",
-            str(cfg),
-            "--refined",
-            str(out_r),
-            "--report",
-            str(out_p),
-        ]
-    )
-    assert proc.returncode == (0 if exp_rep["rejected_count"] == 0 else 1)
-    got = json.loads(out_p.read_text(encoding="utf-8"))
-    assert "P09" not in got["rejected_ids"]
-    assert got["refine_digest"] == exp_rep["refine_digest"]
-    assert abs(json.loads(out_r.read_text(encoding="utf-8"))["a_A"] - exp_ref["a_A"]) < 1e-8
+
+    providers["providers"][0]["key_slots"] = 3
+    providers["providers"][1]["key_slots"] = 3
+    feasible = invoke(binary, (graph, providers, policy), tmp_path / "exact")
+    assert feasible == reference_plan((graph, providers, policy))
+    assert feasible["metrics"]["encrypted_transfer_count"] == 3
+    assert feasible["metrics"]["max_provider_key_slots_used"] == 3
+
+    for transfer in providers["transfers"]:
+        if transfer["from_provider"] == "beta" and transfer["to_provider"] == "alpha":
+            transfer["encrypted"] = False
+    assert invoke(binary, (graph, providers, policy), tmp_path / "plaintext") == {
+        "workload_id": "endpoint-key-accounting", "status": "unsatisfied", "placements": [],
+        "boundaries": [], "provider_resources": [], "metrics": None,
+    }
 
 
-def test_tof_outlier_refit_clears_collateral_residual_flags():
-    """After the single residual re-fit, reject flags must be refreshed against the final cell.
-
-    A +80 us TOF bump on P07 can make collateral peaks look bad on the first fit; once P07
-    is excluded and the cell is re-solved, those collateral peaks must clear if they now
-    pass residual_sigma_max. Sticky first-pass residual rejects are incorrect.
-    """
-    _restore_live_policy()
-    _rebuild()
-    peaks = load_peaks(PEAKS.read_text(encoding="utf-8"))
-    for peak in peaks:
-        if peak["peak_id"] == "P07":
-            peak["tof_us"] += 80.0
-    peak_path = Path("/tmp/ndref-outlier-peaks.csv")
-    _write_peaks(peak_path, peaks)
-    instr = json.loads(INSTR.read_text(encoding="utf-8"))
-    _, exp_rep = expect_pack(peaks, instr, "orthorhombic", SHIPPED)
-    assert exp_rep["rejected_ids"] == ["P07", "P09"]
-    assert "P01" not in exp_rep["rejected_ids"]
-    out_r = Path("/tmp/ndref-outlier-refined.json")
-    out_p = Path("/tmp/ndref-outlier-report.json")
-    proc = _run(
-        [
-            "--peaks",
-            str(peak_path),
-            "--config",
-            str(SEALED),
-            "--refined",
-            str(out_r),
-            "--report",
-            str(out_p),
-        ]
-    )
-    assert proc.returncode == 1
-    got = json.loads(out_p.read_text(encoding="utf-8"))
-    assert got["rejected_ids"] == ["P07", "P09"]
-    assert "P01" not in got["rejected_ids"]
-    by_id = {row["peak_id"]: row for row in got["residuals"]}
-    assert by_id["P01"]["rejected"] is False
-    assert by_id["P07"]["rejected"] is True
-    assert by_id["P09"]["rejected"] is True
-    assert got["refine_digest"] == exp_rep["refine_digest"]
+def test_unsatisfied_shape_for_security_constraint_conflict(binary: Path, tmp_path: Path) -> None:
+    """Require the canonical empty result when enclave, trust, placement, and memory constraints conflict."""
+    graph, providers, policy = synthetic_bundle(4)
+    graph["workload_id"] = "unsatisfied-enclave"
+    graph["enclave_groups"] = [["n0", "n1", "n2"]]
+    graph["nodes"][0]["classification"] = "secret"
+    providers["providers"][0]["memory_bytes"] = 200
+    providers["providers"][1]["memory_bytes"] = 200
+    policy["placement_rules"] = [{"node_id": "n1", "allowed_provider_ids": ["remote"], "allowed_modes": ["fp16"]}]
+    actual = invoke(binary, (graph, providers, policy), tmp_path)
+    assert actual == {
+        "workload_id": "unsatisfied-enclave", "status": "unsatisfied", "placements": [],
+        "boundaries": [], "provider_resources": [], "metrics": None,
+    }
 
 
-def test_hexagonal_metric_recovers_locked_angles():
-    """Hexagonal 4/3 Q-rows recover a/c with locked angles; digest uses canonical zero text."""
-    _restore_live_policy()
-    _rebuild()
-    a_true, c_true = 3.2, 5.1
-    h_js = SHIPPED["h_js"]
-    m_n = SHIPPED["m_n_kg"]
-    instr = {"L1_m": 10.0, "L2_m": 2.0, "two_theta_deg": 90.0, "pulse_offset_us": 10.0}
-    path_m = instr["L1_m"] + instr["L2_m"]
-    sin_theta = math.sin(math.radians(instr["two_theta_deg"] / 2.0))
-    miller = [(1, 0, 0), (1, 0, 1), (1, 1, 0), (0, 0, 2), (2, 0, 1), (1, 1, 2)]
-    peaks: list[dict[str, Any]] = []
-    for idx, (h, k, ell) in enumerate(miller, 1):
-        q = (4.0 / 3.0) * (h * h + h * k + k * k) / (a_true * a_true) + (ell * ell) / (
-            c_true * c_true
-        )
-        d_a = 1.0 / math.sqrt(q)
-        t_s = (d_a * 1e-10) * 2.0 * path_m * sin_theta * m_n / h_js
-        peaks.append(
+def test_complete_plan_tie_break_and_nonlocal_tradeoffs(binary: Path, tmp_path: Path) -> None:
+    """Check full-sequence canonicalization when startup, memory, transfer, conversion, and local latency choices interact."""
+    graph, providers, policy = synthetic_bundle(12)
+    graph["workload_id"] = "coupled-tie-break"
+    graph["enclave_groups"] = [["n2", "n3"], ["n7", "n8"]]
+    providers["providers"][0]["memory_bytes"] = 1750
+    providers["providers"][1]["memory_bytes"] = 1900
+    policy["max_path_exposure_ppm"] = 24
+    policy["max_remote_nodes"] = 0
+    policy["max_transfers"] = 3
+    policy["max_conversions"] = 3
+    actual = invoke(binary, (graph, providers, policy), tmp_path)
+    assert actual == reference_plan((graph, providers, policy))
+    assert actual["status"] == "ok"
+
+
+def test_maximum_size_search_with_coupled_budgets(binary: Path, tmp_path: Path) -> None:
+    """Force exact optimization over maximum-size coupled and symmetry-heavy search spaces."""
+    graph, providers, policy = synthetic_bundle(18)
+    graph["workload_id"] = "maximum-coupled-search"
+    providers["providers"][0]["memory_bytes"] = 3200
+    providers["providers"][1]["memory_bytes"] = 3200
+    providers["providers"][2]["memory_bytes"] = 4000
+    policy["max_path_exposure_ppm"] = 45
+    policy["max_remote_nodes"] = 3
+    policy["max_transfers"] = 5
+    policy["max_conversions"] = 5
+    actual = invoke(binary, (graph, providers, policy), tmp_path)
+    expected = reference_plan((graph, providers, policy))
+    assert actual == expected
+    assert actual["status"] == "ok"
+    assert set(actual["metrics"]) == {
+        "node_latency_us", "boundary_latency_us", "startup_latency_us", "total_latency_us",
+        "path_exposure_ppm", "max_provider_memory_bytes", "max_provider_key_slots_used",
+        "transfer_count", "conversion_count", "encrypted_transfer_count", "remote_node_count",
+    }
+
+    symmetric_graph = {
+        "workload_id": "maximum-symmetric-search",
+        "nodes": [
+            {"id": f"s{i}", "op": "Unit", "classification": "public", "output_bytes": 1}
+            for i in range(18)
+        ],
+        "edges": [],
+        "enclave_groups": [[f"s{i}", f"s{i + 1}", f"s{i + 2}"] for i in range(0, 18, 3)],
+    }
+    symmetric_providers = {
+        "providers": [
             {
-                "peak_id": f"H{idx:02d}",
-                "h": h,
-                "k": k,
-                "l": ell,
-                "tof_us": t_s * 1e6 + instr["pulse_offset_us"],
-                "intensity": 200.0,
-                "sigma_tof": 2.0,
-                "extinct_flag": 0,
+                "id": provider_id,
+                "memory_bytes": 100,
+                "startup_us": 0,
+                "remote": False,
+                "trust_level": 0,
+                "attestation_epoch": 1,
+                "key_slots": 0,
+                "capabilities": [{"op": "Unit", "modes": [
+                    {"name": mode_name, "latency_us": 0, "workspace_bytes": 0, "exposure_ppm": 0}
+                    for mode_name in mode_names
+                ]}],
             }
-        )
-    peak_path = Path("/tmp/ndref-hex-peaks.csv")
-    _write_peaks(peak_path, peaks)
-    instr_path = Path("/tmp/ndref-hex-instrument.json")
-    instr_path.write_text(json.dumps(instr, indent=2) + "\n", encoding="utf-8")
-    struct_path = Path("/tmp/ndref-hex-structure.json")
-    struct_path.write_text(
-        json.dumps(
+            for provider_id, mode_names in (("alpha", ("m0", "m1")), ("beta", ("m0", "m1")), ("gamma", ("m0",)))
+        ],
+        "transfers": [],
+        "conversions": [],
+    }
+    symmetric_policy = {
+        "allowed_provider_ids": ["gamma", "beta", "alpha"],
+        "minimum_trust": {"public": 0, "restricted": 1, "secret": 2},
+        "minimum_attestation_epoch": 1,
+        "max_path_exposure_ppm": 0,
+        "max_remote_nodes": 0,
+        "max_transfers": 0,
+        "max_conversions": 0,
+        "placement_rules": [],
+    }
+    symmetric_bundle = (symmetric_graph, symmetric_providers, symmetric_policy)
+    symmetric_actual = invoke(binary, symmetric_bundle, tmp_path / "symmetric")
+    assert symmetric_actual == reference_plan(symmetric_bundle)
+    assert symmetric_actual["placements"] == [
+        {
+            "node_id": f"s{i}",
+            "provider_id": "alpha" if i < 6 else "beta" if i < 12 else "gamma",
+            "mode": "m0",
+        }
+        for i in range(18)
+    ]
+
+
+def test_compatible_bounds_unicode_tie_and_int64_values(binary: Path, tmp_path: Path) -> None:
+    """Cover one-node graphs, one-to-four providers, Unicode ties, empty edges, and values beyond 32-bit range."""
+    graph = {
+        "workload_id": "bounds-and-unicode",
+        "nodes": [{"id": "only", "op": "Unit", "classification": "public", "output_bytes": 4_294_967_300}],
+        "edges": [],
+        "enclave_groups": [],
+    }
+    mode = {"name": "fp32", "latency_us": 4_294_967_300, "workspace_bytes": 20, "exposure_ppm": 0}
+    providers = {
+        "providers": [
             {
-                "a_A": 3.25,
-                "b_A": 3.25,
-                "c_A": 5.20,
-                "alpha_deg": 90.0,
-                "beta_deg": 90.0,
-                "gamma_deg": 120.0,
-                "crystal_system": "hexagonal",
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    _, exp_rep = expect_pack(peaks, instr, "hexagonal", SHIPPED)
-    out_r = Path("/tmp/ndref-hex-refined.json")
-    out_p = Path("/tmp/ndref-hex-report.json")
-    proc = _run(
-        [
-            "--peaks",
-            str(peak_path),
-            "--instrument",
-            str(instr_path),
-            "--structure",
-            str(struct_path),
-            "--config",
-            str(SEALED),
-            "--refined",
-            str(out_r),
-            "--report",
-            str(out_p),
-        ]
-    )
-    assert proc.returncode == 0, proc.stderr
-    raw_rep = out_p.read_text(encoding="utf-8")
-    got_ref = json.loads(out_r.read_text(encoding="utf-8"))
-    got_rep = json.loads(raw_rep)
-    assert abs(got_ref["a_A"] - a_true) < 1e-6
-    assert abs(got_ref["c_A"] - c_true) < 1e-6
-    assert got_ref["gamma_deg"] == 120.0
-    assert got_rep["refine_digest"] == exp_rep["refine_digest"]
-    assert got_rep["rejected_count"] == 0
-    assert "-0.0000000000" not in raw_rep
+                "id": provider_id,
+                "memory_bytes": 5_000_000_000,
+                "startup_us": 0,
+                "remote": False,
+                "trust_level": 3,
+                "attestation_epoch": 9,
+                "key_slots": 0,
+                "capabilities": [{"op": "Unit", "modes": [copy.deepcopy(mode)]}],
+            }
+            for provider_id in ("βeta", "éclair", "zeta", "alpha")
+        ],
+        "transfers": [],
+        "conversions": [],
+    }
+    policy = {
+        "allowed_provider_ids": ["éclair", "zeta", "βeta", "alpha"],
+        "minimum_trust": {"public": 0, "restricted": 2, "secret": 3},
+        "minimum_attestation_epoch": 8,
+        "max_path_exposure_ppm": 0,
+        "max_remote_nodes": 0,
+        "max_transfers": 0,
+        "max_conversions": 0,
+        "placement_rules": [],
+    }
+    four_provider_bundle = (graph, providers, policy)
+    actual = invoke(binary, four_provider_bundle, tmp_path / "four")
+    assert actual == reference_plan(four_provider_bundle)
+    assert actual["placements"] == [{"node_id": "only", "provider_id": "alpha", "mode": "fp32"}]
+    assert actual["boundaries"] == []
+    assert actual["metrics"]["total_latency_us"] == 4_294_967_300
+
+    one_provider_graph = copy.deepcopy(graph)
+    one_provider_graph["workload_id"] = "one-provider-bound"
+    one_provider_doc = copy.deepcopy(providers)
+    one_provider_doc["providers"] = [one_provider_doc["providers"][0]]
+    one_provider_doc["providers"][0]["capabilities"][0]["modes"] = [
+        {**copy.deepcopy(mode), "name": "zmode"},
+        {**copy.deepcopy(mode), "name": "amode"},
+    ]
+    one_provider_policy = copy.deepcopy(policy)
+    one_provider_policy["allowed_provider_ids"] = ["βeta"]
+    one_provider_policy["placement_rules"] = [
+        {"node_id": "only", "allowed_provider_ids": ["βeta"], "allowed_modes": ["zmode", "amode"]}
+    ]
+    one_provider_bundle = (one_provider_graph, one_provider_doc, one_provider_policy)
+    one_provider_actual = invoke(binary, one_provider_bundle, tmp_path / "one")
+    assert one_provider_actual == reference_plan(one_provider_bundle)
+    assert one_provider_actual["placements"] == [{"node_id": "only", "provider_id": "βeta", "mode": "amode"}]
 
 
-def test_orthorhombic_angle_lock_violation_is_fatal():
-    """Reference orthorhombic cells with unlocked beta exit 2 without writing artifacts."""
-    _restore_live_policy()
-    _rebuild()
-    bad = Path("/tmp/ndref-bad-angles.json")
-    bad.write_text(
-        json.dumps(
+def test_transfer_ceiling_is_safe_at_signed_int64_limit(binary: Path, tmp_path: Path) -> None:
+    """Require overflow-safe KiB ceiling arithmetic for the documented signed-64-bit domain."""
+    maximum_int64 = (1 << 63) - 1
+    graph = {
+        "workload_id": "int64-transfer-ceiling",
+        "nodes": [
+            {"id": "source", "op": "Block", "classification": "restricted", "output_bytes": 1},
+            {"id": "sink", "op": "Block", "classification": "restricted", "output_bytes": 1},
+        ],
+        "edges": [
             {
-                "a_A": 5.0,
-                "b_A": 5.1,
-                "c_A": 5.2,
-                "alpha_deg": 90.0,
-                "beta_deg": 91.0,
-                "gamma_deg": 90.0,
-                "crystal_system": "orthorhombic",
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    out_r = Path("/tmp/ndref-badang-refined.json")
-    out_p = Path("/tmp/ndref-badang-report.json")
-    if out_r.exists():
-        out_r.unlink()
-    if out_p.exists():
-        out_p.unlink()
-    proc = _run(
-        [
-            "--structure",
-            str(bad),
-            "--config",
-            str(SEALED),
-            "--refined",
-            str(out_r),
-            "--report",
-            str(out_p),
-        ]
-    )
-    assert proc.returncode == 2
-    assert not out_r.exists()
-    assert not out_p.exists()
-
-
-def test_flag_permutation_matches_canonical_digest():
-    """Flag order must not change exit status or refine_digest on the sample pack."""
-    _restore_live_policy()
-    _rebuild()
-    out_r = Path("/tmp/ndref-order-refined.json")
-    out_p = Path("/tmp/ndref-order-report.json")
-    proc = _run(
-        [
-            "--report",
-            str(out_p),
-            "--config",
-            str(SEALED),
-            "--refined",
-            str(out_r),
-            "--structure",
-            str(STRUCT),
-            "--instrument",
-            str(INSTR),
-            "--peaks",
-            str(PEAKS),
-        ]
-    )
-    assert proc.returncode == 1
-    assert proc.stdout == ""
-    peaks = load_peaks(PEAKS.read_text(encoding="utf-8"))
-    instr = json.loads(INSTR.read_text(encoding="utf-8"))
-    _, exp_rep = expect_pack(peaks, instr, "orthorhombic", SHIPPED)
-    got = json.loads(out_p.read_text(encoding="utf-8"))
-    assert got["refine_digest"] == exp_rep["refine_digest"]
-
-
-def test_admitted_and_reject_paths_keep_stdout_empty():
-    """Exit 0/1 paths must leave stdout empty while still writing both artifacts."""
-    _restore_live_policy()
-    _rebuild()
-    out_r = Path("/tmp/ndref-stdout-refined.json")
-    out_p = Path("/tmp/ndref-stdout-report.json")
-    proc = _run(["--config", str(SEALED), "--refined", str(out_r), "--report", str(out_p)])
-    assert proc.returncode in (0, 1)
-    assert proc.stdout == ""
-    assert out_r.exists() and out_p.exists()
-
-
-def test_digest_tracks_refined_cell_not_reference_guess():
-    """refine_digest must reflect the fitted cell, not the scratched reference lengths."""
-    _restore_live_policy()
-    _rebuild()
-    out_r = Path("/tmp/ndref-mut-refined.json")
-    out_p = Path("/tmp/ndref-mut-report.json")
-    proc = _run(["--config", str(SEALED), "--refined", str(out_r), "--report", str(out_p)])
-    assert proc.returncode == 1
-    peaks = load_peaks(PEAKS.read_text(encoding="utf-8"))
-    instr = json.loads(INSTR.read_text(encoding="utf-8"))
-    _, exp_rep = expect_pack(peaks, instr, "orthorhombic", SHIPPED)
-    got = json.loads(out_p.read_text(encoding="utf-8"))
-    assert got["refine_digest"] == exp_rep["refine_digest"]
-    assert got["a_A"] != 5.15
+                "id": "large-tensor",
+                "from": "source",
+                "to": "sink",
+                "sensitivity": "restricted",
+                "tensor_bytes": maximum_int64,
+            }
+        ],
+        "enclave_groups": [],
+    }
+    mode = {"name": "exact", "latency_us": 0, "workspace_bytes": 0, "exposure_ppm": 0}
+    providers = {
+        "providers": [
+            {
+                "id": provider_id,
+                "memory_bytes": 10,
+                "startup_us": 0,
+                "remote": False,
+                "trust_level": 2,
+                "attestation_epoch": 1,
+                "key_slots": 1,
+                "capabilities": [{"op": "Block", "modes": [copy.deepcopy(mode)]}],
+            }
+            for provider_id in ("left", "right")
+        ],
+        "transfers": [
+            {
+                "from_provider": "left",
+                "to_provider": "right",
+                "encrypted": True,
+                "fixed_us": 0,
+                "per_kib_us": 1,
+                "exposure_ppm": 0,
+            }
+        ],
+        "conversions": [],
+    }
+    policy = {
+        "allowed_provider_ids": ["left", "right"],
+        "minimum_trust": {"public": 0, "restricted": 2, "secret": 3},
+        "minimum_attestation_epoch": 1,
+        "max_path_exposure_ppm": 0,
+        "max_remote_nodes": 0,
+        "max_transfers": 1,
+        "max_conversions": 0,
+        "placement_rules": [
+            {"node_id": "source", "allowed_provider_ids": ["left"], "allowed_modes": ["exact"]},
+            {"node_id": "sink", "allowed_provider_ids": ["right"], "allowed_modes": ["exact"]},
+        ],
+    }
+    bundle = (graph, providers, policy)
+    actual = invoke(binary, bundle, tmp_path)
+    expected_ceiling = maximum_int64 // 1024 + 1
+    assert actual == reference_plan(bundle)
+    assert actual["boundaries"][0]["latency_us"] == expected_ceiling
+    assert actual["metrics"]["boundary_latency_us"] == expected_ceiling

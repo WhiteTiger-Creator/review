@@ -6,6 +6,8 @@
 **/.mypy_cache/
 **/.ruff_cache/
 **/node_modules/
-solution/
+**/bin/
+**/out/
 tests/
-*.log
+solution/
+.env
