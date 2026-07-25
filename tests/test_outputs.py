@@ -1,769 +1,481 @@
-import os
-import re
-import subprocess
-import sys
+#!/usr/bin/env python3
+"""Verifier for WireGuard peer mesh reconciliation plan output."""
+
+from __future__ import annotations
+
+import hashlib
+import ipaddress
+import json
+import math
+from collections import defaultdict
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(__file__))
-import reference as ref
+INVENTORY = Path("/app/inventory")
+OUTPUT = Path("/app/output/mesh_plan.json")
+CONTRACT = Path("/app/docs/mesh-ops-policy.md")
+PROFILE = Path("/app/config/profiles/mesh-core/ops.toml")
+PROFILE_NAME = Path("/app/config/profile.name")
 
-APP = "/app"
-BIN = os.path.join(APP, "resolve")
-RV = "v1.0.0"  # root edges are always active regardless of this label
+T0 = 1720000000
+GRACE = 1800
+RUN_ID = "wireguard-peer-mesh-v1"
+KEEPALIVE_FLOOR = 15
+CORRECT_SEAL = "5f0a62ba49ac1be3f92f94c519f278948327d68894b341dd884124e1894c6d21"
 
-PUBLIC = ref.load_battery("public.jsonl")
-HIDDEN = ref.load_battery("hidden.jsonl")
-ALL = PUBLIC + HIDDEN
-
-FULL_INPUT = "".join(rec["scenario"].rstrip("\n") + "\n" for rec in ALL)
-EXPECTED = [line for rec in ALL for line in rec["expected"]]
-PUB_ROWS = sum(len(r["expected"]) for r in PUBLIC)
-
-# Ordered parse of the whole stream, preserving RESET boundaries.
-SCEN = ref.parse_stream(FULL_INPUT)
-REF_STREAM = ref.pinned_stream(SCEN)
-PS_LINES = ref.per_scenario_stream(SCEN)
-FL_LINES = ref.flat_stream(SCEN)
-IL_LINES = ref.ignore_lock_stream(SCEN)
-CI_LINES = ref.cap_ignore_stream(SCEN)
-NR_LINES = ref.no_retract_stream(SCEN)
-NC_LINES = ref.no_cap_carry_stream(SCEN)
-
-# Row identity (sid, module) for each output line, in order.
-ROWMETA = [{"sid": sc["sid"], "mod": m} for sc in SCEN for m in ref.qmods(sc)]
-
-# Naive readings that must each be wrong: independent per-scenario resolution
-# (no carry), textbook flatten, dropping the lock floor, ignoring the CAP
-# ceilings entirely, and detecting conflicts without retracting dependents.
-PER_TRAPS = [i for i in range(len(EXPECTED)) if PS_LINES[i] != REF_STREAM[i]]
-FLAT_TRAPS = [i for i in range(len(EXPECTED)) if FL_LINES[i] != REF_STREAM[i]]
-LOCK_TRAPS = [i for i in range(len(EXPECTED)) if IL_LINES[i] != REF_STREAM[i]]
-CAP_TRAPS = [i for i in range(len(EXPECTED)) if CI_LINES[i] != REF_STREAM[i]]
-RETRACT_TRAPS = [i for i in range(len(EXPECTED)) if NR_LINES[i] != REF_STREAM[i]]
-SCAR_TRAPS = [i for i in range(len(EXPECTED)) if NC_LINES[i] != REF_STREAM[i]]
+INVENTORY_SHA256 = {
+    "endpoints/e01.json": "5323bd6d159e048be4fbafcc09f4e680e1210c963e2704350eae9d3e747b2dbb",
+    "meshes/m01.json": "05796e3379203ef1d92aa6d4c25d2cb8acc1f6547c31c3f02fd4f8d4d4d383fd",
+    "peers/p01.json": "b133dc92a8d0cf41e26d9c25c94f09b50cf34256a46054461103b0e37cbdf2e6",
+    "peers/p02.json": "ef4453e3b9f489ec1c77599b798e5556390c8b15732831fd7202fcae3d161c5e",
+    "peers/p03.json": "ebf8b3a953989442b86e88e7188105f1489e4079b390767fd075eeb30df5907b",
+    "peers/p04.json": "a84b0e3ee6d33f4befdb46e6ec4bc7e88e6858539f59f84bab0daad5293cf912",
+    "peers/p05.json": "f776eb779dbbf5b8d44660cf16cfa4b3914b2002297d418ec62044da3b65a65d",
+    "peers/p06.json": "21bc33790aec553462d3fd08b526145474e17d2d69f95cd7d7ae8eedc4cf1e13",
+    "peers/p07.json": "f1a829485ab90e58a06e69c5248b13ec15e6af2b51ab0c0bb1ae12a40aedb20e",
+    "peers/p08.json": "0b091ab8ad925e1ba924f8f0c82212c787614d95e763fe53d88f590eb9bf64a0",
+    "peers/p09.json": "92c6992e35a31aa38da1e7028985736f65bd548234e9d8e94c2c1cf5f9de3d54",
+    "peers/p10.json": "30f7664645f14ae587ccf439bf363f16e27891ca8b654636284483f6ea18c36f",
+    "peers/p11.json": "ba1ad727288cb2b978909eab6245b161c81e5367e9fbde1251072ff1294447bb",
+    "peers/p12.json": "56e55261945eb6a1c1c604d03dc86c1f0d5c7c6103948fb3eed321cdc5bd1965",
+    "peers/p13.json": "405dfa588ae1712d0949b82ae88ad1ed77d39e7e8aac17e4725c30dd13582ced",
+    "peers/p14.json": "ea10748fc52a9ea9526303ae718c58cbafba79905b2d6dacfa92a1b88515f627",
+    "peers/p15.json": "5837c588fe2f46f405ae329712f2215d69b2e101c31669fcc2f87922a257a14f",
+    "peers/p16.json": "dca7fb3da4a09d5761f0103e7e7d7f29203012ad4b35649b6d7e5533cb6aa30d",
+    "peers/p17.json": "c18f3d04cd58fae4a0bccf41876d8b376bc4aafe8eb4313a421538626973971f",
+    "peers/p18.json": "d682f88beb1558220968987ba9bf73b2966c1c043d57447c5d786c07cddbe5e1",
+}
 
 
-def _build():
-    r = subprocess.run(["make", "-C", APP], capture_output=True, text=True, check=False)
-    return r.returncode == 0 and os.path.exists(BIN)
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-BUILT = _build()
+def _half_away_round(x: float) -> int:
+    """Match Go math.Round (half away from zero)."""
+    if x >= 0:
+        return math.floor(x + 0.5)
+    return math.ceil(x - 0.5)
 
 
-def _run(text):
-    r = subprocess.run(
-        [BIN], input=text, capture_output=True, text=True, timeout=120, check=False
+def _config_seal(
+    grace: int,
+    allow_disabled: bool,
+    soft_conflict: bool,
+    prefer_keepalive: bool,
+    dual_iface: bool,
+) -> str:
+    payload = (
+        f"run_id={RUN_ID}\n"
+        f"ops_epoch={T0}\n"
+        f"handshake_grace_sec={grace}\n"
+        f"allow_disabled={'true' if allow_disabled else 'false'}\n"
+        f"soft_peer_conflict={'true' if soft_conflict else 'false'}\n"
+        f"prefer_keepalive={'true' if prefer_keepalive else 'false'}\n"
+        f"dual_iface_link={'true' if dual_iface else 'false'}\n"
     )
-    return r.stdout.splitlines()
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
-ACTUAL = _run(FULL_INPUT) if BUILT else []
+def _load_corpus():
+    meshes = {
+        n["mesh_id"]: n
+        for n in json.loads((INVENTORY / "meshes" / "m01.json").read_text())["nets"]
+    }
+    endpoints = json.loads((INVENTORY / "endpoints" / "e01.json").read_text())[
+        "endpoints"
+    ]
+    peers = []
+    for path in sorted((INVENTORY / "peers").glob("*.json")):
+        peers.append(json.loads(path.read_text()))
+    return meshes, endpoints, peers
 
 
-# -- committed data is internally consistent ---------------------------------
-
-
-def test_binary_built():
-    """The agent program builds and produces an executable."""
-    assert BUILT, "make did not produce /app/resolve"
-
-
-def test_committed_expected_is_reference_stream():
-    """Committed expected equals the independently recomputed streamed answer."""
-    assert EXPECTED == REF_STREAM
-
-
-def test_total_row_count():
-    """The program emits exactly one line per distinct queried module."""
-    assert len(ACTUAL) == len(EXPECTED)
-
-
-def test_full_battery_matches():
-    """Every battery row matches the committed expected line exactly."""
-    assert ACTUAL == EXPECTED
-
-
-def _chunk(k, n=10):
-    lo = (len(EXPECTED) * k) // n
-    hi = (len(EXPECTED) * (k + 1)) // n
-    assert ACTUAL[lo:hi] == EXPECTED[lo:hi]
-
-
-def test_chunk_0():
-    """Battery rows in the first decile match exactly."""
-    _chunk(0)
-
-
-def test_chunk_1():
-    """Battery rows in the second decile match exactly."""
-    _chunk(1)
-
-
-def test_chunk_2():
-    """Battery rows in the third decile match exactly."""
-    _chunk(2)
-
-
-def test_chunk_3():
-    """Battery rows in the fourth decile match exactly."""
-    _chunk(3)
-
-
-def test_chunk_4():
-    """Battery rows in the fifth decile match exactly."""
-    _chunk(4)
-
-
-def test_chunk_5():
-    """Battery rows in the sixth decile match exactly."""
-    _chunk(5)
-
-
-def test_chunk_6():
-    """Battery rows in the seventh decile match exactly."""
-    _chunk(6)
-
-
-def test_chunk_7():
-    """Battery rows in the eighth decile match exactly."""
-    _chunk(7)
-
-
-def test_chunk_8():
-    """Battery rows in the ninth decile match exactly."""
-    _chunk(8)
-
-
-def test_chunk_9():
-    """Battery rows in the tenth decile match exactly."""
-    _chunk(9)
-
-
-def test_public_slice_matches():
-    """The public example rows resolve exactly as shipped."""
-    assert ACTUAL[:PUB_ROWS] == EXPECTED[:PUB_ROWS]
-
-
-def test_examples_match_public_sessions():
-    """Each shipped example session reproduces its public battery slice."""
-    n_sessions = sum(1 for rec in PUBLIC if rec.get("reset"))
-    files = sorted(
-        f
-        for f in os.listdir(os.path.join(APP, "data", "examples"))
-        if f.endswith(".in")
+def _in_mesh(ip: str, mesh_id: str, meshes: dict) -> bool:
+    return ipaddress.ip_address(ip) in ipaddress.ip_network(
+        meshes[mesh_id]["cidr"], strict=False
     )
-    assert len(files) == n_sessions, (len(files), n_sessions)
-    idx = 0
-    for fn in files:
-        got = _run(Path(APP, "data", "examples", fn).read_text(encoding="utf-8"))
-        outp = Path(APP, "data", "examples", fn[:-3] + ".out")
-        want = outp.read_text(encoding="utf-8").splitlines()
-        assert got == want == EXPECTED[idx : idx + len(got)]
-        idx += len(got)
 
 
-# -- identifiability: every naive reading is visibly wrong on public data -----
-
-
-def _public_diverge(kernel):
-    pub = SCEN[: len(PUBLIC)]
-    exp = ref.pinned_stream(pub)
-    got = kernel(pub)
-    return sum(1 for a, b in zip(exp, got, strict=True) if a != b)
-
-
-def test_per_scenario_diverges_on_public():
-    """Independent per-scenario resolution is wrong on several public rows."""
-    assert _public_diverge(ref.per_scenario_stream) >= 3
-
-
-def test_flat_diverges_on_public():
-    """Textbook flatten MVS is wrong on at least two public rows."""
-    assert _public_diverge(ref.flat_stream) >= 2
-
-
-def test_lock_diverges_on_public():
-    """Dropping the lock floor is wrong on a public row."""
-    assert _public_diverge(ref.ignore_lock_stream) >= 1
-
-
-def test_cap_ignore_diverges_on_public():
-    """Ignoring the CAP ceilings is wrong on several public rows."""
-    assert _public_diverge(ref.cap_ignore_stream) >= 3
-
-
-def test_no_retract_diverges_on_public():
-    """Marking conflicts without retracting dependents is wrong on public."""
-    assert _public_diverge(ref.no_retract_stream) >= 1
-
-
-def test_no_cap_carry_diverges_on_public():
-    """Treating conflict as per-scenario (no scar memory) is wrong on public."""
-    assert _public_diverge(ref.no_cap_carry_stream) >= 2
-
-
-def test_per_scenario_scores_zero():
-    """A full independent-per-scenario submission fails graded rows."""
-    assert PS_LINES != REF_STREAM
-
-
-def test_flat_scores_zero():
-    """A full textbook-flatten submission fails graded rows."""
-    assert FL_LINES != REF_STREAM
-
-
-def test_ignore_lock_scores_zero():
-    """A submission that ignores the lock floor fails graded rows."""
-    assert IL_LINES != REF_STREAM
-
-
-def test_cap_ignore_scores_zero():
-    """A submission blind to the ceilings fails graded rows."""
-    assert CI_LINES != REF_STREAM
-
-
-def test_no_retract_scores_zero():
-    """A submission that never retracts a conflicted provider fails graded rows."""
-    assert NR_LINES != REF_STREAM
-
-
-def test_no_cap_carry_scores_zero():
-    """A submission that forgets conflict scars across scenarios fails graded rows."""
-    assert NC_LINES != REF_STREAM
-
-
-def test_per_scenario_trap_fraction_in_band():
-    """Carry-sensitive rows are a substantial but bounded slice of the battery."""
-    frac = len(PER_TRAPS) / len(EXPECTED)
-    assert 0.20 <= frac <= 0.45, frac
-
-
-def test_flat_trap_fraction_in_band():
-    """Flatten-trap rows are a substantial but bounded slice of the battery."""
-    frac = len(FLAT_TRAPS) / len(EXPECTED)
-    assert 0.45 <= frac <= 0.72, frac
-
-
-def test_cap_trap_fraction_in_band():
-    """Ceiling-sensitive rows are a substantial but bounded slice of the battery."""
-    frac = len(CAP_TRAPS) / len(EXPECTED)
-    assert 0.18 <= frac <= 0.45, frac
-
-
-def test_scar_trap_fraction_in_band():
-    """Scar-sensitive rows are a real but bounded slice of the battery."""
-    frac = len(SCAR_TRAPS) / len(EXPECTED)
-    assert 0.05 <= frac <= 0.30, frac
-
-
-def test_program_correct_on_per_scenario_traps():
-    """On carry-sensitive rows the program differs from the independent pick."""
-    assert len(PER_TRAPS) >= 60
-    for i in PER_TRAPS:
-        assert ACTUAL[i] == EXPECTED[i]
-        assert ACTUAL[i] != PS_LINES[i]
-
-
-def test_program_correct_on_flat_traps():
-    """The program produces the pinned answer on every flatten-trap row."""
-    assert len(FLAT_TRAPS) >= 60
-    for i in FLAT_TRAPS:
-        assert ACTUAL[i] == EXPECTED[i]
-        assert ACTUAL[i] != FL_LINES[i]
-
-
-def test_program_correct_on_lock_traps():
-    """On lock-floor traps the chosen version differs from the no-floor pick."""
-    assert len(LOCK_TRAPS) >= 20
-    for i in LOCK_TRAPS:
-        assert ACTUAL[i] == EXPECTED[i]
-        assert ACTUAL[i] != IL_LINES[i]
-
-
-def test_program_correct_on_cap_traps():
-    """On ceiling-sensitive rows the program differs from the cap-blind pick."""
-    assert len(CAP_TRAPS) >= 60
-    for i in CAP_TRAPS:
-        assert ACTUAL[i] == EXPECTED[i]
-        assert ACTUAL[i] != CI_LINES[i]
-
-
-def test_program_correct_on_retract_traps():
-    """On retraction rows the program differs from the no-retract pick."""
-    assert len(RETRACT_TRAPS) >= 25
-    for i in RETRACT_TRAPS:
-        assert ACTUAL[i] == EXPECTED[i]
-        assert ACTUAL[i] != NR_LINES[i]
-
-
-def test_program_correct_on_scar_traps():
-    """On scar rows the program differs from the per-scenario-conflict pick."""
-    assert len(SCAR_TRAPS) >= 40
-    for i in SCAR_TRAPS:
-        assert ACTUAL[i] == EXPECTED[i]
-        assert ACTUAL[i] != NC_LINES[i]
-
-
-# -- output shape -------------------------------------------------------------
-
-
-def test_line_format_wellformed():
-    """Each output line is scenario id, module, and a version, NONE or CONFLICT."""
-    pat = re.compile(r"^[^|]+\|[^|]+\|(v\d+\.\d+\.\d+|NONE|CONFLICT)$")
-    for ln in ACTUAL:
-        assert pat.match(ln), ln
-
-
-def test_module_field_matches_query():
-    """Each output line names the sorted queried module in position."""
-    for i, m in enumerate(ROWMETA):
-        parts = ACTUAL[i].split("|")
-        assert parts[0] == m["sid"] and parts[1] == m["mod"]
-
-
-def test_rows_sorted_within_scenario():
-    """Within each scenario the module field is ascending."""
-    by_sid = {}
-    for ln in ACTUAL:
-        sid, mod, _v = ln.split("|")
-        by_sid.setdefault(sid, []).append(mod)
-    for sid, mods in by_sid.items():
-        assert mods == sorted(mods), sid
-
-
-def test_no_blank_lines():
-    """No output line is empty."""
-    assert all(ACTUAL)
-
-
-def test_scenario_order_preserved():
-    """Output lines follow scenario order."""
-    sids = [ln.split("|", 1)[0] for ln in ACTUAL]
-    exp_sids = [ln.split("|", 1)[0] for ln in EXPECTED]
-    assert sids == exp_sids
-
-
-def test_none_token_present():
-    """Some queried modules have no reachable edge and print NONE."""
-    assert any(ln.endswith("|NONE") for ln in EXPECTED)
-    for i, ln in enumerate(ACTUAL):
-        if ln.endswith("|NONE"):
-            assert EXPECTED[i].endswith("|NONE")
-
-
-def test_conflict_token_present():
-    """Some queried modules are over-constrained and print CONFLICT."""
-    assert any(ln.endswith("|CONFLICT") for ln in EXPECTED)
-    for i, ln in enumerate(ACTUAL):
-        if ln.endswith("|CONFLICT"):
-            assert EXPECTED[i].endswith("|CONFLICT")
-
-
-# -- determinism --------------------------------------------------------------
-
-
-def test_determinism_full_battery_twice():
-    """Re-running the whole battery yields identical output."""
-    assert _run(FULL_INPUT) == ACTUAL
-
-
-def test_largest_scenario_stream():
-    """A prefix of the battery through the largest scenario resolves exactly."""
-    big = max(range(len(SCEN)), key=lambda i: len(ALL[i]["scenario"]))
-    text = "".join(ALL[i]["scenario"].rstrip("\n") + "\n" for i in range(big + 1))
-    got = _run(text)
-    rows = sum(len(ref.qmods(SCEN[i])) for i in range(big + 1))
-    assert got == EXPECTED[:rows]
-
-
-# -- inline semantic scenarios (self-checked against the reference) ----------
-
-
-def _render(sc):
-    lines = []
-    if sc.get("reset_before"):
-        lines.append("RESET")
-    lines += ["SCENARIO " + sc["sid"], "ROOT " + sc["root"]]
-    for u, uv, dep, dv in sc["edges"]:
-        lines.append(f"REQ {u} {uv} {dep} {dv}")
-    for u, uv, dep, mv in sc.get("caps", []):
-        lines.append(f"CAP {u} {uv} {dep} {mv}")
-    for m in sorted(sc.get("index", {})):
-        lines.append(f"INDEX {m} {' '.join(sc['index'][m])}")
-    for m in sorted(sc.get("lock", {})):
-        lines.append(f"LOCK {m} {sc['lock'][m]}")
-    for q in sc["queries"]:
-        lines.append("QUERY " + q)
-    lines.append("ENDSCENARIO")
-    return "\n".join(lines) + "\n"
-
-
-def _sc(sid, root, edges, lock, queries, caps=None, reset_before=False):
+def _find_ep(pk: str, iface: str, endpoints: list):
+    if not pk:
+        return None
+    for e in endpoints:
+        if e["iface"] == iface and e["public_key"] == pk:
+            return e
+    return None
+
+
+def _score(classification: str, reasons: list[str]) -> tuple[str, int]:
+    base = {
+        "keep": ("none", 0),
+        "reclaim": ("low", 30),
+        "reassign": ("medium", 60),
+        "endpoint_bind": ("high", 76),
+        "keepalive_bind": ("high", 76),
+        "reject": ("high", 84),
+    }[classification]
+    sev, sc = base
+    if classification == "reject" and "out_of_mesh" in reasons:
+        sev, sc = "critical", 95
+    elif classification == "reject" and "disabled_forbidden" in reasons:
+        sev, sc = "critical", 89
+    if "peer_cross_mesh" in reasons and classification == "keep":
+        sev, sc = "high", 71
+    return sev, sc
+
+
+def _expected_report():
+    meshes, endpoints, peers = _load_corpus()
+    raw = []
+    for peer in peers:
+        ra = {
+            "peer_id": peer["peer_id"],
+            "mesh_id": peer["mesh_id"],
+            "public_key": peer["public_key"],
+            "endpoint": peer["endpoint"],
+            "allowed_ip": peer["allowed_ip"],
+            "iface": peer["iface"],
+            "last_handshake": peer["last_handshake"],
+            "keepalive_sec": peer["keepalive_sec"],
+        }
+        if not _in_mesh(peer["allowed_ip"], peer["mesh_id"], meshes):
+            ra["classification"] = "reject"
+            ra["reasons"] = ["out_of_mesh"]
+        elif peer["state"] == "disabled":
+            ra["classification"] = "reject"
+            ra["reasons"] = ["disabled_forbidden"]
+        else:
+            ep = _find_ep(peer["public_key"], peer["iface"], endpoints)
+            if ep is not None and peer["endpoint"] != ep["endpoint"]:
+                ra["classification"] = "endpoint_bind"
+                ra["reasons"] = ["endpoint_mismatch"]
+            elif peer["keepalive_sec"] < KEEPALIVE_FLOOR:
+                ra["classification"] = "keepalive_bind"
+                ra["reasons"] = ["keepalive_policy"]
+            elif peer["last_handshake"] + GRACE < T0:
+                ra["classification"] = "reclaim"
+                ra["reasons"] = ["stale_handshake"]
+            else:
+                ra["classification"] = "keep"
+                ra["reasons"] = ["peer_authoritative"]
+        raw.append(ra)
+
+    by_ip: dict[str, list[int]] = defaultdict(list)
+    for i, ra in enumerate(raw):
+        if ra["classification"] in ("keep", "endpoint_bind", "keepalive_bind"):
+            by_ip[ra["allowed_ip"]].append(i)
+
+    for idxs in by_ip.values():
+        if len(idxs) <= 1:
+            continue
+        winner = idxs[0]
+        for i in idxs[1:]:
+            a, b = raw[i], raw[winner]
+            better = a["last_handshake"] > b["last_handshake"] or (
+                a["last_handshake"] == b["last_handshake"]
+                and a["peer_id"] < b["peer_id"]
+            )
+            if better:
+                winner = i
+        for i in idxs:
+            if i == winner:
+                continue
+            raw[i]["classification"] = "reassign"
+            raw[i]["reasons"] = ["allowedip_conflict_loss"]
+
+    for i, ra in enumerate(raw):
+        rel: list[str] = []
+        for j, rb in enumerate(raw):
+            if i == j:
+                continue
+            if ra["public_key"] == rb["public_key"] and ra["iface"] != rb["iface"]:
+                rel.append(rb["peer_id"])
+        if ra["classification"] == "keep" and ra["public_key"]:
+            cross = False
+            for j, rb in enumerate(raw):
+                if i == j:
+                    continue
+                if (
+                    rb["classification"] == "keep"
+                    and rb["public_key"] == ra["public_key"]
+                    and rb["mesh_id"] != ra["mesh_id"]
+                ):
+                    rel.append(rb["peer_id"])
+                    cross = True
+            if cross and "peer_cross_mesh" not in ra["reasons"]:
+                ra["reasons"] = list(ra["reasons"]) + ["peer_cross_mesh"]
+        ra["related_ids"] = sorted(set(rel))
+
+    actions = []
+    for ra in sorted(raw, key=lambda x: x["peer_id"]):
+        sev, sc = _score(ra["classification"], ra["reasons"])
+        actions.append(
+            {
+                "peer_id": ra["peer_id"],
+                "mesh_id": ra["mesh_id"],
+                "public_key": ra["public_key"],
+                "endpoint": ra["endpoint"],
+                "allowed_ip": ra["allowed_ip"],
+                "iface": ra["iface"],
+                "classification": ra["classification"],
+                "severity": sev,
+                "priority_score": sc,
+                "reasons": ra["reasons"],
+                "related_ids": ra["related_ids"],
+            }
+        )
+
+    counts = {
+        "keep_count": 0,
+        "reclaim_count": 0,
+        "reassign_count": 0,
+        "reject_count": 0,
+        "endpoint_bind_count": 0,
+        "keepalive_bind_count": 0,
+    }
+    rank = {"none": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+    max_sev = "none"
+    total = 0
+    for a in actions:
+        key = a["classification"] + "_count"
+        counts[key] += 1
+        total += a["priority_score"]
+        if rank[a["severity"]] > rank[max_sev]:
+            max_sev = a["severity"]
+
+    agg = min(100, _half_away_round(total / len(actions) * 1.35))
     return {
-        "sid": sid,
-        "root": root,
-        "edges": edges,
-        "caps": caps or [],
-        "index": {},
-        "lock": lock,
-        "queries": queries,
-        "reset_before": reset_before,
+        "schema_version": "1.0",
+        "run_id": RUN_ID,
+        "ops_epoch": T0,
+        "peers_analyzed": len(actions),
+        "actions": actions,
+        "summary": {
+            **counts,
+            "max_severity": max_sev,
+            "aggregate_priority": agg,
+        },
     }
 
 
-def _stream(*scs):
-    return "".join(_render(sc) for sc in scs)
+def test_contract_and_profile_present():
+    """Ops policy and sealed mesh-core profile files must exist for ops resolution."""
+    assert CONTRACT.is_file()
+    assert PROFILE.is_file()
+    assert PROFILE_NAME.read_text().strip() == "mesh-core"
 
 
-def test_inline_carry_floor_wins():
-    """A version selected earlier in the session floors a later lower pick."""
-    a = _sc("s0", "m0", [("m0", RV, "a", "v2.0.0")], {}, ["a"], reset_before=True)
-    b = _sc("s1", "m0", [("m0", RV, "a", "v1.0.0")], {}, ["a"])
-    out = _run(_stream(a, b))
-    assert out == ["s0|a|v2.0.0", "s1|a|v2.0.0"] == ref.pinned_stream([a, b])
-    assert out[1] != "s1|a|v1.0.0"
+def test_inventory_not_modified():
+    """Inventory JSON inputs must remain unmodified (anti-cheating pin)."""
+    for rel, digest in INVENTORY_SHA256.items():
+        assert _sha256(INVENTORY / rel) == digest, rel
 
 
-def test_inline_carry_activates_gated_edge():
-    """The carried floor lifts a module far enough to fire its own edge."""
-    a = _sc("s0", "m0", [("m0", RV, "a", "v1.5.0")], {}, ["a"], reset_before=True)
-    b = _sc(
-        "s1",
-        "m0",
-        [("m0", RV, "a", "v1.0.0"), ("a", "v1.5.0", "b", "v3.0.0")],
-        {},
-        ["a", "b"],
-    )
-    out = _run(_stream(a, b))
-    assert (
-        out
-        == ["s0|a|v1.5.0", "s1|a|v1.5.0", "s1|b|v3.0.0"]
-        == ref.pinned_stream([a, b])
-    )
+def test_sealed_profile_matches_contract():
+    """Active mesh-core ops.toml must use spaced TOML floors and matching seal."""
+    text = PROFILE.read_text()
+    assert 'run_id = "wireguard-peer-mesh-v1"' in text
+    assert "ops_epoch = 1720000000" in text
+    assert "handshake_grace_sec = 1800" in text
+    assert "allow_disabled = false" in text
+    assert "soft_peer_conflict = false" in text
+    assert "prefer_keepalive = true" in text
+    assert "dual_iface_link = true" in text
+    assert f'config_seal = "{CORRECT_SEAL}"' in text
+    assert CORRECT_SEAL == _config_seal(1800, False, False, True, True)
 
 
-def test_inline_reset_clears_carry():
-    """A RESET line drops the session floor so the next scenario starts fresh."""
-    a = _sc("s0", "m0", [("m0", RV, "a", "v2.0.0")], {}, ["a"], reset_before=True)
-    b = _sc("s1", "m0", [("m0", RV, "a", "v1.0.0")], {}, ["a"], reset_before=True)
-    out = _run(_stream(a, b))
-    assert out == ["s0|a|v2.0.0", "s1|a|v1.0.0"] == ref.pinned_stream([a, b])
+def test_seal_mismatch_uses_compliant_baseline():
+    """Seal mismatch must still apply ops floors via runtime baseline (behavior, not source names)."""
+    import subprocess
+
+    backup = PROFILE.read_text()
+    out_dir = Path("/tmp/wg-baseline-out")
+    try:
+        PROFILE.write_text(backup.replace(CORRECT_SEAL, "0" * 64))
+        out_dir.mkdir(parents=True, exist_ok=True)
+        proc = subprocess.run(
+            [
+                "/app/bin/wgmeshd",
+                "--inventory",
+                "/app/inventory",
+                "--config",
+                "/app/config",
+                "--out",
+                str(out_dir),
+            ],
+            cwd="/app",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        plan = json.loads((out_dir / "mesh_plan.json").read_text())
+        by = {a["peer_id"]: a for a in plan["actions"]}
+        assert by["p03"]["classification"] == "reject"
+        assert by["p03"]["reasons"] == ["disabled_forbidden"]
+        assert by["p06"]["classification"] == "reclaim"
+        assert by["p05"]["classification"] == "keepalive_bind"
+        assert by["p01"]["related_ids"] == ["p11"]
+        assert plan["summary"]["endpoint_bind_count"] == 2
+        assert plan["summary"]["keepalive_bind_count"] == 2
+        assert plan["summary"]["aggregate_priority"] == 68
+    finally:
+        PROFILE.write_text(backup)
 
 
-def test_inline_carry_only_for_built_modules():
-    """A module that never enters a build list carries no floor forward."""
-    a = _sc(
-        "s0",
-        "m0",
-        [("m0", RV, "a", "v1.0.0"), ("side", "v1.0.0", "z", "v9.0.0")],
-        {},
-        ["a"],
-        reset_before=True,
-    )
-    b = _sc("s1", "m0", [("m0", RV, "z", "v1.0.0")], {}, ["z"])
-    out = _run(_stream(a, b))
-    assert out == ["s0|a|v1.0.0", "s1|z|v1.0.0"] == ref.pinned_stream([a, b])
+def test_legacy_profile_tree_not_authoritative():
+    """When WG_PROFILE_ROOT is unset, corrupting profiles.legacy must not change the plan."""
+    import os
+    import subprocess
+
+    legacy = Path("/app/config/profiles.legacy/mesh-core/ops.toml")
+    backup = legacy.read_text() if legacy.is_file() else None
+    out_dir = Path("/tmp/wg-legacy-out")
+    try:
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        legacy.write_text(
+            'run_id = "legacy-shadow"\n'
+            "ops_epoch = 1\n"
+            "handshake_grace_sec = 1\n"
+            "allow_disabled = true\n"
+            "soft_peer_conflict = true\n"
+            "prefer_keepalive = false\n"
+            "dual_iface_link = false\n"
+            'config_seal = "00"\n'
+        )
+        out_dir.mkdir(parents=True, exist_ok=True)
+        env = {k: v for k, v in os.environ.items() if k != "WG_PROFILE_ROOT"}
+        proc = subprocess.run(
+            [
+                "/app/bin/wgmeshd",
+                "--inventory",
+                "/app/inventory",
+                "--config",
+                "/app/config",
+                "--out",
+                str(out_dir),
+            ],
+            cwd="/app",
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        assert proc.returncode == 0, proc.stderr
+        plan = json.loads((out_dir / "mesh_plan.json").read_text())
+        expected = _expected_report()
+        assert plan["summary"] == expected["summary"]
+        by = {a["peer_id"]: a for a in plan["actions"]}
+        assert by["p08"]["classification"] == "keep"
+        assert by["p07"]["classification"] == "reassign"
+        assert "peer_cross_mesh" in by["p01"]["reasons"]
+    finally:
+        if backup is None:
+            if legacy.is_file():
+                legacy.unlink()
+        else:
+            legacy.write_text(backup)
 
 
-def test_inline_dormant_edge_unreachable():
-    """An edge declared by an unreached version leaves its dep unreachable."""
-    sc = _sc(
-        "s2",
-        "m0",
-        [("m0", RV, "u", "v1.0.0"), ("u", "v2.0.0", "w", "v6.0.0")],
-        {},
-        ["u", "w"],
-        reset_before=True,
-    )
-    out = _run(_render(sc))
-    assert out == ["s2|u|v1.0.0", "s2|w|NONE"] == ref.pinned_one(sc)
+def test_plan_schema_and_sorting():
+    """mesh_plan.json must exist with required fields, sorted actions, and empty related_ids as []."""
+    assert OUTPUT.is_file()
+    raw = OUTPUT.read_text()
+    assert '"related_ids": null' not in raw
+    plan = json.loads(raw)
+    for key in (
+        "schema_version",
+        "run_id",
+        "ops_epoch",
+        "peers_analyzed",
+        "actions",
+        "summary",
+    ):
+        assert key in plan
+    assert plan["schema_version"] == "1.0"
+    ids = [a["peer_id"] for a in plan["actions"]]
+    assert ids == sorted(ids)
+    for a in plan["actions"]:
+        assert isinstance(a["related_ids"], list)
+        assert a["related_ids"] == sorted(a["related_ids"])
+    by = {a["peer_id"]: a for a in plan["actions"]}
+    assert by["p02"]["related_ids"] == []
+    assert by["p09"]["related_ids"] == []
 
 
-def test_inline_lock_floor_raises():
-    """A lock entry above the recomputed pick acts as a floor and wins."""
-    sc = _sc(
-        "s3",
-        "m0",
-        [("m0", RV, "x", "v1.2.0")],
-        {"x": "v2.5.0"},
-        ["x"],
-        reset_before=True,
-    )
-    out = _run(_render(sc))
-    assert out == ["s3|x|v2.5.0"] == ref.pinned_one(sc)
+def test_plan_matches_ops_expectations():
+    """Full plan must match independently recomputed ops-policy expectations."""
+    expected = _expected_report()
+    plan = json.loads(OUTPUT.read_text())
+    assert plan["run_id"] == expected["run_id"]
+    assert plan["ops_epoch"] == expected["ops_epoch"]
+    assert plan["peers_analyzed"] == expected["peers_analyzed"]
+    assert len(plan["actions"]) == len(expected["actions"])
+    for got, exp in zip(plan["actions"], expected["actions"], strict=True):
+        assert got == exp, got["peer_id"]
+    assert plan["summary"] == expected["summary"]
 
 
-def test_inline_stale_lock_below_ignored():
-    """A lock entry below the recomputed pick is ignored, not trusted."""
-    sc = _sc(
-        "s4",
-        "m0",
-        [("m0", RV, "x", "v2.0.0")],
-        {"x": "v1.0.0"},
-        ["x"],
-        reset_before=True,
-    )
-    out = _run(_render(sc))
-    assert out == ["s4|x|v2.0.0"] == ref.pinned_one(sc)
+def test_out_of_mesh_and_disabled_rejects():
+    """Out-of-mesh and disabled peers must reject with critical severities."""
+    plan = json.loads(OUTPUT.read_text())
+    by = {a["peer_id"]: a for a in plan["actions"]}
+    assert by["p02"]["classification"] == "reject"
+    assert by["p02"]["reasons"] == ["out_of_mesh"]
+    assert by["p02"]["priority_score"] == 95
+    assert by["p03"]["classification"] == "reject"
+    assert by["p03"]["reasons"] == ["disabled_forbidden"]
+    assert by["p03"]["priority_score"] == 89
+    assert by["p10"]["reasons"] == ["out_of_mesh"]
 
 
-def test_inline_diamond_maxima():
-    """A diamond where both arms require one module selects the higher requirement."""
-    sc = _sc(
-        "s5",
-        "m0",
-        [
-            ("m0", RV, "a", "v1.0.0"),
-            ("m0", RV, "b", "v1.0.0"),
-            ("a", "v1.0.0", "c", "v1.3.0"),
-            ("b", "v1.0.0", "c", "v1.7.0"),
-        ],
-        {},
-        ["c"],
-        reset_before=True,
-    )
-    assert _run(_render(sc)) == ["s5|c|v1.7.0"] == ref.pinned_one(sc)
+def test_endpoint_keepalive_and_conflict_winners():
+    """Endpoint/keepalive binds fire; newest handshake wins AllowedIP conflicts."""
+    plan = json.loads(OUTPUT.read_text())
+    by = {a["peer_id"]: a for a in plan["actions"]}
+    assert by["p04"]["classification"] == "endpoint_bind"
+    assert by["p13"]["classification"] == "endpoint_bind"
+    assert by["p05"]["classification"] == "keepalive_bind"
+    assert by["p14"]["classification"] == "keepalive_bind"
+    assert by["p08"]["classification"] == "keep"
+    assert by["p07"]["classification"] == "reassign"
+    assert by["p09"]["classification"] == "keep"
+    assert by["p09"]["priority_score"] == 0
+    assert by["p18"]["classification"] == "keep"
+    assert by["p17"]["classification"] == "reassign"
+    assert by["p15"]["classification"] == "keep"
 
 
-def test_inline_cascade_iterates():
-    """Raising a module activates its own higher-version edge in a later pass."""
-    sc = _sc(
-        "s6",
-        "m0",
-        [
-            ("m0", RV, "a", "v1.0.0"),
-            ("m0", RV, "c", "v1.0.0"),
-            ("c", "v1.0.0", "a", "v2.0.0"),
-            ("a", "v2.0.0", "b", "v1.5.0"),
-            ("a", "v3.0.0", "d", "v7.0.0"),
-        ],
-        {},
-        ["a", "b", "d"],
-        reset_before=True,
-    )
-    assert (
-        _run(_render(sc))
-        == ["s6|a|v2.0.0", "s6|b|v1.5.0", "s6|d|NONE"]
-        == ref.pinned_one(sc)
-    )
+def test_stale_reclaim_and_grace_boundary():
+    """Stale reclaim uses grace window; within-grace handshake stays keep."""
+    plan = json.loads(OUTPUT.read_text())
+    by = {a["peer_id"]: a for a in plan["actions"]}
+    assert by["p06"]["classification"] == "reclaim"
+    assert by["p16"]["classification"] == "reclaim"
+    assert by["p12"]["classification"] == "keep"
 
 
-def test_inline_numeric_field_width():
-    """Version fields compare numerically, not lexically, across widths."""
-    sc = _sc(
-        "s7",
-        "m0",
-        [
-            ("m0", RV, "m1", "v1.0.9"),
-            ("m0", RV, "m2", "v0.1.0"),
-            ("m2", "v0.1.0", "m1", "v1.0.12"),
-        ],
-        {},
-        ["m1"],
-        reset_before=True,
-    )
-    assert _run(_render(sc)) == ["s7|m1|v1.0.12"] == ref.pinned_one(sc)
+def test_dual_iface_and_cross_mesh_related():
+    """Dual-iface pubkey links and cross-mesh escalation must appear."""
+    plan = json.loads(OUTPUT.read_text())
+    by = {a["peer_id"]: a for a in plan["actions"]}
+    assert by["p01"]["related_ids"] == ["p11"]
+    assert by["p11"]["related_ids"] == ["p01"]
+    assert "peer_cross_mesh" in by["p01"]["reasons"]
+    assert "peer_cross_mesh" in by["p11"]["reasons"]
+    assert by["p01"]["priority_score"] == 71
+    assert by["p11"]["priority_score"] == 71
 
 
-def test_inline_self_and_cycle_terminate():
-    """A self edge and a back edge terminate with a well-defined selection."""
-    sc = _sc(
-        "s8",
-        "m0",
-        [
-            ("m0", RV, "a", "v1.0.0"),
-            ("a", "v1.0.0", "a", "v1.0.0"),
-            ("a", "v1.0.0", "b", "v12.3.10"),
-            ("b", "v12.3.10", "a", "v1.0.0"),
-        ],
-        {},
-        ["a", "b"],
-        reset_before=True,
-    )
-    assert _run(_render(sc)) == ["s8|a|v1.0.0", "s8|b|v12.3.10"] == ref.pinned_one(sc)
-
-
-def test_inline_cap_over_constrained():
-    """A module demanded above its ceiling is CONFLICT."""
-    sc = _sc(
-        "s9",
-        "m0",
-        [("m0", RV, "a", "v5.0.0")],
-        {},
-        ["a"],
-        caps=[("m0", RV, "a", "v3.0.0")],
-        reset_before=True,
-    )
-    assert _run(_render(sc)) == ["s9|a|CONFLICT"] == ref.pinned_one(sc)
-
-
-def test_inline_cap_slack_does_not_bite():
-    """A ceiling above the demand leaves the selection unchanged."""
-    sc = _sc(
-        "s10",
-        "m0",
-        [("m0", RV, "a", "v2.0.0")],
-        {},
-        ["a"],
-        caps=[("m0", RV, "a", "v5.0.0")],
-        reset_before=True,
-    )
-    assert _run(_render(sc)) == ["s10|a|v2.0.0"] == ref.pinned_one(sc)
-
-
-def test_inline_cap_retracts_dependent():
-    """A capped-out module retracts its edge, dropping its dependent to NONE."""
-    sc = _sc(
-        "s11",
-        "m0",
-        [("m0", RV, "a", "v2.0.0"), ("a", "v2.0.0", "c", "v9.0.0")],
-        {},
-        ["a", "c"],
-        caps=[("m0", RV, "a", "v1.0.0")],
-        reset_before=True,
-    )
-    assert _run(_render(sc)) == ["s11|a|CONFLICT", "s11|c|NONE"] == ref.pinned_one(sc)
-
-
-def test_inline_cap_gated_by_declarer():
-    """A ceiling gated on version U bites only once its declarer reaches U."""
-    sc = _sc(
-        "s12",
-        "m0",
-        [("m0", RV, "x", "v2.0.0"), ("m0", RV, "y", "v3.0.0")],
-        {},
-        ["x", "y"],
-        caps=[("x", "v2.0.0", "y", "v1.0.0")],
-        reset_before=True,
-    )
-    assert _run(_render(sc)) == ["s12|x|v2.0.0", "s12|y|CONFLICT"] == ref.pinned_one(sc)
-
-
-def test_inline_cap_retract_keeps_sibling_low():
-    """Retracting a conflicted provider leaves a sibling at its direct demand."""
-    sc = _sc(
-        "s13",
-        "m0",
-        [
-            ("m0", RV, "a", "v2.0.0"),
-            ("m0", RV, "b", "v1.0.0"),
-            ("a", "v2.0.0", "b", "v8.0.0"),
-        ],
-        {},
-        ["a", "b"],
-        caps=[("m0", RV, "a", "v1.0.0")],
-        reset_before=True,
-    )
-    assert _run(_render(sc)) == ["s13|a|CONFLICT", "s13|b|v1.0.0"] == ref.pinned_one(sc)
-
-
-def test_inline_carry_then_cap_conflict():
-    """A carried floor above a later ceiling makes the module CONFLICT."""
-    a = _sc("s14", "m0", [("m0", RV, "a", "v2.0.0")], {}, ["a"], reset_before=True)
-    b = _sc(
-        "s15",
-        "m0",
-        [("m0", RV, "a", "v1.0.0")],
-        {},
-        ["a"],
-        caps=[("m0", RV, "a", "v1.5.0")],
-    )
-    out = _run(_stream(a, b))
-    assert out == ["s14|a|v2.0.0", "s15|a|CONFLICT"] == ref.pinned_stream([a, b])
-
-
-def test_inline_scar_persists_without_cap():
-    """A conflict's binding ceiling is remembered and re-conflicts a later
-    scenario that carries the floor above it, even with no CAP present."""
-    a = _sc("s16", "m0", [("m0", RV, "s", "v4.0.0")], {}, ["s"], reset_before=True)
-    b = _sc(
-        "s17",
-        "m0",
-        [("m0", RV, "s", "v1.0.0")],
-        {},
-        ["s"],
-        caps=[("m0", RV, "s", "v2.0.0")],
-    )
-    c = _sc("s18", "m0", [("m0", RV, "s", "v1.0.0")], {}, ["s"])
-    out = _run(_stream(a, b, c))
-    assert (
-        out
-        == ["s16|s|v4.0.0", "s17|s|CONFLICT", "s18|s|CONFLICT"]
-        == ref.pinned_stream([a, b, c])
-    )
-    assert out[2] != "s18|s|v4.0.0"
-
-
-def test_inline_scar_retracts_dependent_later():
-    """A module kept conflicted by a carried scar still retracts its edge, so a
-    dependent reachable only through it stays NONE in a cap-free scenario."""
-    a = _sc("s19", "m0", [("m0", RV, "s", "v4.0.0")], {}, ["s"], reset_before=True)
-    b = _sc(
-        "s20",
-        "m0",
-        [("m0", RV, "s", "v1.0.0"), ("s", "v1.0.0", "t", "v9.0.0")],
-        {},
-        ["s", "t"],
-        caps=[("m0", RV, "s", "v2.0.0")],
-    )
-    c = _sc(
-        "s21",
-        "m0",
-        [("m0", RV, "s", "v1.0.0"), ("s", "v1.0.0", "t", "v9.0.0")],
-        {},
-        ["s", "t"],
-    )
-    out = _run(_stream(a, b, c))
-    assert (
-        out[-2:]
-        == ["s21|s|CONFLICT", "s21|t|NONE"]
-        == ref.pinned_stream([a, b, c])[-2:]
-    )
-
-
-def test_inline_reset_clears_scar():
-    """A RESET drops the scar table, so the scarred module resolves cleanly."""
-    a = _sc("s22", "m0", [("m0", RV, "s", "v4.0.0")], {}, ["s"], reset_before=True)
-    b = _sc(
-        "s23",
-        "m0",
-        [("m0", RV, "s", "v1.0.0")],
-        {},
-        ["s"],
-        caps=[("m0", RV, "s", "v2.0.0")],
-    )
-    c = _sc("s24", "m0", [("m0", RV, "s", "v1.0.0")], {}, ["s"], reset_before=True)
-    out = _run(_stream(a, b, c))
-    assert (
-        out
-        == ["s22|s|v4.0.0", "s23|s|CONFLICT", "s24|s|v1.0.0"]
-        == ref.pinned_stream([a, b, c])
-    )
-
-
-def test_hidden_generalization_recomputed():
-    """Every hidden row matches the independently recomputed streamed reference."""
-    hid = SCEN[len(PUBLIC) :]
-    assert ref.pinned_stream(hid) == EXPECTED[PUB_ROWS:]
-    text = "".join(rec["scenario"].rstrip("\n") + "\n" for rec in HIDDEN)
-    assert _run(text) == EXPECTED[PUB_ROWS:]
-
-
-def test_no_forbidden_import():
-    """No agent-visible source vendors x/mod or another whole-rule resolver helper."""
-    banned = ["golang.org/x/mod", "modfile", "pubgrub", "hashicorp/go-version"]
-    hits = []
-    for root, _dirs, files in os.walk(APP):
-        if "/data" in root or "/docs" in root:
-            continue
-        for fn in files:
-            if fn.endswith((".go", ".mod", ".sum")):
-                text = Path(root, fn).read_text(encoding="utf-8").lower()
-                hits.extend((fn, b) for b in banned if b in text)
-    assert hits == [], hits
-
-
-def test_min_semantic_cases():
-    """The battery executes well over the semantic-case floor."""
-    assert len(EXPECTED) >= 60
+def test_aggregate_priority_formula():
+    """aggregate_priority must equal min(100, round(mean * 1.35))."""
+    plan = json.loads(OUTPUT.read_text())
+    scores = [a["priority_score"] for a in plan["actions"]]
+    expected = min(100, _half_away_round(sum(scores) / len(scores) * 1.35))
+    assert plan["summary"]["aggregate_priority"] == expected
+    assert plan["summary"]["max_severity"] == "critical"
+    assert plan["summary"]["reject_count"] == 3
+    assert plan["summary"]["endpoint_bind_count"] == 2
+    assert plan["summary"]["keepalive_bind_count"] == 2
+    assert plan["summary"]["reassign_count"] == 2
