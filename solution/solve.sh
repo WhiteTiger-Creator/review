@@ -1,25 +1,14 @@
 #!/bin/bash
-# Reference solution: land the range sieve, the search course and the artifact
-# scribe, teach the command table the new subcommand, rebuild the module and
-# publish every project. Fully offline.
 set -euo pipefail
-
-cd "$(dirname "${BASH_SOURCE[0]}")"
-
-mkdir -p /app/internal/sieve /app/internal/course /app/internal/scribe
-
-patch -p1 -d /app < files/01-sieve-bounds.patch
-patch -p1 -d /app < files/02-sieve-admit.patch
-patch -p1 -d /app < files/03-course-frame.patch
-patch -p1 -d /app < files/04-course-sweep.patch
-patch -p1 -d /app < files/05-scribe-shape.patch
-patch -p1 -d /app < files/06-scribe-mint.patch
-patch -p1 -d /app < files/07-console-subrun.patch
-patch -p1 -d /app < files/08-console-dispatch.patch
-
-cd /app
-make clean
-make all
-
-mkdir -p /app/out
-/app/bin/slate resolve --all
+install -m 0644 /solution/reference/internal/game/validate.go /app/internal/game/validate.go
+install -m 0644 /solution/reference/internal/game/resolve.go /app/internal/game/resolve.go
+install -m 0644 /solution/reference/internal/game/digest.go /app/internal/game/digest.go
+/app/bin/build-tidefront
+rm -f /output/oracle-game.json
+/app/bin/tidefront adjudicate \
+  --match /app/examples/game/match.json \
+  --stations /app/examples/game/stations.json \
+  --catalog /app/examples/game/catalog \
+  --leaps /app/examples/game/leaps.txt \
+  --threads 2 \
+  --output /output/oracle-game.json

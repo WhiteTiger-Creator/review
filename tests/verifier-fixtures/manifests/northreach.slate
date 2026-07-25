@@ -1,4 +1,0 @@
-# sealed: two lines that cannot meet
-project northreach
-require elmstone ^1.6.0
-require cobalt ^1.3.0
