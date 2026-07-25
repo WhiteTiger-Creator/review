@@ -3,37 +3,34 @@ version = "2.0"
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
-difficulty = "hard"
-category = "machine-learning"
+difficulty = "medium"
+category = "scientific-computing"
 subcategories = []
-tags = ["machine-learning", "model-registry", "promotion", "evaluation-ledger", "quantized-inference", "metamorphic-testing"]
-languages = ["go"]
-codebase_size = "large"
 number_of_milestones = 0
-expert_time_estimate_min = 180
+codebase_size = "small"
+languages = ["julia"]
+tags = [
+  "neutron-diffraction",
+  "powder-diffraction",
+  "crystallography",
+  "bragg-law",
+  "lattice-refinement",
+  "reciprocal-metric",
+  "materials-science",
+  "time-of-flight",
+]
+expert_time_estimate_min = 210
 junior_time_estimate_min = 480
 
-[category_profile]
-challenge_family = "model promotion and evaluation lineage"
-profile_name = "ml_model_lifecycle"
-allowed_instruction_disclosures = "registry authority, promotion workflow, ledger replay rules, metamorphic evaluation contracts, CLI"
-forbidden_instruction_leaks = "fix-path symbols, staged-incomplete evaluate shortcut, held-out seeds"
-category_specific_hardness_bar = "promotion authority, generation binding, and metamorphic contracts must be recovered together"
-category_specific_verifier_risks = "settings-only patch, skipping finalize, stale replay copy, fixture overwrite"
-coverage_role = "Adds Go registry-bound quantized evaluation with staged promotion and ledger replay"
-
-[reference_pattern]
-justification_if_none = "docs/reference_tasks/index.json has an empty references list; no promoted ml_model_lifecycle Go reference exists"
+[verifier]
+timeout_sec = 480.0
 
 [agent]
-timeout_sec = 1800
-
-[verifier]
-timeout_sec = 900
+timeout_sec = 1800.0
 
 [environment]
-allow_internet = false
-build_timeout_sec = 900
+build_timeout_sec = 900.0
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
+allow_internet = false
