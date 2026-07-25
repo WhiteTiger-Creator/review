@@ -1,535 +1,199 @@
-"""Deterministic artifact and held-out checks for a generated R MLE task."""
-
+import contextlib
 import json
 import os
 import shutil
 import subprocess
-from pathlib import Path
+import sys
 
-import numpy as np
-import pandas as pd
 import pytest
-from sklearn.metrics import (
-    accuracy_score,
-    f1_score,
-    mean_absolute_error,
-    mean_squared_error,
-    r2_score,
-)
 
-DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
-CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/app/config"))
-OUT = Path(os.environ.get("OUT_DIR", os.environ.get("OUTPUT_DIR", "/app/outputs")))
-LABELS = Path(os.environ.get("EVAL_LABELS_PATH", "/tests/eval/test_labels.csv"))
-ANALYSIS = Path(os.environ.get("ANALYSIS_PATH", "/app/analysis.R"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import reference
 
-def read_key_values(path):
-    frame = pd.read_csv(path)
-    return dict(zip(frame["key"], frame["value"]))
+APP = "/app"
+WORK = "/tmp/elast_work"
+EVAL = "/tmp/elast_eval"
+JAR = os.path.join(WORK, "engine.jar")
+KOTLINC = "/opt/kotlinc/bin/kotlinc"
+JAVA = "/opt/java/openjdk/bin/java"
 
+SEGMENTS = ["grocery", "apparel", "electronics", "home"]
+PANEL_NAMES = ["committed", "a", "b", "c"]
+PANELS = {}
+TRUTH = {}
+SEALED = {"tests": False, "interp": 0}
 
-def class_probability_columns(classes):
-    return ["prob_" + "".join(ch.lower() if ch.isalnum() else "_" for ch in c).strip("_") for c in classes]
-
-
-def macro_f1(actual, predicted, classes):
-    return f1_score(actual, predicted, labels=classes, average="macro", zero_division=0)
+ZERO_EPS = 1e-9
+PROJECTED_EPS = 2e-6
+SEPARATION = 1e-3
 
 
-MISSING_TOKENS = {"", "NA", "NaN", "nan", "null", "?", "MISSING"}
+def _tol(ref):
+    return max(2e-6, 1e-5 * abs(ref))
 
 
-def is_missing(value):
-    if pd.isna(value):
-        return True
-    return str(value).strip() in MISSING_TOKENS
+def _build():
+    src = os.path.join(APP, "src")
+    files = sorted(
+        os.path.join(r, n)
+        for r, _, ns in os.walk(src)
+        for n in ns
+        if n.endswith(".kt")
+    )
+    assert files, "no kotlin sources under /app/src"
+    cmd = [KOTLINC, *files, "-include-runtime", "-d", JAR]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=900, check=False)
+    assert r.returncode == 0, f"pipeline failed to build:\n{r.stderr[-4000:]}"
+    assert os.path.isfile(JAR), "engine jar was not produced"
+    os.chmod(JAR, 0o644)
 
 
-def clean_numeric(series):
-    values = pd.to_numeric(series, errors="coerce").astype(float)
-    values[~np.isfinite(values)] = np.nan
-    return values
+def _seal():
+    for path in ("/tests", os.path.dirname(os.path.abspath(__file__))):
+        with contextlib.suppress(OSError):
+            os.chmod(path, 0o700)
+            SEALED["tests"] = True
+    here = os.path.dirname(os.path.abspath(__file__))
+    with contextlib.suppress(OSError):
+        os.remove(os.path.join(here, "reference.py"))
+    for d in ("/usr/bin", "/usr/local/bin", "/bin", "/usr/sbin"):
+        if not os.path.isdir(d):
+            continue
+        for n in os.listdir(d):
+            if not n.startswith(("python", "perl", "ruby")):
+                continue
+            p = os.path.join(d, n)
+            if os.path.islink(p) and not os.path.exists(p):
+                continue
+            with contextlib.suppress(OSError):
+                os.chmod(p, 0o750)
+                SEALED["interp"] += 1
 
 
-def feature_rows(roles):
-    return roles.loc[roles["role"] == "feature"].reset_index(drop=True)
+@pytest.fixture(scope="session", autouse=True)
+def prepared():
+    for d in (WORK, EVAL):
+        if os.path.isdir(d):
+            shutil.rmtree(d)
+        os.makedirs(d)
+        os.chmod(d, 0o777)
+    _build()
+    hd = os.path.join(os.path.dirname(os.path.abspath(__file__)), "heldout")
+    PANELS["committed"] = os.path.join(APP, "data", "panel.csv")
+    for name in ("a", "b", "c"):
+        dst = os.path.join(EVAL, f"panel_{name}.csv")
+        shutil.copy(os.path.join(hd, f"panel_{name}.csv"), dst)
+        os.chmod(dst, 0o644)
+        PANELS[name] = dst
+    for name, path in PANELS.items():
+        TRUTH[name] = reference.run(path)
+    _seal()
+    return TRUTH
 
 
-def learn_encoder(frame, roles):
-    encoders = {}
-    for _, role in feature_rows(roles).iterrows():
-        feature = role["feature"]
-        if role["data_type"] == "numeric":
-            values = clean_numeric(frame[feature])
-            finite = values.dropna()
-            med = float(finite.median()) if len(finite) else 0.0
-            imputed = values.fillna(med).astype(float)
-            center = float(imputed.mean())
-            scale = float(imputed.std(ddof=1)) if len(imputed) > 1 else 1.0
-            if not np.isfinite(scale) or scale < 1e-9:
-                scale = 1.0
-            encoders[feature] = {"type": "numeric", "median": med, "mean": center, "sd": scale}
-        else:
-            vals = ["__missing__" if is_missing(value) else str(value).strip() for value in frame[feature]]
-            levels = sorted(set(vals))
-            for extra in ["__missing__", "__other__"]:
-                if extra not in levels:
-                    levels.append(extra)
-            encoders[feature] = {"type": "categorical", "levels": levels}
-    return encoders
+def as_nobody(cmd, timeout=600):
+    env = {"PATH": "/usr/bin:/bin", "HOME": "/tmp"}
+    return subprocess.run(
+        cmd, capture_output=True, text=True, timeout=timeout, check=False,
+        user="nobody", group="nogroup", extra_groups=[], cwd="/tmp", env=env,
+    )
 
 
-def apply_encoder(frame, encoders):
-    parts = []
-    for feature, encoder in encoders.items():
-        if encoder["type"] == "numeric":
-            values = clean_numeric(frame[feature]).fillna(encoder["median"]).astype(float)
-            parts.append(((values - encoder["mean"]) / encoder["sd"]).to_numpy().reshape(-1, 1))
-        else:
-            vals = ["__missing__" if is_missing(value) else str(value).strip() for value in frame[feature]]
-            vals = [value if value in encoder["levels"] else "__other__" for value in vals]
-            mat = np.zeros((len(frame), len(encoder["levels"])), dtype=float)
-            for idx, level in enumerate(encoder["levels"]):
-                mat[:, idx] = [1.0 if value == level else 0.0 for value in vals]
-            parts.append(mat)
-    return np.column_stack(parts) if parts else np.zeros((len(frame), 0), dtype=float)
+def output_for(name):
+    out = os.path.join(WORK, f"out_{name}.json")
+    if os.path.isfile(out):
+        os.remove(out)
+    r = as_nobody([JAVA, "-jar", JAR, "--panel", PANELS[name], "--out", out])
+    assert r.returncode == 0, (
+        f"pipeline exit {r.returncode} on {name}\n"
+        f"stdout:{r.stdout[-1500:]}\nstderr:{r.stderr[-1500:]}"
+    )
+    assert os.path.isfile(out), f"no artifact written for {name}"
+    with open(out) as f:
+        return json.load(f)
 
 
-def fit_ridge(x, y, lambda_value):
-    design = np.column_stack([np.ones(len(x)), x])
-    penalty = np.eye(design.shape[1])
-    penalty[0, 0] = 0.0
-    return np.linalg.solve(design.T @ design + float(lambda_value) * penalty, design.T @ y)
+def cv_by_value(obj):
+    return {round(float(k), 12): v for k, v in obj["cv_mean_error"].items()}
 
 
-def predict_ridge(beta, x):
-    design = np.column_stack([np.ones(len(x)), x])
-    return design @ beta
-
-
-def target_for_model(y, use_log):
-    return np.log1p(np.maximum(y, 0.0)) if use_log else y
-
-
-def target_from_model(y, use_log):
-    return np.maximum(0.0, np.expm1(y)) if use_log else y
-
-
-def expected_selection_report(public_data, config, roles):
-    """Recompute validation k selection with group-stability ranking."""
-    split_col = config["split_column"]
-    target_col = config["target_column"]
-    group_col = config["group_column"]
-    fit = public_data[public_data[split_col] == "fit"].reset_index(drop=True)
-    validation = public_data[public_data[split_col] == "validation"].reset_index(drop=True)
-    encoders = learn_encoder(fit, roles)
-    fit_x = apply_encoder(fit, encoders)
-    validation_x = apply_encoder(validation, encoders)
-    fit_y = clean_numeric(fit[target_col]).to_numpy(float)
-    validation_y = clean_numeric(validation[target_col]).to_numpy(float)
-    use_log = bool(np.nanmin(np.concatenate([fit_y, validation_y])) >= 0.0)
-    groups = validation[group_col].fillna("__missing__").astype(str).replace({"": "__missing__"})
-    rows = []
-    for candidate_k in [int(value) for value in str(config["k_grid"]).split("|")]:
-        beta = fit_ridge(fit_x, target_for_model(fit_y, use_log), candidate_k)
-        prediction = target_from_model(predict_ridge(beta, validation_x), use_log)
-        rmse = float(np.sqrt(mean_squared_error(validation_y, prediction)))
-        group_rmse = []
-        for group in sorted(groups.unique()):
-            mask = (groups == group).to_numpy()
-            group_rmse.append(float(np.sqrt(mean_squared_error(validation_y[mask], prediction[mask]))))
-        rows.append(
-            {
-                "candidate_k": candidate_k,
-                "validation_metric": rmse,
-                "worst_group_rmse": max(group_rmse),
-                "best_group_rmse": min(group_rmse),
-                "stability_gap": max(group_rmse) - min(group_rmse),
-                "selected": False,
-            }
+@pytest.mark.parametrize("name", PANEL_NAMES)
+def test_coefficients_match(name):
+    """Every fitted coefficient on the standardized design matches ELAST-X v2."""
+    got = output_for(name)["coefficients"]
+    ref = TRUTH[name]["coefficients"]
+    for k, v in ref.items():
+        assert k in got, f"missing coefficient {k}"
+        assert abs(got[k] - v) <= _tol(v), (
+            f"coef {k} on {name}: got {got[k]!r} want {v!r}"
         )
-    selected_idx = min(
-        range(len(rows)),
-        key=lambda idx: (
-            rows[idx]["stability_gap"],
-            rows[idx]["validation_metric"],
-            rows[idx]["candidate_k"],
-        ),
-    )
-    rows[selected_idx]["selected"] = True
-    return pd.DataFrame(rows)
 
 
-def selected_lambda(public_data, config, roles):
-    expected = expected_selection_report(public_data, config, roles)
-    selected = expected[expected["selected"]]
-    assert len(selected) == 1
-    return int(selected["candidate_k"].iloc[0])
+@pytest.mark.parametrize("name", PANEL_NAMES)
+def test_lambda_selected(name):
+    """The cross-validated ridge penalty is the one-standard-error choice."""
+    got = output_for(name)
+    ref = TRUTH[name]["lambda"]
+    assert abs(got["lambda"] - ref) <= _tol(ref)
 
 
-def expected_ridge_predictions(public_data, config, roles, split_name):
-    """Recompute row-level ridge predictions for validation or test rows."""
-    split_col = config["split_column"]
-    target_col = config["target_column"]
-    lambda_value = selected_lambda(public_data, config, roles)
-    if split_name == "validation":
-        train = public_data[public_data[split_col] == "fit"].reset_index(drop=True)
-        evaluation = public_data[public_data[split_col] == "validation"].reset_index(drop=True)
-        log_source = public_data[public_data[split_col].isin(["fit", "validation"])][target_col]
-    elif split_name == "test":
-        train = public_data[public_data[split_col].isin(["fit", "validation"])].reset_index(drop=True)
-        evaluation = public_data[public_data[split_col] == "test"].reset_index(drop=True)
-        log_source = train[target_col]
-    else:
-        raise ValueError(f"Unsupported split_name: {split_name}")
-    encoders = learn_encoder(train, roles)
-    train_x = apply_encoder(train, encoders)
-    evaluation_x = apply_encoder(evaluation, encoders)
-    train_y = clean_numeric(train[target_col]).to_numpy(float)
-    log_values = clean_numeric(log_source).dropna().to_numpy(float)
-    use_log = bool(len(log_values) and np.nanmin(log_values) >= 0.0)
-    beta = fit_ridge(train_x, target_for_model(train_y, use_log), lambda_value)
-    prediction = target_from_model(predict_ridge(beta, evaluation_x), use_log)
-    return pd.DataFrame({"row_id": evaluation["row_id"], "expected_prediction": prediction}).sort_values("row_id")
-
-
-def expected_feature_summary(public_data, config, roles):
-    """Recompute feature missingness counts by split."""
-    rows = []
-    split_col = config["split_column"]
-    for _, role in feature_rows(roles).iterrows():
-        feature = role["feature"]
-        row = {"feature": feature, "data_type": role["data_type"]}
-        for split_name, column in [
-            ("fit", "missing_fit"),
-            ("validation", "missing_validation"),
-            ("test", "missing_test"),
-        ]:
-            values = public_data.loc[public_data[split_col] == split_name, feature]
-            row[column] = int(sum(is_missing(value) for value in values))
-        rows.append(row)
-    return pd.DataFrame(rows)
-
-
-def expected_group_error_report(validation_predictions):
-    """Recompute validation group mean absolute errors."""
-    source = validation_predictions.copy()
-    groups = source["group_key"].apply(lambda value: "__missing__" if is_missing(value) else str(value).strip())
-    source["group_key"] = groups
-    return (
-        source.groupby("group_key", sort=True)
-        .agg(mean_abs_error=("abs_error", "mean"), n_validation=("abs_error", "size"))
-        .reset_index()
-    )
-
-
-def expected_neighbor_evidence(public_data, config, roles):
-    """Recompute nearest final-reference row for the neighbor evidence report."""
-    split_col = config["split_column"]
-    lambda_value = selected_lambda(public_data, config, roles)
-    _ = lambda_value  # The selected k/lambda fixes the final model; nearest row uses the same final encoding.
-    train = public_data[public_data[split_col].isin(["fit", "validation"])].reset_index(drop=True)
-    evaluation = (
-        public_data[public_data[split_col] == "test"]
-        .sort_values("row_id")
-        .reset_index(drop=True)
-    )
-    encoders = learn_encoder(train, roles)
-    train_x = apply_encoder(train, encoders)
-    evaluation_x = apply_encoder(evaluation, encoders)
-    rows = []
-    for idx in range(min(50, len(evaluation))):
-        distances = np.sqrt(((train_x - evaluation_x[idx, :]) ** 2).sum(axis=1))
-        nearest = int(np.argsort(distances, kind="mergesort")[0])
-        rows.append(
-            {
-                "row_id": evaluation["row_id"].iloc[idx],
-                "nearest_fit_index": nearest + 1,
-                "nearest_distance": round(float(distances[nearest]), 6),
-            }
+@pytest.mark.parametrize("name", PANEL_NAMES)
+def test_cv_curve_match(name):
+    """The mean cross-validation error at every grid lambda matches."""
+    got = cv_by_value(output_for(name))
+    ref = {round(float(k), 12): v for k, v in TRUTH[name]["cv_mean_error"].items()}
+    for lam, v in ref.items():
+        assert lam in got, f"missing cv lambda {lam!r}"
+        assert abs(got[lam] - v) <= _tol(v), (
+            f"cv[{lam!r}] on {name}: got {got[lam]!r} want {v!r}"
         )
-    return pd.DataFrame(rows)
 
 
-def run_analysis(data_dir, out_dir):
-    env = os.environ.copy()
-    env["DATA_DIR"] = str(data_dir)
-    env["DATA_PATH"] = str(data_dir / "train.csv")
-    env["OUT_DIR"] = str(out_dir)
-    env["OUTPUT_DIR"] = str(out_dir)
-    result = subprocess.run(
-        ["Rscript", str(ANALYSIS)],
-        text=True,
-        capture_output=True,
-        timeout=420,
-        check=False,
-        env=env,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    return out_dir
+@pytest.mark.parametrize("name", PANEL_NAMES)
+def test_elasticities_match(name):
+    """Per-segment arc elasticities match, including any monotonicity projection."""
+    got = output_for(name)["elasticities"]
+    ref = TRUTH[name]["elasticities"]
+    for s in SEGMENTS:
+        assert s in got, f"missing elasticity {s}"
+        assert abs(got[s] - ref[s]) <= _tol(ref[s]), (
+            f"elasticity {s} on {name}: got {got[s]!r} want {ref[s]!r}"
+        )
 
 
-@pytest.fixture(scope="module")
-def config():
-    return read_key_values(CONFIG_DIR / "model_config.csv")
+@pytest.mark.parametrize("name", PANEL_NAMES)
+def test_holdout_metric_match(name):
+    """The weighted holdout MAPE matches ELAST-X v2."""
+    got = output_for(name)["holdout_weighted_mape"]
+    ref = TRUTH[name]["holdout_weighted_mape"]
+    assert abs(got - ref) <= _tol(ref)
 
 
-@pytest.fixture(scope="module")
-def thresholds():
-    return read_key_values(CONFIG_DIR / "evaluation_thresholds.csv")
+def test_monotonicity_projection_is_data_driven():
+    """A positive raw slope is projected to zero and other segments keep their sign."""
+    assert abs(TRUTH["committed"]["elasticities"]["home"]) <= ZERO_EPS
+    assert TRUTH["c"]["elasticities"]["home"] < -SEPARATION
+    assert abs(output_for("committed")["elasticities"]["home"]) <= PROJECTED_EPS
+    assert output_for("c")["elasticities"]["home"] < -SEPARATION
 
 
-@pytest.fixture(scope="module")
-def roles():
-    return pd.read_csv(CONFIG_DIR / "feature_roles.csv")
+def test_output_is_not_hardcoded():
+    """Held-out panels have different truth, so echoing the visible answer fails."""
+    a = TRUTH["committed"]["coefficients"]
+    b = TRUTH["a"]["coefficients"]
+    assert any(abs(a[k] - b[k]) > SEPARATION for k in a), "held-out truth must differ"
+    got_a = output_for("a")["holdout_weighted_mape"]
+    ref_a = TRUTH["a"]["holdout_weighted_mape"]
+    assert abs(got_a - ref_a) <= _tol(ref_a)
+    visible = TRUTH["committed"]["holdout_weighted_mape"]
+    assert abs(got_a - visible) > SEPARATION
 
 
-@pytest.fixture(scope="module")
-def public_data():
-    return pd.read_csv(DATA_DIR / "train.csv")
-
-
-@pytest.fixture(scope="module")
-def labels():
-    return pd.read_csv(LABELS)
-
-
-@pytest.fixture(scope="module")
-def predictions():
-    return pd.read_csv(OUT / "predictions.csv")
-
-
-@pytest.fixture(scope="module")
-def validation_predictions():
-    return pd.read_csv(OUT / "validation_predictions.csv")
-
-
-@pytest.fixture(scope="module")
-def metrics():
-    return json.loads((OUT / "metrics.json").read_text())
-
-
-class TestPublicSurface:
-    def test_required_artifacts_exist(self):
-        """The required output files are present after the R analysis runs."""
-        required = [
-            "predictions.csv",
-            "validation_predictions.csv",
-            "metrics.json",
-            "selection_report.csv",
-            "feature_summary.csv",
-            "group_error_report.csv",
-            "neighbor_evidence.csv",
-            "interval_report.csv",
-            "residual_bins.csv",
-        ]
-        missing = [name for name in required if not (OUT / name).exists()]
-        assert not missing
-
-    def test_public_test_targets_are_blank(self, public_data, config):
-        """The public data does not reveal target values for held-out test rows."""
-        test_rows = public_data[public_data[config["split_column"]] == "test"]
-        assert test_rows[config["target_column"]].isna().all()
-
-    def test_feature_summary_matches_configured_features(self, public_data, config, roles):
-        """feature_summary.csv covers features and split-specific missing counts."""
-        summary = pd.read_csv(OUT / "feature_summary.csv")
-        assert list(summary.columns) == [
-            "feature",
-            "data_type",
-            "missing_fit",
-            "missing_validation",
-            "missing_test",
-        ]
-        expected = expected_feature_summary(public_data, config, roles)
-        summary = summary.sort_values("feature").reset_index(drop=True)
-        expected = expected.sort_values("feature").reset_index(drop=True)
-        pd.testing.assert_frame_equal(summary, expected, check_dtype=False)
-
-
-class TestPredictionContract:
-    def test_predictions_cover_heldout_rows(self, predictions, labels):
-        """predictions.csv covers every held-out row_id exactly once."""
-        assert predictions["row_id"].is_unique
-        assert set(predictions["row_id"]) == set(labels["row_id"])
-
-    def test_predictions_are_sorted(self, predictions):
-        """predictions.csv is sorted by row_id for deterministic upload checks."""
-        values = predictions["row_id"].to_numpy()
-        assert np.all(values[:-1] <= values[1:])
-
-    def test_prediction_columns_match_task_mode(self, predictions, config):
-        """The prediction schema matches the declared modeling mode."""
-        if config["task_mode"] == "regression":
-            assert {"prediction", "lower", "upper", "group_key"}.issubset(predictions)
-            assert np.isfinite(predictions["prediction"]).all()
-            assert (predictions["lower"] <= predictions["upper"]).all()
-        else:
-            classes = config["class_order"].split("|")
-            prob_cols = class_probability_columns(classes)
-            assert {"pred_label", "group_key"}.issubset(predictions)
-            assert set(prob_cols).issubset(predictions)
-            sums = predictions[prob_cols].sum(axis=1).to_numpy()
-            np.testing.assert_allclose(sums, np.ones(len(sums)), atol=1e-4)
-
-
-class TestValidationEvidence:
-    def test_selection_report_has_one_selected_k(self, public_data, config, roles, metrics):
-        """selection_report.csv recomputes validation group stability and marks the chosen k."""
-        report = pd.read_csv(OUT / "selection_report.csv")
-        assert list(report.columns) == [
-            "candidate_k",
-            "validation_metric",
-            "worst_group_rmse",
-            "best_group_rmse",
-            "stability_gap",
-            "selected",
-        ]
-        expected = expected_selection_report(public_data, config, roles)
-        for column in [
-            "candidate_k",
-            "validation_metric",
-            "worst_group_rmse",
-            "best_group_rmse",
-            "stability_gap",
-        ]:
-            np.testing.assert_allclose(report[column].astype(float), expected[column].astype(float), atol=5e-5)
-        selected = report[report["selected"].astype(str).str.lower().isin(["true", "1"])]
-        assert len(selected) == 1
-        assert int(selected["candidate_k"].iloc[0]) == int(metrics["selected_k"])
-        expected_selected = expected[expected["selected"]]
-        assert int(selected["candidate_k"].iloc[0]) == int(expected_selected["candidate_k"].iloc[0])
-
-    def test_group_report_uses_validation_groups(self, validation_predictions):
-        """group_error_report.csv recomputes validation group mean errors."""
-        report = pd.read_csv(OUT / "group_error_report.csv")
-        assert list(report.columns) == ["group_key", "mean_abs_error", "n_validation"]
-        assert report["group_key"].is_unique
-        assert (report["n_validation"] > 0).all()
-        expected = expected_group_error_report(validation_predictions)
-        report = report.sort_values("group_key").reset_index(drop=True)
-        expected = expected.sort_values("group_key").reset_index(drop=True)
-        assert report["group_key"].tolist() == expected["group_key"].tolist()
-        assert report["n_validation"].astype(int).tolist() == expected["n_validation"].astype(int).tolist()
-        np.testing.assert_allclose(report["mean_abs_error"], expected["mean_abs_error"], atol=1e-6)
-
-    def test_neighbor_evidence_matches_reference(self, public_data, config, roles):
-        """neighbor_evidence.csv recomputes nearest final-reference rows."""
-        report = pd.read_csv(OUT / "neighbor_evidence.csv")
-        assert list(report.columns) == ["row_id", "nearest_fit_index", "nearest_distance"]
-        expected = expected_neighbor_evidence(public_data, config, roles)
-        assert len(report) == len(expected)
-        assert report["row_id"].tolist() == expected["row_id"].tolist()
-        assert report["nearest_fit_index"].astype(int).tolist() == expected["nearest_fit_index"].astype(int).tolist()
-        assert (report["nearest_distance"] >= 0).all()
-        np.testing.assert_allclose(report["nearest_distance"], expected["nearest_distance"], atol=5e-6)
-
-    def test_metrics_match_validation_predictions(self, validation_predictions, metrics, config, public_data, roles):
-        """metrics.json is an honest summary of the selected fit-only validation model."""
-        if config["task_mode"] == "regression":
-            expected = expected_ridge_predictions(public_data, config, roles, "validation")
-            merged = validation_predictions.merge(expected, on="row_id", how="inner", validate="one_to_one")
-            np.testing.assert_allclose(merged["prediction"], merged["expected_prediction"], atol=1e-4)
-            rmse = np.sqrt(
-                mean_squared_error(
-                    validation_predictions["actual"],
-                    validation_predictions["prediction"],
-                )
-            )
-            mae = mean_absolute_error(
-                validation_predictions["actual"],
-                validation_predictions["prediction"],
-            )
-            assert abs(float(metrics["validation_rmse"]) - rmse) <= 1e-5
-            assert abs(float(metrics["validation_mae"]) - mae) <= 1e-5
-        else:
-            classes = config["class_order"].split("|")
-            acc = accuracy_score(
-                validation_predictions["actual"].astype(str),
-                validation_predictions["pred_label"].astype(str),
-            )
-            f1 = macro_f1(
-                validation_predictions["actual"].astype(str),
-                validation_predictions["pred_label"].astype(str),
-                classes,
-            )
-            assert abs(float(metrics["validation_accuracy"]) - acc) <= 1e-5
-            assert abs(float(metrics["validation_macro_f1"]) - f1) <= 1e-5
-
-    def test_interval_and_residual_reports_are_contentful(self, validation_predictions, metrics, config):
-        """Regression interval and residual-bin reports summarize validation predictions."""
-        if config["task_mode"] != "regression":
-            return
-        interval = pd.read_csv(OUT / "interval_report.csv")
-        assert list(interval.columns) == ["split", "interval_coverage", "mean_width"]
-        assert len(interval) == 1
-        assert interval["split"].iloc[0] == "validation"
-        coverage = float(interval["interval_coverage"].iloc[0])
-        assert 0.0 <= coverage <= 1.0
-        assert abs(coverage - float(metrics["interval_coverage"])) <= 1e-5
-        assert np.isfinite(float(interval["mean_width"].iloc[0]))
-        assert float(interval["mean_width"].iloc[0]) >= 0.0
-
-        residual_bins = pd.read_csv(OUT / "residual_bins.csv")
-        assert list(residual_bins.columns) == ["prediction_bin", "mean_abs_error", "count"]
-        assert not residual_bins.empty
-        assert int(residual_bins["count"].sum()) == len(validation_predictions)
-        assert (residual_bins["count"] > 0).all()
-
-
-class TestHeldoutQuality:
-    def test_heldout_score_clears_threshold(self, predictions, labels, config, thresholds, public_data, roles):
-        """Held-out predictions match the selected refit model and clear quality bars."""
-        merged = predictions.merge(labels, on="row_id", how="inner", validate="one_to_one")
-        target = config["target_column"]
-        if config["task_mode"] == "regression":
-            expected = expected_ridge_predictions(public_data, config, roles, "test")
-            checked = predictions.merge(expected, on="row_id", how="inner", validate="one_to_one")
-            np.testing.assert_allclose(checked["prediction"], checked["expected_prediction"], atol=1e-4)
-            rmse = np.sqrt(mean_squared_error(merged[target], merged["prediction"]))
-            mae = mean_absolute_error(merged[target], merged["prediction"])
-            r2 = r2_score(merged[target], merged["prediction"])
-            assert rmse <= float(thresholds["max_rmse"])
-            assert mae <= float(thresholds["max_mae"])
-            assert r2 >= float(thresholds["min_r2"])
-        else:
-            classes = config["class_order"].split("|")
-            acc = accuracy_score(merged[target].astype(str), merged["pred_label"].astype(str))
-            f1 = macro_f1(
-                merged[target].astype(str),
-                merged["pred_label"].astype(str),
-                classes,
-            )
-            assert acc >= float(thresholds["min_accuracy"])
-            assert f1 >= float(thresholds["min_macro_f1"])
-
-    def test_fit_label_perturbation_changes_predictions(self, tmp_path, predictions, config):
-        """Changing fit labels changes held-out predictions in an alternate run."""
-        alt_data = tmp_path / "data"
-        shutil.copytree(DATA_DIR, alt_data)
-        frame = pd.read_csv(alt_data / "train.csv")
-        target = config["target_column"]
-        fit_mask = frame[config["split_column"]] == "fit"
-        if config["task_mode"] == "regression":
-            values = pd.to_numeric(frame.loc[fit_mask, target])
-            frame.loc[fit_mask, target] = values + values.std(ddof=0) * 0.75
-        else:
-            classes = config["class_order"].split("|")
-            mapping = {classes[i]: classes[(i + 1) % len(classes)] for i in range(len(classes))}
-            frame.loc[fit_mask, target] = frame.loc[fit_mask, target].astype(str).map(mapping)
-        frame.to_csv(alt_data / "train.csv", index=False)
-        alt_out = tmp_path / "out"
-        alt_out.mkdir()
-        run_analysis(alt_data, alt_out)
-        changed = pd.read_csv(alt_out / "predictions.csv")
-        merged = predictions.merge(changed, on="row_id", suffixes=("_orig", "_alt"))
-        if config["task_mode"] == "regression":
-            delta = np.abs(merged["prediction_orig"] - merged["prediction_alt"]).mean()
-        else:
-            classes = config["class_order"].split("|")
-            prob_cols = class_probability_columns(classes)
-            delta = 0.0
-            for col in prob_cols:
-                delta += np.abs(merged[f"{col}_orig"] - merged[f"{col}_alt"]).mean()
-        assert delta > 1e-6
+def test_tests_directory_is_sealed():
+    """The graded panels and reference are unreadable to the pipeline process."""
+    assert SEALED["tests"], "tests directory was not sealed"
+    assert SEALED["interp"] > 0, "no interpreters were sealed"
+    here = os.path.dirname(os.path.abspath(__file__))
+    r = as_nobody(["/bin/cat", os.path.join(here, "heldout", "panel_a.csv")])
+    assert r.returncode != 0, "held-out panel is readable by the pipeline process"

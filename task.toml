@@ -5,30 +5,24 @@ author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
 category = "machine-learning"
-codebase_size = "small"
 subcategories = ["tool_specific"]
+tags = ["demand-modeling", "price-elasticity", "cross-validation", "regularized-regression", "model-reproduction"]
+languages = ["kotlin"]
+codebase_size = "minimal"
 number_of_milestones = 0
-languages = ["r"]
-tags = [
-  "r",
-  "regression",
-  "ecology",
-  "counts",
-  "tabular"
-]
 expert_time_estimate_min = 120
-junior_time_estimate_min = 340
-
-[verifier]
-timeout_sec = 900
-
-[agent]
-timeout_sec = 1200
-user = 65534
+junior_time_estimate_min = 360
 
 [environment]
-build_timeout_sec = 900
+allow_internet = false
+build_timeout_sec = 1500
 cpus = 2
 memory_mb = 4096
-storage_mb = 8192
-allow_internet = false
+storage_mb = 10240
+
+[verifier]
+timeout_sec = 1200
+
+[agent]
+timeout_sec = 1800
+user = "agent"

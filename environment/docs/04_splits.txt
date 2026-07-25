@@ -1,1 +1,0 @@
-The fit split is used for preprocessing and model selection candidates. The validation split selects and audits the candidate. The test split has blank public targets.

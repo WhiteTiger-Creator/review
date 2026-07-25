@@ -1,14 +1,7 @@
 #!/bin/bash
 set -euo pipefail
-
-cp /solution/analysis.R /app/analysis.R
-Rscript /app/analysis.R
-test -s /app/outputs/predictions.csv
-test -s /app/outputs/validation_predictions.csv
-test -s /app/outputs/metrics.json
-test -s /app/outputs/selection_report.csv
-test -s /app/outputs/feature_summary.csv
-test -s /app/outputs/group_error_report.csv
-test -s /app/outputs/neighbor_evidence.csv
-test -s /app/outputs/interval_report.csv
-test -s /app/outputs/residual_bins.csv
+cd /app
+cp /solution/fixed/kotlin/Model.kt src/main/kotlin/Model.kt
+./build.sh
+mkdir -p artifacts
+./run.sh --panel data/panel.csv --out artifacts/elasticity.json
