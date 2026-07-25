@@ -1,9 +1,0 @@
-{
-  "family": "wave_beta",
-  "budget": 3,
-  "unit_slice": "sd",
-  "incident_wave": "sd",
-  "permute": false,
-  "swap_masks": false,
-  "band_limit": 30
-}

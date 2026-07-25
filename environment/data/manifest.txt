@@ -1,0 +1,6 @@
+problem_01.txt  n=5 k=120  (leading exponent ~0.432, trailing ~-0.495)
+problem_02.txt  n=5 k=120  (leading exponent ~0.506, trailing ~-0.557)
+problem_03.txt  n=5 k=120  (leading exponent ~0.343, trailing ~-0.330)
+problem_04.txt  n=5 k=120  (problem_01 with every matrix scaled by 2; each exponent is problem_01's plus log 2)
+problem_05.txt  n=5 k=120  (problem_01 with some matrices negated; exponents identical to problem_01)
+problem_06.txt  n=5 k=120  (leading exponent ~1.252, trailing ~-1.462)

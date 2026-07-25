@@ -1,7 +1,21 @@
-Offline restart-storm budget tooling under `/app/environment` is drifting across ops cycles. Cold and hot digests diverge on graded bundles. Later profile rows inherit tallies from earlier ones. The wrong policy generation gets selected across ledger churn. A bare scrub leaves the ledger tip and overlay selection incoherent. n3_v1 stays unavailable until preserve-anchor recovery succeeds.
+A dynamical-systems group studies how a time-varying linear process stretches state
+space over many steps. The process is a sequence of linear maps applied one after
+another; its long-term behavior is governed by the principal stretching rates of the
+composed map over the horizon.
 
-Repair the Go sources under `/app/environment`, rebuild with `bash /app/environment/scripts/build_all.sh`, then run `/app/environment/bin/wave_sched --grid-full --out /app/output/storm_trace.json`. A good run exits 0 and also writes `/app/output/replay_audit.json`. Graded storm_trace format is n3_v1 with family, lane_order, span_band, span_digest, cold_digest, and hot_digest for wave_alpha, wave_beta, wave_gamma, and wave_delta. Digests are lowercase hex length 64. span_digest reports the sealed hex digest over unit slice bytes, incident wave bytes, active lane masks in lane_order, and the eight-byte staging prefix that fed ranking. cold_digest is computed as that same seal with the first eight bytes of `/app/environment/pack/seed/token_seed.bin` as the staging prefix. hot_digest is computed as that same seal with the staging bytes that actually fed lane ranking (gen-bound checkpoint when selected, otherwise `.anchor_staging`). On a converged row the three digest columns match. Pack path keys (sg_unit, sd_unit, sg_incident, sd_incident), recovery commands, and output field shapes live in `/app/environment/docs/pact_n3.md`. Ledger tip selection, overlay pick, shadow suppression, hit-cache keying, lane_order ranking, and gen-bound staging contracts live in `/app/environment/docs/policy_overlay.md` and `/app/environment/docs/field_layout.md`. Emitting n3_v1 requires `/app/environment/pack/seed/.storm_gen` to parse as decimal 0. Cold and hot prefixes must agree for those digests to converge. A mismatched staging prefix (including HOTSTG01 or a one-byte flip) blocks n3_v1 on the hot path.
+Each problem supplies one such sequence, k real n-by-n matrices M_1 through M_k
+applied in order to form the composition P = M_k ... M_1. The program must return the
+n finite-horizon exponents of the composition, defined as the natural logarithms of
+the singular values of P divided by k, that is the average logarithmic principal
+stretches of the composition's Cauchy-Green tensor. Report them in decreasing order.
 
-Ops recovery is `/app/environment/phase/rld_x2.sh`. A bare call with no flags increments the roll counter, drops staging, poisons storm_gen, and mutates the wave ledger. Two bare resets with no preserve leave the grid unable to emit n3_v1. Preserve-anchor restores seed staging, clears the roll counter, clears storm_gen poison, and restores ledger coherency. Pack path targets named above must remain unchanged across preserve-anchor recovery. replay_audit must report tip_gen, policy_gen, policy_id, policy_path, and ledger_fingerprint consistent with the ledger and selected overlay.
+The exponents span a wide range: the leading directions grow by many orders of
+magnitude over the horizon while the trailing directions shrink by as many, so the
+composed map is enormously ill conditioned.
 
-Hand-written JSON and static copies are not enough. Source under `/app/environment` has to be fixed. Rebuilt libraries must pass the offline package probes under `/tests/lib_probe`, and the driver must emit the contracts above.
+The work happens in the single C source file at /app/lyap.c, compiled by
+/app/build.sh. It takes an input directory and an output path, reads each problem, and
+writes the exponents. The layouts and required accuracy are described under /app/docs. Only double precision may be used: extended or arbitrary precision types
+and libraries, and external linear-algebra libraries, are not permitted. Worked
+examples with solutions are under /app/data. The starter reads and writes the right
+shapes but does not compute them. Work offline.
