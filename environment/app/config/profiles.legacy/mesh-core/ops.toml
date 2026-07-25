@@ -1,9 +1,0 @@
-# Sealed mesh-core WireGuard peer mesh ops profile
-run_id = "wireguard-peer-mesh-v1"
-ops_epoch = 1720000000
-handshake_grace_sec = 86400
-allow_disabled = true
-soft_peer_conflict = true
-prefer_keepalive = false
-dual_iface_link = false
-config_seal = "408351b75b2b175e1c240769f90161136ea2635026b2f5c2ae735e6377c1d782"

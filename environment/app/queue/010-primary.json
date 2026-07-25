@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "job_id": "release-a",
+  "payload_path": "/app/payloads/release-a.bin",
+  "payload_sha256": "dc5c965a3769d7e05ee470d906348447de5b5828ec891f007e78803ec4bf9911",
+  "key": "release-primary",
+  "mechanism": "rsa-pss-sha256"
+}

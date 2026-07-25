@@ -1,0 +1,11 @@
+schema_version = 1
+module = "/usr/lib/softhsm/libsofthsm2.so"
+pin_file = "/app/config/token-user.pin"
+token_label = "legacy-token"
+key_label = "legacy-signing"
+public_key = "/app/config/public/legacy.pem"
+state_dir = "/app/state"
+queue_dir = "/app/queue"
+payload_root = "/app/payloads"
+output_dir = "/output/signed"
+log_dir = "/var/log/signing"

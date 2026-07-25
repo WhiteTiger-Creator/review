@@ -1,0 +1,17 @@
+schema_version = 2
+module = "/usr/lib/softhsm/libsofthsm2.so"
+pin_file = "/app/config/token-user.pin"
+state_dir = "/app/state"
+queue_dir = "/app/queue"
+payload_root = "/app/payloads"
+output_dir = "/output/signed"
+log_dir = "/var/log/signing"
+max_jobs_per_worker = 1
+
+[keys.release-primary]
+uri = "pkcs11:token=release-token;serial=1001;object=release-signing;type=private;id=%01"
+public_key = "/app/config/public/release-primary.pem"
+
+[keys.release-secondary]
+uri = "pkcs11:token=release-token;serial=1001;object=release-signing;type=private;id=%02"
+public_key = "/app/config/public/release-secondary.pem"

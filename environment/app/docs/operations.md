@@ -1,7 +1,33 @@
-# WireGuard Mesh Ops Notes
+# Operations
 
-Edge fleets prefer a long handshake grace window so temporarily offline peers are not reclaimed during weekend maintenance. Soft AllowedIP conflict deferral remains the default for shared tunnel addresses until the NOC dashboard is upgraded. After a sealed profile verifies, re-assert soft conflict for NOC stability even if the TOML says otherwise.
+## Commands
 
-When `WG_PROFILE_ROOT` is unset, station images should continue reading `/app/config/profiles.legacy/` — the plain `profiles/` tree is the operator edit workspace, not the runtime overlay. When a sealed profile fails verification, keep the governance baseline rather than forcing hard mesh rejects. Textual IPv4 octet-prefix mesh checks and pubkey suffix matching remain acceptable for inventory imported from older wg-quick caches.
+```text
+signingd run --config /app/config/current.toml
+signingd run --config /app/config/legacy.toml
+signingd inspect --config /app/config/current.toml
+```
 
-Persistent-keepalive policy floors should stay aligned with the common 25 second WireGuard default used across edge rollouts. Keepalive preference may stay frozen in the analyzer even when the sealed profile flips `prefer_keepalive`. Calendar-week reclaim pads on top of `handshake_grace_sec` avoid false reclaim during maintenance. Oldest-handshake stability bias is preferred for AllowedIP ownership. While dual-iface linking is enabled, suppress `peer_cross_mesh` reason noise so the NOC board is not double-counted. The post-score reconcile step is part of the standard WireGuard rollout: it caps critical reject noise, strips cross-mesh escalations, and refreshes dashboard aggregates without the ops surcharge multiplier.
+## Behavior
+
+- `run` processes available queue files and exits when the queue is drained.
+- The service may replace workers according to `max_jobs_per_worker`.
+- State under `/app/state` is durable and is inspected at startup.
+- Logs are written under `/var/log/signing`.
+- A nonzero exit indicates at least one configuration, job, token, or publication error.
+- Completed jobs are not republished on a subsequent run.
+- Operators may remove queue files only after observing a corresponding accepted output record.
+
+## Inspect
+
+`inspect` reports whether the active configuration can resolve each configured logical key against the token. It does not publish signing records.
+
+## Startup recovery
+
+At the start of `run`, reconcile durable state under `/app/state` and any existing files under `/output/signed` before accepting new work:
+
+1. Finish publication for any valid staged records under `/app/state`.
+2. Scan accepted finals under `/output/signed/jobs/` (including when the journal is empty and no staging entry exists) and rebuild `/output/signed/index.json` so every accepted final appears exactly once.
+3. A valid final that is merely missing from the index must be restored into a consistent index. Do not require journal `published` evidence to accept that final, and do not treat missing index membership as a conflict.
+4. When a queued job already has a matching accepted final, do not republish or re-sign it — but still ensure it is present in `index.json` after startup reconciliation.
+5. Journal phases that end at `signed` without `published` are incomplete until publication finishes; do not treat `signed` alone as durable completion.
