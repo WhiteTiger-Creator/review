@@ -1,32 +1,23 @@
-#!/usr/bin/env bash
-set -uo pipefail
+#!/bin/bash
+
+# Verifier dependencies are installed in environment/Dockerfile.
 
 mkdir -p /logs/verifier
 echo 0 > /logs/verifier/reward.txt
-export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
-export PYTHONDONTWRITEBYTECODE=1
-unset PYTHONHOME PYTHONPATH PYTEST_ADDOPTS PYTEST_PLUGINS
+printf '%s\n' '{"results":{"tool":{"name":"ctrf-stub"},"summary":{"tests":0,"passed":0,"failed":0,"skipped":0},"tests":[]}}' > /logs/verifier/ctrf.json
 
-restore_permissions() {
-    chmod 0755 /tests 2>/dev/null || true
-    chmod 0644 /tests/test_outputs.py 2>/dev/null || true
-}
-trap restore_permissions EXIT
-chmod 0700 /tests
-chmod 0600 /tests/test_outputs.py
-
-# Check if we're in a valid working directory
 if [ "$PWD" = "/" ]; then
-    echo "The task image must set a working directory." >&2
-    exit 0
+    echo "Error: No working directory set. Please set a WORKDIR in your Dockerfile before running this script."
+    echo 0 > /logs/verifier/reward.txt
+    exit 1
 fi
 
-cd /tests || exit 0
-/opt/verifier-venv/bin/python -m pytest -p ctrf.main \
-    --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA --tb=short
-rc=$?
+cd /tests && PYTHONSAFEPATH=1 python -m pytest -o cache_dir=/tmp/pytest_cache \
+  --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
 
-if [ "$rc" -eq 0 ]; then
+python -c 'import json,sys; from pathlib import Path; d=json.loads(Path("/logs/verifier/ctrf.json").read_text()); s=(d.get("results") or {}).get("summary") or d.get("summary") or {}; p=int(s.get("passed") or 0); f=int(s.get("failed") or 0); sys.exit(0 if p>=29 and f==0 else 1)'
+
+if [ $? -eq 0 ]; then
     echo 1 > /logs/verifier/reward.txt
 else
     echo 0 > /logs/verifier/reward.txt

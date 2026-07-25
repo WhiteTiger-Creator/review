@@ -1,0 +1,6 @@
+{"epoch":10,"watermark":500,"nonce":"a1b2c3d4","class":"root"}
+{"epoch":20,"watermark":800,"nonce":"e5f6a7b8","class":"root"}
+{"epoch":25,"watermark":900,"nonce":"b1c2d3e4","class":"root"}
+{"epoch":30,"watermark":400,"nonce":"c9d0e1f2","class":"root"}
+{"epoch":40,"watermark":700,"nonce":"a3b4c5d6","class":"root"}
+{"epoch":50,"watermark":600,"nonce":"e7f8a9b0","class":"root"}

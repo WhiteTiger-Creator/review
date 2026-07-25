@@ -1,0 +1,13 @@
+# Trust verification policy.
+
+[trust]
+authority = "strict-tier"
+verification = "ed25519"
+replay_protection = "monotonic"
+
+[lanes]
+mqtt = 1
+lora = 2
+uart = 3
+canbus = 4
+zigbee = 5

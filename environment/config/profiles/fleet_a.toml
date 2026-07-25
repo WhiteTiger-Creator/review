@@ -1,0 +1,2 @@
+label = "fleet_a"
+epochs = [10, 20, 25, 30]

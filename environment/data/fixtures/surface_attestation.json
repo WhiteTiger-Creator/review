@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "backends": [
+    {"name": "mqtt", "status": "active"},
+    {"name": "lora", "status": "active"},
+    {"name": "uart", "status": "active"},
+    {"name": "canbus", "status": "inactive"},
+    {"name": "zigbee", "status": "inactive"}
+  ],
+  "epochs": [
+    {"id": 10, "profile": "fleet_a", "accepted": 10},
+    {"id": 20, "profile": "fleet_a", "accepted": 8},
+    {"id": 30, "profile": "fleet_a", "accepted": 6},
+    {"id": 40, "profile": "fleet_b", "accepted": 8},
+    {"id": 50, "profile": "fleet_b", "accepted": 7}
+  ]
+}
