@@ -6,8 +6,6 @@
 **/.mypy_cache/
 **/.ruff_cache/
 **/node_modules/
-.env
-._*
-.DS_Store
-solution/
-tests/
+target
+*.o
+*.rlib

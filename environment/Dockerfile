@@ -1,41 +1,23 @@
-FROM golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+FROM rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
 
-ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH="/usr/local/cargo/bin:${PATH}"
+ENV CARGO_NET_OFFLINE=true
+ENV CARGO_TERM_COLOR=never
 
-RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        tmux \
         asciinema \
-        ca-certificates \
-        g++ \
-        make \
         python3 \
         python3-pip \
-        python3-venv \
-        sqlite3 \
-        tmux; \
-    apt-get clean; \
-    rm -rf /var/lib/apt/lists/*
-
-ENV TEST_VENV=/opt/test-venv
-ENV PATH="${TEST_VENV}/bin:${PATH}"
-
-RUN set -eux; \
-    python3 -m venv "${TEST_VENV}"; \
-    "${TEST_VENV}/bin/pip" install --no-cache-dir \
-        pytest==8.4.1 \
-        pytest-json-ctrf==0.3.5 \
-        cryptography==43.0.3
-
-ENV GOFLAGS=-mod=mod
-ENV GOTOOLCHAIN=local
+    && rm -rf /var/lib/apt/lists/* \
+    && pip3 install --no-cache-dir --break-system-packages pytest==8.3.4
 
 WORKDIR /app
 
-RUN mkdir -p /app/output /app/trust-remediator/build
+COPY Cargo.toml Cargo.lock README.md check_build.sh ./
+COPY src ./src
+COPY docs ./docs
+COPY data ./data
 
-COPY data/              /app/data/
-COPY operator_handbook/ /app/operator_handbook/
-COPY trust-remediator/  /app/trust-remediator/
-
-CMD ["/bin/bash"]
+RUN chmod +x check_build.sh

@@ -1,5 +1,0 @@
-ACCESS cert_fp=b92647cc2aba0eeee8197c1a425f5fb947b31b004d3311da996b9939cffd688b service=edge-gateway ts=2026-01-15T10:30:45Z record=fs-001 bytes=4097
-ACCESS cert_fp=232f366b5d3f0141e35fa1d392948ebdc1c5c16f2368ae04c1f55ec71783cf4a service=mesh-proxy ts=2026-01-15T11:00:12Z record=fs-002 bytes=4098
-ACCESS cert_fp=0b67f80107a7686baa2edce3a28aad7f2cc3996c19aa5af963f50bf1975ae057 service=mesh-proxy ts=2026-01-15T11:00:55Z record=fs-003 bytes=4099
-ACCESS cert_fp=451a71544f124a55157f21c0506110526de63f878a2391d7cbac04efd9730be5 service=legacy-ingest ts=2026-01-15T12:15:00Z record=fs-004 bytes=4100
-ACCESS cert_fp=c1d7cf67a5c81579e803b1131a1a89c352aaf614a2a47e695087d6413217d59c service=legacy-ingest ts=2026-01-15T12:14:30Z record=fs-006 bytes=4102

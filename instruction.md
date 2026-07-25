@@ -1,37 +1,23 @@
-# Trust-store remediation incident
+An IEEE 754-2019 conformance task: compute the operations logb and scalbn and
+the flags each raises. logb returns the radix two exponent of its
+binary64 operand in that format. scalbn returns its operand multiplied by two
+raised to a given integer power n, with the exact product mapped in one step
+into the interchange format the request names, binary16, binary32, or binary64,
+under three attributes it also names: one of the five rounding directions; an
+exception handling, either the default or the exponent adjusted alternate
+handling of clause 8.2; and a tininess detection, before or after rounding.
+Operands are 16 character hexadecimal strings giving all 64 bits. The demanding
+corners are signed zeros, infinities, quiet and signalling Not a Number
+operands, and each destination's subnormal and exponent range edges, where the
+attributes decide what an overflow delivers and which conditions a tiny result
+raises. Bits and flags must both be exact. Five exceptions are tracked, always
+in this order: Invalid, DivByZero, Overflow, Underflow, ineXact.
 
-Anchor deduplication during a trust-store migration silently dropped
-fingerprint-only distrust rows. Standing distrust warrants still authorise those
-rows, so the live store currently trusts certificates that operators had already
-rejected. The Go utility that is supposed to close the gap, at
-`/app/trust-remediator/`, produces incomplete patches and the wrong certificate
-verdicts as a result.
-
-Fix it, and leave `/app/data` byte-for-byte as you found it.
-
-Build with the shipped `Makefile`, which links `build/trust_attest`, then run:
-
-    /app/trust-remediator/build/trust_attest --incident /app/data --write /app/output
-
-The incident bundle holds the post-migration store `/app/data/trust_store.db`,
-the warrant database `/app/data/warrants/warrants.db`, the policy at
-`/app/data/remediation.policy`, the access journal
-`/app/data/access/access.journal` beside its SQLite mirror
-`/app/data/access/access_audit.db`, the evaluation timestamp in
-`/app/data/eval_time.txt`, and PEM material under `/app/data/authorities/` and
-`/app/data/leaves/`. `/app/operator_handbook/` documents each of those, the rules
-for honouring a warrant, and the exact shape of every artifact. Nothing about the
-expected behaviour lives outside that handbook.
-
-Six artifacts belong under `/app/output` on a successful run:
-`remediated_trust_store.db`, `remediation.sql`, `remediated.policy`,
-`access_evidence.tsv`, `certificate_decisions.tsv`, and `audit_receipt.txt`.
-
-One input can stop the run: if the policy's known chain-depth bounds contradict
-each other, exit non-zero having written only `remediated.policy` with its
-rejection trailer, and no database, patch, TSV, or receipt.
-
-The rebuilt binary must be newer than every source under `/app/trust-remediator/`
-so a stale artifact cannot be graded in place of your work. Both the Go toolchain
-and the runtime dependencies are already present system-wide; the build needs no
-network access.
+A request is logb with an operand, or scalbn with an operand, a signed decimal
+scale n, a destination token, and the three attributes. Blank lines, hash
+comments, and unmatched lines are ignored. Every accepted request yields one
+result line: the hexadecimal encoding of the result in its destination format,
+lower case with leading zeros, then a five character flag mask whose positions
+are 1 for the exceptions signalled. Complete the Rust crate in /app so cargo
+build --release produces /app/target/release/fpexp, reading requests on
+standard input.

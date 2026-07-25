@@ -1,764 +1,320 @@
 #!/bin/bash
 set -euo pipefail
 
-cd /app/trust-remediator
-mkdir -p build /app/output
+cd /app
 
-cat > internal/warrant/patch.go <<'GOEOF'
-package warrant
+cat > src/pack.rs <<'RUSTEOF'
+use crate::fmt::Fmt;
+use crate::mode::Mode;
 
-import (
-	"crypto/x509"
-	"encoding/pem"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"sort"
-	"strconv"
-	"strings"
-
-	"trustremediator/internal/attest"
-)
-
-type PatchSummary struct {
-	Honored              int
-	Inert                int
-	RestoredFingerprints []string
-	SQL                  string
+/// Precision, exponent range and exponent field width of a destination.
+pub struct Params {
+    pub p: i128,
+    pub emax: i128,
+    pub emin: i128,
+    pub w: u32,
 }
 
-type record struct {
-	id        string
-	kind      string
-	value     string
-	issuer    string
-	notBefore string
-	notAfter  string
+pub fn params(f: Fmt) -> Params {
+    match f {
+        Fmt::B16 => Params {
+            p: 11,
+            emax: 15,
+            emin: -14,
+            w: 5,
+        },
+        Fmt::B32 => Params {
+            p: 24,
+            emax: 127,
+            emin: -126,
+            w: 8,
+        },
+        Fmt::B64 => Params {
+            p: 53,
+            emax: 1023,
+            emin: -1022,
+            w: 11,
+        },
+    }
 }
 
-func BuildPatch(dataDir string, base attest.Distrust) (attest.Distrust, PatchSummary) {
-	dbPath := filepath.Join(dataDir, "warrants", "warrants.db")
-	rows := sqliteQuery(dbPath, `SELECT warrant_id, target_kind, target_value, issuer_cn, `+
-		`not_before, not_after FROM distrust_warrant ORDER BY warrant_id ASC`)
-
-	quorum := warrantQuorum(dataDir)
-	evalTime := readEvalTime(dataDir)
-	custodians := custodianSet(dbPath)
-	signers := distinctSigners(dbPath)
-	countermanded := countermandSet(dbPath)
-	authorities := authorityCNs(dataDir)
-
-	baseNames := map[string]bool{}
-	for _, n := range base.ByName {
-		baseNames[n] = true
-	}
-	postFP := map[string]bool{}
-	fpSet := map[string]bool{}
-	for _, f := range base.ByFP {
-		postFP[f] = true
-		fpSet[f] = true
-	}
-	nameSet := map[string]bool{}
-	for _, n := range base.ByName {
-		nameSet[n] = true
-	}
-
-	honored := 0
-	inert := 0
-	stmts := []string{"-- trust store remediation patch"}
-
-	for _, row := range rows {
-		w := record{id: row[0], kind: row[1], value: row[2], issuer: row[3],
-			notBefore: row[4], notAfter: row[5]}
-
-		if w.kind != "fingerprint" && w.kind != "common_name" {
-			inert++
-			continue
-		}
-		if w.notBefore > evalTime || evalTime > w.notAfter {
-			inert++
-			continue
-		}
-		endorsements := 0
-		for signer := range signers[w.id] {
-			if custodians[signer] {
-				endorsements++
-			}
-		}
-		if endorsements < quorum {
-			inert++
-			continue
-		}
-		if countermanded[w.id] {
-			inert++
-			continue
-		}
-		if !authorities[w.issuer] || baseNames[w.issuer] {
-			inert++
-			continue
-		}
-
-		honored++
-		switch w.kind {
-		case "fingerprint":
-			fpSet[w.value] = true
-			stmts = append(stmts,
-				"INSERT OR IGNORE INTO distrust_fingerprint (fingerprint, source) VALUES ('"+
-					w.value+"', 'warrant_honored');")
-		case "common_name":
-			nameSet[w.value] = true
-			stmts = append(stmts,
-				"INSERT OR IGNORE INTO distrust_name (common_name, source) VALUES ('"+
-					w.value+"', 'warrant_honored');")
-		}
-	}
-
-	var fps, names []string
-	recovered := []string{}
-	for f := range fpSet {
-		fps = append(fps, f)
-		if !postFP[f] {
-			recovered = append(recovered, f)
-		}
-	}
-	for n := range nameSet {
-		names = append(names, n)
-	}
-	sort.Strings(fps)
-	sort.Strings(names)
-	sort.Strings(recovered)
-
-	sqlText := strings.Join(stmts, "\n") + "\n"
-	return attest.Distrust{ByFP: fps, ByName: names}, PatchSummary{
-		Honored:              honored,
-		Inert:                inert,
-		RestoredFingerprints: recovered,
-		SQL:                  sqlText,
-	}
+/// The exponent adjustment of the alternate handling: 3 * 2^(w - 2).
+pub fn alpha(f: Fmt) -> i128 {
+    3i128 << (params(f).w - 2)
 }
 
-func warrantQuorum(dataDir string) int {
-	data, err := os.ReadFile(filepath.Join(dataDir, "remediation.policy"))
-	if err != nil {
-		return 1
-	}
-	section := ""
-	for _, raw := range strings.Split(string(data), "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			section = line[1 : len(line)-1]
-			continue
-		}
-		if section != "remediation" {
-			continue
-		}
-		key, val, found := strings.Cut(line, "=")
-		if !found || strings.TrimSpace(key) != "warrant_quorum" {
-			continue
-		}
-		if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil {
-			return n
-		}
-	}
-	return 1
+pub fn sign_shift(f: Fmt) -> u32 {
+    let pr = params(f);
+    (pr.p - 1) as u32 + pr.w
 }
 
-func readEvalTime(dataDir string) string {
-	data, err := os.ReadFile(filepath.Join(dataDir, "eval_time.txt"))
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(data))
+pub fn inf_body(f: Fmt) -> u64 {
+    let pr = params(f);
+    ((2 * pr.emax + 1) as u64) << (pr.p - 1)
 }
 
-func custodianSet(dbPath string) map[string]bool {
-	out := map[string]bool{}
-	for _, row := range sqliteQuery(dbPath,
-		`SELECT signer_id FROM authorized_signer WHERE role = 'custodian'`) {
-		out[row[0]] = true
-	}
-	return out
+fn maxfin_body(f: Fmt) -> u64 {
+    let pr = params(f);
+    (((2 * pr.emax) as u64) << (pr.p - 1)) | ((1u64 << (pr.p - 1)) - 1)
 }
 
-func distinctSigners(dbPath string) map[string]map[string]bool {
-	out := map[string]map[string]bool{}
-	for _, row := range sqliteQuery(dbPath,
-		`SELECT warrant_id, signer_id FROM warrant_countersignature`) {
-		if out[row[0]] == nil {
-			out[row[0]] = map[string]bool{}
-		}
-		out[row[0]][row[1]] = true
-	}
-	return out
+/// Carry a binary64 Not a Number payload into `f`, left justified and quiet.
+pub fn nan_word(f: Fmt, sign: u64, mant: u64) -> u64 {
+    let pr = params(f);
+    let frac = (mant >> (52 - (pr.p - 1))) | (1u64 << (pr.p - 2));
+    (sign << sign_shift(f)) | (((2 * pr.emax + 1) as u64) << (pr.p - 1)) | frac
 }
 
-func countermandSet(dbPath string) map[string]bool {
-	out := map[string]bool{}
-	for _, row := range sqliteQuery(dbPath, `SELECT warrant_id FROM warrant_countermand`) {
-		out[row[0]] = true
-	}
-	return out
+fn overflow_word(sign: u64, f: Fmt, mode: Mode) -> u64 {
+    let body = if sign == 0 {
+        match mode {
+            Mode::Rne | Mode::Rna | Mode::Rtp => inf_body(f),
+            _ => maxfin_body(f),
+        }
+    } else {
+        match mode {
+            Mode::Rne | Mode::Rna | Mode::Rtn => inf_body(f),
+            _ => maxfin_body(f),
+        }
+    };
+    (sign << sign_shift(f)) | body
 }
 
-func authorityCNs(dataDir string) map[string]bool {
-	out := map[string]bool{}
-	entries, err := os.ReadDir(filepath.Join(dataDir, "authorities"))
-	if err != nil {
-		return out
-	}
-	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".pem") {
-			continue
-		}
-		raw, err := os.ReadFile(filepath.Join(dataDir, "authorities", e.Name()))
-		if err != nil {
-			continue
-		}
-		block, _ := pem.Decode(raw)
-		if block == nil {
-			continue
-		}
-		cert, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			continue
-		}
-		out[cert.Subject.CommonName] = true
-	}
-	return out
+fn round_up(mode: Mode, sign: u64, low: u128, half: u128, keep_odd: bool) -> bool {
+    if low == 0 {
+        return false;
+    }
+    match mode {
+        Mode::Rtz => false,
+        Mode::Rtp => sign == 0,
+        Mode::Rtn => sign == 1,
+        Mode::Rne => low > half || (low == half && keep_odd),
+        Mode::Rna => low > half || low == half,
+    }
 }
 
-func sqliteQuery(dbPath, query string) [][]string {
-	cmd := exec.Command("sqlite3", dbPath, query)
-	cmd.Env = append(os.Environ(), "SQLITE_HEADER=off")
-	out, err := cmd.Output()
-	if err != nil {
-		panic(err)
-	}
-	text := strings.TrimSpace(string(out))
-	if text == "" {
-		return nil
-	}
-	var rows [][]string
-	for _, line := range strings.Split(text, "\n") {
-		rows = append(rows, strings.Split(line, "|"))
-	}
-	return rows
-}
-GOEOF
-
-cat > internal/policy/roundtrip.go <<'GOEOF'
-package policy
-
-import (
-	"bufio"
-	"fmt"
-	"os"
-	"path/filepath"
-	"strconv"
-	"strings"
-)
-
-type Document struct {
-	Lines []string
-	Path  string
+/// Round (-1)^sign * m * 2^e to `p` significant bits, exponent range unbounded.
+///
+/// Returns the rounded significand, the exponent of its least significant bit,
+/// and whether any bits were lost.
+pub fn round_unbounded(sign: u64, m: u128, e: i128, p: i128, mode: Mode) -> (u128, i128, bool) {
+    let mut shift = (128 - m.leading_zeros()) as i128 - p;
+    if shift <= 0 {
+        return (m << ((-shift) as u32), e + shift, false);
+    }
+    let s = shift as u32;
+    let low = m & ((1u128 << s) - 1);
+    let mut q = m >> s;
+    let inexact = low != 0;
+    let half = 1u128 << (s - 1);
+    if round_up(mode, sign, low, half, (q & 1) == 1) {
+        q += 1;
+        if (128 - q.leading_zeros()) as i128 > p {
+            q >>= 1;
+            shift += 1;
+        }
+    }
+    (q, e + shift, inexact)
 }
 
-func Load(dataDir string) (*Document, error) {
-	policyPath := filepath.Join(dataDir, "remediation.policy")
-	data, err := os.ReadFile(policyPath)
-	if err != nil {
-		return nil, err
-	}
-	lines := []string{}
-	sc := bufio.NewScanner(strings.NewReader(string(data)))
-	for sc.Scan() {
-		lines = append(lines, sc.Text())
-	}
-	return &Document{Lines: lines, Path: policyPath}, nil
+/// Encode a p-bit significand `q` whose least significant bit weighs 2^e.
+pub fn pack_normal(sign: u64, q: u128, e: i128, f: Fmt) -> u64 {
+    let pr = params(f);
+    let expfield = (e + pr.p - 1 + pr.emax) as u64;
+    (sign << sign_shift(f)) | (expfield << (pr.p - 1)) | ((q as u64) - (1u64 << (pr.p - 1)))
 }
 
-func ChainDepths(doc *Document) (int, int, error) {
-	inRemediation := false
-	minD, maxD := 0, 0
-	haveMin, haveMax := false, false
-	for _, line := range doc.Lines {
-		trim := strings.TrimSpace(line)
-		if trim == "[remediation]" {
-			inRemediation = true
-			continue
-		}
-		if strings.HasPrefix(trim, "[") && trim != "[remediation]" {
-			inRemediation = false
-		}
-		if !inRemediation || !strings.Contains(line, "=") {
-			continue
-		}
-		key, val, _ := strings.Cut(strings.TrimSpace(line), "=")
-		switch key {
-		case "min_chain_depth":
-			v, err := strconv.Atoi(val)
-			if err != nil {
-				return 0, 0, err
-			}
-			minD, haveMin = v, true
-		case "max_chain_depth":
-			v, err := strconv.Atoi(val)
-			if err != nil {
-				return 0, 0, err
-			}
-			maxD, haveMax = v, true
-		}
-	}
-	if !haveMin || !haveMax {
-		return 0, 0, fmt.Errorf("missing chain depth")
-	}
-	return minD, maxD, nil
+/// Round (-1)^sign * m * 2^e into `f` under `mode`.
+///
+/// Returns (word, inexact, overflow, tiny_after), where `tiny_after` reports
+/// that the delivered magnitude lies below the smallest normal of `f`.
+pub fn encode_value(sign: u64, m: u128, e: i128, f: Fmt, mode: Mode) -> (u64, bool, bool, bool) {
+    let pr = params(f);
+    let sbit = sign_shift(f);
+    let lsig = (128 - m.leading_zeros()) as i128;
+    let exp2 = e + lsig - 1;
+    if exp2 > pr.emax {
+        return (overflow_word(sign, f, mode), true, true, false);
+    }
+    let ulp_exp = if exp2 >= pr.emin {
+        exp2 - (pr.p - 1)
+    } else {
+        pr.emin - (pr.p - 1)
+    };
+    let shift = ulp_exp - e;
+    let mut inexact = false;
+    let q: u128;
+    if shift <= 0 {
+        q = m << ((-shift) as u32);
+    } else if shift >= 128 {
+        inexact = true;
+        let away = (mode == Mode::Rtp && sign == 0) || (mode == Mode::Rtn && sign == 1);
+        q = if away { 1 } else { 0 };
+    } else {
+        let s = shift as u32;
+        let low = m & ((1u128 << s) - 1);
+        let mut r = m >> s;
+        inexact = low != 0;
+        let half = 1u128 << (s - 1);
+        if round_up(mode, sign, low, half, (r & 1) == 1) {
+            r += 1;
+        }
+        q = r;
+    }
+    if q == 0 {
+        return (sign << sbit, true, false, true);
+    }
+    let lq = (128 - q.leading_zeros()) as i128;
+    let new_exp2 = ulp_exp + lq - 1;
+    if new_exp2 > pr.emax {
+        return (overflow_word(sign, f, mode), true, true, false);
+    }
+    if new_exp2 < pr.emin {
+        let k = q << ((ulp_exp - (pr.emin - (pr.p - 1))) as u32);
+        return ((sign << sbit) | (k as u64), inexact, false, true);
+    }
+    let s = (pr.p - 1) - (lq - 1);
+    let sig = if s >= 0 {
+        q << (s as u32)
+    } else {
+        q >> ((-s) as u32)
+    };
+    let expfield = (new_exp2 + pr.emax) as u64;
+    (
+        (sign << sbit) | (expfield << (pr.p - 1)) | ((sig as u64) - (1u64 << (pr.p - 1))),
+        inexact,
+        false,
+        false,
+    )
+}
+RUSTEOF
+
+cat > src/logb.rs <<'RUSTEOF'
+use crate::bits::{classify, NEG_INF, POS_INF, QUIET};
+use crate::fmt::Fmt;
+use crate::mode::Mode;
+use crate::pack;
+
+fn int_to_f64(v: i128) -> u64 {
+    if v == 0 {
+        return 0;
+    }
+    let sign: u64 = if v < 0 { 1 } else { 0 };
+    let (w, _, _, _) = pack::encode_value(sign, v.unsigned_abs(), 0, Fmt::B64, Mode::Rne);
+    w
 }
 
-func WriteRejected(outDir string, doc *Document) error {
-	var lines []string
-	lines = append(lines, doc.Lines...)
-	lines = append(lines, "[remediation_audit]")
-	lines = append(lines, "status=rejected")
-	lines = append(lines, "reason=contradictory_known_fields")
-	return os.WriteFile(filepath.Join(outDir, "remediated.policy"), []byte(strings.Join(lines, "\n")+"\n"), 0644)
+pub fn eval(word: u64) -> (u64, [bool; 5]) {
+    let (_sign, exp, mant) = classify(word);
+    let mut f = [false; 5];
+    if exp == 0x7ff && mant != 0 {
+        if mant & QUIET == 0 {
+            f[0] = true;
+        }
+        return (word | QUIET, f);
+    }
+    if exp == 0x7ff {
+        return (POS_INF, f);
+    }
+    if exp == 0 && mant == 0 {
+        f[1] = true;
+        return (NEG_INF, f);
+    }
+    let e: i128 = if exp == 0 {
+        -1074 + ((64 - mant.leading_zeros()) as i128 - 1)
+    } else {
+        exp as i128 - 1023
+    };
+    (int_to_f64(e), f)
 }
+RUSTEOF
 
-func WriteRoundtrip(outDir string, doc *Document) error {
-	return os.WriteFile(filepath.Join(outDir, "remediated.policy"), []byte(strings.Join(doc.Lines, "\n")+"\n"), 0644)
+cat > src/scalbn.rs <<'RUSTEOF'
+use crate::bits::{classify, QUIET};
+use crate::fmt::Fmt;
+use crate::mode::{Handling, Mode, Tininess};
+use crate::pack;
+
+pub fn eval(
+    word: u64,
+    n: i128,
+    dest: Fmt,
+    mode: Mode,
+    handling: Handling,
+    tininess: Tininess,
+) -> (u64, [bool; 5]) {
+    let (sign, exp, mant) = classify(word);
+    let pr = pack::params(dest);
+    let mut f = [false; 5];
+    if exp == 0x7ff && mant != 0 {
+        if mant & QUIET == 0 {
+            f[0] = true;
+        }
+        return (pack::nan_word(dest, sign, mant), f);
+    }
+    if exp == 0x7ff {
+        return ((sign << pack::sign_shift(dest)) | pack::inf_body(dest), f);
+    }
+    if exp == 0 && mant == 0 {
+        return (sign << pack::sign_shift(dest), f);
+    }
+    let (m, e): (u128, i128) = if exp == 0 {
+        (mant as u128, -1074 + n)
+    } else {
+        ((mant | (1u64 << 52)) as u128, exp as i128 - 1075 + n)
+    };
+    if handling == Handling::Wrap {
+        let a = pack::alpha(dest);
+        let (q, qe, qinexact) = pack::round_unbounded(sign, m, e, pr.p, mode);
+        let lead = qe + pr.p - 1;
+        let mut adjusted: Option<i128> = None;
+        if lead > pr.emax && lead - a >= pr.emin && lead - a <= pr.emax {
+            f[2] = true;
+            adjusted = Some(qe - a);
+        } else if lead < pr.emin && lead + a >= pr.emin && lead + a <= pr.emax {
+            f[3] = true;
+            adjusted = Some(qe + a);
+        }
+        if let Some(scaled) = adjusted {
+            if qinexact {
+                f[4] = true;
+            }
+            return (pack::pack_normal(sign, q, scaled, dest), f);
+        }
+    }
+    let lead = e + (128 - m.leading_zeros()) as i128 - 1;
+    let (out, inexact, overflow, tiny_after) = pack::encode_value(sign, m, e, dest, mode);
+    if overflow {
+        f[2] = true;
+        f[4] = true;
+    } else if inexact {
+        f[4] = true;
+        let tiny = match tininess {
+            Tininess::Before => lead < pr.emin,
+            Tininess::After => tiny_after,
+        };
+        if tiny {
+            f[3] = true;
+        }
+    }
+    (out, f)
 }
-GOEOF
+RUSTEOF
 
-cat > internal/provenance/join.go <<'GOEOF'
-package provenance
+if ! cargo build --release --offline; then
+  echo "oracle build failed" >&2
+  exit 1
+fi
 
-import (
-	"bufio"
-	"crypto/sha256"
-	"encoding/hex"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"sort"
-	"strings"
+if [ ! -x target/release/fpexp ]; then
+  echo "oracle binary missing" >&2
+  exit 1
+fi
 
-	"trustremediator/internal/attest"
-)
-
-func accessMinute(ts string) string {
-	if len(ts) >= 16 {
-		return ts[:16]
-	}
-	return ts
-}
-
-func joinKey(certFP, serviceID, accessTS string) string {
-	raw := certFP + ":" + serviceID + ":" + accessMinute(accessTS)
-	h := sha256.Sum256([]byte(raw))
-	return hex.EncodeToString(h[:])
-}
-
-type fsRec struct {
-	CertFP    string
-	ServiceID string
-	AccessTS  string
-}
-
-type dbRec struct {
-	CertFP    string
-	ServiceID string
-	AccessTS  string
-}
-
-func parseJournalLine(line string) fsRec {
-	parts := strings.Fields(line)
-	kv := map[string]string{}
-	for _, p := range parts[1:] {
-		if k, v, ok := strings.Cut(p, "="); ok {
-			kv[k] = v
-		}
-	}
-	return fsRec{
-		CertFP:    kv["cert_fp"],
-		ServiceID: kv["service"],
-		AccessTS:  kv["ts"],
-	}
-}
-
-func Build(dataDir string) []attest.ProvEntry {
-	var fsRecs []fsRec
-	fh, err := os.Open(filepath.Join(dataDir, "access", "access.journal"))
-	if err != nil {
-		panic(err)
-	}
-	defer fh.Close()
-	sc := bufio.NewScanner(fh)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || !strings.HasPrefix(line, "ACCESS") {
-			continue
-		}
-		fsRecs = append(fsRecs, parseJournalLine(line))
-	}
-
-	dbRows := sqliteQuery(filepath.Join(dataDir, "access", "access_audit.db"),
-		`SELECT cert_fp, service_id, access_ts FROM access_records`)
-	var dbRecs []dbRec
-	for _, row := range dbRows {
-		dbRecs = append(dbRecs, dbRec{CertFP: row[0], ServiceID: row[1], AccessTS: row[2]})
-	}
-
-	type tuple struct {
-		cert, svc, minute string
-	}
-	fsKeys := map[tuple]string{}
-	dbKeys := map[tuple]string{}
-	for _, r := range fsRecs {
-		minute := accessMinute(r.AccessTS)
-		t := tuple{r.CertFP, r.ServiceID, minute}
-		fsKeys[t] = joinKey(r.CertFP, r.ServiceID, r.AccessTS)
-	}
-	for _, r := range dbRecs {
-		minute := accessMinute(r.AccessTS)
-		t := tuple{r.CertFP, r.ServiceID, minute}
-		dbKeys[t] = joinKey(r.CertFP, r.ServiceID, r.AccessTS)
-	}
-
-	all := map[tuple]bool{}
-	for t := range fsKeys {
-		all[t] = true
-	}
-	for t := range dbKeys {
-		all[t] = true
-	}
-	var tuples []tuple
-	for t := range all {
-		tuples = append(tuples, t)
-	}
-	sort.Slice(tuples, func(i, j int) bool {
-		if tuples[i].cert != tuples[j].cert {
-			return tuples[i].cert < tuples[j].cert
-		}
-		if tuples[i].svc != tuples[j].svc {
-			return tuples[i].svc < tuples[j].svc
-		}
-		return tuples[i].minute < tuples[j].minute
-	})
-
-	var out []attest.ProvEntry
-	for _, t := range tuples {
-		_, inFS := fsKeys[t]
-		_, inDB := dbKeys[t]
-		status := "joined"
-		if inFS && !inDB {
-			status = "fs_only"
-		} else if !inFS && inDB {
-			status = "db_only"
-		}
-		jk := fsKeys[t]
-		if jk == "" {
-			jk = dbKeys[t]
-		}
-		out = append(out, attest.ProvEntry{
-			CertFP: t.cert, ServiceID: t.svc, AccessMinute: t.minute,
-			JoinKey: jk, JoinStatus: status,
-		})
-	}
-	return out
-}
-
-func sqliteQuery(dbPath, query string) [][]string {
-	cmd := exec.Command("sqlite3", dbPath, query)
-	cmd.Env = append(os.Environ(), "SQLITE_HEADER=off")
-	out, err := cmd.Output()
-	if err != nil {
-		panic(err)
-	}
-	text := strings.TrimSpace(string(out))
-	if text == "" {
-		return nil
-	}
-	var rows [][]string
-	for _, line := range strings.Split(text, "\n") {
-		rows = append(rows, strings.Split(line, "|"))
-	}
-	return rows
-}
-GOEOF
-
-cat > internal/pki/validate.go <<'GOEOF'
-package pki
-
-import (
-	"bytes"
-	"crypto/sha256"
-	"crypto/x509"
-	"encoding/hex"
-	"encoding/pem"
-	"os"
-	"path/filepath"
-	"sort"
-	"strings"
-	"time"
-
-	"trustremediator/internal/attest"
-	"trustremediator/internal/truststore"
-)
-
-var rank = map[string]int{"acceptable": 0, "not_yet_valid": 1, "expired": 2, "name_constraint": 3, "revoked": 4}
-
-func ValidateCerts(dataDir string, eff attest.Distrust) []attest.Verdict {
-	_, trustedMap, err := truststore.Load(dataDir)
-	if err != nil {
-		panic(err)
-	}
-	authorities := loadDir(filepath.Join(dataDir, "authorities"))
-	leaves := loadDir(filepath.Join(dataDir, "leaves"))
-	byFP := map[string]bool{}
-	for _, f := range eff.ByFP {
-		byFP[f] = true
-	}
-	byName := map[string]bool{}
-	for _, n := range eff.ByName {
-		byName[n] = true
-	}
-	tb, err := os.ReadFile(filepath.Join(dataDir, "eval_time.txt"))
-	if err != nil {
-		panic(err)
-	}
-	T, err := time.Parse(time.RFC3339, strings.TrimSpace(string(tb)))
-	if err != nil {
-		panic(err)
-	}
-
-	var enumerate func(cur *x509.Certificate, chain []*x509.Certificate, seen map[string]bool, out *[][]*x509.Certificate)
-	enumerate = func(cur *x509.Certificate, chain []*x509.Certificate, seen map[string]bool, out *[][]*x509.Certificate) {
-		if selfSigned(cur) {
-			cp := make([]*x509.Certificate, len(chain))
-			copy(cp, chain)
-			*out = append(*out, cp)
-			return
-		}
-		for _, a := range authorities {
-			if !bytes.Equal(a.RawSubject, cur.RawIssuer) {
-				continue
-			}
-			if !verify(cur, a) {
-				continue
-			}
-			if seen[cn(a)] {
-				continue
-			}
-			ns := map[string]bool{}
-			for k := range seen {
-				ns[k] = true
-			}
-			ns[cn(a)] = true
-			enumerate(a, append(append([]*x509.Certificate{}, chain...), a), ns, out)
-		}
-	}
-
-	taintedMembers := func(chain []*x509.Certificate) []string {
-		var tm []string
-		for _, m := range chain {
-			if byFP[fp(m)] || byName[cn(m)] {
-				tm = append(tm, fp(m))
-			}
-		}
-		sort.Strings(tm)
-		return tm
-	}
-
-	nameViolationDepth := func(chain []*x509.Certificate) *int {
-		sans := chain[0].DNSNames
-		var best *int
-		for i := 1; i < len(chain); i++ {
-			ca := chain[i]
-			bad := false
-			if len(ca.PermittedDNSDomains) > 0 {
-				for _, s := range sans {
-					ok := false
-					for _, e := range ca.PermittedDNSDomains {
-						if dnsMatch(e, s) {
-							ok = true
-							break
-						}
-					}
-					if !ok {
-						bad = true
-					}
-				}
-			}
-			if len(ca.ExcludedDNSDomains) > 0 {
-				for _, s := range sans {
-					for _, e := range ca.ExcludedDNSDomains {
-						if dnsMatch(e, s) {
-							bad = true
-						}
-					}
-				}
-			}
-			if bad {
-				d := i
-				if best == nil {
-					best = &d
-				}
-			}
-		}
-		return best
-	}
-
-	status := func(chain []*x509.Certificate) (string, []string, *int) {
-		if tm := taintedMembers(chain); len(tm) > 0 {
-			return "revoked", tm, nil
-		}
-		if d := nameViolationDepth(chain); d != nil {
-			return "name_constraint", []string{}, d
-		}
-		for _, m := range chain {
-			if m.NotAfter.Before(T) {
-				return "expired", []string{}, nil
-			}
-		}
-		for _, m := range chain {
-			if m.NotBefore.After(T) {
-				return "not_yet_valid", []string{}, nil
-			}
-		}
-		return "acceptable", []string{}, nil
-	}
-
-	fpTuple := func(chain []*x509.Certificate) string {
-		var s []string
-		for _, m := range chain {
-			s = append(s, fp(m))
-		}
-		return strings.Join(s, ",")
-	}
-
-	var results []attest.Verdict
-	for _, leaf := range leaves {
-		var allPaths [][]*x509.Certificate
-		seen := map[string]bool{cn(leaf): true}
-		enumerate(leaf, []*x509.Certificate{leaf}, seen, &allPaths)
-
-		var anchored [][]*x509.Certificate
-		for _, p := range allPaths {
-			if trustedMap[fp(p[len(p)-1])] {
-				anchored = append(anchored, p)
-			}
-		}
-
-		if len(anchored) == 0 {
-			nameIssuer := false
-			for _, a := range authorities {
-				if bytes.Equal(a.RawSubject, leaf.RawIssuer) {
-					nameIssuer = true
-					break
-				}
-			}
-			reason := "no_path"
-			if len(allPaths) == 0 && nameIssuer {
-				reason = "bad_signature"
-			}
-			results = append(results, attest.Verdict{
-				Leaf: cn(leaf), Decision: "rejected", Reason: reason,
-				SelectedPath: []string{fp(leaf)}, PathsConsidered: 0,
-				ConstraintDepth: nil, TaintedMembers: []string{},
-			})
-			continue
-		}
-
-		bestIdx := 0
-		bestSt, bestTm, bestDepth := status(anchored[0])
-		bestKey := [3]interface{}{rank[bestSt], len(anchored[0]), fpTuple(anchored[0])}
-		for i := 1; i < len(anchored); i++ {
-			st, tm, dp := status(anchored[i])
-			key := [3]interface{}{rank[st], len(anchored[i]), fpTuple(anchored[i])}
-			less := false
-			if key[0].(int) != bestKey[0].(int) {
-				less = key[0].(int) < bestKey[0].(int)
-			} else if key[1].(int) != bestKey[1].(int) {
-				less = key[1].(int) < bestKey[1].(int)
-			} else {
-				less = key[2].(string) < bestKey[2].(string)
-			}
-			if less {
-				bestIdx, bestSt, bestTm, bestDepth, bestKey = i, st, tm, dp, key
-			}
-		}
-		chain := anchored[bestIdx]
-		var sp []string
-		for _, m := range chain {
-			sp = append(sp, fp(m))
-		}
-		dec := "rejected"
-		reason := bestSt
-		if bestSt == "acceptable" {
-			dec, reason = "accepted", "valid"
-		}
-		var depth *int
-		if bestSt == "name_constraint" {
-			depth = bestDepth
-		}
-		if bestTm == nil {
-		 bestTm = []string{}
-		}
-		results = append(results, attest.Verdict{
-			Leaf: cn(leaf), Decision: dec, Reason: reason, SelectedPath: sp,
-			PathsConsidered: len(anchored), ConstraintDepth: depth, TaintedMembers: bestTm,
-		})
-	}
-
-	sort.Slice(results, func(i, j int) bool { return results[i].Leaf < results[j].Leaf })
-	return results
-}
-
-func fp(c *x509.Certificate) string {
-	h := sha256.Sum256(c.Raw)
-	return hex.EncodeToString(h[:])
-}
-
-func cn(c *x509.Certificate) string { return c.Subject.CommonName }
-
-func verify(child, parent *x509.Certificate) bool {
-	return parent.CheckSignature(child.SignatureAlgorithm, child.RawTBSCertificate, child.Signature) == nil
-}
-
-func selfSigned(c *x509.Certificate) bool {
-	return bytes.Equal(c.RawSubject, c.RawIssuer) && verify(c, c)
-}
-
-func loadDir(dir string) []*x509.Certificate {
-	files, _ := filepath.Glob(filepath.Join(dir, "*.pem"))
-	sort.Strings(files)
-	var out []*x509.Certificate
-	for _, f := range files {
-		b, err := os.ReadFile(f)
-		if err != nil {
-			panic(err)
-		}
-		blk, _ := pem.Decode(b)
-		if blk == nil {
-			panic("bad pem: " + f)
-		}
-		c, err := x509.ParseCertificate(blk.Bytes)
-		if err != nil {
-			panic(err)
-		}
-		out = append(out, c)
-	}
-	return out
-}
-
-func dnsMatch(entry, dns string) bool {
-	return dns == entry || strings.HasSuffix(dns, "."+entry)
-}
-GOEOF
-
-make
-touch build/trust_attest
-./build/trust_attest --incident /app/data --write /app/output
+for stem in sample-logb sample-scalbn sample-specials sample-subnormal sample-attributes sample-formats; do
+  ./target/release/fpexp < "data/$stem.in" > "/tmp/oracle-$stem.out"
+  if ! diff -q "/tmp/oracle-$stem.out" "data/$stem.expected"; then
+    echo "oracle disagrees with the shipped sample $stem" >&2
+    exit 1
+  fi
+done
