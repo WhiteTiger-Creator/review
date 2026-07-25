@@ -1,362 +1,323 @@
-"""Behavioral verification for the commissioned local relay generation."""
-from __future__ import annotations
-
 import hashlib
 import json
-import socket
+import os
+import re
 import sqlite3
-import stat
 import subprocess
 import time
+import urllib.request
 from pathlib import Path
 
+import tomllib
+
 APP = Path("/app")
-CONFIG_DIR = APP / "etc/harbor-relay"
-AUDIT = APP / "var/deployment-audit.db"
-MANIFEST = APP / "var/deployment-manifest.json"
-LOCK = APP / "var/harbor-deployment.lock"
-ZERO = "0" * 64
-
-# The arrival replay fixture is intentionally pinned to the canonical bytes used by
-# the sealed request corpus. Keep this explicit pin synchronized with the packaged file.
-ARRIVAL_REPLAY_SHA256 = "4c9841e467bc1842aa5beb3992543e9f6c7114168fc4196692911980abd69237"
-
-PROTECTED = {
-    "docs/audit-database-contract.md": "6a69e8976bc4d1d4c69b53f61ddf1c90d46e236709f518bb000c176d7d9a2f5a",
-    "docs/capacity-and-payload-notes.md": "78fea40500906017363413cc407b158f9639f5bced544b031e678133a07f00e1",
-    "docs/catalog-field-notes.md": "1cfe0a8a61bfe73ad5d81685661bfca1ce8113e7ff3821e1edbb87b887ad98de",
-    "docs/oncall-shift-notes.md": "b9759f083a19489997c3957cead3d3fb0b8187626599c6a31ce8f02e3693827f",
-    "docs/operator-commissioning-contract.md": "cb33d8e9c528417de1ab54d92bb25ab87457d7f8c1d4bf662f3a4e3d99d565da",
-    "docs/publication-and-audit-minutes.md": "f224593ec58eeaa72b3f2e06f0af455df3672eab703c65b7946fa3e063146c7a",
-    "docs/publication-state-machine.md": "7caa0a2f94669e5adb1313cde280bda1dd349105e8436ea5d63d5f1143c41ae9",
-    "docs/service-commissioning-corpus.manifest": "30a934ec236544a1eb02e92569b8839e773317fd35faa917ff0651191f67ada0",
-    "docs/relay-config-format.md": "379a52dcc094b133f583c67afd3b7eb48b35d6417b66fed7e6a081f1df57b000",
-    "docs/relay-operations-handbook.md": "68ec339d7842c525ecd52caaa27b6ffbc342e10cdc9fa29573fc564135323113",
-    "docs/route-governance-record.md": "fd7f57e4f6f3cba632d52099300042aa293d4efc20b264ca4d085ccdb754c4f7",
-    "docs/socket-evidence-review.md": "dce8576d9f1949c7bf4a3b580ac1a7ee0074c68ba30b3a27d336c782bca26f10",
-    "etc/harbor-relay/environment": "37a348b1f87129d1798bf70fbc27a7b3ac19f86d1fed568760b4527d5e4b2ac8",
-    "etc/harbor-relay/service.account": "347b74cca9e03f1d208e1b5c7026830abd046a38d16411a14dfb8b46d6e361bf",
-    "evidence/capture.meta": "56334ed560725dc8a3bc8e7c621b7b0da08d6f36a4cff774069481e61d7140ae",
-    "evidence/relay.lsof": "c011e2763c5a4b16333358e337d217bbaaa9b195bda4a00df3ae3a33bb6b89f1",
-    "evidence/relay.strace": "9221acfe033c3079863ef635eb772a67f5fc8f4852ad285ebb42078699681a11",
-    "fixtures/README.txt": "da120e89b13e5b27b3519860c0cfd59e178ebff7709411aab430c56f5dbdce2f",
-    "fixtures/bootstrap-config/limits.conf": "f28a35039bff7cae9ceb372296939043a89fd08072baa8bf5ff71e8725d60af1",
-    "fixtures/bootstrap-config/relay.conf": "1aafa548b85f221e911ee4a6df4388e24d980ec1f07f60e47fa63793d2ec5169",
-    "fixtures/bootstrap-config/routes.map": "65dad79e3b2217a5c34e9fbac418bd720514526bdebe154e7a5397fa35a63381",
-    "fixtures/requests/arrival-replay.http": ARRIVAL_REPLAY_SHA256,
-    "fixtures/requests/manifest-replay.http": "ad3a76dd6c30f1127181a3d119d0d5456b21d3db71100d62e448373e1d88aec9",
-    "fixtures/requests/replay-set.manifest": "68bbcc614bb582f239338cd0bb11d2f7e0c3bb02f02bcf2d5f3c7ab229101a66",
-    "fixtures/requests/status-replay.http": "96f0bdf0e942f7ed65512d8762ca7610c3ee2cf09ab964af576b7e1aab0acef9",
-    "scripts/initialize-service-state": "194aa338b81efd7ab956ec6c5fba19d6a2225ab82ba35bd505b85a956d57e5a6",
-    "scripts/send-sample-request": "6b55e5deba6ed58ee8b9d71dbd3b019bede64a62c2ce9f3fc70daa8698c48f9b",
-    "share/deployment-catalog.batch": "4fc9b616e2541e785b7172367fff16aa31d8d18cbb5583b3689e1636405c4b59",
+EXPECTED_BASELINE = "21f47d57d7ad326d1d2a103430a27cb47bc17dab851a4c83ceb9f62bf00aec59"
+TARGETS = {
+    "crossbeam-channel": ("0.5.14", "0.5.15", "RUSTSEC-2025-0024", 1, "1.60"),
+    "serde-json-wasm": ("1.0.0", "1.0.1", "RUSTSEC-2024-0012", 0, ""),
+    "time": ("0.3.36", "0.3.47", "RUSTSEC-2026-0009", 0, "1.88.0"),
 }
 
-EXPECTED_RELAY = {
-    "site_key": "st-042",
-    "socket_path": "/app/run/harbor-relay/recovery.sock",
-    "socket_mode": "0660",
-    "socket_owner": "relayops",
-    "socket_group": "relay",
-    "listen_backlog": "128",
-    "route_map": "/app/etc/harbor-relay/routes.map",
-    "limits_file": "/app/etc/harbor-relay/limits.conf",
-    "audit_db": "/app/var/deployment-audit.db",
-    "catalog_generation": "29",
-}
-EXPECTED_LIMITS = {
-    "open_files_soft": "640",
-    "reserved_files": "64",
-    "max_connections": "108",
-    "request_body_limit": "65536",
-}
-EXPECTED_ROUTES = [
-    ("GET", "/v1/berth/capabilities", "http://127.0.0.1:5902/capabilities", "preserve", "1200", "rt-203"),
-    ("GET", "/v1/berth/status", "http://127.0.0.1:5902/status", "preserve", "725", "rt-200"),
-    ("POST", "/v1/berth/arrivals", "http://127.0.0.1:5901/intake/arrivals-v2", "custody-token", "1850", "rt-201"),
-    ("POST", "/v1/berth/manifest", "http://127.0.0.1:5901/intake/manifest-v2", "dual-proof", "4100", "rt-204"),
-]
 
-
-def sha256(path: Path) -> str:
-    """Return the lowercase SHA-256 digest of one file."""
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def digest_lines(values: list[str]) -> str:
-    """Hash newline-terminated digest lines using the publication contract."""
-    return hashlib.sha256(("\n".join(values) + "\n").encode()).hexdigest()
-
-
-def read_key_values(path: Path) -> dict[str, str]:
-    """Read an ordered key/value configuration into a dictionary."""
-    return dict(line.split("=", 1) for line in path.read_text(encoding="utf-8").splitlines())
-
-
-def catalog_output() -> bytes:
-    """Obtain the sealed catalog through the same public batch interface available to operators."""
-    result = subprocess.run(
-        [str(APP / "bin/catalog-query"), "--batch-file", str(APP / "share/deployment-catalog.batch")],
-        check=True,
-        capture_output=True,
+def run(command, *, timeout=180, env=None):
+    merged = os.environ.copy()
+    if env:
+        merged.update(env)
+    return subprocess.run(
+        command, cwd=APP, text=True, capture_output=True, timeout=timeout, env=merged, check=False
     )
-    return result.stdout
 
 
-def send_unix(socket_path: Path, request: bytes) -> tuple[bytes, bytes]:
-    """Send one HTTP message to the relay over its Unix socket."""
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.connect(str(socket_path))
-        client.sendall(request)
-        client.shutdown(socket.SHUT_WR)
-        response = bytearray()
-        while True:
-            chunk = client.recv(65536)
-            if not chunk:
-                break
-            response.extend(chunk)
-    head, body = bytes(response).split(b"\r\n\r\n", 1)
-    return head, body
+def tree_digest():
+    digest = hashlib.sha256()
+    for root_name in ["crates", "docs", "sql", "tooling"]:
+        root = APP / root_name
+        for path in sorted(item for item in root.rglob("*") if item.is_file()):
+            relative = path.relative_to(APP).as_posix().encode()
+            digest.update(relative)
+            digest.update(b"\0")
+            digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
 
 
-def test_authoritative_commissioning_inputs_are_unchanged() -> None:
-    """Verify the policy corpus, operating records, fixtures, interface, and initialization assets remain immutable."""
-    for relative, expected in PROTECTED.items():
-        path = APP / relative
-        assert path.is_file(), relative
-        assert sha256(path) == expected, relative
-    manifest = (APP / "docs/service-commissioning-corpus.manifest").read_text(encoding="utf-8").splitlines()
-    listed = [line.split("\t")[1] for line in manifest if line and not line.startswith("#")]
-    assert listed == [
-        "relay-operations-handbook.md",
-        "socket-evidence-review.md",
-        "route-governance-record.md",
-        "capacity-and-payload-notes.md",
-        "publication-and-audit-minutes.md",
-    ]
+def lock_data():
+    return tomllib.loads((APP / "Cargo.lock").read_text(encoding="utf-8"))
 
 
-def test_catalog_interface_and_platform_binaries_remain_valid() -> None:
-    """Verify the sealed catalog generation and existing relay binaries remain usable without source rebuilding."""
-    with sqlite3.connect("file:/opt/harbor/operations.db?mode=ro", uri=True) as db:
-        tables = [
-            row[0]
-            for row in db.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-            )
-        ]
-        logical = {}
-        for table in tables:
-            columns = [row[1] for row in db.execute(f"PRAGMA table_info({table})")]
-            order = ",".join(str(index + 1) for index in range(len(columns)))
-            rows = [list(row) for row in db.execute(f"SELECT * FROM {table} ORDER BY {order}")]
-            logical[table] = {"columns": columns, "rows": rows}
-        encoded = json.dumps(logical, separators=(",", ":"), sort_keys=True).encode()
-        assert hashlib.sha256(encoded).hexdigest() == "257aeb2867adb97ba5ad8d47ae3fbfe678ba965236d5998616314db99a9e3780"
-    output = catalog_output().decode("utf-8")
-    assert output.startswith("@result catalog_meta\n")
-    assert output.rstrip().endswith("@end")
-    check = subprocess.run(
-        [str(APP / "bin/harbor-relay"), "--check-config", str(CONFIG_DIR / "relay.conf")],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert check.returncode == 0, check.stderr
-    for forbidden in [APP / "src", APP / "include", APP / "Makefile", APP / "build"]:
-        assert not forbidden.exists()
+def locked_versions(name):
+    return [item["version"] for item in lock_data()["package"] if item["name"] == name]
 
 
-def test_commissioned_configuration_matches_authorized_socket_routes_and_limits() -> None:
-    """Verify the installed text configuration contains the chronology-safe socket, closed routes, and calculated limits."""
-    relay_path = CONFIG_DIR / "relay.conf"
-    limits_path = CONFIG_DIR / "limits.conf"
-    routes_path = CONFIG_DIR / "routes.map"
-    assert read_key_values(relay_path) == EXPECTED_RELAY
-    assert read_key_values(limits_path) == EXPECTED_LIMITS
-    route_lines = routes_path.read_text(encoding="utf-8").splitlines()
-    assert route_lines[0] == "method\texternal_path\tupstream\tauth_mode\ttimeout_ms\tsource_route_id"
-    assert [tuple(line.split("\t")) for line in route_lines[1:]] == EXPECTED_ROUTES
-    assert relay_path.read_bytes().endswith(b"\n")
-    assert limits_path.read_bytes().endswith(b"\n")
-    assert routes_path.read_bytes().endswith(b"\n")
-    assert "data-plane.sock\"" in (APP / "evidence/relay.strace").read_text() and "EACCES" in (APP / "evidence/relay.strace").read_text()
-    after = (APP / "evidence/relay.lsof").read_text().split("# snapshot=after", 1)[1]
-    assert EXPECTED_RELAY["socket_path"] not in after
-
-
-def test_service_generation_permissions_and_clean_state_are_correct() -> None:
-    """Verify only the documented service-generation files remain, with required modes and no staging or compiler residue."""
-    expected_modes = {
-        CONFIG_DIR / "relay.conf": 0o640,
-        CONFIG_DIR / "limits.conf": 0o640,
-        CONFIG_DIR / "routes.map": 0o640,
-        AUDIT: 0o600,
-        MANIFEST: 0o640,
-        LOCK: 0o600,
-    }
-    for path, mode in expected_modes.items():
-        assert path.is_file(), path
-        assert stat.S_IMODE(path.stat().st_mode) == mode
-    residue = []
-    for directory in [CONFIG_DIR, APP / "var"]:
-        residue.extend(
-            path
-            for path in directory.iterdir()
-            if any(token in path.name for token in (".tmp", ".bak", "-journal", "-wal", "-shm"))
-        )
-    assert residue == []
-
-
-def test_deployment_manifest_has_deterministic_identity_and_exact_provenance() -> None:
-    """Verify the compact JSON manifest identity, ordering, provenance hashes, and publication metadata independently."""
-    raw = MANIFEST.read_text(encoding="utf-8")
-    manifest = json.loads(raw)
-    assert raw == json.dumps(manifest, separators=(",", ":")) + "\n"
-    assert list(manifest) == [
-        "run_id",
-        "site_key",
-        "handbook_revision",
-        "catalog_generation",
-        "configuration",
-        "routes",
-        "assertions",
-        "inputs",
-        "publication",
-    ]
-    assert manifest["site_key"] == "st-042"
-    assert manifest["handbook_revision"] == "HRH-2026.07-R11"
-    assert manifest["catalog_generation"] == 29
-    expected_configuration = {**EXPECTED_RELAY, **EXPECTED_LIMITS}
-    assert manifest["configuration"] == expected_configuration
-    assert [tuple(str(item[key]) for key in ("method", "external_path", "upstream", "auth_mode", "timeout_ms", "source_route_id")) for item in manifest["routes"]] == EXPECTED_ROUTES
-    assert [item["decision_code"] for item in manifest["routes"]] == ["required", "selected", "selected", "replaced"]
-    assert len(manifest["assertions"]) == 10 and all(item["passed"] == 1 for item in manifest["assertions"])
-    assert [item["kind"] for item in manifest["inputs"]] == sorted(item["kind"] for item in manifest["inputs"])
-
-    request_paths = [APP / "fixtures/requests/replay-set.manifest"]
-    for line in request_paths[0].read_text(encoding="utf-8").splitlines():
-        if line and not line.startswith("#"):
-            request_paths.append(Path(line.split("\t", 1)[1]))
-    request_set = digest_lines([sha256(path) for path in request_paths])
-    evidence_set = digest_lines([sha256(APP / "evidence/capture.meta"), sha256(APP / "evidence/relay.strace"), sha256(APP / "evidence/relay.lsof")])
-    catalog_sha = hashlib.sha256(catalog_output()).hexdigest()
-    seed = "|".join(
-        [
-            "st-042",
-            "HRH-2026.07-R11",
-            "29",
-            request_set,
-            evidence_set,
-            catalog_sha,
-            sha256(CONFIG_DIR / "relay.conf"),
-            sha256(CONFIG_DIR / "limits.conf"),
-            sha256(CONFIG_DIR / "routes.map"),
-        ]
-    )
-    assert manifest["run_id"] == hashlib.sha256(seed.encode()).hexdigest()[:24]
-
-    input_rows = {(item["kind"], item["path"]): item for item in manifest["inputs"]}
-    catalog_item = input_rows[("catalog-batch-result", "/app/share/deployment-catalog.batch")]
-    assert catalog_item["sha256"] == catalog_sha
-    assert catalog_item["bytes"] == len(catalog_output())
-    for (kind, path_text), item in input_rows.items():
-        if kind == "catalog-batch-result":
-            continue
-        path = Path(path_text)
-        assert item["sha256"] == sha256(path)
-        assert item["bytes"] == path.stat().st_size
-
-    expected_publication = [
-        (CONFIG_DIR / "relay.conf", "0640"),
-        (CONFIG_DIR / "limits.conf", "0640"),
-        (CONFIG_DIR / "routes.map", "0640"),
-        (AUDIT, "0600"),
-        (MANIFEST, "0640"),
-    ]
-    assert [item["path"] for item in manifest["publication"]] == [str(path) for path, _ in expected_publication]
-    for item, (path, mode) in zip(manifest["publication"], expected_publication, strict=True):
-        assert item["mode"] == mode
-        if path in {AUDIT, MANIFEST}:
-            assert (item["sha256"], item["bytes"]) == (ZERO, 0)
-        else:
-            assert (item["sha256"], item["bytes"]) == (sha256(path), path.stat().st_size)
-
-
-def test_deployment_audit_schema_constraints_and_reconciliation_are_complete() -> None:
-    """Verify the seven-table deployment audit is constrained, complete, and reconciled with all publication bytes and decisions."""
-    with sqlite3.connect(AUDIT) as db:
-        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
-        tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY rowid")]
-        assert tables == ["deployment_run", "input_artifact", "configuration", "route", "decision", "assertion", "publication_file"]
-        run = db.execute(
-            "SELECT run_id,site_key,handbook_revision,catalog_generation,status FROM deployment_run"
-        ).fetchone()
-        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-        assert run == (manifest["run_id"], "st-042", "HRH-2026.07-R11", 29, "commissioned")
-        assert db.execute("SELECT COUNT(*) FROM assertion WHERE passed=1").fetchone() == (10,)
-        assert db.execute("SELECT COUNT(*) FROM decision").fetchone() == (14,)
-        assert [row[0] for row in db.execute("SELECT sequence FROM decision ORDER BY sequence")] == list(range(1, 15))
-        assert db.execute("SELECT COUNT(*) FROM input_artifact").fetchone() == (8,)
-        file_configuration = {**EXPECTED_RELAY, **EXPECTED_LIMITS}
-        assert dict(db.execute("SELECT key,value FROM configuration")) == file_configuration
-        audit_routes = db.execute(
-            "SELECT method,external_path,upstream,auth_mode,timeout_ms,source_route_id FROM route ORDER BY method,external_path"
-        ).fetchall()
-        assert audit_routes == [row[:4] + (int(row[4]), row[5]) for row in EXPECTED_ROUTES]
-        publication = {row[0]: row[1:] for row in db.execute("SELECT path,sha256,bytes,mode_text FROM publication_file")}
-        assert publication[str(AUDIT)] == (ZERO, 0, "0600")
-        assert publication[str(MANIFEST)] == (ZERO, 0, "0640")
-        assert publication[str(CONFIG_DIR / "relay.conf")] == (sha256(CONFIG_DIR / "relay.conf"), (CONFIG_DIR / "relay.conf").stat().st_size, "0640")
-    with sqlite3.connect(AUDIT) as db:
-        for statement in (Path("/tests/deployment_assertions.sql").read_text(encoding="utf-8").split(";")):
-            if statement.strip():
-                assert db.execute(statement).fetchone() == (1,)
-
-
-def test_commissioned_relay_serves_required_missing_and_oversized_requests() -> None:
-    """Verify the existing relay binds the commissioned socket and serves all required HTTP outcomes."""
-    socket_path = Path(EXPECTED_RELAY["socket_path"])
-    socket_path.unlink(missing_ok=True)
-    process = subprocess.Popen(
-        [str(APP / "bin/harbor-relay")],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    try:
-        deadline = time.time() + 5
-        while time.time() < deadline and not socket_path.exists() and process.poll() is None:
-            time.sleep(0.05)
-        assert socket_path.exists(), process.stderr.read() if process.stderr else "relay exited"
-        expected = {
-            "arrival": ("/v1/berth/arrivals", "rt-201"),
-            "manifest": ("/v1/berth/manifest", "rt-204"),
-            "status": ("/v1/berth/status", "rt-200"),
-        }
-        for line in (APP / "fixtures/requests/replay-set.manifest").read_text(encoding="utf-8").splitlines():
-            if not line or line.startswith("#"):
-                continue
-            role, request_path = line.split("\t", 1)
-            head, body = send_unix(socket_path, Path(request_path).read_bytes())
-            payload = json.loads(body)
-            assert b"200 OK" in head
-            assert (payload["path"], payload["source_route_id"]) == expected[role]
-        head, body = send_unix(socket_path, b"GET /v1/berth/capabilities?full=1 HTTP/1.1\r\nHost: x\r\n\r\n")
-        assert b"200 OK" in head and json.loads(body)["source_route_id"] == "rt-203"
-        head, _ = send_unix(socket_path, b"GET /not-present HTTP/1.1\r\nHost: x\r\n\r\n")
-        assert b"404 Not Found" in head
-        oversized = b"x" * 65537
-        request = b"POST /v1/berth/arrivals HTTP/1.1\r\nHost: x\r\nContent-Length: 65537\r\n\r\n" + oversized
-        head, _ = send_unix(socket_path, request)
-        assert b"413 Payload Too Large" in head
-        unix_rows = Path("/proc/net/unix").read_text(encoding="utf-8")
-        assert str(socket_path) in unix_rows
-    finally:
-        process.terminate()
+def fetch_json(url):
+    last = None
+    for attempt in range(3):
         try:
-            process.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=3)
-        socket_path.unlink(missing_ok=True)
+            request = urllib.request.Request(url, headers={"User-Agent": "terminus-release-policy/1"})
+            with urllib.request.urlopen(request, timeout=20) as response:
+                return json.load(response)
+        except (OSError, ValueError) as error:
+            last = error
+            time.sleep(1 + attempt)
+    raise last
+
+
+def sparse_path(name):
+    if len(name) == 1:
+        return f"1/{name}"
+    if len(name) == 2:
+        return f"2/{name}"
+    if len(name) == 3:
+        return f"3/{name[0]}/{name}"
+    return f"{name[:2]}/{name[2:4]}/{name}"
+
+
+def fetch_index_row(name, version):
+    url = f"https://index.crates.io/{sparse_path(name)}"
+    last = None
+    for attempt in range(3):
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "terminus-release-policy/1"})
+            with urllib.request.urlopen(request, timeout=20) as response:
+                rows = [json.loads(line) for line in response.read().decode().splitlines() if line]
+            return next(row for row in rows if row["vers"] == version)
+        except (OSError, ValueError, StopIteration) as error:
+            last = error
+            time.sleep(1 + attempt)
+    raise last
+
+
+def test_release_baseline_source_and_policy_inputs_are_unchanged():
+    """The dependency operation leaves every source, policy, SQL, and pinned tooling byte at its baseline value."""
+    assert tree_digest() == EXPECTED_BASELINE
+
+
+def test_only_authorized_release_paths_exist():
+    """The handoff adds policy and evidence files without a wrapper command, executable, patch crate, or stray top-level file."""
+    allowed = {
+        ".cargo", ".dockerignore", "Cargo.lock", "Cargo.toml", "Dockerfile", "LICENSE",
+        "crates", "deny.toml", "docs", "release", "sql", "target", "tooling", "vendor",
+    }
+    assert {path.name for path in APP.iterdir()} <= allowed
+    assert not (APP / "bin").exists()
+    assert {path.name for path in (APP / "release").iterdir()} == {"dependency-ledger.sqlite", "reconciliation.md"}
+    assert not list(APP.glob("*.sh"))
+    assert not list((APP / "crates").rglob("*.sh"))
+
+
+def test_workspace_manifest_has_exact_safe_pins_and_minimum_msrv():
+    """The workspace policy carries the three safe exact pins, the coupled Serde pin, and only the required MSRV increase."""
+    root = tomllib.loads((APP / "Cargo.toml").read_text(encoding="utf-8"))
+    assert root["workspace"]["package"]["rust-version"] == "1.88"
+    dependencies = root["workspace"]["dependencies"]
+    assert dependencies["crossbeam-channel"] == "=0.5.15"
+    assert dependencies["serde-json-wasm"] == "=1.0.1"
+    assert dependencies["time"]["version"] == "=0.3.47"
+    assert dependencies["serde"]["version"] == "=1.0.220"
+    assert "patch" not in root
+    for name, value in dependencies.items():
+        if isinstance(value, dict) and "path" in value:
+            assert value["version"] == "=0.7.0", name
+
+
+def test_lockfile_has_one_registry_release_per_quarantined_crate():
+    """Cargo's format-4 lock contains one selected target version with registry source and checksum and no git package."""
+    lock = lock_data()
+    assert lock["version"] == 4
+    for name, (_old, selected, _advisory, _yanked, _rust) in TARGETS.items():
+        assert locked_versions(name) == [selected]
+    for item in lock["package"]:
+        source = item.get("source")
+        if source is not None:
+            assert source == "registry+https://github.com/rust-lang/crates.io-index"
+            assert re.fullmatch(r"[0-9a-f]{64}", item["checksum"])
+
+
+def test_final_source_replacement_is_exact_and_vendor_replays_metadata():
+    """The exact vendor source policy supports locked offline metadata with the full eight-member workspace graph."""
+    expected = (
+        '[source.crates-io]\nreplace-with = "vendored-sources"\n\n'
+        '[source.vendored-sources]\ndirectory = "vendor"\n\n'
+        '[net]\ngit-fetch-with-cli = true\n'
+    )
+    assert (APP / ".cargo/config.toml").read_text(encoding="utf-8") == expected
+    result = run(
+        ["cargo", "metadata", "--locked", "--offline", "--format-version", "1"],
+        env={"CARGO_NET_OFFLINE": "true"},
+    )
+    assert result.returncode == 0, result.stderr
+    metadata = json.loads(result.stdout)
+    members = [package for package in metadata["packages"] if package["source"] is None]
+    assert len(members) == 8
+
+
+def test_workspace_build_and_tests_pass_with_network_disabled():
+    """Stock Cargo compiles and tests every existing workspace target using only the locked vendor graph."""
+    result = run(
+        ["cargo", "test", "--workspace", "--all-targets", "--locked", "--offline"],
+        env={"CARGO_NET_OFFLINE": "true"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "test result: ok" in result.stdout or "test result: ok" in result.stderr
+
+
+def test_vendor_packages_carry_cargo_checksum_manifests():
+    """Every vendored registry directory has Cargo's checksum manifest and each selected target matches its locked package name."""
+    vendor = APP / "vendor"
+    directories = [path for path in vendor.iterdir() if path.is_dir()]
+    assert len(directories) >= 40
+    for directory in directories:
+        checksum = directory / ".cargo-checksum.json"
+        assert checksum.is_file(), directory.name
+        parsed = json.loads(checksum.read_text(encoding="utf-8"))
+        assert "files" in parsed
+        assert "package" in parsed
+    for name in TARGETS:
+        manifest = tomllib.loads((vendor / name / "Cargo.toml").read_text(encoding="utf-8"))
+        assert manifest["package"]["version"] == TARGETS[name][1]
+
+
+def test_deny_policy_has_no_suppression_and_matches_release_rules():
+    """cargo-deny checks every feature without advisory ignores, skips, wildcard pins, or untrusted sources."""
+    deny = tomllib.loads((APP / "deny.toml").read_text(encoding="utf-8"))
+    assert deny["graph"]["all-features"] is True
+    assert set(deny["advisories"]) == {"ignore", "git-fetch-with-cli"}
+    assert deny["advisories"]["ignore"] == []
+    assert deny["advisories"]["git-fetch-with-cli"] is True
+    assert deny["licenses"]["confidence-threshold"] == 0.8
+    assert set(deny["licenses"]["allow"]) == {
+        "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-3-Clause", "ISC", "MIT", "Unicode-3.0", "Zlib"
+    }
+    assert deny["bans"]["multiple-versions"] == "warn"
+    assert deny["bans"]["wildcards"] == "deny"
+    assert deny["bans"]["skip"] == deny["bans"]["skip-tree"] == []
+    banned = {item["crate"] for item in deny["bans"]["deny"]}
+    assert banned == {"crossbeam-channel@=0.5.14", "serde-json-wasm@=1.0.0", "time@=0.3.36"}
+    assert deny["sources"]["unknown-registry"] == "deny"
+    assert deny["sources"]["unknown-git"] == "deny"
+    assert deny["sources"]["allow-registry"] == ["https://github.com/rust-lang/crates.io-index"]
+    assert deny["sources"]["allow-git"] == []
+
+
+def test_cargo_deny_local_checks_pass_without_fetching():
+    """The final graph passes cargo-deny bans, licenses, and sources in offline mode with all features active."""
+    result = run([
+        "cargo", "deny", "--offline", "--all-features", "check", "bans", "licenses", "sources"
+    ])
+    assert result.returncode == 0, result.stderr
+    combined = result.stdout + result.stderr
+    assert "bans ok" in combined
+    assert "licenses ok" in combined
+    assert "sources ok" in combined
+
+
+def test_release_ledger_schema_identity_and_dependency_rows():
+    """SQLite binds one release run and the three specified dependency changes to the exact final lockfile hash."""
+    database = APP / "release/dependency-ledger.sqlite"
+    connection = sqlite3.connect(database)
+    assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert connection.execute("SELECT count(*) FROM release_run").fetchone()[0] == 1
+    run_row = connection.execute(
+        "SELECT run_id,resolved_at,rust_version,cargo_version,cargo_audit_version,cargo_deny_version,"
+        "cargo_lock_sha256,rustsec_commit,offline_replay,source_unchanged FROM release_run"
+    ).fetchone()
+    lock_hash = hashlib.sha256((APP / "Cargo.lock").read_bytes()).hexdigest()
+    assert run_row[0] == lock_hash[:20]
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", run_row[1])
+    assert run_row[2].startswith("rustc 1.89.")
+    assert run_row[3].startswith("cargo 1.89.")
+    assert run_row[4] == "cargo-audit-audit 0.22.2"
+    assert run_row[5] == "cargo-deny 0.19.4"
+    assert run_row[6] == lock_hash
+    assert re.fullmatch(r"[0-9a-f]{40}", run_row[7])
+    assert run_row[8:] == (1, 1)
+    rows = connection.execute(
+        "SELECT name,from_version,to_version,advisory_id,yanked_before,target_rust_version "
+        "FROM dependency_change ORDER BY name"
+    ).fetchall()
+    assert rows == [(name, *TARGETS[name]) for name in sorted(TARGETS)]
+    connection.close()
+
+
+def test_ledger_contains_the_four_exact_passing_policy_checks():
+    """The release ledger records each required stock-tool check once with its exact replay command and pass status."""
+    connection = sqlite3.connect(APP / "release/dependency-ledger.sqlite")
+    rows = connection.execute("SELECT tool,command,status FROM policy_check ORDER BY tool").fetchall()
+    connection.close()
+    assert rows == [
+        ("cargo-audit", "cargo audit --json", "pass"),
+        ("cargo-deny", "cargo deny --all-features check advisories bans licenses sources", "pass"),
+        ("cargo-metadata", "cargo metadata --locked --offline --format-version 1", "pass"),
+        ("cargo-test", "cargo test --workspace --all-targets --locked --offline", "pass"),
+    ]
+
+
+def test_handoff_note_matches_lock_ledger_tools_and_changes():
+    """The handoff note matches SQLite and semantically confirms that the source baseline stayed unchanged."""
+    note = (APP / "release/reconciliation.md").read_text(encoding="utf-8")
+    connection = sqlite3.connect(APP / "release/dependency-ledger.sqlite")
+    run_row = connection.execute(
+        "SELECT resolved_at,rust_version,cargo_version,cargo_audit_version,cargo_deny_version,cargo_lock_sha256,rustsec_commit "
+        "FROM release_run"
+    ).fetchone()
+    connection.close()
+    for value in run_row:
+        assert value in note
+    for name, values in TARGETS.items():
+        assert name in note
+        assert values[0] in note
+        assert values[1] in note
+        assert values[2] in note
+    for command in [
+        "cargo metadata --locked --offline --format-version 1",
+        "cargo test --workspace --all-targets --locked --offline",
+        "cargo audit --json",
+        "cargo deny --all-features check advisories bans licenses sources",
+    ]:
+        assert command in note
+    note_sentences = re.split(r"(?:[.!?](?:\s+|$)|\n+)", note.lower())
+    unchanged_wording = re.compile(
+        r"\b(?:unchanged|unmodified|unaltered|intact|preserved)\b"
+        r"|\b(?:not|no)\b.{0,80}\b(?:change|changed|changes|modify|modified|"
+        r"modifications|alter|altered|alterations)\b"
+    )
+    assert any(unchanged_wording.search(sentence) for sentence in note_sentences)
+    assert "\u2014" not in note
+
+
+def test_live_frozen_advisory_boundaries_and_selected_index_rows():
+    """Frozen RustSec records retain their fixed boundaries and the selected live index rows remain published, non-yanked, and toolchain-compatible."""
+    fixed = {
+        "RUSTSEC-2024-0012": "1.0.1",
+        "RUSTSEC-2025-0024": "0.5.15",
+        "RUSTSEC-2026-0009": "0.3.47",
+    }
+    for advisory_id, boundary in fixed.items():
+        record = fetch_json(f"https://api.osv.dev/v1/vulns/{advisory_id}")
+        assert record["id"] == advisory_id
+        events = [
+            event for affected in record["affected"] for item in affected.get("ranges", [])
+            if item["type"] == "SEMVER" for event in item["events"]
+        ]
+        assert {event.get("fixed") for event in events} >= {boundary}
+    for name, (_old, selected, _advisory, _yanked, _rust) in TARGETS.items():
+        row = fetch_index_row(name, selected)
+        assert row["name"] == name
+        assert row["vers"] == selected
+        assert row["yanked"] is False
+        required = row.get("rust_version")
+        if required:
+            assert tuple(map(int, required.split("."))) <= (1, 89, 0)
+
+
+def test_live_stock_policy_tools_clear_the_current_database():
+    """cargo-audit and cargo-deny both clear the final graph against the current default RustSec database without ignores."""
+    audit = run(["cargo", "audit", "--json"], timeout=180)
+    assert audit.returncode == 0, audit.stderr
+    report = json.loads(audit.stdout)
+    assert report["vulnerabilities"]["found"] is False
+    assert report["vulnerabilities"]["count"] == 0
+    deny = run([
+        "cargo", "deny", "--all-features", "check", "advisories", "bans", "licenses", "sources"
+    ], timeout=180)
+    assert deny.returncode == 0, deny.stderr
+    assert "advisories ok" in deny.stdout + deny.stderr
