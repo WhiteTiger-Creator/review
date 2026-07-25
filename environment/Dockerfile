@@ -1,51 +1,35 @@
-FROM public.ecr.aws/docker/library/eclipse-temurin:21-jdk-jammy@sha256:25d1276565738d3c805e632a4542c3a7598866ef967f4def6544c15de3a74b14 AS jdk-toolchain
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends xz-utils \
+RUN ln -sf /usr/local/go/bin/go /usr/local/bin/go && ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        tmux \
+        asciinema \
+        python3 \
+        python3-venv \
+        make \
+    && python3 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir pytest==8.3.4 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY vendor/kotlinc-2.1.0-jvm.tar.xz /tmp/kotlinc.tar.xz
-RUN mkdir -p /opt/kotlinc \
-    && tar -xJf /tmp/kotlinc.tar.xz -C /opt/kotlinc \
-    && rm /tmp/kotlinc.tar.xz \
-    && chmod 755 /opt/kotlinc/bin/kotlinc /opt/kotlinc/bin/kotlinc-jvm
-
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
-
-COPY --from=jdk-toolchain /opt/java/openjdk /opt/java/openjdk
-COPY --from=jdk-toolchain /opt/kotlinc /opt/kotlinc
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash ca-certificates coreutils diffutils \
-       findutils grep sed util-linux tmux asciinema xz-utils \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY vendor/pywheels.tar.xz /tmp/pywheels.tar.xz
-COPY requirements.lock /tmp/requirements.lock
-RUN mkdir -p /tmp/wheels \
-    && tar -xJf /tmp/pywheels.tar.xz -C /tmp/wheels \
-    && rm /tmp/pywheels.tar.xz \
-    && pip install --no-cache-dir --no-index --find-links /tmp/wheels \
-       --require-hashes --no-deps -r /tmp/requirements.lock \
-    && rm -rf /tmp/wheels /tmp/requirements.lock
-
-ENV JAVA_HOME=/opt/java/openjdk \
-    PATH="/opt/java/openjdk/bin:/opt/kotlinc/bin:${PATH}"
-
-RUN ln -s /opt/java/openjdk/bin/java /usr/local/bin/java \
-    && ln -s /opt/java/openjdk/bin/javac /usr/local/bin/javac \
-    && ln -s /opt/kotlinc/bin/kotlinc /usr/local/bin/kotlinc \
-    && printf 'export JAVA_HOME=/opt/java/openjdk\nexport PATH="/opt/java/openjdk/bin:/opt/kotlinc/bin:$PATH"\n' \
-       > /etc/profile.d/toolchain.sh
+# The agent session runs as this restricted, non-root user (task.toml sets
+# [agent].user = "agent"). The image build and verifier still run as root
+# (no USER directive), so the verifier can write /logs/verifier. Pytest is
+# invoked from the root-owned venv at /opt/venv, which the agent uid cannot
+# overwrite, so neither the interpreter nor the pytest module can be shadowed.
+RUN groupadd --system agent \
+    && useradd --system --gid agent --create-home --home-dir /home/agent agent
 
 WORKDIR /app
-COPY README.md ./README.md
-COPY docs ./docs
-COPY src ./src
-COPY data ./data
-COPY build.sh ./build.sh
-COPY run.sh ./run.sh
-RUN chmod 755 /app/build.sh /app/run.sh
 
-RUN useradd -m -u 1000 -s /bin/bash agent \
-    && chown -R agent:agent /app
+COPY main.go /app/main.go
+COPY select.go /app/select.go
+COPY go.mod /app/go.mod
+COPY docs/ /app/docs/
+COPY data/ /app/data/
+COPY Makefile /app/Makefile
+
+# /app is the agent's workspace: it edits select.go and builds ./resolve there.
+# Make it agent-owned so the non-root session can write, while /opt/venv and the
+# system interpreters stay root-owned and unmodifiable.
+RUN chown -R agent:agent /app

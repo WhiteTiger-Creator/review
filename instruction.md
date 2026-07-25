@@ -1,5 +1,31 @@
-The Kotlin pipeline under /app fits ELAST-X v2, a machine-learning demand model that estimates per-segment price elasticities from a product-week panel. It runs a cross-validated regularized regression of log-demand on log-price and covariates, then reports the fitted coefficients, the per-segment elasticities, and a holdout error metric. The current sources fit a generic pooled regression that does not follow the ELAST-X v2 methodology, so the numbers it produces are not ELAST-X v2.
+A build tool resolves a stream of scenarios, one version per queried module.
+`main.go` wires I/O and `make` builds `resolve` (stdin→stdout); complete
+`resolveStream` in `select.go`. `docs/` has the exact grammar. An `INDEX` row
+lists a module's published versions; it is informational, never bounding
+selection.
 
-The methodology is written up in /app/docs/elast_x_memo.md: the target transform, the feature winsorization and standardization, the sample weighting, the ridge penalty and how its strength is cross-validated, the monotonicity treatment of the price response, the elasticity convention, and the holdout metric. Bring the pipeline into agreement with that memo. Build it with /app/build.sh and run it as /app/run.sh --panel /app/data/panel.csv --out /app/artifacts/elasticity.json, writing the object the memo specifies.
+A module's answer is its selected version, `NONE` if it never joins the main
+module's reachable set, or `CONFLICT` if reachable but over-constrained. Rules
+interact:
 
-The artifact must be your pipeline's own output. Grading rebuilds the pipeline and runs it again on held-out panels it has never seen, fed through the same entrypoint, comparing every reported figure against ELAST-X v2 at a tight tolerance.
+- **Version-conditioned edges.** A requirement or ceiling on version U of a
+  module applies only once its selection reaches U; the main module's edges
+  always apply.
+- **Floors, not pins.** A `LOCK` and any carried version are floors: each raises
+  a selection, never caps it, inert at or below the otherwise selected version.
+- **Session carry.** Scenarios share tables persisting until a `RESET`. Each
+  module's selected version becomes its floor in every later scenario; a module
+  never built carries nothing.
+- **Ceilings and conflict.** A `CAP` bounds a module from above. Its lowest
+  in-force ceiling is compared with the max of its floors and in-force
+  requirement edges. Exceeding it makes the module over-constrained
+  (`CONFLICT`), contributing no edges, so modules reachable only through it are
+  `NONE`.
+- **Conflict scars.** A conflicted module lifts no floor; its binding ceiling is
+  remembered session-wide, ratcheting only lower and re-imposed every later
+  scenario until `RESET`, even absent a `CAP`. A carried floor above a scar keeps
+  re-conflicting.
+
+Per scenario emit one line per queried module, ascending module order:
+`<scenario-id>|<module>|<version>`, version verbatim (or `NONE`/`CONFLICT`);
+nothing else.

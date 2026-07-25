@@ -3,26 +3,26 @@ version = "2.0"
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
-difficulty = "hard"
-category = "machine-learning"
+category = "build-and-dependency-management"
 subcategories = ["tool_specific"]
-tags = ["demand-modeling", "price-elasticity", "cross-validation", "regularized-regression", "model-reproduction"]
-languages = ["kotlin"]
+difficulty = "medium"
 codebase_size = "minimal"
 number_of_milestones = 0
-expert_time_estimate_min = 120
-junior_time_estimate_min = 360
-
-[environment]
-allow_internet = false
-build_timeout_sec = 1500
-cpus = 2
-memory_mb = 4096
-storage_mb = 10240
+languages = ["go"]
+tags = ["minimal-version-selection", "dependency-graph", "lockfile", "module-resolution"]
+expert_time_estimate_min = 50
+junior_time_estimate_min = 160
 
 [verifier]
-timeout_sec = 1200
+timeout_sec = 1800
 
 [agent]
 timeout_sec = 1800
 user = "agent"
+
+[environment]
+build_timeout_sec = 1800
+cpus = 2
+memory_mb = 4096
+storage_mb = 4096
+allow_internet = false

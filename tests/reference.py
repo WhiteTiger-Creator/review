@@ -1,340 +1,391 @@
-import csv
-import math
+import json
+import os
+from collections import deque
 
-SEGMENTS = ["grocery", "apparel", "electronics", "home"]
-OFFSET = 8.0
-RECENCY = 0.97
-LAMBDA_GRID = [0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0]
-WINSOR = {
-    "log_price": (2.5, 97.5),
-    "log_competitor_price": (2.5, 97.5),
-    "log_traffic": (5.0, 100.0),
-}
-CONT = ["log_price", "log_competitor_price", "log_traffic", "week_trend"]
-KFOLDS = 5
-EMBARGO = 3
-HOLDOUT_START = 48
-N_WEEKS = 60
-ARC_STEP = 0.10
-MAPE_FLOOR = 5.0
-WEIGHT_FLOOR = 1e-6
-
-COVARS = ["log_competitor_price", "promo", "holiday", "log_traffic", "week_trend"]
+BASE = "v0.0.0"
+CONFLICT = "CONFLICT"
 
 
-def _row(r):
-    return {
-        "product_id": int(r["product_id"]),
-        "segment": r["segment"],
-        "week": int(r["week"]),
-        "price": float(r["price"]),
-        "units": float(r["units"]),
-        "competitor_price": float(r["competitor_price"]),
-        "promo": float(r["promo"]),
-        "holiday": float(r["holiday"]),
-        "traffic": float(r["traffic"]),
-    }
+def vkey(v):
+    return tuple(int(x) for x in v[1:].split("."))
 
 
-def read_panel(path):
-    with open(path) as f:
-        return [_row(r) for r in csv.DictReader(f)]
+def vmax(vs):
+    best = vs[0]
+    for v in vs[1:]:
+        if vkey(v) > vkey(best):
+            best = v
+    return best
 
 
-def feats(rows):
-    return {
-        "log_price": [math.log(r["price"]) for r in rows],
-        "log_competitor_price": [math.log(r["competitor_price"]) for r in rows],
-        "log_traffic": [math.log(r["traffic"]) for r in rows],
-        "week_trend": [r["week"] / N_WEEKS for r in rows],
-        "promo": [r["promo"] for r in rows],
-        "holiday": [r["holiday"] for r in rows],
-        "units": [r["units"] for r in rows],
-        "segment": [r["segment"] for r in rows],
-        "week": [r["week"] for r in rows],
-        "price": [r["price"] for r in rows],
-    }
+def vmin(vs):
+    best = vs[0]
+    for v in vs[1:]:
+        if vkey(v) < vkey(best):
+            best = v
+    return best
 
 
-def wpercentile(x, w, q):
-    idx = sorted(range(len(x)), key=lambda i: x[i])
-    xs = [x[i] for i in idx]
-    ws = [w[i] for i in idx]
-    tot = sum(ws)
-    c = 0.0
-    cum = []
-    for wi in ws:
-        cum.append((c + wi / 2.0) / tot)
-        c += wi
-    t = q / 100.0
-    if t <= cum[0]:
-        return xs[0]
-    if t >= cum[-1]:
-        return xs[-1]
-    for i in range(1, len(cum)):
-        if t <= cum[i]:
-            span = cum[i] - cum[i - 1]
-            f = (t - cum[i - 1]) / span if span != 0 else 0.0
-            return xs[i - 1] + f * (xs[i] - xs[i - 1])
-    return xs[-1]
+def parse_stream(text):
+    """Parse the whole stdin into an ordered list of scenario dicts.
+
+    A ``RESET`` line may appear between scenarios; the scenario that follows it
+    carries ``reset_before = True``. All other scenarios carry ``False``.
+    """
+    scen = []
+    cur = None
+    reset_pending = False
+    for line in text.splitlines():
+        p = line.split()
+        if not p:
+            continue
+        k = p[0]
+        if k == "RESET":
+            reset_pending = True
+            continue
+        if k == "SCENARIO":
+            cur = {
+                "sid": p[1],
+                "root": None,
+                "edges": [],
+                "caps": [],
+                "index": {},
+                "lock": {},
+                "queries": [],
+                "reset_before": reset_pending,
+            }
+            reset_pending = False
+        elif cur is None:
+            continue
+        elif k == "ROOT":
+            cur["root"] = p[1]
+        elif k == "REQ":
+            cur["edges"].append((p[1], p[2], p[3], p[4]))
+        elif k == "CAP":
+            cur["caps"].append((p[1], p[2], p[3], p[4]))
+        elif k == "INDEX":
+            cur["index"][p[1]] = list(p[2:])
+        elif k == "LOCK":
+            cur["lock"][p[1]] = p[2]
+        elif k == "QUERY":
+            cur["queries"].append(p[1])
+        elif k == "ENDSCENARIO":
+            scen.append(cur)
+            cur = None
+    return scen
 
 
-def solve(a, b):
-    n = len(b)
-    m = [[*row, b[i]] for i, row in enumerate(a)]
-    for c in range(n):
-        p = max(range(c, n), key=lambda r: abs(m[r][c]))
-        m[c], m[p] = m[p], m[c]
-        piv = m[c][c]
-        for r in range(n):
-            if r == c:
+def parse_scenario(text):
+    """Parse a single scenario block (session context empty)."""
+    return parse_stream(text)[0]
+
+
+def qmods(sc):
+    return sorted(set(sc["queries"]))
+
+
+def _floor(sc, sess, m):
+    cands = [BASE]
+    if m in sc.get("lock", {}):
+        cands.append(sc["lock"][m])
+    if m in sess:
+        cands.append(sess[m])
+    return vmax(cands)
+
+
+def _expand(sc, sess, skip=None):
+    """Monotone lower-bound expansion.
+
+    Returns ``(sel, build)`` where an edge declared by version ``uver`` of ``u``
+    is in force only once ``u`` is in the build list and its selected version has
+    reached ``uver`` (the root's edges are always in force). Requirers named in
+    ``skip`` contribute no edges (used to retract conflicted providers).
+    """
+    if skip is None:
+        skip = set()
+    root = sc["root"]
+    sel = {root: _floor(sc, sess, root)}
+    build = {root}
+    changed = True
+    while changed:
+        changed = False
+        for u, uver, dep, depver in sc["edges"]:
+            if u not in build or u in skip:
                 continue
-            fr = m[r][c] / piv
-            for k in range(c, n + 1):
-                m[r][k] -= fr * m[c][k]
-    return [m[i][n] / m[i][i] for i in range(n)]
+            if u != root and vkey(uver) > vkey(sel[u]):
+                continue
+            if dep not in build:
+                build.add(dep)
+                sel[dep] = _floor(sc, sess, dep)
+                changed = True
+            if vkey(depver) > vkey(sel[dep]):
+                sel[dep] = depver
+                changed = True
+    return sel, build
 
 
-def wmean_wstd(x, w):
-    sw = sum(w)
-    m = sum(wi * xi for wi, xi in zip(w, x, strict=True)) / sw
-    v = sum(wi * (xi - m) ** 2 for wi, xi in zip(w, x, strict=True)) / sw
-    return m, math.sqrt(v) if v > 0 else 1.0
+def _ceilings(sc, demand, build):
+    """Lowest in-force ceiling per module.
+
+    A ``CAP`` declared by version ``uver`` of ``u`` limits ``dep`` to at most
+    ``maxver``; it is in force under the same gate as a requirement, evaluated
+    against the maximal (cap-free) demand.
+    """
+    root = sc["root"]
+    ceil = {}
+    for u, uver, dep, maxver in sc.get("caps", []):
+        if u not in build:
+            continue
+        if u != root and vkey(uver) > vkey(demand[u]):
+            continue
+        ceil[dep] = maxver if dep not in ceil else vmin([ceil[dep], maxver])
+    return ceil
 
 
-class Prep:
-    pass
+def _in_force_ceilings(sc, sess, scar):
+    """Lowest in-force ceiling per module, merging local caps with carried scars.
+
+    A local ``CAP`` is gated like a requirement and judged against the maximal
+    cap-free demand; a scar ceiling carried from an earlier scenario is
+    unconditional. The binding ceiling is the lowest of the two.
+    """
+    demand, dbuild = _expand(sc, sess)
+    ceil = _ceilings(sc, demand, dbuild)
+    for m, c in scar.items():
+        if m not in ceil or vkey(c) < vkey(ceil[m]):
+            ceil[m] = c
+    return demand, dbuild, ceil
 
 
-def prepare(rows):
-    f = feats(rows)
-    n = len(rows)
-    wmax = max(f["week"])
-    w = []
-    for i in range(n):
-        rec = RECENCY ** (wmax - f["week"][i])
-        vol = math.log1p(f["units"][i])
-        w.append(max(WEIGHT_FLOOR, rec * vol))
-    sw = sum(w)
-    w = [wi * n / sw for wi in w]
-    lim = {}
-    cont = {}
-    for c in ["log_price", "log_competitor_price", "log_traffic"]:
-        lo = wpercentile(f[c], w, WINSOR[c][0])
-        hi = wpercentile(f[c], w, WINSOR[c][1])
-        lim[c] = (lo, hi)
-        cont[c] = [min(max(v, lo), hi) for v in f[c]]
-    cont["week_trend"] = list(f["week_trend"])
-    mom = {}
-    std = {}
-    for c in CONT:
-        m, s = wmean_wstd(cont[c], w)
-        mom[c] = (m, s)
-        std[c] = [(v - m) / s for v in cont[c]]
-    p = Prep()
-    p.f = f
-    p.w = w
-    p.lim = lim
-    p.mom = mom
-    p.std = std
-    p.n = n
-    return p
+def step(sc, sess, scar):
+    """Resolve one scenario in a given session floor and scar context.
+
+    Returns ``(sel, build, live, ceil)``: ``sel``/``build`` are the retracted
+    selection; ``live`` are the built, over-constrained modules; ``ceil`` is the
+    binding-ceiling map used to score conflict and to update scars.
+    """
+    demand, dbuild, ceil = _in_force_ceilings(sc, sess, scar)
+    conflict = {m for m in dbuild if m in ceil and vkey(demand[m]) > vkey(ceil[m])}
+    sel, build = _expand(sc, sess, skip=conflict)
+    live = {m for m in conflict if m in build}
+    return sel, build, live, ceil
 
 
-def design(p):
-    f = p.f
-    std = p.std
-    cols = []
-    names = []
-    for s in SEGMENTS:
-        cols.append([1.0 if seg == s else 0.0 for seg in f["segment"]])
-        names.append("int_" + s)
-    for s in SEGMENTS:
-        pairs = zip(f["segment"], std["log_price"], strict=True)
-        cols.append([(1.0 if seg == s else 0.0) * z for seg, z in pairs])
-        names.append("slope_" + s)
-    for c in COVARS:
-        cols.append(list(std[c]) if c in CONT else list(f[c]))
-        names.append(c)
-    x = [[cols[j][i] for j in range(len(cols))] for i in range(p.n)]
-    return x, names
+def apply_carry(sess, scar, sel, build, live, ceil):
+    """Advance both session tables after a scenario resolves.
+
+    Built, non-conflicted modules lift the monotone session floor. Each built,
+    over-constrained module deposits its binding ceiling into the scar table,
+    which only ratchets lower. A conflicted module lifts no floor.
+    """
+    for m in build:
+        if m in live:
+            continue
+        if m not in sess or vkey(sel[m]) > vkey(sess[m]):
+            sess[m] = sel[m]
+    for m in live:
+        c = ceil[m]
+        if m not in scar or vkey(c) < vkey(scar[m]):
+            scar[m] = c
 
 
-def ridge_beta(x, y, w, lam, drop=()):
-    p = len(x[0])
-    a = [[0.0] * p for _ in range(p)]
-    b = [0.0] * p
-    for i in range(len(x)):
-        wi = w[i]
-        xi = x[i]
-        for aa in range(p):
-            xa = 0.0 if aa in drop else xi[aa]
-            b[aa] += wi * xa * y[i]
-            for c in range(aa, p):
-                xc = 0.0 if c in drop else xi[c]
-                a[aa][c] += wi * xa * xc
-    for aa in range(p):
-        for c in range(aa):
-            a[aa][c] = a[c][aa]
-    for aa in range(p):
-        a[aa][aa] += lam
-        if aa in drop:
-            for c in range(p):
-                a[aa][c] = 0.0
-                a[c][aa] = 0.0
-            a[aa][aa] = 1.0
-            b[aa] = 0.0
-    return solve(a, b)
+def resolve(sc, sess=None, scar=None):
+    """Full resolution with version-conditioned edges, floors, ceilings, scars.
+
+    Feasibility is judged against the maximal demand: a module whose demanded
+    version exceeds its lowest in-force ceiling (a local ``CAP`` or a carried
+    scar) is over-constrained. Its own edges are then retracted, so modules
+    reachable only through it drop out. Returns ``(sel, build, conflict)``.
+    """
+    if sess is None:
+        sess = {}
+    if scar is None:
+        scar = {}
+    sel, build, live, _ceil = step(sc, sess, scar)
+    return sel, build, live
 
 
-def build_folds(week, n):
-    uw = sorted(set(week))
-    q, rem = divmod(len(uw), KFOLDS)
-    blocks = []
-    start = 0
-    for i in range(KFOLDS):
-        size = q + (1 if i < rem else 0)
-        blocks.append(uw[start:start + size])
-        start += size
-    folds = []
-    for block in blocks:
-        val_w = set(block)
-        lo = min(block)
-        hi = max(block)
-        emb = set()
-        for e in range(1, EMBARGO + 1):
-            emb.add(lo - e)
-            emb.add(hi + e)
-        tr = [j for j in range(n) if week[j] not in val_w and week[j] not in emb]
-        val = [j for j in range(n) if week[j] in val_w]
-        folds.append((tr, val))
-    return folds
+def resolve_stream(scen):
+    """Resolve scenarios in stream order, carrying a floor table and a scar table.
 
-
-def cv_curve(x, y, w, week, lam_list):
-    folds = build_folds(week, len(y))
-    means = []
-    ses = []
-    for lam in lam_list:
-        errs = []
-        for tr, val in folds:
-            xtr = [x[i] for i in tr]
-            ytr = [y[i] for i in tr]
-            wtr = [w[i] for i in tr]
-            beta = ridge_beta(xtr, ytr, wtr, lam)
-            num = 0.0
-            den = 0.0
-            for i in val:
-                pred = sum(beta[j] * x[i][j] for j in range(len(beta)))
-                num += w[i] * (pred - y[i]) ** 2
-                den += w[i]
-            errs.append(num / den)
-        m = sum(errs) / KFOLDS
-        var = sum((e - m) ** 2 for e in errs) / (KFOLDS - 1)
-        means.append(m)
-        ses.append(math.sqrt(var) / math.sqrt(KFOLDS))
-    return means, ses
-
-
-def select_lambda(means, ses, lam_list):
-    j = min(range(len(means)), key=lambda i: means[i])
-    thr = means[j] + ses[j]
-    cand = [i for i in range(len(lam_list)) if means[i] <= thr]
-    return max(cand)
-
-
-def median(v):
-    n = len(v)
-    m = n // 2
-    return v[m] if n % 2 else (v[m - 1] + v[m]) / 2.0
-
-
-def q_at(price, intercept, slope, scale):
-    mlp, slp, lo_lp, hi_lp = scale
-    z = (min(max(math.log(price), lo_lp), hi_lp) - mlp) / slp
-    return math.exp(intercept + slope * z) - OFFSET
-
-
-def elasticity(train, beta, idx, scale, seg):
-    seg_prices = sorted(r["price"] for r in train if r["segment"] == seg)
-    pref = median(seg_prices)
-    sl = beta[idx["slope_" + seg]]
-    it = beta[idx["int_" + seg]]
-    p1 = pref
-    p2 = pref * (1 + ARC_STEP)
-    q1 = q_at(p1, it, sl, scale)
-    q2 = q_at(p2, it, sl, scale)
-    return ((q2 - q1) / ((q1 + q2) / 2)) / ((p2 - p1) / ((p1 + p2) / 2))
-
-
-def run(path):
-    rows = read_panel(path)
-    train = [r for r in rows if r["week"] < HOLDOUT_START]
-    hold = [r for r in rows if r["week"] >= HOLDOUT_START]
-    p = prepare(train)
-    x, names = design(p)
-    y = [math.log(u + OFFSET) for u in p.f["units"]]
-    means, ses = cv_curve(x, y, p.w, p.f["week"], LAMBDA_GRID)
-    lam = LAMBDA_GRID[select_lambda(means, ses, LAMBDA_GRID)]
-    beta = ridge_beta(x, y, p.w, lam)
-    idx = {nm: i for i, nm in enumerate(names)}
-    drop = [idx["slope_" + s] for s in SEGMENTS if beta[idx["slope_" + s]] > 0]
-    if drop:
-        beta = ridge_beta(x, y, p.w, lam, drop=tuple(drop))
-    out = {
-        "lambda": lam,
-        "coefficients": {},
-        "cv_mean_error": {},
-        "elasticities": {},
-        "holdout_weighted_mape": 0.0,
-    }
-    for c in COVARS:
-        out["coefficients"][c] = beta[idx[c]]
-    for s in SEGMENTS:
-        out["coefficients"]["intercept_" + s] = beta[idx["int_" + s]]
-        out["coefficients"]["price_slope_" + s] = beta[idx["slope_" + s]]
-    for i, lam_i in enumerate(LAMBDA_GRID):
-        out["cv_mean_error"][fmt(lam_i)] = means[i]
-    mlp, slp = p.mom["log_price"]
-    lo_lp, hi_lp = p.lim["log_price"]
-    scale = (mlp, slp, lo_lp, hi_lp)
-    for s in SEGMENTS:
-        out["elasticities"][s] = elasticity(train, beta, idx, scale, s)
-    out["holdout_weighted_mape"] = holdout_mape(hold, p, beta, idx)
+    A ``reset_before`` flag clears both tables. After a scenario resolves the
+    floor table only grows (built, non-conflicted modules), while the scar table
+    only ratchets lower (built, over-constrained modules record their binding
+    ceiling). A module carried above a remembered ceiling re-conflicts in every
+    later scenario until a ``RESET``.
+    """
+    sess, scar = {}, {}
+    out = []
+    for sc in scen:
+        if sc.get("reset_before"):
+            sess, scar = {}, {}
+        sel, build, live, ceil = step(sc, sess, scar)
+        out.append((sel, build, live))
+        apply_carry(sess, scar, sel, build, live, ceil)
     return out
 
 
-def holdout_mape(hold, p, beta, idx):
-    fh = feats(hold)
-    num = 0.0
-    den = 0.0
-    for i in range(len(hold)):
-        vec = {}
-        for c in ["log_price", "log_competitor_price", "log_traffic"]:
-            lo, hi = p.lim[c]
-            v = min(max(fh[c][i], lo), hi)
-            m, s = p.mom[c]
-            vec[c] = (v - m) / s
-        m, s = p.mom["week_trend"]
-        vec["week_trend"] = (fh["week_trend"][i] - m) / s
-        seg = fh["segment"][i]
-        pred = beta[idx["int_" + seg]] + beta[idx["slope_" + seg]] * vec["log_price"]
-        for c in COVARS:
-            xv = vec[c] if c in CONT else fh[c][i]
-            pred += beta[idx[c]] * xv
-        pu = math.exp(pred) - OFFSET
-        actual = fh["units"][i]
-        ape = abs(pu - actual) / max(actual, MAPE_FLOOR)
-        num += actual * ape
-        den += actual
-    return num / den if den > 0 else 0.0
+def _value(sc, sel, build, conflict, m):
+    if m not in build:
+        return "NONE"
+    if m in conflict:
+        return CONFLICT
+    return sel[m]
 
 
-def fmt(x):
-    return repr(float(x))
+def _lines(sc, sel, build, conflict):
+    return [f"{sc['sid']}|{m}|{_value(sc, sel, build, conflict, m)}" for m in qmods(sc)]
 
 
-if __name__ == "__main__":
-    import json
-    import sys
-    print(json.dumps(run(sys.argv[1]), indent=2))
+def pinned_stream(scen):
+    out = []
+    for sc, (sel, build, conflict) in zip(scen, resolve_stream(scen), strict=True):
+        out.extend(_lines(sc, sel, build, conflict))
+    return out
+
+
+def pinned_one(sc, sess=None):
+    """Reference answer for one scenario in a given session context."""
+    sel, build, conflict = resolve(sc, sess or {})
+    return _lines(sc, sel, build, conflict)
+
+
+# -- naive kernels (traps); each must fail the full battery ------------------
+
+
+def per_scenario_stream(scen):
+    """Trap: resolve every scenario independently, no session carry."""
+    out = []
+    for sc in scen:
+        out.extend(pinned_one(sc, {}))
+    return out
+
+
+def _cap_ignore_resolve(sc, sess):
+    """Correct lower-bound resolution but blind to ceilings (no conflicts)."""
+    sel, build = _expand(sc, sess)
+    return sel, build, set()
+
+
+def cap_ignore_stream(scen):
+    """Primary trap: floors, carry, and gating are correct but CAP rows are
+    ignored, so no module is ever over-constrained or retracted."""
+    sess = {}
+    out = []
+    for sc in scen:
+        if sc.get("reset_before"):
+            sess = {}
+        sel, build, conflict = _cap_ignore_resolve(sc, sess)
+        out.extend(_lines(sc, sel, build, conflict))
+        for m in build:
+            if m not in sess or vkey(sel[m]) > vkey(sess[m]):
+                sess[m] = sel[m]
+    return out
+
+
+def _no_retract_resolve(sc, sess):
+    """Detect conflicts but keep the maximal demand for everyone else."""
+    demand, dbuild = _expand(sc, sess)
+    ceil = _ceilings(sc, demand, dbuild)
+    conflict = {m for m in dbuild if m in ceil and vkey(demand[m]) > vkey(ceil[m])}
+    return demand, dbuild, conflict
+
+
+def no_retract_stream(scen):
+    """Trap: mark over-constrained modules CONFLICT but never retract their
+    edges, so their dependents keep the inflated demand instead of dropping."""
+    sess = {}
+    out = []
+    for sc in scen:
+        if sc.get("reset_before"):
+            sess = {}
+        sel, build, conflict = _no_retract_resolve(sc, sess)
+        out.extend(_lines(sc, sel, build, conflict))
+        for m in build:
+            if m in conflict:
+                continue
+            if m not in sess or vkey(sel[m]) > vkey(sess[m]):
+                sess[m] = sel[m]
+    return out
+
+
+def no_cap_carry_stream(scen):
+    """Primary scar trap: floors carry and local caps retract correctly, but
+    conflict is treated as purely per-scenario. The binding ceiling of an
+    over-constrained module is never remembered, so once its scar is cleared by
+    the next scenario a module carried above that ceiling is wrongly re-selected
+    at its floor (and its dependents wrongly rebuilt) wherever no live ``CAP``
+    is present."""
+    sess = {}
+    out = []
+    for sc in scen:
+        if sc.get("reset_before"):
+            sess = {}
+        sel, build, live, ceil = step(sc, sess, {})  # empty scar every scenario
+        out.extend(_lines(sc, sel, build, live))
+        apply_carry(sess, {}, sel, build, live, ceil)
+    return out
+
+
+def _reach_flat(sc):
+    adj = {}
+    for u, _uv, dep, _dv in sc["edges"]:
+        adj.setdefault(u, []).append(dep)
+    seen = {sc["root"]}
+    q = deque([sc["root"]])
+    while q:
+        cur = q.popleft()
+        for dep in adj.get(cur, []):
+            if dep not in seen:
+                seen.add(dep)
+                q.append(dep)
+    return seen
+
+
+def flat(sc):
+    """Textbook MVS: every edge active, max required version, no floors, no
+    ceilings, no conflicts."""
+    reach = _reach_flat(sc)
+    out = []
+    for m in qmods(sc):
+        cands = [dv for u, _uv, dep, dv in sc["edges"] if dep == m and u in reach]
+        v = vmax(cands) if cands else "NONE"
+        out.append(f"{sc['sid']}|{m}|{v}")
+    return out
+
+
+def flat_stream(scen):
+    out = []
+    for sc in scen:
+        out.extend(flat(sc))
+    return out
+
+
+def ignore_lock_stream(scen):
+    """Correct gating, ceilings, and carry but the explicit lock floor dropped."""
+    sess = {}
+    out = []
+    for sc in scen:
+        if sc.get("reset_before"):
+            sess = {}
+        stripped = dict(sc)
+        stripped["lock"] = {}
+        sel, build, conflict = resolve(stripped, sess)
+        out.extend(_lines(sc, sel, build, conflict))
+        for m in build:
+            if m in conflict:
+                continue
+            if m not in sess or vkey(sel[m]) > vkey(sess[m]):
+                sess[m] = sel[m]
+    return out
+
+
+def load_battery(name):
+    path = os.path.join(os.path.dirname(__file__), "battery", name)
+    recs = []
+    with open(path, encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if line:
+                recs.append(json.loads(line))
+    return recs
