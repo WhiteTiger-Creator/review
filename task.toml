@@ -1,47 +1,28 @@
-# Task configuration schema version
 version = "2.0"
 
-# Task metadata (author, difficulty, categorization)
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
-difficulty = "hard"
 category = "security"
-# Options for subcategories are: "long_context", "tool_specific", "api_integration", "db_interaction", "ui_building"
-subcategories = ["tool_specific"]
-# The number of milestones in the task (can be zero if not a milestone task)
+subcategories = []
+difficulty = "hard"
+codebase_size = "minimal"
 number_of_milestones = 0
-# Size of the codebase: minimal -> 0-20 files, small -> 20+ files, large -> 200+ files
-codebase_size = "small"
-# Coding languages used in the oracle solution or required by the agent
-languages = ["go", "bash"]
-# For tool_specific, api_integration, and db_interaction subcategories, please include specific tool, api framework, or database software
-tags = [
-    "threat-detection",
-    "soc",
-    "c2-beacon",
-    "network-security",
-    "go",
-]
-# Estimated time to complete (minutes)
+languages = ["rust"]
+tags = ["security", "exploit", "request-smuggling", "rust", "hpack", "http2", "cwe-436"]
+keywords = ["security", "exploit", "request-smuggling", "header-desync", "hpack", "cwe-436"]
 expert_time_estimate_min = 180
-junior_time_estimate_min = 360
+junior_time_estimate_min = 420
 
-# Verifier: runs the test script to check task completion
 [verifier]
-timeout_sec = 900.0
+timeout_sec = 1800
 
-# Agent: limits how long the agent can run when attempting the task
 [agent]
-timeout_sec = 1800.0
+timeout_sec = 1800
 
-# Sandbox environment limits
 [environment]
-allow_internet = false
-build_timeout_sec = 900.0
-docker_flags = []
-cpus = 2
+build_timeout_sec = 1200
+cpus = 4
 memory_mb = 4096
 storage_mb = 10240
-gpus = 0
-gpu_types = []
+allow_internet = false

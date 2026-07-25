@@ -1,61 +1,28 @@
-FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+# Build stage: compile the audited decoder into a stripped binary. Its source is
+# used only here and never enters the final image, so the audited decoder is
+# staged as a black box the agent must characterize by probing, not by reading.
+FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36 AS build
+WORKDIR /build
+COPY audited/decoder.rs /build/decoder.rs
+RUN rustc -O -C strip=symbols /build/decoder.rs -o /build/decoder
 
-# Agent must rebuild /app/build/huntctl after editing Go packages, and the
-# verifier re-runs that build. Keep the Go toolchain plus make in the final
-# image (documented single-stage carve-out for compile-at-runtime repair tasks).
-LABEL org.opencontainers.image.title="classify-network-behavior-profiles" \
-    org.opencontainers.image.description="Offline SOC network threat hunt admission and investigation ranker" \
-    org.opencontainers.image.source="https://github.com/laude-institute/terminal-bench" \
-    org.opencontainers.image.revision="1.0.2" \
-    org.opencontainers.image.created="2026-07-24T00:00:00Z" \
-    org.opencontainers.image.version="1.0.2" \
-    org.opencontainers.image.licenses="MIT"
+FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    PATH="/usr/local/go/bin:/go/bin:/usr/local/bin:/usr/bin:/bin" \
-    GOTOOLCHAIN=local \
-    GO111MODULE=on \
-    GOPROXY=off \
-    CGO_ENABLED=0 \
-    GOROOT=/usr/local/go \
-    LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1 \
-    SOURCE_DATE_EPOCH=0
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        asciinema \
-        ca-certificates \
-        make \
-        python3 \
-        python3-pip \
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
         tmux \
-    && ln -sf /usr/bin/python3 /usr/bin/python \
-    && ln -sf /usr/local/go/bin/go /usr/local/bin/go \
-    && ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt \
-    && printf '%s\n' 'export PATH="/usr/local/go/bin:/go/bin:/usr/local/bin:/usr/bin:/bin"' > /etc/profile.d/go-path.sh \
-    && rm -rf /var/lib/apt/lists/*
+        asciinema \
+        python3 \
+        python3-pip && \
+    rm -rf /var/lib/apt/lists/*
 
-COPY requirements.lock /tmp/requirements.lock
-COPY verifier-wheels/ /opt/verifier-wheels/
-
-RUN pip3 install --break-system-packages --no-cache-dir --no-index \
-        --find-links=/opt/verifier-wheels \
-        --require-hashes \
-        -r /tmp/requirements.lock \
-    && rm -rf /root/.cache /tmp/requirements.lock
+RUN pip3 install --no-cache-dir --break-system-packages pytest==8.3.3 pytest-json-ctrf==0.3.5
 
 WORKDIR /app
 
-COPY go.mod Makefile /app/
-COPY hunt_captures/ /app/hunt_captures/
-COPY detect_policy/ /app/detect_policy/
-COPY huntgate/ /app/huntgate/
-COPY sigscore/ /app/sigscore/
-COPY peerhunt/ /app/peerhunt/
-COPY triageprio/ /app/triageprio/
+# Immutable evidence: the audited decoder as a runnable black-box binary only.
+COPY --from=build /build/decoder /app/environment/evidence/decoder
+RUN chmod +x /app/environment/evidence/decoder
 
-RUN mkdir -p /app/build
+COPY docs/ /app/environment/docs/
+COPY analysis/ /app/environment/analysis/

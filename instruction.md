@@ -1,5 +1,30 @@
-SOC network threat hunt admission under /app is failing after the detection stack upgrade. Compromised hosts with C2 beaconing credential spray DNS tunneling and peer fanout get wrong CLEAN WATCH or ALERT labels so infected assets slip triage. Repair only /app/huntgate /app/sigscore /app/peerhunt and /app/triageprio. Do not modify /app/hunt_captures /app/detect_policy /app/go.mod or /app/Makefile.
+This is an offensive HTTP/2 security exercise. A vulnerable HPACK header-block
+decoder is staged as immutable evidence at /app/environment/evidence/decoder — a
+stripped black-box binary whose source is withheld; you may execute it but must
+not modify it. It shares the octet grammar and RFC 7541 Huffman code of a
+spec-compliant peer, yet mismanages shared decoder state so the two decoders
+reconstruct different header-field sequences from identical well-formed wire
+octets. That interpretation conflict (CWE-436) is a header desynchronization
+primitive — the basis of HTTP/2 request smuggling and cache poisoning. Its
+observed behavior is the authoritative definition of the audited decoder;
+what must be discovered is how it deviates from the spec-compliant reference
+documented for you and the exact conditions under which each deviation manifests.
+Several departures make it more permissive; one makes it stricter, and some
+conflicts arise only when departures act together.
 
-Emit /app/build/huntctl and /app/build/threat_admission_report.json for every window_id in /app/hunt_captures/catalog.json. Read threat_admission_contract.json from scenario_defaults first. Defaults: z_threshold 2.5 escalate_z 8 confidence_floor 0.4 contrib_scale 2.5 min_emit_contribution 1 contagion_max_cost 2 contagion_damp 0.9 quarantine_damp 0.85 quarantine_min 2 quarantine_cost 1 contagion_seed_z 10. Contribution round4(weight*log1p(z-threshold)). ALERT when conf>=floor and (count>=2 or role server|dns|dc or max_z>=escalate_z) else WATCH. Emit investigations for every WATCH and ALERT host never CLEAN. Quarantine before contagion. Contagion half-open cost < max with maximum hop damp. Clusters are final-ALERT peer components only; boost uses 1.0+0.15*organic_count excluding promoted members though clusters.size counts all ALERT members. Priority stages round4(conf*role) then severity then boost then damp. Risk HIGH only if ALERT and conf>=0.8 and max_z>=5 else MEDIUM if conf>=floor else LOW.
+Your job is to weaponize the divergence, not classify it. You are handed a
+sequence of exploitation obligations. Each names the audited deviation — or a
+combination that must act jointly — as the required root cause and pins the
+accept/reject outcome, the exact emitted-field position of the first
+disagreement, the dynamic-table maximum your block must carry, a length ceiling,
+and any Huffman requirement. For each, craft one well-formed attack block on which
+the two decoders diverge in exactly that way and no other. The verifier recomputes
+both decoders and every deviation subset to confirm the conflict fires at the
+named position and outcome and is attributable to exactly the named deviations.
 
-Keep arrays non null catalog order fixtures immutable compact trailing newline identical reruns and apply every policy_overrides key without hardcoding digests.
+The wire format, reference decoder, obligation grammar, and witness contract are
+in /app/environment/docs; grading follows them exactly. Fresh obligations are
+graded, so construct per obligation. Deliver your payload generator as a Rust
+program in /app/environment/analysis, built with cargo build --release --locked to
+produce the `synth` binary. The standard library is the only dependency and there
+is no network.
