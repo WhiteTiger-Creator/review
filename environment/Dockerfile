@@ -1,35 +1,23 @@
-FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
+FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
 
-# Canonical Terminal-Bench Rust runtime; digest-pinned.
+ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    tmux \
-    asciinema \
-    python3 \
-    python3-pip \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        r-base-core \
+        tmux \
+        asciinema \
+        ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
-COPY requirements.in /tmp/requirements.in
-COPY requirements.lock /tmp/requirements.lock
-
-RUN pip3 install --no-cache-dir --break-system-packages \
-    --require-hashes --no-deps \
-    -r /tmp/requirements.lock \
-    && ln -sf /usr/local/cargo/bin/cargo /usr/local/bin/cargo \
-    && ln -sf /usr/local/cargo/bin/rustc /usr/local/bin/rustc \
-    && rm -f /tmp/requirements.in /tmp/requirements.lock
-
-ENV CARGO_HOME="/usr/local/cargo"
-ENV RUSTUP_HOME="/usr/local/rustup"
-ENV PATH="/usr/local/cargo/bin:/usr/local/rustup/bin:/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
-
-COPY app /app
-COPY source_snapshots /app/source_snapshots
+RUN pip install --no-cache-dir \
+        numpy==2.1.3 \
+        pandas==2.2.3 \
+        pytest==8.3.4
 
 WORKDIR /app
 
-RUN mkdir -p /app/output \
-    && chmod 0777 /app/output
+RUN mkdir -p /app/outputs
 
-CMD ["sleep", "infinity"]
+COPY data/sensors.csv /app/data/sensors.csv
+COPY data/PROTOCOL.md /app/data/PROTOCOL.md
