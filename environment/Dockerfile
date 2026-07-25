@@ -35,6 +35,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 ENV TERM=xterm-256color \
+    HOME=/tmp \
     RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH="/usr/local/cargo/bin:/app/bin:${PATH}" \
@@ -44,7 +45,8 @@ RUN tmux -V \
     && asciinema --version \
     && tmux new-session -d -s _smoke \
     && tmux has-session -t _smoke \
-    && tmux kill-session -t _smoke
+    && tmux kill-session -t _smoke \
+    && rm -rf /tmp/tmux-*
 
 COPY requirements.txt /tmp/requirements.txt
 # Installs pytest==8.4.1 and pytest-json-ctrf==0.3.5 with hash-locked transitive deps.
@@ -73,5 +75,14 @@ COPY config/ /app/config/
 COPY data/ /app/data/
 COPY ops/ /app/ops/
 
+# Keep rebuild/output/log paths writable for Harbor agent+verifier mounts.
+# /logs/agent must be creatable: Harbor redirects oracle stdout there.
+# Do NOT chmod -R a+rwX /tmp: that opens /tmp/tmux-* left by the smoke test and
+# terminus-2 aborts with "directory /tmp/tmux-0 has unsafe permissions".
 RUN chmod +x /app/ops/run_mesh.sh \
-    && mkdir -p /output /logs/verifier
+    && mkdir -p /output /logs/verifier /logs/agent \
+    && chmod -R a+rX /usr/local/cargo /usr/local/rustup \
+    && chmod a+rw /app/Cargo.toml /app/Cargo.lock \
+    && chmod -R a+rwX /app/core /app/vfy /app/skim /app/target /app/bin /output /logs \
+    && chmod 1777 /tmp \
+    && rm -rf /tmp/tmux-*
