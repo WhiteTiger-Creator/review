@@ -1,434 +1,535 @@
-"""Verifier for edge fleet trust attestation recovery."""
-from __future__ import annotations
+"""Deterministic artifact and held-out checks for a generated R MLE task."""
 
 import json
-import re
+import os
 import shutil
 import subprocess
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score,
+)
 
-OUTPUT = Path("/output/ceremony-ledger.json")
-QUARANTINE = Path("/output/quarantine.json")
-FIXTURES = Path("/app/data/fixtures")
-SURFACE = FIXTURES / "surface_attestation.json"
-SEED = FIXTURES / "seed.json"
-SEGMENTS = Path("/app/data/signed_segments")
-VERIFIER_OUT = Path("/tmp") / "ceremony-ledger-verify.json"
-DYNAMIC_OUT = Path("/tmp") / "ceremony-ledger-dynamic.json"
-DYNAMIC_FRAME = FIXTURES / "dynamic_test_frame.bin"
-DYNAMIC_INJECTED = FIXTURES / "dynamic_test_injected.bin"
-
-EPOCH_10_ACCEPTED = 8
-EPOCH_20_ACCEPTED = 5
-EPOCH_30_ACCEPTED = 3
-EPOCH_40_ACCEPTED = 5
-EPOCH_50_ACCEPTED = 4
-SURFACE_EPOCH_10 = 10
-SCHEMA_VERSION = 1
-STATUS_ACTIVE = "active"
-STATUS_INACTIVE = "inactive"
-PROFILE_A = "fleet_a"
-PROFILE_B = "fleet_b"
-BACKEND_NAMES = {"mqtt", "lora", "uart", "canbus", "zigbee"}
-PUBLISHED_EPOCHS = {10, 20, 30, 40, 50}
-CORE_EPOCHS = {10, 20, 40, 50}
-REASON_INTEGRITY = "integrity_failure"
-REASON_REPLAY = "replay"
-REASON_REVOKED = "revoked"
-QUARANTINE_REASONS = (REASON_INTEGRITY, REASON_REPLAY, REASON_REVOKED)
-KEY_BACKENDS = "backends"
-KEY_EPOCHS = "epochs"
-KEY_REJECTED = "rejected"
-KEY_EPOCH = "epoch"
-KEY_LANE = "lane"
-KEY_TS = "ts"
-EPOCH_TEN = 10
-EPOCH_THIRTY = 30
-EPOCH_TWENTY_FIVE = 25
-BAND_LO = 2
-BAND_HI = 4
-BAND_CAP = 6
-BACKEND_COUNT = 5
-SAMPLE_A = "sample_a"
-SAMPLE_B = "sample_b"
-SAMPLE_C = "sample_c"
-SEED_NAME = "lane-lattice-v2"
-DYNAMIC_LEGACY = FIXTURES / "dynamic_test_legacy.bin"
+DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
+CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/app/config"))
+OUT = Path(os.environ.get("OUT_DIR", os.environ.get("OUTPUT_DIR", "/app/outputs")))
+LABELS = Path(os.environ.get("EVAL_LABELS_PATH", "/tests/eval/test_labels.csv"))
+ANALYSIS = Path(os.environ.get("ANALYSIS_PATH", "/app/analysis.R"))
 
 
-def _quarantine_path_for(attest_out: Path) -> Path:
-    name = attest_out.name.replace("ceremony-ledger", "quarantine")
-    return attest_out.with_name(name)
+def read_key_values(path):
+    frame = pd.read_csv(path)
+    return dict(zip(frame["key"], frame["value"]))
 
 
-def _rebuild_and_attest(out: Path) -> dict:
-    result = subprocess.run(
-        ["cargo", "build", "-p", "trusteval", "--release"],
-        cwd="/app",
-        capture_output=True,
-        text=True,
-        check=False,
+def class_probability_columns(classes):
+    return ["prob_" + "".join(ch.lower() if ch.isalnum() else "_" for ch in c).strip("_") for c in classes]
+
+
+def macro_f1(actual, predicted, classes):
+    return f1_score(actual, predicted, labels=classes, average="macro", zero_division=0)
+
+
+MISSING_TOKENS = {"", "NA", "NaN", "nan", "null", "?", "MISSING"}
+
+
+def is_missing(value):
+    if pd.isna(value):
+        return True
+    return str(value).strip() in MISSING_TOKENS
+
+
+def clean_numeric(series):
+    values = pd.to_numeric(series, errors="coerce").astype(float)
+    values[~np.isfinite(values)] = np.nan
+    return values
+
+
+def feature_rows(roles):
+    return roles.loc[roles["role"] == "feature"].reset_index(drop=True)
+
+
+def learn_encoder(frame, roles):
+    encoders = {}
+    for _, role in feature_rows(roles).iterrows():
+        feature = role["feature"]
+        if role["data_type"] == "numeric":
+            values = clean_numeric(frame[feature])
+            finite = values.dropna()
+            med = float(finite.median()) if len(finite) else 0.0
+            imputed = values.fillna(med).astype(float)
+            center = float(imputed.mean())
+            scale = float(imputed.std(ddof=1)) if len(imputed) > 1 else 1.0
+            if not np.isfinite(scale) or scale < 1e-9:
+                scale = 1.0
+            encoders[feature] = {"type": "numeric", "median": med, "mean": center, "sd": scale}
+        else:
+            vals = ["__missing__" if is_missing(value) else str(value).strip() for value in frame[feature]]
+            levels = sorted(set(vals))
+            for extra in ["__missing__", "__other__"]:
+                if extra not in levels:
+                    levels.append(extra)
+            encoders[feature] = {"type": "categorical", "levels": levels}
+    return encoders
+
+
+def apply_encoder(frame, encoders):
+    parts = []
+    for feature, encoder in encoders.items():
+        if encoder["type"] == "numeric":
+            values = clean_numeric(frame[feature]).fillna(encoder["median"]).astype(float)
+            parts.append(((values - encoder["mean"]) / encoder["sd"]).to_numpy().reshape(-1, 1))
+        else:
+            vals = ["__missing__" if is_missing(value) else str(value).strip() for value in frame[feature]]
+            vals = [value if value in encoder["levels"] else "__other__" for value in vals]
+            mat = np.zeros((len(frame), len(encoder["levels"])), dtype=float)
+            for idx, level in enumerate(encoder["levels"]):
+                mat[:, idx] = [1.0 if value == level else 0.0 for value in vals]
+            parts.append(mat)
+    return np.column_stack(parts) if parts else np.zeros((len(frame), 0), dtype=float)
+
+
+def fit_ridge(x, y, lambda_value):
+    design = np.column_stack([np.ones(len(x)), x])
+    penalty = np.eye(design.shape[1])
+    penalty[0, 0] = 0.0
+    return np.linalg.solve(design.T @ design + float(lambda_value) * penalty, design.T @ y)
+
+
+def predict_ridge(beta, x):
+    design = np.column_stack([np.ones(len(x)), x])
+    return design @ beta
+
+
+def target_for_model(y, use_log):
+    return np.log1p(np.maximum(y, 0.0)) if use_log else y
+
+
+def target_from_model(y, use_log):
+    return np.maximum(0.0, np.expm1(y)) if use_log else y
+
+
+def expected_selection_report(public_data, config, roles):
+    """Recompute validation k selection with group-stability ranking."""
+    split_col = config["split_column"]
+    target_col = config["target_column"]
+    group_col = config["group_column"]
+    fit = public_data[public_data[split_col] == "fit"].reset_index(drop=True)
+    validation = public_data[public_data[split_col] == "validation"].reset_index(drop=True)
+    encoders = learn_encoder(fit, roles)
+    fit_x = apply_encoder(fit, encoders)
+    validation_x = apply_encoder(validation, encoders)
+    fit_y = clean_numeric(fit[target_col]).to_numpy(float)
+    validation_y = clean_numeric(validation[target_col]).to_numpy(float)
+    use_log = bool(np.nanmin(np.concatenate([fit_y, validation_y])) >= 0.0)
+    groups = validation[group_col].fillna("__missing__").astype(str).replace({"": "__missing__"})
+    rows = []
+    for candidate_k in [int(value) for value in str(config["k_grid"]).split("|")]:
+        beta = fit_ridge(fit_x, target_for_model(fit_y, use_log), candidate_k)
+        prediction = target_from_model(predict_ridge(beta, validation_x), use_log)
+        rmse = float(np.sqrt(mean_squared_error(validation_y, prediction)))
+        group_rmse = []
+        for group in sorted(groups.unique()):
+            mask = (groups == group).to_numpy()
+            group_rmse.append(float(np.sqrt(mean_squared_error(validation_y[mask], prediction[mask]))))
+        rows.append(
+            {
+                "candidate_k": candidate_k,
+                "validation_metric": rmse,
+                "worst_group_rmse": max(group_rmse),
+                "best_group_rmse": min(group_rmse),
+                "stability_gap": max(group_rmse) - min(group_rmse),
+                "selected": False,
+            }
+        )
+    selected_idx = min(
+        range(len(rows)),
+        key=lambda idx: (
+            rows[idx]["stability_gap"],
+            rows[idx]["validation_metric"],
+            rows[idx]["candidate_k"],
+        ),
     )
-    assert result.returncode == 0, f"cargo build failed:\n{result.stderr}"
-    result = subprocess.run(
-        ["/app/target/release/trusteval", "attest", "--out", str(out)],
-        cwd="/app",
-        capture_output=True,
-        text=True,
-        check=False,
+    rows[selected_idx]["selected"] = True
+    return pd.DataFrame(rows)
+
+
+def selected_lambda(public_data, config, roles):
+    expected = expected_selection_report(public_data, config, roles)
+    selected = expected[expected["selected"]]
+    assert len(selected) == 1
+    return int(selected["candidate_k"].iloc[0])
+
+
+def expected_ridge_predictions(public_data, config, roles, split_name):
+    """Recompute row-level ridge predictions for validation or test rows."""
+    split_col = config["split_column"]
+    target_col = config["target_column"]
+    lambda_value = selected_lambda(public_data, config, roles)
+    if split_name == "validation":
+        train = public_data[public_data[split_col] == "fit"].reset_index(drop=True)
+        evaluation = public_data[public_data[split_col] == "validation"].reset_index(drop=True)
+        log_source = public_data[public_data[split_col].isin(["fit", "validation"])][target_col]
+    elif split_name == "test":
+        train = public_data[public_data[split_col].isin(["fit", "validation"])].reset_index(drop=True)
+        evaluation = public_data[public_data[split_col] == "test"].reset_index(drop=True)
+        log_source = train[target_col]
+    else:
+        raise ValueError(f"Unsupported split_name: {split_name}")
+    encoders = learn_encoder(train, roles)
+    train_x = apply_encoder(train, encoders)
+    evaluation_x = apply_encoder(evaluation, encoders)
+    train_y = clean_numeric(train[target_col]).to_numpy(float)
+    log_values = clean_numeric(log_source).dropna().to_numpy(float)
+    use_log = bool(len(log_values) and np.nanmin(log_values) >= 0.0)
+    beta = fit_ridge(train_x, target_for_model(train_y, use_log), lambda_value)
+    prediction = target_from_model(predict_ridge(beta, evaluation_x), use_log)
+    return pd.DataFrame({"row_id": evaluation["row_id"], "expected_prediction": prediction}).sort_values("row_id")
+
+
+def expected_feature_summary(public_data, config, roles):
+    """Recompute feature missingness counts by split."""
+    rows = []
+    split_col = config["split_column"]
+    for _, role in feature_rows(roles).iterrows():
+        feature = role["feature"]
+        row = {"feature": feature, "data_type": role["data_type"]}
+        for split_name, column in [
+            ("fit", "missing_fit"),
+            ("validation", "missing_validation"),
+            ("test", "missing_test"),
+        ]:
+            values = public_data.loc[public_data[split_col] == split_name, feature]
+            row[column] = int(sum(is_missing(value) for value in values))
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def expected_group_error_report(validation_predictions):
+    """Recompute validation group mean absolute errors."""
+    source = validation_predictions.copy()
+    groups = source["group_key"].apply(lambda value: "__missing__" if is_missing(value) else str(value).strip())
+    source["group_key"] = groups
+    return (
+        source.groupby("group_key", sort=True)
+        .agg(mean_abs_error=("abs_error", "mean"), n_validation=("abs_error", "size"))
+        .reset_index()
     )
-    assert result.returncode == 0, f"trusteval attest failed:\n{result.stderr}"
-    body = out.read_text(encoding="utf-8")
-    data = json.loads(body)
-    assert data.get("version") == SCHEMA_VERSION
-    return data
 
 
-def _load_quarantine(path: Path) -> dict:
-    assert path.is_file(), f"missing quarantine at {path}"
-    data = json.loads(path.read_text(encoding="utf-8"))
-    assert data.get("version") == SCHEMA_VERSION
-    assert KEY_REJECTED in data
-    return data
+def expected_neighbor_evidence(public_data, config, roles):
+    """Recompute nearest final-reference row for the neighbor evidence report."""
+    split_col = config["split_column"]
+    lambda_value = selected_lambda(public_data, config, roles)
+    _ = lambda_value  # The selected k/lambda fixes the final model; nearest row uses the same final encoding.
+    train = public_data[public_data[split_col].isin(["fit", "validation"])].reset_index(drop=True)
+    evaluation = (
+        public_data[public_data[split_col] == "test"]
+        .sort_values("row_id")
+        .reset_index(drop=True)
+    )
+    encoders = learn_encoder(train, roles)
+    train_x = apply_encoder(train, encoders)
+    evaluation_x = apply_encoder(evaluation, encoders)
+    rows = []
+    for idx in range(min(50, len(evaluation))):
+        distances = np.sqrt(((train_x - evaluation_x[idx, :]) ** 2).sum(axis=1))
+        nearest = int(np.argsort(distances, kind="mergesort")[0])
+        rows.append(
+            {
+                "row_id": evaluation["row_id"].iloc[idx],
+                "nearest_fit_index": nearest + 1,
+                "nearest_distance": round(float(distances[nearest]), 6),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
-def _reason_keys(data: dict, reason: str) -> set[tuple]:
-    return {
-        (int(e["epoch"]), e["lane"], int(e["ts"]))
-        for e in data["rejected"]
-        if e["reason"] == reason
-    }
+def run_analysis(data_dir, out_dir):
+    env = os.environ.copy()
+    env["DATA_DIR"] = str(data_dir)
+    env["DATA_PATH"] = str(data_dir / "train.csv")
+    env["OUT_DIR"] = str(out_dir)
+    env["OUTPUT_DIR"] = str(out_dir)
+    result = subprocess.run(
+        ["Rscript", str(ANALYSIS)],
+        text=True,
+        capture_output=True,
+        timeout=420,
+        check=False,
+        env=env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return out_dir
 
 
 @pytest.fixture(scope="module")
-def roster_from_binary() -> dict:
-    """Fresh rebuild + attestation from current /app sources."""
-    return _rebuild_and_attest(VERIFIER_OUT)
+def config():
+    return read_key_values(CONFIG_DIR / "model_config.csv")
 
 
 @pytest.fixture(scope="module")
-def quarantine_from_binary(roster_from_binary: dict) -> dict:
-    """Quarantine produced by the same rebuild as roster_from_binary."""
-    _ = roster_from_binary
-    return _load_quarantine(_quarantine_path_for(VERIFIER_OUT))
+def thresholds():
+    return read_key_values(CONFIG_DIR / "evaluation_thresholds.csv")
 
 
-def _status_map(roster: dict) -> dict[str, str]:
-    assert roster.get("version") == SCHEMA_VERSION
-    backends = roster["backends"]
-    return {row["name"]: row["status"] for row in backends}
+@pytest.fixture(scope="module")
+def roles():
+    return pd.read_csv(CONFIG_DIR / "feature_roles.csv")
 
 
-def _epoch_map(roster: dict) -> dict[int, dict]:
-    return {int(row["id"]): row for row in roster["epochs"]}
+@pytest.fixture(scope="module")
+def public_data():
+    return pd.read_csv(DATA_DIR / "train.csv")
 
 
-def test_roster_structure(roster_from_binary: dict):
-    """Attestation shape plus deep-path signal (not surface-inflated epoch 10)."""
-    assert roster_from_binary["version"] == SCHEMA_VERSION
-    assert KEY_BACKENDS in roster_from_binary
-    assert KEY_EPOCHS in roster_from_binary
-    backends = roster_from_binary["backends"]
-    assert len(backends) == BACKEND_COUNT
-    names = {b["name"] for b in backends}
-    assert names == BACKEND_NAMES
-    for b in backends:
-        assert b["status"] in (STATUS_ACTIVE, STATUS_INACTIVE)
-    epochs = _epoch_map(roster_from_binary)
-    assert CORE_EPOCHS.issubset(epochs.keys())
-    assert int(epochs[EPOCH_TEN]["accepted"]) < SURFACE_EPOCH_10
-    assert int(epochs[EPOCH_TEN]["accepted"]) >= EPOCH_30_ACCEPTED
+@pytest.fixture(scope="module")
+def labels():
+    return pd.read_csv(LABELS)
 
 
-def test_authority_correct_tier(roster_from_binary: dict):
-    """Epoch 10 accepted count matches restored deep attestation."""
-    epochs = _epoch_map(roster_from_binary)
-    assert EPOCH_TEN in epochs
-    accepted_10 = int(epochs[EPOCH_TEN]["accepted"])
-    assert accepted_10 == EPOCH_10_ACCEPTED
+@pytest.fixture(scope="module")
+def predictions():
+    return pd.read_csv(OUT / "predictions.csv")
 
 
-def test_keyed_integrity_rejects_injected(roster_from_binary: dict):
-    """Forged frames must not inflate epoch 10 accepted."""
-    epochs = _epoch_map(roster_from_binary)
-    assert int(epochs[EPOCH_TEN]["accepted"]) == EPOCH_10_ACCEPTED
-    assert int(epochs[EPOCH_TEN]["accepted"]) < SURFACE_EPOCH_10
+@pytest.fixture(scope="module")
+def validation_predictions():
+    return pd.read_csv(OUT / "validation_predictions.csv")
 
 
-def test_keyed_integrity_epoch30(roster_from_binary: dict):
-    """Epoch 30 remains published under hold co-presence with reduced tally."""
-    epochs = _epoch_map(roster_from_binary)
-    assert EPOCH_THIRTY in epochs
-    accepted = int(epochs[EPOCH_THIRTY]["accepted"])
-    assert BAND_LO <= accepted <= BAND_HI
-    assert accepted < BAND_CAP
+@pytest.fixture(scope="module")
+def metrics():
+    return json.loads((OUT / "metrics.json").read_text())
 
 
-def test_keyed_integrity_epoch40(roster_from_binary: dict):
-    """Epoch 40 accepted matches restored attestation."""
-    epochs = _epoch_map(roster_from_binary)
-    assert int(epochs[40]["accepted"]) == EPOCH_40_ACCEPTED
+class TestPublicSurface:
+    def test_required_artifacts_exist(self):
+        """The required output files are present after the R analysis runs."""
+        required = [
+            "predictions.csv",
+            "validation_predictions.csv",
+            "metrics.json",
+            "selection_report.csv",
+            "feature_summary.csv",
+            "group_error_report.csv",
+            "neighbor_evidence.csv",
+            "interval_report.csv",
+            "residual_bins.csv",
+        ]
+        missing = [name for name in required if not (OUT / name).exists()]
+        assert not missing
+
+    def test_public_test_targets_are_blank(self, public_data, config):
+        """The public data does not reveal target values for held-out test rows."""
+        test_rows = public_data[public_data[config["split_column"]] == "test"]
+        assert test_rows[config["target_column"]].isna().all()
+
+    def test_feature_summary_matches_configured_features(self, public_data, config, roles):
+        """feature_summary.csv covers features and split-specific missing counts."""
+        summary = pd.read_csv(OUT / "feature_summary.csv")
+        assert list(summary.columns) == [
+            "feature",
+            "data_type",
+            "missing_fit",
+            "missing_validation",
+            "missing_test",
+        ]
+        expected = expected_feature_summary(public_data, config, roles)
+        summary = summary.sort_values("feature").reset_index(drop=True)
+        expected = expected.sort_values("feature").reset_index(drop=True)
+        pd.testing.assert_frame_equal(summary, expected, check_dtype=False)
 
 
-def test_replay_detection_epoch10(roster_from_binary: dict):
-    """Epoch 10 rejects replayed credentials."""
-    epochs = _epoch_map(roster_from_binary)
-    assert int(epochs[10]["accepted"]) == EPOCH_10_ACCEPTED
+class TestPredictionContract:
+    def test_predictions_cover_heldout_rows(self, predictions, labels):
+        """predictions.csv covers every held-out row_id exactly once."""
+        assert predictions["row_id"].is_unique
+        assert set(predictions["row_id"]) == set(labels["row_id"])
+
+    def test_predictions_are_sorted(self, predictions):
+        """predictions.csv is sorted by row_id for deterministic upload checks."""
+        values = predictions["row_id"].to_numpy()
+        assert np.all(values[:-1] <= values[1:])
+
+    def test_prediction_columns_match_task_mode(self, predictions, config):
+        """The prediction schema matches the declared modeling mode."""
+        if config["task_mode"] == "regression":
+            assert {"prediction", "lower", "upper", "group_key"}.issubset(predictions)
+            assert np.isfinite(predictions["prediction"]).all()
+            assert (predictions["lower"] <= predictions["upper"]).all()
+        else:
+            classes = config["class_order"].split("|")
+            prob_cols = class_probability_columns(classes)
+            assert {"pred_label", "group_key"}.issubset(predictions)
+            assert set(prob_cols).issubset(predictions)
+            sums = predictions[prob_cols].sum(axis=1).to_numpy()
+            np.testing.assert_allclose(sums, np.ones(len(sums)), atol=1e-4)
 
 
-def test_replay_detection_epoch20(roster_from_binary: dict):
-    """Epoch 20 rejects replayed credentials."""
-    epochs = _epoch_map(roster_from_binary)
-    assert int(epochs[20]["accepted"]) == EPOCH_20_ACCEPTED
+class TestValidationEvidence:
+    def test_selection_report_has_one_selected_k(self, public_data, config, roles, metrics):
+        """selection_report.csv recomputes validation group stability and marks the chosen k."""
+        report = pd.read_csv(OUT / "selection_report.csv")
+        assert list(report.columns) == [
+            "candidate_k",
+            "validation_metric",
+            "worst_group_rmse",
+            "best_group_rmse",
+            "stability_gap",
+            "selected",
+        ]
+        expected = expected_selection_report(public_data, config, roles)
+        for column in [
+            "candidate_k",
+            "validation_metric",
+            "worst_group_rmse",
+            "best_group_rmse",
+            "stability_gap",
+        ]:
+            np.testing.assert_allclose(report[column].astype(float), expected[column].astype(float), atol=5e-5)
+        selected = report[report["selected"].astype(str).str.lower().isin(["true", "1"])]
+        assert len(selected) == 1
+        assert int(selected["candidate_k"].iloc[0]) == int(metrics["selected_k"])
+        expected_selected = expected[expected["selected"]]
+        assert int(selected["candidate_k"].iloc[0]) == int(expected_selected["candidate_k"].iloc[0])
+
+    def test_group_report_uses_validation_groups(self, validation_predictions):
+        """group_error_report.csv recomputes validation group mean errors."""
+        report = pd.read_csv(OUT / "group_error_report.csv")
+        assert list(report.columns) == ["group_key", "mean_abs_error", "n_validation"]
+        assert report["group_key"].is_unique
+        assert (report["n_validation"] > 0).all()
+        expected = expected_group_error_report(validation_predictions)
+        report = report.sort_values("group_key").reset_index(drop=True)
+        expected = expected.sort_values("group_key").reset_index(drop=True)
+        assert report["group_key"].tolist() == expected["group_key"].tolist()
+        assert report["n_validation"].astype(int).tolist() == expected["n_validation"].astype(int).tolist()
+        np.testing.assert_allclose(report["mean_abs_error"], expected["mean_abs_error"], atol=1e-6)
+
+    def test_neighbor_evidence_matches_reference(self, public_data, config, roles):
+        """neighbor_evidence.csv recomputes nearest final-reference rows."""
+        report = pd.read_csv(OUT / "neighbor_evidence.csv")
+        assert list(report.columns) == ["row_id", "nearest_fit_index", "nearest_distance"]
+        expected = expected_neighbor_evidence(public_data, config, roles)
+        assert len(report) == len(expected)
+        assert report["row_id"].tolist() == expected["row_id"].tolist()
+        assert report["nearest_fit_index"].astype(int).tolist() == expected["nearest_fit_index"].astype(int).tolist()
+        assert (report["nearest_distance"] >= 0).all()
+        np.testing.assert_allclose(report["nearest_distance"], expected["nearest_distance"], atol=5e-6)
+
+    def test_metrics_match_validation_predictions(self, validation_predictions, metrics, config, public_data, roles):
+        """metrics.json is an honest summary of the selected fit-only validation model."""
+        if config["task_mode"] == "regression":
+            expected = expected_ridge_predictions(public_data, config, roles, "validation")
+            merged = validation_predictions.merge(expected, on="row_id", how="inner", validate="one_to_one")
+            np.testing.assert_allclose(merged["prediction"], merged["expected_prediction"], atol=1e-4)
+            rmse = np.sqrt(
+                mean_squared_error(
+                    validation_predictions["actual"],
+                    validation_predictions["prediction"],
+                )
+            )
+            mae = mean_absolute_error(
+                validation_predictions["actual"],
+                validation_predictions["prediction"],
+            )
+            assert abs(float(metrics["validation_rmse"]) - rmse) <= 1e-5
+            assert abs(float(metrics["validation_mae"]) - mae) <= 1e-5
+        else:
+            classes = config["class_order"].split("|")
+            acc = accuracy_score(
+                validation_predictions["actual"].astype(str),
+                validation_predictions["pred_label"].astype(str),
+            )
+            f1 = macro_f1(
+                validation_predictions["actual"].astype(str),
+                validation_predictions["pred_label"].astype(str),
+                classes,
+            )
+            assert abs(float(metrics["validation_accuracy"]) - acc) <= 1e-5
+            assert abs(float(metrics["validation_macro_f1"]) - f1) <= 1e-5
+
+    def test_interval_and_residual_reports_are_contentful(self, validation_predictions, metrics, config):
+        """Regression interval and residual-bin reports summarize validation predictions."""
+        if config["task_mode"] != "regression":
+            return
+        interval = pd.read_csv(OUT / "interval_report.csv")
+        assert list(interval.columns) == ["split", "interval_coverage", "mean_width"]
+        assert len(interval) == 1
+        assert interval["split"].iloc[0] == "validation"
+        coverage = float(interval["interval_coverage"].iloc[0])
+        assert 0.0 <= coverage <= 1.0
+        assert abs(coverage - float(metrics["interval_coverage"])) <= 1e-5
+        assert np.isfinite(float(interval["mean_width"].iloc[0]))
+        assert float(interval["mean_width"].iloc[0]) >= 0.0
+
+        residual_bins = pd.read_csv(OUT / "residual_bins.csv")
+        assert list(residual_bins.columns) == ["prediction_bin", "mean_abs_error", "count"]
+        assert not residual_bins.empty
+        assert int(residual_bins["count"].sum()) == len(validation_predictions)
+        assert (residual_bins["count"] > 0).all()
 
 
-def test_replay_detection_epoch50(roster_from_binary: dict):
-    """Epoch 50 rejects replayed credentials."""
-    epochs = _epoch_map(roster_from_binary)
-    assert int(epochs[50]["accepted"]) == EPOCH_50_ACCEPTED
+class TestHeldoutQuality:
+    def test_heldout_score_clears_threshold(self, predictions, labels, config, thresholds, public_data, roles):
+        """Held-out predictions match the selected refit model and clear quality bars."""
+        merged = predictions.merge(labels, on="row_id", how="inner", validate="one_to_one")
+        target = config["target_column"]
+        if config["task_mode"] == "regression":
+            expected = expected_ridge_predictions(public_data, config, roles, "test")
+            checked = predictions.merge(expected, on="row_id", how="inner", validate="one_to_one")
+            np.testing.assert_allclose(checked["prediction"], checked["expected_prediction"], atol=1e-4)
+            rmse = np.sqrt(mean_squared_error(merged[target], merged["prediction"]))
+            mae = mean_absolute_error(merged[target], merged["prediction"])
+            r2 = r2_score(merged[target], merged["prediction"])
+            assert rmse <= float(thresholds["max_rmse"])
+            assert mae <= float(thresholds["max_mae"])
+            assert r2 >= float(thresholds["min_r2"])
+        else:
+            classes = config["class_order"].split("|")
+            acc = accuracy_score(merged[target].astype(str), merged["pred_label"].astype(str))
+            f1 = macro_f1(
+                merged[target].astype(str),
+                merged["pred_label"].astype(str),
+                classes,
+            )
+            assert acc >= float(thresholds["min_accuracy"])
+            assert f1 >= float(thresholds["min_macro_f1"])
 
-
-def test_revocation_epoch20(roster_from_binary: dict):
-    """Epoch 20 reflects ledger revocation."""
-    epochs = _epoch_map(roster_from_binary)
-    assert int(epochs[20]["accepted"]) == EPOCH_20_ACCEPTED
-
-
-def test_hold_semantics_epoch30(roster_from_binary: dict):
-    """Epoch 30 publishes with held co-presence (exact restored accepted)."""
-    epochs = _epoch_map(roster_from_binary)
-    assert EPOCH_THIRTY in epochs
-    assert epochs[EPOCH_THIRTY]["profile"] == PROFILE_A
-    assert int(epochs[EPOCH_THIRTY]["accepted"]) == EPOCH_30_ACCEPTED
-
-
-def test_copresence_backends(roster_from_binary: dict):
-    """Matrix lanes active; off-matrix inactive; deep path not surface-inflated."""
-    statuses = _status_map(roster_from_binary)
-    assert statuses.get("mqtt") == STATUS_ACTIVE
-    assert statuses.get("lora") == STATUS_ACTIVE
-    assert statuses.get("uart") == STATUS_ACTIVE
-    assert statuses.get("canbus") == STATUS_INACTIVE
-    assert statuses.get("zigbee") == STATUS_INACTIVE
-    epochs = _epoch_map(roster_from_binary)
-    surface = json.loads(SURFACE.read_text(encoding="utf-8"))
-    surface_epochs = {int(e["id"]): e for e in surface["epochs"]}
-    assert int(epochs[10]["accepted"]) < int(surface_epochs[10]["accepted"])
-    assert int(epochs[20]["accepted"]) < int(surface_epochs[20]["accepted"])
-
-
-def test_all_epochs_present(roster_from_binary: dict):
-    """All five fleet epochs publish with correct profiles."""
-    epochs = _epoch_map(roster_from_binary)
-    assert set(epochs.keys()) == PUBLISHED_EPOCHS
-    assert epochs[10]["profile"] == PROFILE_A
-    assert epochs[20]["profile"] == PROFILE_A
-    assert epochs[30]["profile"] == PROFILE_A
-    assert epochs[40]["profile"] == PROFILE_B
-    assert epochs[50]["profile"] == PROFILE_B
-
-
-def test_revoked_lane_omits_epoch(roster_from_binary: dict):
-    """Epoch with a required lane only-revoked must not publish."""
-    epochs = _epoch_map(roster_from_binary)
-    assert EPOCH_TWENTY_FIVE not in epochs
-    assert set(epochs.keys()) == PUBLISHED_EPOCHS
-
-
-def test_hold_keeps_epoch_with_reduced_accepted(roster_from_binary: dict):
-    """Suspended co-presence keeps the epoch; accepted is only non-held trust."""
-    epochs = _epoch_map(roster_from_binary)
-    assert EPOCH_THIRTY in epochs
-    assert epochs[EPOCH_THIRTY]["profile"] == PROFILE_A
-    assert int(epochs[EPOCH_THIRTY]["accepted"]) == EPOCH_30_ACCEPTED
-    assert int(epochs[EPOCH_THIRTY]["accepted"]) < BAND_CAP
-
-
-def test_output_differs_from_surface(roster_from_binary: dict):
-    """Deep attestation must disagree with the surface fixture on every shared epoch."""
-    surface = json.loads(SURFACE.read_text(encoding="utf-8"))
-    assert roster_from_binary != surface
-    surface_epochs = {int(e["id"]): e for e in surface["epochs"]}
-    roster_epochs = _epoch_map(roster_from_binary)
-    for eid in sorted(PUBLISHED_EPOCHS):
-        assert eid in roster_epochs
-        assert int(roster_epochs[eid]["accepted"]) < int(surface_epochs[eid]["accepted"])
-
-
-def test_output_matches_rebuilt(roster_from_binary: dict):
-    """On-disk agent output must match rebuilt trusteval."""
-    assert OUTPUT.is_file(), f"missing {OUTPUT}"
-    on_disk = json.loads(OUTPUT.read_text(encoding="utf-8"))
-    assert on_disk == roster_from_binary
-    epochs = _epoch_map(on_disk)
-    assert int(epochs[10]["accepted"]) == EPOCH_10_ACCEPTED
-
-
-def test_attestation_stable_across_runs(roster_from_binary: dict):
-    """Second attest run must match the first and stay below surface tallies."""
-    second = _rebuild_and_attest(Path("/tmp") / "ceremony-ledger-second.json")
-    assert second == roster_from_binary
-    epochs = _epoch_map(second)
-    assert int(epochs[EPOCH_TEN]["accepted"]) < SURFACE_EPOCH_10
-    assert EPOCH_THIRTY in epochs
-
-
-def test_output_differs_from_jarcheck(roster_from_binary: dict):
-    """Agent output must differ from jarcheck and beat surface inflation."""
-    surface_poke = json.loads(SURFACE.read_text(encoding="utf-8"))
-    assert roster_from_binary != surface_poke
-    assert OUTPUT.is_file()
-    on_disk = json.loads(OUTPUT.read_text(encoding="utf-8"))
-    assert on_disk == roster_from_binary
-    assert on_disk != surface_poke
-    assert Path("/app/bin").joinpath("jarcheck").is_file()
-    epochs = _epoch_map(on_disk)
-    poke_epochs = {int(e["id"]): e for e in surface_poke["epochs"]}
-    assert int(epochs[10]["accepted"]) < int(poke_epochs[10]["accepted"])
-
-
-def test_dynamic_frame_injection():
-    """Inject a valid frame and verify the evaluator incorporates it."""
-    seg_path = SEGMENTS / "seg_99.bin"
-    assert DYNAMIC_FRAME.is_file(), "dynamic test frame fixture missing"
-    shutil.copy(DYNAMIC_FRAME, seg_path)
-    try:
-        roster = _rebuild_and_attest(DYNAMIC_OUT)
-        epochs = _epoch_map(roster)
-        assert int(epochs[10]["accepted"]) == EPOCH_10_ACCEPTED + 1, (
-            f"Expected {EPOCH_10_ACCEPTED + 1} after injection, got {epochs[10]['accepted']}"
-        )
-    finally:
-        seg_path.unlink(missing_ok=True)
-
-
-def test_dynamic_injected_frame_rejected():
-    """Inject a forged frame and verify it is rejected."""
-    seg_path = SEGMENTS / "seg_98.bin"
-    assert DYNAMIC_INJECTED.is_file(), "dynamic injected frame fixture missing"
-    shutil.copy(DYNAMIC_INJECTED, seg_path)
-    try:
-        roster = _rebuild_and_attest(DYNAMIC_OUT)
-        epochs = _epoch_map(roster)
-        assert int(epochs[40]["accepted"]) == EPOCH_40_ACCEPTED, (
-            f"Expected {EPOCH_40_ACCEPTED} (injected rejected), got {epochs[40]['accepted']}"
-        )
-    finally:
-        seg_path.unlink(missing_ok=True)
-
-
-def test_dynamic_legacy_binding_rejected():
-    """Payload-only legacy signatures must not raise accepted tallies."""
-    seg_path = SEGMENTS / "seg_97.bin"
-    assert DYNAMIC_LEGACY.is_file(), "dynamic legacy frame fixture missing"
-    shutil.copy(DYNAMIC_LEGACY, seg_path)
-    try:
-        roster = _rebuild_and_attest(DYNAMIC_OUT)
-        epochs = _epoch_map(roster)
-        assert int(epochs[40]["accepted"]) == EPOCH_40_ACCEPTED
-    finally:
-        seg_path.unlink(missing_ok=True)
-
-
-def test_watermark_boundary_included(roster_from_binary: dict):
-    """On-watermark credential at epoch 10 contributes to accepted."""
-    epochs = _epoch_map(roster_from_binary)
-    assert int(epochs[EPOCH_TEN]["accepted"]) == EPOCH_10_ACCEPTED
-
-
-def test_integrity_count_exact(
-    roster_from_binary: dict, quarantine_from_binary: dict
-):
-    """Agent quarantine integrity set matches rebuilt trusteval."""
-    _ = roster_from_binary
-    agent = _load_quarantine(QUARANTINE)
-    assert _reason_keys(agent, REASON_INTEGRITY) == _reason_keys(
-        quarantine_from_binary, REASON_INTEGRITY
-    )
-
-
-def test_quarantine_structure(
-    roster_from_binary: dict, quarantine_from_binary: dict
-):
-    """Quarantine shape and reason vocabulary match rebuilt trusteval."""
-    _ = roster_from_binary
-    assert QUARANTINE.is_file(), f"missing {QUARANTINE}"
-    agent = _load_quarantine(QUARANTINE)
-    assert len(agent["rejected"]) == len(quarantine_from_binary["rejected"])
-    reasons = {e["reason"] for e in agent["rejected"]}
-    assert REASON_INTEGRITY in reasons
-    assert REASON_REPLAY in reasons
-    assert REASON_REVOKED in reasons
-    for entry in agent["rejected"]:
-        assert KEY_EPOCH in entry
-        assert KEY_LANE in entry
-        assert KEY_TS in entry
-        assert entry["reason"] in QUARANTINE_REASONS
-
-
-def test_quarantine_integrity_failures(
-    roster_from_binary: dict, quarantine_from_binary: dict
-):
-    """integrity_failure rows match the rebuilt oracle set."""
-    _ = roster_from_binary
-    agent = _load_quarantine(QUARANTINE)
-    assert _reason_keys(agent, REASON_INTEGRITY) == _reason_keys(
-        quarantine_from_binary, REASON_INTEGRITY
-    )
-    assert len(_reason_keys(agent, REASON_INTEGRITY)) >= 1
-
-
-def test_quarantine_replay_entries(
-    roster_from_binary: dict, quarantine_from_binary: dict
-):
-    """replay rows match the rebuilt oracle set."""
-    _ = roster_from_binary
-    agent = _load_quarantine(QUARANTINE)
-    assert _reason_keys(agent, REASON_REPLAY) == _reason_keys(
-        quarantine_from_binary, REASON_REPLAY
-    )
-    assert len(_reason_keys(agent, REASON_REPLAY)) >= 1
-
-
-def test_quarantine_revoked_entries(
-    roster_from_binary: dict, quarantine_from_binary: dict
-):
-    """revoked rows match the rebuilt oracle set."""
-    _ = roster_from_binary
-    agent = _load_quarantine(QUARANTINE)
-    assert _reason_keys(agent, REASON_REVOKED) == _reason_keys(
-        quarantine_from_binary, REASON_REVOKED
-    )
-    assert len(_reason_keys(agent, REASON_REVOKED)) >= 1
-
-
-def test_quarantine_matches_rebuilt(
-    roster_from_binary: dict, quarantine_from_binary: dict
-):
-    """On-disk quarantine equals rebuilt trusteval quarantine."""
-    _ = roster_from_binary
-    agent = _load_quarantine(QUARANTINE)
-    assert agent == quarantine_from_binary
-
-
-def test_fixtures_untouched():
-    """Seed and surface fixtures remain as shipped."""
-    data = json.loads(SEED.read_text(encoding="utf-8"))
-    assert data.get("seed") == SEED_NAME
-    assert data.get("preserve") is True
-    surface = json.loads(SURFACE.read_text(encoding="utf-8"))
-    assert surface.get("version") == SCHEMA_VERSION
-    assert int(surface["epochs"][0]["accepted"]) == SURFACE_EPOCH_10
-    audit = (FIXTURES / "pre_incident_audit.log").read_text(encoding="utf-8")
-    assert SAMPLE_A in audit
-    assert SAMPLE_B in audit
-    assert SAMPLE_C in audit
-    assert len(re.findall(r"seed_hex=[0-9a-f]{8}", audit)) >= 3
-    assert len(re.findall(r"sk_hex=[0-9a-f]{64}", audit)) >= 3
-    assert len(re.findall(r"pubkey_hex=[0-9a-f]{64}", audit)) >= 3
-    assert len(re.findall(r"sig_hex=[0-9a-f]{128}", audit)) >= 3
-    assert len(re.findall(r"message_hex=[0-9a-f]+", audit)) >= 3
-    assert "key_dom_hex=" in audit
-    assert "domain_ascii=WAUV" in audit
+    def test_fit_label_perturbation_changes_predictions(self, tmp_path, predictions, config):
+        """Changing fit labels changes held-out predictions in an alternate run."""
+        alt_data = tmp_path / "data"
+        shutil.copytree(DATA_DIR, alt_data)
+        frame = pd.read_csv(alt_data / "train.csv")
+        target = config["target_column"]
+        fit_mask = frame[config["split_column"]] == "fit"
+        if config["task_mode"] == "regression":
+            values = pd.to_numeric(frame.loc[fit_mask, target])
+            frame.loc[fit_mask, target] = values + values.std(ddof=0) * 0.75
+        else:
+            classes = config["class_order"].split("|")
+            mapping = {classes[i]: classes[(i + 1) % len(classes)] for i in range(len(classes))}
+            frame.loc[fit_mask, target] = frame.loc[fit_mask, target].astype(str).map(mapping)
+        frame.to_csv(alt_data / "train.csv", index=False)
+        alt_out = tmp_path / "out"
+        alt_out.mkdir()
+        run_analysis(alt_data, alt_out)
+        changed = pd.read_csv(alt_out / "predictions.csv")
+        merged = predictions.merge(changed, on="row_id", suffixes=("_orig", "_alt"))
+        if config["task_mode"] == "regression":
+            delta = np.abs(merged["prediction_orig"] - merged["prediction_alt"]).mean()
+        else:
+            classes = config["class_order"].split("|")
+            prob_cols = class_probability_columns(classes)
+            delta = 0.0
+            for col in prob_cols:
+                delta += np.abs(merged[f"{col}_orig"] - merged[f"{col}_alt"]).mean()
+        assert delta > 1e-6
