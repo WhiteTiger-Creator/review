@@ -1,323 +1,317 @@
-import hashlib
-import json
-import os
-import re
-import sqlite3
+# ruff: noqa: I001
+"""Behavioral verification for harden-rails-compose-archive-attestation."""
+
+from __future__ import annotations
+
 import subprocess
-import time
-import urllib.request
 from pathlib import Path
 
-import tomllib
+import pytest
+import requests
 
-APP = Path("/app")
-EXPECTED_BASELINE = "21f47d57d7ad326d1d2a103430a27cb47bc17dab851a4c83ceb9f62bf00aec59"
-TARGETS = {
-    "crossbeam-channel": ("0.5.14", "0.5.15", "RUSTSEC-2025-0024", 1, "1.60"),
-    "serde-json-wasm": ("1.0.0", "1.0.1", "RUSTSEC-2024-0012", 0, ""),
-    "time": ("0.3.36", "0.3.47", "RUSTSEC-2026-0009", 0, "1.88.0"),
-}
+from support.archive_factory import build_archive
+from support.corpus_fixture import metadata, unpack
+from support.integrity import verify_fixture_checksums
+from support.puma_server import PumaServer
+from support.signature_checks import verify_attestation
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+META = metadata()
 
 
-def run(command, *, timeout=180, env=None):
-    merged = os.environ.copy()
-    if env:
-        merged.update(env)
-    return subprocess.run(
-        command, cwd=APP, text=True, capture_output=True, timeout=timeout, env=merged, check=False
+@pytest.fixture(scope="session", autouse=True)
+def _checksums() -> None:
+    verify_fixture_checksums()
+
+
+@pytest.fixture
+def cache_dir(tmp_path: Path) -> Path:
+    d = tmp_path / "cache"
+    d.mkdir()
+    return d
+
+
+def post_attestation(server: PumaServer, archive: bytes, release_ref: str | None = None) -> requests.Response:
+    files = {"archive": ("archive.tar", archive, "application/x-tar")}
+    data = {}
+    if release_ref:
+        data["release_ref"] = release_ref
+    return requests.post(f"{server.base_url}/api/v1/attestations", files=files, data=data, timeout=60)
+
+
+def test_health_route_is_preserved(cache_dir: Path) -> None:
+    """GET /up remains available."""
+    repo = unpack("trusted-corpus-a")
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = requests.get(f"{server.base_url}/up", timeout=10)
+        assert resp.status_code == 200
+
+
+def test_default_trusted_release_clean_archive_passes(cache_dir: Path) -> None:
+    """Clean seeded archive returns pass attestation with valid signature."""
+    repo = unpack("trusted-corpus-a")
+    archive, _ = build_archive(
+        11,
+        [
+            {"name": "compose.yml", "data": "services:\n  web:\n    image: nginx\n"},
+            {"name": "app.env", "data": "PUBLIC_URL=https://example.com\n"},
+        ],
     )
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["verdict"] == "pass"
+        assert body["findings"] == []
+        verify_attestation(dict(body))
 
 
-def tree_digest():
-    digest = hashlib.sha256()
-    for root_name in ["crates", "docs", "sql", "tooling"]:
-        root = APP / root_name
-        for path in sorted(item for item in root.rglob("*") if item.is_file()):
-            relative = path.relative_to(APP).as_posix().encode()
-            digest.update(relative)
-            digest.update(b"\0")
-            digest.update(hashlib.sha256(path.read_bytes()).digest())
-    return digest.hexdigest()
-
-
-def lock_data():
-    return tomllib.loads((APP / "Cargo.lock").read_text(encoding="utf-8"))
-
-
-def locked_versions(name):
-    return [item["version"] for item in lock_data()["package"] if item["name"] == name]
-
-
-def fetch_json(url):
-    last = None
-    for attempt in range(3):
-        try:
-            request = urllib.request.Request(url, headers={"User-Agent": "terminus-release-policy/1"})
-            with urllib.request.urlopen(request, timeout=20) as response:
-                return json.load(response)
-        except (OSError, ValueError) as error:
-            last = error
-            time.sleep(1 + attempt)
-    raise last
-
-
-def sparse_path(name):
-    if len(name) == 1:
-        return f"1/{name}"
-    if len(name) == 2:
-        return f"2/{name}"
-    if len(name) == 3:
-        return f"3/{name[0]}/{name}"
-    return f"{name[:2]}/{name[2:4]}/{name}"
-
-
-def fetch_index_row(name, version):
-    url = f"https://index.crates.io/{sparse_path(name)}"
-    last = None
-    for attempt in range(3):
-        try:
-            request = urllib.request.Request(url, headers={"User-Agent": "terminus-release-policy/1"})
-            with urllib.request.urlopen(request, timeout=20) as response:
-                rows = [json.loads(line) for line in response.read().decode().splitlines() if line]
-            return next(row for row in rows if row["vers"] == version)
-        except (OSError, ValueError, StopIteration) as error:
-            last = error
-            time.sleep(1 + attempt)
-    raise last
-
-
-def test_release_baseline_source_and_policy_inputs_are_unchanged():
-    """The dependency operation leaves every source, policy, SQL, and pinned tooling byte at its baseline value."""
-    assert tree_digest() == EXPECTED_BASELINE
-
-
-def test_only_authorized_release_paths_exist():
-    """The handoff adds policy and evidence files without a wrapper command, executable, patch crate, or stray top-level file."""
-    allowed = {
-        ".cargo", ".dockerignore", "Cargo.lock", "Cargo.toml", "Dockerfile", "LICENSE",
-        "crates", "deny.toml", "docs", "release", "sql", "target", "tooling", "vendor",
-    }
-    assert {path.name for path in APP.iterdir()} <= allowed
-    assert not (APP / "bin").exists()
-    assert {path.name for path in (APP / "release").iterdir()} == {"dependency-ledger.sqlite", "reconciliation.md"}
-    assert not list(APP.glob("*.sh"))
-    assert not list((APP / "crates").rglob("*.sh"))
-
-
-def test_workspace_manifest_has_exact_safe_pins_and_minimum_msrv():
-    """The workspace policy carries the three safe exact pins, the coupled Serde pin, and only the required MSRV increase."""
-    root = tomllib.loads((APP / "Cargo.toml").read_text(encoding="utf-8"))
-    assert root["workspace"]["package"]["rust-version"] == "1.88"
-    dependencies = root["workspace"]["dependencies"]
-    assert dependencies["crossbeam-channel"] == "=0.5.15"
-    assert dependencies["serde-json-wasm"] == "=1.0.1"
-    assert dependencies["time"]["version"] == "=0.3.47"
-    assert dependencies["serde"]["version"] == "=1.0.220"
-    assert "patch" not in root
-    for name, value in dependencies.items():
-        if isinstance(value, dict) and "path" in value:
-            assert value["version"] == "=0.7.0", name
-
-
-def test_lockfile_has_one_registry_release_per_quarantined_crate():
-    """Cargo's format-4 lock contains one selected target version with registry source and checksum and no git package."""
-    lock = lock_data()
-    assert lock["version"] == 4
-    for name, (_old, selected, _advisory, _yanked, _rust) in TARGETS.items():
-        assert locked_versions(name) == [selected]
-    for item in lock["package"]:
-        source = item.get("source")
-        if source is not None:
-            assert source == "registry+https://github.com/rust-lang/crates.io-index"
-            assert re.fullmatch(r"[0-9a-f]{64}", item["checksum"])
-
-
-def test_final_source_replacement_is_exact_and_vendor_replays_metadata():
-    """The exact vendor source policy supports locked offline metadata with the full eight-member workspace graph."""
-    expected = (
-        '[source.crates-io]\nreplace-with = "vendored-sources"\n\n'
-        '[source.vendored-sources]\ndirectory = "vendor"\n\n'
-        '[net]\ngit-fetch-with-cli = true\n'
+def test_mixed_archive_reports_constructed_findings_without_secret_leakage(cache_dir: Path) -> None:
+    """Injected violations appear without leaking secret bytes."""
+    repo = unpack("trusted-corpus-a")
+    secret = "sk_live_abcdefghijklmnop"
+    archive, manifest = build_archive(
+        22,
+        [
+            {
+                "path": "stack/docker-compose.yml",
+                "data": f"services:\n  api:\n    environment:\n      DATABASE_PASSWORD: {secret}\n",
+                "expect_finding": True,
+                "rule_id": "compose.secret",
+            },
+            {
+                "path": "tokens/bad.jwt",
+                "data": "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJhYmMifQ.\n",
+                "expect_finding": True,
+                "kind": "jwt",
+                "rule_id": "jwt.forbidden_algorithm",
+            },
+        ],
     )
-    assert (APP / ".cargo/config.toml").read_text(encoding="utf-8") == expected
-    result = run(
-        ["cargo", "metadata", "--locked", "--offline", "--format-version", "1"],
-        env={"CARGO_NET_OFFLINE": "true"},
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive, META["trusted_a"]["ref"])
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["verdict"] == "reject"
+        raw = resp.text
+        assert secret not in raw
+        paths = {f["path"] for f in body["findings"]}
+        assert any(m.path in paths for m in manifest)
+
+
+def test_archive_path_traversal_is_rejected_before_scanning(cache_dir: Path) -> None:
+    """Parent-traversing archive paths are rejected with HTTP 422 before scanning."""
+    repo = unpack("trusted-corpus-a")
+    archive, _ = build_archive(33, [{"path": "../outside.env", "data": "SECRET=1\n"}])
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive)
+        assert resp.status_code == 422
+        assert "error" in resp.json()
+
+
+def test_unsafe_archive_precedes_corpus_resolution_failure(cache_dir: Path) -> None:
+    """Unsafe archive validation returns HTTP 422 before an unavailable corpus can return HTTP 424."""
+    archive, _ = build_archive(331, [{"path": "../outside.env", "data": "SECRET=1\n"}])
+    missing_remote = cache_dir.parent / "missing-corpus.git"
+    with PumaServer(remote_url=f"file://{missing_remote}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive)
+        assert resp.status_code == 422, resp.text
+        assert resp.json()["error"]["code"] == "unsafe_path"
+
+
+def test_archive_absolute_path_is_rejected(cache_dir: Path) -> None:
+    """Absolute tar member paths are rejected with HTTP 422."""
+    repo = unpack("trusted-corpus-a")
+    archive, _ = build_archive(34, [{"path": "/etc/attestor.env", "data": "SECRET=1\n"}])
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive)
+        assert resp.status_code == 422
+        assert "error" in resp.json()
+
+
+def test_archive_duplicate_normalized_path_is_rejected(cache_dir: Path) -> None:
+    """Duplicate tar member paths are rejected with HTTP 422."""
+    repo = unpack("trusted-corpus-a")
+    archive, _ = build_archive(
+        35,
+        [
+            {"path": "config/app.env", "data": "A=1\n"},
+            {"path": "config/app.env", "data": "B=2\n"},
+        ],
     )
-    assert result.returncode == 0, result.stderr
-    metadata = json.loads(result.stdout)
-    members = [package for package in metadata["packages"] if package["source"] is None]
-    assert len(members) == 8
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive)
+        assert resp.status_code == 422
+        assert "error" in resp.json()
 
 
-def test_workspace_build_and_tests_pass_with_network_disabled():
-    """Stock Cargo compiles and tests every existing workspace target using only the locked vendor graph."""
-    result = run(
-        ["cargo", "test", "--workspace", "--all-targets", "--locked", "--offline"],
-        env={"CARGO_NET_OFFLINE": "true"},
+@pytest.mark.parametrize(
+    ("entry_type", "linkname"),
+    [("symlink", "target.env"), ("hardlink", "target.env")],
+)
+def test_archive_links_are_rejected(cache_dir: Path, entry_type: str, linkname: str) -> None:
+    """Symbolic and hard-link tar entries are rejected with HTTP 422."""
+    repo = unpack("trusted-corpus-a")
+    archive, _ = build_archive(
+        36,
+        [{"path": f"payload/{entry_type}.env", "data": b"", "type": entry_type, "linkname": linkname}],
     )
-    assert result.returncode == 0, result.stderr
-    assert "test result: ok" in result.stdout or "test result: ok" in result.stderr
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive)
+        assert resp.status_code == 422
+        assert "error" in resp.json()
 
 
-def test_vendor_packages_carry_cargo_checksum_manifests():
-    """Every vendored registry directory has Cargo's checksum manifest and each selected target matches its locked package name."""
-    vendor = APP / "vendor"
-    directories = [path for path in vendor.iterdir() if path.is_dir()]
-    assert len(directories) >= 40
-    for directory in directories:
-        checksum = directory / ".cargo-checksum.json"
-        assert checksum.is_file(), directory.name
-        parsed = json.loads(checksum.read_text(encoding="utf-8"))
-        assert "files" in parsed
-        assert "package" in parsed
-    for name in TARGETS:
-        manifest = tomllib.loads((vendor / name / "Cargo.toml").read_text(encoding="utf-8"))
-        assert manifest["package"]["version"] == TARGETS[name][1]
+def test_archive_non_regular_entry_is_rejected(cache_dir: Path) -> None:
+    """Special non-regular tar entries are rejected with HTTP 422."""
+    repo = unpack("trusted-corpus-a")
+    archive, _ = build_archive(37, [{"path": "payload/channel", "data": b"", "type": "fifo"}])
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive)
+        assert resp.status_code == 422
+        assert "error" in resp.json()
 
 
-def test_deny_policy_has_no_suppression_and_matches_release_rules():
-    """cargo-deny checks every feature without advisory ignores, skips, wildcard pins, or untrusted sources."""
-    deny = tomllib.loads((APP / "deny.toml").read_text(encoding="utf-8"))
-    assert deny["graph"]["all-features"] is True
-    assert set(deny["advisories"]) == {"ignore", "git-fetch-with-cli"}
-    assert deny["advisories"]["ignore"] == []
-    assert deny["advisories"]["git-fetch-with-cli"] is True
-    assert deny["licenses"]["confidence-threshold"] == 0.8
-    assert set(deny["licenses"]["allow"]) == {
-        "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-3-Clause", "ISC", "MIT", "Unicode-3.0", "Zlib"
-    }
-    assert deny["bans"]["multiple-versions"] == "warn"
-    assert deny["bans"]["wildcards"] == "deny"
-    assert deny["bans"]["skip"] == deny["bans"]["skip-tree"] == []
-    banned = {item["crate"] for item in deny["bans"]["deny"]}
-    assert banned == {"crossbeam-channel@=0.5.14", "serde-json-wasm@=1.0.0", "time@=0.3.36"}
-    assert deny["sources"]["unknown-registry"] == "deny"
-    assert deny["sources"]["unknown-git"] == "deny"
-    assert deny["sources"]["allow-registry"] == ["https://github.com/rust-lang/crates.io-index"]
-    assert deny["sources"]["allow-git"] == []
+def test_archive_non_normalized_name_is_rejected(cache_dir: Path) -> None:
+    """Tar names containing a redundant non-normalized segment are rejected with HTTP 422."""
+    repo = unpack("trusted-corpus-a")
+    archive, _ = build_archive(38, [{"path": "payload/./hidden.env", "data": "SECRET=1\n"}])
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive)
+        assert resp.status_code == 422
+        assert "error" in resp.json()
 
 
-def test_cargo_deny_local_checks_pass_without_fetching():
-    """The final graph passes cargo-deny bans, licenses, and sources in offline mode with all features active."""
-    result = run([
-        "cargo", "deny", "--offline", "--all-features", "check", "bans", "licenses", "sources"
-    ])
-    assert result.returncode == 0, result.stderr
-    combined = result.stdout + result.stderr
-    assert "bans ok" in combined
-    assert "licenses ok" in combined
-    assert "sources ok" in combined
+def test_invalid_or_non_tag_release_refs_are_refused(cache_dir: Path) -> None:
+    """Branch refs and other non-tag release references are refused."""
+    repo = unpack("trusted-corpus-a")
+    archive, _ = build_archive(44, [{"name": "ok.env", "data": "OK=1\n"}])
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive, META["trusted_a"]["branch_ref"])
+        assert resp.status_code in {422, 424}
 
 
-def test_release_ledger_schema_identity_and_dependency_rows():
-    """SQLite binds one release run and the three specified dependency changes to the exact final lockfile hash."""
-    database = APP / "release/dependency-ledger.sqlite"
-    connection = sqlite3.connect(database)
-    assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-    assert connection.execute("SELECT count(*) FROM release_run").fetchone()[0] == 1
-    run_row = connection.execute(
-        "SELECT run_id,resolved_at,rust_version,cargo_version,cargo_audit_version,cargo_deny_version,"
-        "cargo_lock_sha256,rustsec_commit,offline_replay,source_unchanged FROM release_run"
-    ).fetchone()
-    lock_hash = hashlib.sha256((APP / "Cargo.lock").read_bytes()).hexdigest()
-    assert run_row[0] == lock_hash[:20]
-    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", run_row[1])
-    assert run_row[2].startswith("rustc 1.89.")
-    assert run_row[3].startswith("cargo 1.89.")
-    assert run_row[4] == "cargo-audit-audit 0.22.2"
-    assert run_row[5] == "cargo-deny 0.19.4"
-    assert run_row[6] == lock_hash
-    assert re.fullmatch(r"[0-9a-f]{40}", run_row[7])
-    assert run_row[8:] == (1, 1)
-    rows = connection.execute(
-        "SELECT name,from_version,to_version,advisory_id,yanked_before,target_rust_version "
-        "FROM dependency_change ORDER BY name"
-    ).fetchall()
-    assert rows == [(name, *TARGETS[name]) for name in sorted(TARGETS)]
-    connection.close()
+def test_lightweight_tag_is_refused(cache_dir: Path) -> None:
+    """Lightweight tags are refused even when their target commit is otherwise trusted."""
+    repo = unpack("trusted-corpus-a")
+    archive, _ = build_archive(54, [{"name": "ok.env", "data": "OK=1\n"}])
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive, META["trusted_a"]["lightweight_ref"])
+        assert resp.status_code == 424
+        assert "error" in resp.json()
 
 
-def test_ledger_contains_the_four_exact_passing_policy_checks():
-    """The release ledger records each required stock-tool check once with its exact replay command and pass status."""
-    connection = sqlite3.connect(APP / "release/dependency-ledger.sqlite")
-    rows = connection.execute("SELECT tool,command,status FROM policy_check ORDER BY tool").fetchall()
-    connection.close()
-    assert rows == [
-        ("cargo-audit", "cargo audit --json", "pass"),
-        ("cargo-deny", "cargo deny --all-features check advisories bans licenses sources", "pass"),
-        ("cargo-metadata", "cargo metadata --locked --offline --format-version 1", "pass"),
-        ("cargo-test", "cargo test --workspace --all-targets --locked --offline", "pass"),
-    ]
+def test_unsigned_annotated_tag_is_refused(cache_dir: Path) -> None:
+    """Unsigned annotated tags return HTTP 424."""
+    repo = unpack("unsigned-corpus")
+    archive, _ = build_archive(55, [{"name": "ok.env", "data": "OK=1\n"}])
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive, META["unsigned"]["ref"])
+        assert resp.status_code == 424
 
 
-def test_handoff_note_matches_lock_ledger_tools_and_changes():
-    """The handoff note matches SQLite and semantically confirms that the source baseline stayed unchanged."""
-    note = (APP / "release/reconciliation.md").read_text(encoding="utf-8")
-    connection = sqlite3.connect(APP / "release/dependency-ledger.sqlite")
-    run_row = connection.execute(
-        "SELECT resolved_at,rust_version,cargo_version,cargo_audit_version,cargo_deny_version,cargo_lock_sha256,rustsec_commit "
-        "FROM release_run"
-    ).fetchone()
-    connection.close()
-    for value in run_row:
-        assert value in note
-    for name, values in TARGETS.items():
-        assert name in note
-        assert values[0] in note
-        assert values[1] in note
-        assert values[2] in note
-    for command in [
-        "cargo metadata --locked --offline --format-version 1",
-        "cargo test --workspace --all-targets --locked --offline",
-        "cargo audit --json",
-        "cargo deny --all-features check advisories bans licenses sources",
-    ]:
-        assert command in note
-    note_sentences = re.split(r"(?:[.!?](?:\s+|$)|\n+)", note.lower())
-    unchanged_wording = re.compile(
-        r"\b(?:unchanged|unmodified|unaltered|intact|preserved)\b"
-        r"|\b(?:not|no)\b.{0,80}\b(?:change|changed|changes|modify|modified|"
-        r"modifications|alter|altered|alterations)\b"
+def test_valid_signature_from_untrusted_fingerprint_is_refused(cache_dir: Path) -> None:
+    """Valid signatures from fingerprints outside the allowlist are refused."""
+    repo = unpack("untrusted-signer-corpus")
+    archive, _ = build_archive(66, [{"name": "ok.env", "data": "OK=1\n"}])
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive, META["untrusted"]["ref"])
+        assert resp.status_code == 424
+
+
+def test_missing_lfs_object_is_refused(cache_dir: Path) -> None:
+    """A signed release with an unavailable required LFS object fails closed with HTTP 424."""
+    repo = unpack("missing-lfs-corpus")
+    archive, _ = build_archive(76, [{"name": "ok.env", "data": "OK=1\n"}])
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive, META["missing_lfs"]["ref"])
+        assert resp.status_code == 424
+        assert "error" in resp.json()
+
+
+def test_cache_isolated_by_remote_url(cache_dir: Path) -> None:
+    """A cache warmed from one remote is never reused for another remote with the same tag ref."""
+    trusted_repo = unpack("trusted-corpus-a")
+    untrusted_repo = unpack("untrusted-signer-corpus")
+    archive, _ = build_archive(75, [{"name": "ok.env", "data": "OK=1\n"}])
+
+    with PumaServer(remote_url=f"file://{trusted_repo}", cache_root=str(cache_dir)) as server:
+        warm = post_attestation(server, archive, META["trusted_a"]["ref"])
+        assert warm.status_code == 200, warm.text
+
+    with PumaServer(remote_url=f"file://{untrusted_repo}", cache_root=str(cache_dir)) as server:
+        poisoned = post_attestation(server, archive, META["untrusted"]["ref"])
+        assert poisoned.status_code == 424, poisoned.text
+        assert "error" in poisoned.json()
+
+
+def test_cache_isolated_by_allowed_signer(cache_dir: Path) -> None:
+    """A cache warmed for one allowed signer is not reused after the signer override changes."""
+    repo = unpack("trusted-corpus-a")
+    archive, _ = build_archive(751, [{"name": "ok.env", "data": "OK=1\n"}])
+
+    with PumaServer(
+        remote_url=f"file://{repo}",
+        cache_root=str(cache_dir),
+        allowed_signer=META["trusted_a"]["signer_fingerprint"],
+    ) as server:
+        warm = post_attestation(server, archive, META["trusted_a"]["ref"])
+        assert warm.status_code == 200, warm.text
+
+    with PumaServer(
+        remote_url=f"file://{repo}",
+        cache_root=str(cache_dir),
+        allowed_signer=META["trusted_b"]["signer_fingerprint"],
+    ) as server:
+        refused = post_attestation(server, archive, META["trusted_a"]["ref"])
+        assert refused.status_code == 424, refused.text
+        assert "error" in refused.json()
+
+
+def test_lfs_policy_is_hydrated_and_controls_results(cache_dir: Path) -> None:
+    """Corpus B LFS policy hydration drives scanner findings and policy_sha256."""
+    repo = unpack("trusted-corpus-b")
+    archive, _ = build_archive(
+        77,
+        [{"path": "notes.txt", "data": "corp_b_vault_marker\n", "expect_finding": True, "rule_id": "CORPUS-B-VAULT-LINE"}],
     )
-    assert any(unchanged_wording.search(sentence) for sentence in note_sentences)
-    assert "\u2014" not in note
+    with PumaServer(
+        remote_url=f"file://{repo}",
+        cache_root=str(cache_dir),
+        allowed_signer=META["trusted_b"]["signer_fingerprint"],
+    ) as server:
+        resp = post_attestation(server, archive, META["trusted_b"]["ref"])
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["baseline"]["policy_sha256"] == META["trusted_b"]["policy_sha256"]
 
 
-def test_live_frozen_advisory_boundaries_and_selected_index_rows():
-    """Frozen RustSec records retain their fixed boundaries and the selected live index rows remain published, non-yanked, and toolchain-compatible."""
-    fixed = {
-        "RUSTSEC-2024-0012": "1.0.1",
-        "RUSTSEC-2025-0024": "0.5.15",
-        "RUSTSEC-2026-0009": "0.3.47",
-    }
-    for advisory_id, boundary in fixed.items():
-        record = fetch_json(f"https://api.osv.dev/v1/vulns/{advisory_id}")
-        assert record["id"] == advisory_id
-        events = [
-            event for affected in record["affected"] for item in affected.get("ranges", [])
-            if item["type"] == "SEMVER" for event in item["events"]
-        ]
-        assert {event.get("fixed") for event in events} >= {boundary}
-    for name, (_old, selected, _advisory, _yanked, _rust) in TARGETS.items():
-        row = fetch_index_row(name, selected)
-        assert row["name"] == name
-        assert row["vers"] == selected
-        assert row["yanked"] is False
-        required = row.get("rust_version")
-        if required:
-            assert tuple(map(int, required.split("."))) <= (1, 89, 0)
+def test_attestation_signature_matches_canonical_payload(cache_dir: Path) -> None:
+    """RS256 signature verifies against the canonical unsigned payload."""
+    repo = unpack("trusted-corpus-a")
+    archive, _ = build_archive(88, [{"name": "bad.env", "data": "API_SECRET=sk_live_qwertyuiopasdfgh\n", "expect_finding": True, "rule_id": "compose.secret"}])
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        resp = post_attestation(server, archive)
+        body = resp.json()
+        verify_attestation(dict(body))
 
 
-def test_live_stock_policy_tools_clear_the_current_database():
-    """cargo-audit and cargo-deny both clear the final graph against the current default RustSec database without ignores."""
-    audit = run(["cargo", "audit", "--json"], timeout=180)
-    assert audit.returncode == 0, audit.stderr
-    report = json.loads(audit.stdout)
-    assert report["vulnerabilities"]["found"] is False
-    assert report["vulnerabilities"]["count"] == 0
-    deny = run([
-        "cargo", "deny", "--all-features", "check", "advisories", "bans", "licenses", "sources"
-    ], timeout=180)
-    assert deny.returncode == 0, deny.stderr
-    assert "advisories ok" in deny.stdout + deny.stderr
+def test_repeated_identical_request_is_byte_deterministic(cache_dir: Path) -> None:
+    """Identical requests produce byte-identical JSON responses."""
+    repo = unpack("trusted-corpus-a")
+    archive, _ = build_archive(99, [{"name": "compose.yml", "data": "services:\n  web:\n    image: nginx\n"}])
+    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
+        bodies = [post_attestation(server, archive).content for _ in range(3)]
+        assert bodies[0] == bodies[1] == bodies[2]
+
+
+def test_existing_rspec_behavior_remains_green() -> None:
+    """Shipped RSpec examples continue to pass after the repair."""
+    proc = subprocess.run(
+        ["bundle", "exec", "rspec", "--format", "progress", "/app/environment/source/spec"],
+        cwd="/app",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr

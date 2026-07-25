@@ -1,0 +1,26 @@
+--- a/app/services/corpus/policy_bundle.rb
++++ b/app/services/corpus/policy_bundle.rb
+@@ -2,16 +2,17 @@
+   PolicyBundle = Struct.new(:sha256, :rules, keyword_init: true)
+ 
+   class PolicyBundle
++    LFS_POINTER = "version https://git-lfs.github.com/spec/v1"
++
+     def self.load(repo_dir, manifest_name)
+       manifest = JSON.parse(File.read(File.join(repo_dir, manifest_name)))
+       path = File.join(repo_dir, manifest.fetch("policy_path"))
+       bytes = File.read(path)
+-      rules = begin
+-        YAML.safe_load(bytes, permitted_classes: [], aliases: false)
+-      rescue StandardError
+-        { "schema_version" => 1, "secret_name_patterns" => [], "secret_value_patterns" => [], "compose" => {}, "pem" => {}, "jwt" => {}, "text_rules" => [] }
+-      end
+-      new(sha256: manifest.fetch("policy_sha256"), rules: rules)
++      raise Errors::ReleaseFailure.new("lfs_unresolved", "policy pointer not hydrated") if bytes.start_with?(LFS_POINTER)
++      digest = Digest::SHA256.hexdigest(bytes)
++      raise Errors::ReleaseFailure.new("policy_digest_mismatch", "policy digest mismatch") unless digest == manifest.fetch("policy_sha256")
++      rules = YAML.safe_load(bytes, permitted_classes: [], aliases: false)
++      new(sha256: digest, rules: rules)
+     end
+   end
+ end

@@ -1,0 +1,14 @@
+--- a/app/services/archive/entry.rb
++++ b/app/services/archive/entry.rb
+@@ -2,11 +2,6 @@
+   class Entry
+     attr_reader :path, :bytes
+ 
+-    def self.from_path(_disk, raw_name, bytes)
+-      canonical = raw_name.gsub(%r{/+}, "/").gsub("./", "")
+-      new(path: canonical, bytes: bytes)
+-    end
+-
+     def initialize(path:, bytes:)
+       @path = path
+       @bytes = bytes
