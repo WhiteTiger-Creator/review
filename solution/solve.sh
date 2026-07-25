@@ -1,26 +1,18 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
-ORACLE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd /app
 
-if false; then patch -p1 --forward < patches/all.patch; fi
-patch -p1 --forward < "$ORACLE_ROOT/patches/all.patch"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PKG_DIR=/app/unsealer/src/main/java/com/acme/inbox/jwe
 
-bundle exec ruby -c app/services/corpus/resolver.rb
-bundle exec ruby -c app/services/archive/reader.rb
-bundle exec ruby -c app/services/attestation/canonical_json.rb
-bundle exec rspec --format progress
-bundle exec puma -C config/puma.rb -b tcp://127.0.0.1:3000 >/tmp/puma.log 2>&1 &
-PUMA_PID=$!  # verifier smoke-server parent tracks child PID for cleanup
-cleanup() { kill "$PUMA_PID" 2>/dev/null || true; }
-trap cleanup EXIT
-for _ in $(seq 1 60); do
-  if curl -sf http://127.0.0.1:3000/up >/dev/null; then
-    break
-  fi
-  sleep 0.5
-done
-script/attest-local /app/fixtures/archives/clean-compose.tar > /tmp/clean-attestation.json
-script/attest-local /app/fixtures/archives/mixed-leaks.tar > /tmp/reject-attestation.json
-script/attest-local /app/fixtures/archives/clean-compose.tar > /tmp/clean-attestation-2.json
-cmp /tmp/clean-attestation.json /tmp/clean-attestation-2.json
+# Replace the stub with the JDK-only implementation: JWK loading and P-256 conversion, the three
+# JWE serializations, ECDH-1PU key agreement with the hand-rolled Concat KDF, AES key unwrap and
+# AES-GCM decryption, the sender registry fetch, and the canonical report plus transcript digest.
+mkdir -p "$PKG_DIR"
+rm -f "$PKG_DIR"/*.java
+cp "$SCRIPT_DIR"/src/*.java "$PKG_DIR"/
+
+cd /app/unsealer
+mvn -B -q clean package
+
+test -f /app/unsealer/target/jwe-unsealer.jar
+echo "built /app/unsealer/target/jwe-unsealer.jar"

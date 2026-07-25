@@ -1,22 +1,18 @@
 #!/bin/bash
-set -uo pipefail
+set -euo pipefail
 
-# Check if we're in a valid working directory
-if [ "$PWD" = "/" ]; then
-    echo "Error: No working directory set. Please set a WORKDIR in your Dockerfile before running this script."
-    mkdir -p /logs/verifier
-    echo 0 > /logs/verifier/reward.txt
-    exit 0
-fi
-
+TEST_DIR="${TEST_DIR:-/tests}"
 mkdir -p /logs/verifier
+echo 0 > /logs/verifier/reward.txt
 
-# pytest and pytest-json-ctrf must be pre-installed in the Docker image.
-PYTHONSAFEPATH=1 /opt/verifier/bin/python3 -m pytest --confcutdir=/tests --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
+# Invoke the verifier's interpreter by absolute path. The venv is root-owned and the agent runs
+# unprivileged, so this resolves to the pytest baked into the image rather than anything the agent
+# could have placed earlier on PATH.
+set +e
+/opt/verifier-venv/bin/pytest "$TEST_DIR/test_outputs.py" -rA -p no:cacheprovider \
+    --ctrf /logs/verifier/ctrf.json
 
-# Produce reward file (REQUIRED)
-rc=$?
-if [ "$rc" -eq 0 ]; then
+if [ $? -eq 0 ]; then
     echo 1 > /logs/verifier/reward.txt
 else
     echo 0 > /logs/verifier/reward.txt

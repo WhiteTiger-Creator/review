@@ -1,317 +1,377 @@
-# ruff: noqa: I001
-"""Behavioral verification for harden-rails-compose-archive-attestation."""
+"""Behavioural checks for the Acme inbox JWE unsealer.
 
-from __future__ import annotations
+Every fixture is minted fresh: new recipient, sender and ephemeral keys, new plaintexts, a new local
+registry on a new port. The expected report and transcript digest are recomputed here from the same
+public specifications the tool must follow, so a stored answer cannot pass.
+"""
 
-import subprocess
-from pathlib import Path
+import hashlib
+import json
+import os
+import time
+import urllib.request
+import zipfile
 
-import pytest
-import requests
+import jose_ref as ref
 
-from support.archive_factory import build_archive
-from support.corpus_fixture import metadata, unpack
-from support.integrity import verify_fixture_checksums
-from support.puma_server import PumaServer
-from support.signature_checks import verify_attestation
-
-FIXTURES = Path(__file__).resolve().parent / "fixtures"
-META = metadata()
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _checksums() -> None:
-    verify_fixture_checksums()
-
-
-@pytest.fixture
-def cache_dir(tmp_path: Path) -> Path:
-    d = tmp_path / "cache"
-    d.mkdir()
-    return d
-
-
-def post_attestation(server: PumaServer, archive: bytes, release_ref: str | None = None) -> requests.Response:
-    files = {"archive": ("archive.tar", archive, "application/x-tar")}
-    data = {}
-    if release_ref:
-        data["release_ref"] = release_ref
-    return requests.post(f"{server.base_url}/api/v1/attestations", files=files, data=data, timeout=60)
-
-
-def test_health_route_is_preserved(cache_dir: Path) -> None:
-    """GET /up remains available."""
-    repo = unpack("trusted-corpus-a")
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = requests.get(f"{server.base_url}/up", timeout=10)
-        assert resp.status_code == 200
-
-
-def test_default_trusted_release_clean_archive_passes(cache_dir: Path) -> None:
-    """Clean seeded archive returns pass attestation with valid signature."""
-    repo = unpack("trusted-corpus-a")
-    archive, _ = build_archive(
-        11,
-        [
-            {"name": "compose.yml", "data": "services:\n  web:\n    image: nginx\n"},
-            {"name": "app.env", "data": "PUBLIC_URL=https://example.com\n"},
-        ],
-    )
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive)
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert body["verdict"] == "pass"
-        assert body["findings"] == []
-        verify_attestation(dict(body))
-
-
-def test_mixed_archive_reports_constructed_findings_without_secret_leakage(cache_dir: Path) -> None:
-    """Injected violations appear without leaking secret bytes."""
-    repo = unpack("trusted-corpus-a")
-    secret = "sk_live_abcdefghijklmnop"
-    archive, manifest = build_archive(
-        22,
-        [
-            {
-                "path": "stack/docker-compose.yml",
-                "data": f"services:\n  api:\n    environment:\n      DATABASE_PASSWORD: {secret}\n",
-                "expect_finding": True,
-                "rule_id": "compose.secret",
-            },
-            {
-                "path": "tokens/bad.jwt",
-                "data": "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJhYmMifQ.\n",
-                "expect_finding": True,
-                "kind": "jwt",
-                "rule_id": "jwt.forbidden_algorithm",
-            },
-        ],
-    )
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive, META["trusted_a"]["ref"])
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert body["verdict"] == "reject"
-        raw = resp.text
-        assert secret not in raw
-        paths = {f["path"] for f in body["findings"]}
-        assert any(m.path in paths for m in manifest)
-
-
-def test_archive_path_traversal_is_rejected_before_scanning(cache_dir: Path) -> None:
-    """Parent-traversing archive paths are rejected with HTTP 422 before scanning."""
-    repo = unpack("trusted-corpus-a")
-    archive, _ = build_archive(33, [{"path": "../outside.env", "data": "SECRET=1\n"}])
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive)
-        assert resp.status_code == 422
-        assert "error" in resp.json()
-
-
-def test_unsafe_archive_precedes_corpus_resolution_failure(cache_dir: Path) -> None:
-    """Unsafe archive validation returns HTTP 422 before an unavailable corpus can return HTTP 424."""
-    archive, _ = build_archive(331, [{"path": "../outside.env", "data": "SECRET=1\n"}])
-    missing_remote = cache_dir.parent / "missing-corpus.git"
-    with PumaServer(remote_url=f"file://{missing_remote}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive)
-        assert resp.status_code == 422, resp.text
-        assert resp.json()["error"]["code"] == "unsafe_path"
-
-
-def test_archive_absolute_path_is_rejected(cache_dir: Path) -> None:
-    """Absolute tar member paths are rejected with HTTP 422."""
-    repo = unpack("trusted-corpus-a")
-    archive, _ = build_archive(34, [{"path": "/etc/attestor.env", "data": "SECRET=1\n"}])
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive)
-        assert resp.status_code == 422
-        assert "error" in resp.json()
-
-
-def test_archive_duplicate_normalized_path_is_rejected(cache_dir: Path) -> None:
-    """Duplicate tar member paths are rejected with HTTP 422."""
-    repo = unpack("trusted-corpus-a")
-    archive, _ = build_archive(
-        35,
-        [
-            {"path": "config/app.env", "data": "A=1\n"},
-            {"path": "config/app.env", "data": "B=2\n"},
-        ],
-    )
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive)
-        assert resp.status_code == 422
-        assert "error" in resp.json()
-
-
-@pytest.mark.parametrize(
-    ("entry_type", "linkname"),
-    [("symlink", "target.env"), ("hardlink", "target.env")],
+GITHUB_JWKS = (
+    "https://raw.githubusercontent.com/eclipse/microprofile-jwt-auth/"
+    "d729a3f276a530ce5c471f23dbb2d253b891eb8f/tck/src/test/resources/rs256es256.jwk"
 )
-def test_archive_links_are_rejected(cache_dir: Path, entry_type: str, linkname: str) -> None:
-    """Symbolic and hard-link tar entries are rejected with HTTP 422."""
-    repo = unpack("trusted-corpus-a")
-    archive, _ = build_archive(
-        36,
-        [{"path": f"payload/{entry_type}.env", "data": b"", "type": entry_type, "linkname": linkname}],
-    )
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive)
-        assert resp.status_code == 422
-        assert "error" in resp.json()
+JOSE_LIBRARY_PACKAGES = (
+    "org/jose4j/",
+    "com/nimbusds/",
+    "io/jsonwebtoken/",
+    "com/auth0/",
+    "org/bouncycastle/",
+    "org/apache/commons/codec/",
+    "com/google/crypto/",
+)
 
 
-def test_archive_non_regular_entry_is_rejected(cache_dir: Path) -> None:
-    """Special non-regular tar entries are rejected with HTTP 422."""
-    repo = unpack("trusted-corpus-a")
-    archive, _ = build_archive(37, [{"path": "payload/channel", "data": b"", "type": "fifo"}])
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive)
-        assert resp.status_code == 422
-        assert "error" in resp.json()
+class Run:
+    """One unsealer invocation: what the tool produced and what the reference expected."""
+
+    def __init__(self, process, report_bytes, report, digest, exp_report, exp_digest):
+        self.process = process
+        self.report_bytes = report_bytes
+        self.report = report
+        self.digest = digest
+        self.exp_report = exp_report
+        self.exp_digest = exp_digest
+
+    def statuses(self):
+        return ref.statuses(self.report)
 
 
-def test_archive_non_normalized_name_is_rejected(cache_dir: Path) -> None:
-    """Tar names containing a redundant non-normalized segment are rejected with HTTP 422."""
-    repo = unpack("trusted-corpus-a")
-    archive, _ = build_archive(38, [{"path": "payload/./hidden.env", "data": "SECRET=1\n"}])
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive)
-        assert resp.status_code == 422
-        assert "error" in resp.json()
+def run(tmp_path, held, senders, items):
+    """Seals the items, runs the jar over them, and returns the actual and expected outputs."""
+    messages, expected_report, expected_digest = ref.assemble(items)
+    process, report_bytes, report, digest = ref.run_unsealer(tmp_path, held, senders, messages)
+    return Run(process, report_bytes, report, digest, expected_report, expected_digest)
 
 
-def test_invalid_or_non_tag_release_refs_are_refused(cache_dir: Path) -> None:
-    """Branch refs and other non-tag release references are refused."""
-    repo = unpack("trusted-corpus-a")
-    archive, _ = build_archive(44, [{"name": "ok.env", "data": "OK=1\n"}])
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive, META["trusted_a"]["branch_ref"])
-        assert resp.status_code in {422, 424}
+def test_build_produces_the_runnable_jar():
+    """The module builds to the executable jar the inbox ships."""
+    assert os.path.isfile(ref.JAR), "expected the packaged jar at " + ref.JAR
 
 
-def test_lightweight_tag_is_refused(cache_dir: Path) -> None:
-    """Lightweight tags are refused even when their target commit is otherwise trusted."""
-    repo = unpack("trusted-corpus-a")
-    archive, _ = build_archive(54, [{"name": "ok.env", "data": "OK=1\n"}])
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive, META["trusted_a"]["lightweight_ref"])
-        assert resp.status_code == 424
-        assert "error" in resp.json()
+def test_no_third_party_jose_code_is_shipped():
+    """Neither the jar nor its declared classpath carries a third-party JOSE, JWT or crypto library."""
+    with zipfile.ZipFile(ref.JAR) as jar:
+        entries = jar.namelist()
+        manifest = jar.read("META-INF/MANIFEST.MF").decode("utf-8", "replace")
+    bundled = [name for name in entries if name.startswith(JOSE_LIBRARY_PACKAGES)]
+    assert bundled == [], "third-party JOSE code in the jar: " + ", ".join(sorted(bundled)[:5])
+    assert "Class-Path:" not in manifest, "the jar pulls code in from outside its own classpath"
 
 
-def test_unsigned_annotated_tag_is_refused(cache_dir: Path) -> None:
-    """Unsigned annotated tags return HTTP 424."""
-    repo = unpack("unsigned-corpus")
-    archive, _ = build_archive(55, [{"name": "ok.env", "data": "OK=1\n"}])
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive, META["unsigned"]["ref"])
-        assert resp.status_code == 424
+def test_all_three_serializations_unseal_byte_exact(tmp_path):
+    """Compact, flattened and general ECDH-1PU messages all unseal, with a byte-exact report and digest.
+
+    A recipient-only ECDH-ES key agreement, a wrong Concat KDF algorithm id, or the wrong AAD would
+    each derive a different key or tag and fail every one of these, so passing pins the full pipeline.
+    """
+    bob, carol, alice = ref.EcKey("bob-1"), ref.EcKey("carol-1"), ref.EcKey("alice-static")
+    first, second, third = ref.claims(), ref.claims(preferred_username="al"), ref.claims(groups=None)
+    with ref.Registry([alice.public_jwk()]) as registry:
+        senders = {"alice-static": registry.url}
+        items = [
+            (ref.seal("compact", [bob], alice, ref.canonical(first), apu=b"Alice", apv=b"Bob"),
+             *ref.unsealed(bob, alice, first)),
+            (ref.seal("flattened", [bob], alice, ref.canonical(second), aad=b"delivery-context"),
+             *ref.unsealed(bob, alice, second)),
+            (ref.seal("general", [carol, bob], alice, ref.canonical(third)),
+             *ref.unsealed(bob, alice, third)),
+        ]
+        result = run(tmp_path, [bob.private_jwk()], senders, items)
+
+    assert result.process.returncode == 0, result.process.stderr
+    assert result.statuses() == ["unsealed", "unsealed", "unsealed"]
+    assert result.report_bytes == ref.canonical(result.exp_report)
+    assert result.digest == result.exp_digest
+    assert [r.get("recipient_kid") for r in result.report["results"]] == ["bob-1", "bob-1", "bob-1"]
 
 
-def test_valid_signature_from_untrusted_fingerprint_is_refused(cache_dir: Path) -> None:
-    """Valid signatures from fingerprints outside the allowlist are refused."""
-    repo = unpack("untrusted-signer-corpus")
-    archive, _ = build_archive(66, [{"name": "ok.env", "data": "OK=1\n"}])
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive, META["untrusted"]["ref"])
-        assert resp.status_code == 424
+def test_principal_name_falls_back_through_the_claims(tmp_path):
+    """The reported name is upn, then preferred_username, then sub, and groups are byte-sorted."""
+    bob, alice = ref.EcKey("bob-1"), ref.EcKey("alice-static")
+    both = ref.claims(preferred_username="pref", groups=["ops", "admin", "sre"])
+    only_pref = ref.claims(upn=None, preferred_username="pref")
+    only_sub = ref.claims(upn=None, groups=None)
+    none_at_all = ref.claims(upn=None, sub=None)
+    with ref.Registry([alice.public_jwk()]) as registry:
+        senders = {"alice-static": registry.url}
+        items = [(ref.seal("compact", [bob], alice, ref.canonical(p)), *ref.unsealed(bob, alice, p))
+                 for p in (both, only_pref, only_sub, none_at_all)]
+        result = run(tmp_path, [bob.private_jwk()], senders, items)
+
+    assert result.process.returncode == 0, result.process.stderr
+    assert result.report_bytes == ref.canonical(result.exp_report)
+    names = [r["name"] for r in result.report["results"]]
+    assert names == ["alice@acme.example", "pref", "24400320", None]
+    assert result.report["results"][0]["groups"] == ["admin", "ops", "sre"]
+    assert result.report["results"][3]["sub"] is None
 
 
-def test_missing_lfs_object_is_refused(cache_dir: Path) -> None:
-    """A signed release with an unavailable required LFS object fails closed with HTTP 424."""
-    repo = unpack("missing-lfs-corpus")
-    archive, _ = build_archive(76, [{"name": "ok.env", "data": "OK=1\n"}])
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive, META["missing_lfs"]["ref"])
-        assert resp.status_code == 424
-        assert "error" in resp.json()
+def test_algorithm_and_ephemeral_key_policy(tmp_path):
+    """A non-1PU alg, a non-GCM enc, a non-P-256 ephemeral key and an unknown zip are unsupported."""
+    bob, alice = ref.EcKey("bob-1"), ref.EcKey("alice-static")
+    payload = ref.canonical(ref.claims())
+    with ref.Registry([alice.public_jwk()]) as registry:
+        senders = {"alice-static": registry.url}
+        items = [
+            (ref.seal("compact", [bob], alice, payload, alg="ECDH-ES+A256KW"),
+             *ref.rejected("unsupported_algorithm")),
+            (ref.seal("compact", [bob], alice, payload, enc="A128GCM"),
+             *ref.rejected("unsupported_algorithm")),
+            (ref.seal("compact", [bob], alice, payload, bad_epk_crv=True),
+             *ref.rejected("unsupported_algorithm")),
+            (ref.seal("compact", [bob], alice, payload, zip_value="GZIP"),
+             *ref.rejected("unsupported_algorithm")),
+        ]
+        result = run(tmp_path, [bob.private_jwk()], senders, items)
+
+    assert result.process.returncode == 0, result.process.stderr
+    assert result.statuses() == ["unsupported_algorithm"] * 4
+    assert result.report_bytes == ref.canonical(result.exp_report)
 
 
-def test_cache_isolated_by_remote_url(cache_dir: Path) -> None:
-    """A cache warmed from one remote is never reused for another remote with the same tag ref."""
-    trusted_repo = unpack("trusted-corpus-a")
-    untrusted_repo = unpack("untrusted-signer-corpus")
-    archive, _ = build_archive(75, [{"name": "ok.env", "data": "OK=1\n"}])
+def test_recipient_is_selected_from_the_held_keys(tmp_path):
+    """A message is no_recipient when no held key matches, and the held recipient is found among several."""
+    bob, carol, dave = ref.EcKey("bob-1"), ref.EcKey("carol-1"), ref.EcKey("dave-1")
+    alice = ref.EcKey("alice-static")
+    payload = ref.claims()
+    with ref.Registry([alice.public_jwk()]) as registry:
+        senders = {"alice-static": registry.url}
+        items = [
+            (ref.seal("compact", [dave], alice, ref.canonical(payload)), *ref.rejected("no_recipient")),
+            (ref.seal("general", [dave, carol, bob], alice, ref.canonical(payload)),
+             *ref.unsealed(bob, alice, payload)),
+        ]
+        result = run(tmp_path, [bob.private_jwk()], senders, items)
 
-    with PumaServer(remote_url=f"file://{trusted_repo}", cache_root=str(cache_dir)) as server:
-        warm = post_attestation(server, archive, META["trusted_a"]["ref"])
-        assert warm.status_code == 200, warm.text
-
-    with PumaServer(remote_url=f"file://{untrusted_repo}", cache_root=str(cache_dir)) as server:
-        poisoned = post_attestation(server, archive, META["untrusted"]["ref"])
-        assert poisoned.status_code == 424, poisoned.text
-        assert "error" in poisoned.json()
-
-
-def test_cache_isolated_by_allowed_signer(cache_dir: Path) -> None:
-    """A cache warmed for one allowed signer is not reused after the signer override changes."""
-    repo = unpack("trusted-corpus-a")
-    archive, _ = build_archive(751, [{"name": "ok.env", "data": "OK=1\n"}])
-
-    with PumaServer(
-        remote_url=f"file://{repo}",
-        cache_root=str(cache_dir),
-        allowed_signer=META["trusted_a"]["signer_fingerprint"],
-    ) as server:
-        warm = post_attestation(server, archive, META["trusted_a"]["ref"])
-        assert warm.status_code == 200, warm.text
-
-    with PumaServer(
-        remote_url=f"file://{repo}",
-        cache_root=str(cache_dir),
-        allowed_signer=META["trusted_b"]["signer_fingerprint"],
-    ) as server:
-        refused = post_attestation(server, archive, META["trusted_a"]["ref"])
-        assert refused.status_code == 424, refused.text
-        assert "error" in refused.json()
+    assert result.process.returncode == 0, result.process.stderr
+    assert result.statuses() == ["no_recipient", "unsealed"]
+    assert "recipient_kid" not in result.report["results"][0]
+    assert result.report["results"][1]["recipient_kid"] == "bob-1"
+    assert result.report_bytes == ref.canonical(result.exp_report)
 
 
-def test_lfs_policy_is_hydrated_and_controls_results(cache_dir: Path) -> None:
-    """Corpus B LFS policy hydration drives scanner findings and policy_sha256."""
-    repo = unpack("trusted-corpus-b")
-    archive, _ = build_archive(
-        77,
-        [{"path": "notes.txt", "data": "corp_b_vault_marker\n", "expect_finding": True, "rule_id": "CORPUS-B-VAULT-LINE"}],
-    )
-    with PumaServer(
-        remote_url=f"file://{repo}",
-        cache_root=str(cache_dir),
-        allowed_signer=META["trusted_b"]["signer_fingerprint"],
-    ) as server:
-        resp = post_attestation(server, archive, META["trusted_b"]["ref"])
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert body["baseline"]["policy_sha256"] == META["trusted_b"]["policy_sha256"]
+def test_sender_must_be_resolvable_before_decryption(tmp_path):
+    """No skid, an unregistered skid, and a skid absent from the fetched key set are all unknown_sender."""
+    bob, alice, other = ref.EcKey("bob-1"), ref.EcKey("alice-static"), ref.EcKey("someone-else")
+    payload = ref.canonical(ref.claims())
+    with ref.Registry([other.public_jwk()]) as registry:  # serves a set that lacks 'alice-static'
+        senders = {"alice-static": registry.url}
+        items = [
+            (ref.seal("compact", [bob], alice, payload, drop_skid=True),
+             *ref.rejected("unknown_sender", bob)),
+            (ref.seal("compact", [bob], alice, payload, skid="ghost"),
+             *ref.rejected("unknown_sender", bob)),
+            (ref.seal("compact", [bob], alice, payload, skid="alice-static"),
+             *ref.rejected("unknown_sender", bob)),
+        ]
+        result = run(tmp_path, [bob.private_jwk()], senders, items)
+
+    assert result.process.returncode == 0, result.process.stderr
+    assert result.statuses() == ["unknown_sender"] * 3
+    assert all(r["recipient_kid"] == "bob-1" for r in result.report["results"])
+    assert all("sender_kid" not in r for r in result.report["results"])
+    assert result.report_bytes == ref.canonical(result.exp_report)
 
 
-def test_attestation_signature_matches_canonical_payload(cache_dir: Path) -> None:
-    """RS256 signature verifies against the canonical unsigned payload."""
-    repo = unpack("trusted-corpus-a")
-    archive, _ = build_archive(88, [{"name": "bad.env", "data": "API_SECRET=sk_live_qwertyuiopasdfgh\n", "expect_finding": True, "rule_id": "compose.secret"}])
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        resp = post_attestation(server, archive)
-        body = resp.json()
-        verify_attestation(dict(body))
+def test_wrong_published_sender_key_fails_the_key_unwrap(tmp_path):
+    """When the registry publishes a different key than the one that sealed the message, it is bad_key.
+
+    The sender's static key enters the key agreement as the second ECDH input, so a mismatched
+    published key derives the wrong key-encryption key and the RFC 3394 unwrap integrity check fails.
+    """
+    bob, alice, impostor = ref.EcKey("bob-1"), ref.EcKey("alice-static"), ref.EcKey("alice-static")
+    payload = ref.canonical(ref.claims())
+    with ref.Registry([impostor.public_jwk()]) as registry:  # same kid, different key than 'alice'
+        senders = {"alice-static": registry.url}
+        items = [(ref.seal("compact", [bob], alice, payload), *ref.rejected("bad_key", bob, impostor))]
+        result = run(tmp_path, [bob.private_jwk()], senders, items)
+
+    assert result.process.returncode == 0, result.process.stderr
+    assert result.statuses() == ["bad_key"]
+    assert result.report["results"][0]["sender_thumbprint"] == impostor.thumbprint()
+    assert result.report_bytes == ref.canonical(result.exp_report)
 
 
-def test_repeated_identical_request_is_byte_deterministic(cache_dir: Path) -> None:
-    """Identical requests produce byte-identical JSON responses."""
-    repo = unpack("trusted-corpus-a")
-    archive, _ = build_archive(99, [{"name": "compose.yml", "data": "services:\n  web:\n    image: nginx\n"}])
-    with PumaServer(remote_url=f"file://{repo}", cache_root=str(cache_dir)) as server:
-        bodies = [post_attestation(server, archive).content for _ in range(3)]
-        assert bodies[0] == bodies[1] == bodies[2]
+def test_tampering_is_attributed_to_the_right_stage(tmp_path):
+    """A flipped ciphertext is bad_tag, while a flipped tag or a corrupt wrapped key is bad_key.
+
+    The authentication tag is part of the key derivation in key-wrapping mode, so altering it changes
+    the key-encryption key and the unwrap fails before the content is ever authenticated. Only the
+    ciphertext can be altered while still reaching the AES-GCM stage.
+    """
+    bob, alice = ref.EcKey("bob-1"), ref.EcKey("alice-static")
+    payload = ref.canonical(ref.claims())
+    with ref.Registry([alice.public_jwk()]) as registry:
+        senders = {"alice-static": registry.url}
+        items = [
+            (ref.seal("compact", [bob], alice, payload, tamper_ciphertext=True),
+             *ref.rejected("bad_tag", bob, alice)),
+            (ref.seal("compact", [bob], alice, payload, tamper_tag=True),
+             *ref.rejected("bad_key", bob, alice)),
+            (ref.seal("compact", [bob], alice, payload, corrupt_ek=True),
+             *ref.rejected("bad_key", bob, alice)),
+        ]
+        result = run(tmp_path, [bob.private_jwk()], senders, items)
+
+    assert result.process.returncode == 0, result.process.stderr
+    assert result.statuses() == ["bad_tag", "bad_key", "bad_key"]
+    assert result.report_bytes == ref.canonical(result.exp_report)
 
 
-def test_existing_rspec_behavior_remains_green() -> None:
-    """Shipped RSpec examples continue to pass after the repair."""
-    proc = subprocess.run(
-        ["bundle", "exec", "rspec", "--format", "progress", "/app/environment/source/spec"],
-        cwd="/app",
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+def test_deflate_compressed_content_is_inflated(tmp_path):
+    """A zip DEF message unseals to the original bytes, which the transcript digest pins exactly.
+
+    The compressed content is raw DEFLATE with no zlib or gzip wrapper, and the digest covers the
+    inflated plaintext rather than what came out of the cipher.
+    """
+    bob, alice = ref.EcKey("bob-1"), ref.EcKey("alice-static")
+    # A payload with plenty of repetition, so the compressed form differs clearly from the original.
+    payload = ref.claims(groups=["staff"] * 12, upn="alice@acme.example")
+    with ref.Registry([alice.public_jwk()]) as registry:
+        senders = {"alice-static": registry.url}
+        items = [
+            (ref.seal("compact", [bob], alice, ref.canonical(payload), compress=True),
+             *ref.unsealed(bob, alice, payload)),
+            (ref.seal("general", [bob], alice, ref.canonical(payload), compress=True, apu=b"A", apv=b"B"),
+             *ref.unsealed(bob, alice, payload)),
+        ]
+        result = run(tmp_path, [bob.private_jwk()], senders, items)
+
+    assert result.process.returncode == 0, result.process.stderr
+    assert result.statuses() == ["unsealed", "unsealed"]
+    assert result.report_bytes == ref.canonical(result.exp_report)
+    assert result.digest == result.exp_digest
+
+
+def test_additional_authenticated_data_is_bound_into_the_tag(tmp_path):
+    """A message carrying a JWE aad member unseals only when that aad is folded into the GCM AAD."""
+    bob, alice = ref.EcKey("bob-1"), ref.EcKey("alice-static")
+    payload = ref.claims(groups=["ops"])
+    with ref.Registry([alice.public_jwk()]) as registry:
+        senders = {"alice-static": registry.url}
+        items = [(ref.seal("flattened", [bob], alice, ref.canonical(payload), aad=b"binding-context"),
+                  *ref.unsealed(bob, alice, payload))]
+        result = run(tmp_path, [bob.private_jwk()], senders, items)
+
+    assert result.process.returncode == 0, result.process.stderr
+    assert result.statuses() == ["unsealed"]
+    assert result.report_bytes == ref.canonical(result.exp_report)
+    assert result.digest == result.exp_digest
+
+
+def test_structurally_broken_messages_are_malformed(tmp_path):
+    """Messages that are not a JWE in any serialization never reach key resolution.
+
+    Structural validation runs before anything else, so a segment or member that is not base64url is
+    malformed rather than a downstream key or tag failure, in both the compact and the JSON forms.
+    Each of these carries a recipient key id the tool holds, so anything that looked past the
+    structure would report a later verdict and a recipient_kid the report must not contain.
+    """
+    bob, alice = ref.EcKey("bob-1"), ref.EcKey("alice-static")
+    good = ref.seal("compact", [bob], alice, ref.canonical(ref.claims()))
+    header, wrapped, iv, ciphertext, tag = good.split(".")
+    flattened = ref.seal("flattened", [bob], alice, ref.canonical(ref.claims()))
+    bad_iv = dict(flattened, iv="!!not base64!!")
+    not_an_object = ref.b64u(b"[1,2,3]")
+    with ref.Registry([alice.public_jwk()]) as registry:
+        senders = {"alice-static": registry.url}
+        items = [
+            ("aa.bb.cc", *ref.rejected("malformed")),                        # not five segments
+            (f"{header}.!!bad!!.{iv}.{ciphertext}.{tag}", *ref.rejected("malformed")),
+            (f"{header}.{wrapped}.{iv}.{ciphertext}.%%%%", *ref.rejected("malformed")),
+            (json.dumps(bad_iv), *ref.rejected("malformed")),                # JSON member not base64url
+            (f"{not_an_object}.{wrapped}.{iv}.{ciphertext}.{tag}",
+             *ref.rejected("malformed")),                                    # protected is not an object
+            (f'{{"protected":"{header}","iv":"AAAA"}}', *ref.rejected("malformed")),  # missing members
+        ]
+        result = run(tmp_path, [bob.private_jwk()], senders, items)
+
+    assert result.process.returncode == 0, result.process.stderr
+    assert result.statuses() == ["malformed"] * 6
+    assert all(set(r) == {"index", "status"} for r in result.report["results"])
+    assert result.report_bytes == ref.canonical(result.exp_report)
+
+
+def test_registry_is_fetched_at_most_once_per_uri(tmp_path):
+    """Several messages naming the same sender resolve through a single registry fetch that is cached."""
+    bob, alice = ref.EcKey("bob-1"), ref.EcKey("alice-static")
+    with ref.Registry([alice.public_jwk()]) as registry:
+        senders = {"alice-static": registry.url}
+        payloads = [ref.claims(sub=str(n)) for n in range(4)]
+        items = [(ref.seal("compact", [bob], alice, ref.canonical(p)), *ref.unsealed(bob, alice, p))
+                 for p in payloads]
+        result = run(tmp_path, [bob.private_jwk()], senders, items)
+        fetches = registry.count
+
+    assert result.process.returncode == 0, result.process.stderr
+    assert result.statuses() == ["unsealed"] * 4
+    assert fetches == 1, f"the registry key set was fetched {fetches} times, expected one cached read"
+    assert result.report_bytes == ref.canonical(result.exp_report)
+
+
+def test_transcript_digest_covers_the_recovered_plaintext(tmp_path):
+    """The digest is over the statuses and the recovered plaintext bytes, not over the report file."""
+    bob, alice = ref.EcKey("bob-1"), ref.EcKey("alice-static")
+    payload = ref.claims(groups=["a", "b"])
+    with ref.Registry([alice.public_jwk()]) as registry:
+        senders = {"alice-static": registry.url}
+        items = [
+            (ref.seal("compact", [bob], alice, ref.canonical(payload)), *ref.unsealed(bob, alice, payload)),
+            (ref.seal("compact", [bob], alice, ref.canonical(payload), tamper_ciphertext=True),
+             *ref.rejected("bad_tag", bob, alice)),
+        ]
+        result = run(tmp_path, [bob.private_jwk()], senders, items)
+
+    assert result.process.returncode == 0, result.process.stderr
+    assert result.digest == result.exp_digest
+    expected = hashlib.sha256(b"unsealed\n" + ref.canonical(payload) + b"\n" + b"bad_tag\n").hexdigest()
+    assert result.digest == expected
+    assert result.digest != hashlib.sha256(result.report_bytes).hexdigest(), \
+        "the digest must not be a hash of the report"
+
+
+def test_live_sender_key_is_resolved_over_the_network(tmp_path):
+    """Against a real published key set the tool fetches the sender's static key and thumbprints it.
+
+    The message is sealed locally with a different sender key, so the correct outcome once the real
+    key is agreed against is bad_key; the reported RFC 7638 thumbprint proves the live resolution.
+    """
+    published = _fetch(GITHUB_JWKS)
+    ec_key = next(k for k in published["keys"] if k.get("kty") == "EC" and k.get("crv") == "P-256")
+    expected_thumbprint = ref.thumbprint(ec_key)
+
+    bob, local_sender = ref.EcKey("bob-1"), ref.EcKey("eckey")
+    payload = ref.canonical(ref.claims())
+    message = ref.seal("general", [bob], local_sender, payload, skid="eckey")
+    senders = {"eckey": GITHUB_JWKS}
+    process, _, report, digest = ref.run_unsealer(tmp_path, [bob.private_jwk()], senders, [message])
+
+    assert process.returncode == 0, process.stderr
+    result = report["results"][0]
+    assert result["sender_kid"] == "eckey"
+    assert result["sender_thumbprint"] == expected_thumbprint, "wrong RFC 7638 thumbprint for the live key"
+    assert result["status"] == "bad_key"
+    assert digest == hashlib.sha256(b"bad_key\n").hexdigest()
+
+
+def _fetch(url, attempts=4):
+    failure = None
+    for attempt in range(attempts):
+        try:
+            request = urllib.request.Request(url, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(request, timeout=20) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except (OSError, ValueError) as error:
+            # URLError, HTTPError, timeouts and refused connections are all OSError; a truncated or
+            # non-JSON body raises ValueError. Every one of them is worth another attempt.
+            failure = error
+            time.sleep(1.5 * (attempt + 1))
+    raise AssertionError(f"could not reach {url}: {failure}")
