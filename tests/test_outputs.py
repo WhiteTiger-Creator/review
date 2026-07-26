@@ -1,434 +1,399 @@
-"""Verifier for edge fleet trust attestation recovery."""
+"""Verifier for ambulance-demand freeze-epoch regret invariant YAML."""
+
 from __future__ import annotations
 
-import json
-import re
-import shutil
+import hashlib
+import os
+import struct
 import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
-OUTPUT = Path("/output/ceremony-ledger.json")
-QUARANTINE = Path("/output/quarantine.json")
-FIXTURES = Path("/app/data/fixtures")
-SURFACE = FIXTURES / "surface_attestation.json"
-SEED = FIXTURES / "seed.json"
-SEGMENTS = Path("/app/data/signed_segments")
-VERIFIER_OUT = Path("/tmp") / "ceremony-ledger-verify.json"
-DYNAMIC_OUT = Path("/tmp") / "ceremony-ledger-dynamic.json"
-DYNAMIC_FRAME = FIXTURES / "dynamic_test_frame.bin"
-DYNAMIC_INJECTED = FIXTURES / "dynamic_test_injected.bin"
+OUT = Path("/app/output/invariant.yaml")
+ENV = Path("/app/environment")
+VERIFY_BIN = Path("/tmp/xdrv_verify")
 
-EPOCH_10_ACCEPTED = 8
-EPOCH_20_ACCEPTED = 5
-EPOCH_30_ACCEPTED = 3
-EPOCH_40_ACCEPTED = 5
-EPOCH_50_ACCEPTED = 4
-SURFACE_EPOCH_10 = 10
-SCHEMA_VERSION = 1
-STATUS_ACTIVE = "active"
-STATUS_INACTIVE = "inactive"
-PROFILE_A = "fleet_a"
-PROFILE_B = "fleet_b"
-BACKEND_NAMES = {"mqtt", "lora", "uart", "canbus", "zigbee"}
-PUBLISHED_EPOCHS = {10, 20, 30, 40, 50}
-CORE_EPOCHS = {10, 20, 40, 50}
-REASON_INTEGRITY = "integrity_failure"
-REASON_REPLAY = "replay"
-REASON_REVOKED = "revoked"
-QUARANTINE_REASONS = (REASON_INTEGRITY, REASON_REPLAY, REASON_REVOKED)
-KEY_BACKENDS = "backends"
-KEY_EPOCHS = "epochs"
-KEY_REJECTED = "rejected"
-KEY_EPOCH = "epoch"
-KEY_LANE = "lane"
-KEY_TS = "ts"
-EPOCH_TEN = 10
-EPOCH_THIRTY = 30
-EPOCH_TWENTY_FIVE = 25
-BAND_LO = 2
-BAND_HI = 4
-BAND_CAP = 6
-BACKEND_COUNT = 5
-SAMPLE_A = "sample_a"
-SAMPLE_B = "sample_b"
-SAMPLE_C = "sample_c"
-SEED_NAME = "lane-lattice-v2"
-DYNAMIC_LEGACY = FIXTURES / "dynamic_test_legacy.bin"
+EXPECT_ARM = "hold_meta"
+EXPECT_SEED = 41246
+EXPECT_FREEZE = 2
 
 
-def _quarantine_path_for(attest_out: Path) -> Path:
-    name = attest_out.name.replace("ceremony-ledger", "quarantine")
-    return attest_out.with_name(name)
+def _zones():
+    zones = []
+    for p in sorted((ENV / "fixtures" / "zones").glob("*.bin")):
+        raw = p.read_bytes()
+        assert raw[:4] == b"ZNF1"
+        n, fdim, stamp = struct.unpack_from("<HHI", raw, 4)
+        off = 12
+        for _ in range(n):
+            zid, lab = struct.unpack_from("<Hh", raw, off)
+            off += 4
+            feats = list(struct.unpack_from("<" + "d" * fdim, raw, off))
+            off += 8 * fdim
+            zones.append((zid, lab, feats, stamp))
+    return zones
 
 
-def _rebuild_and_attest(out: Path) -> dict:
-    result = subprocess.run(
-        ["cargo", "build", "-p", "trusteval", "--release"],
-        cwd="/app",
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, f"cargo build failed:\n{result.stderr}"
-    result = subprocess.run(
-        ["/app/target/release/trusteval", "attest", "--out", str(out)],
-        cwd="/app",
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, f"trusteval attest failed:\n{result.stderr}"
-    body = out.read_text(encoding="utf-8")
-    data = json.loads(body)
-    assert data.get("version") == SCHEMA_VERSION
-    return data
+def _eigengap_rows(zones):
+    items = sorted(((sum(f) / len(f), zid, lab, f) for zid, lab, f, _ in zones))
+    best_gap, cut_after = -1.0, 0
+    for i in range(len(items) - 1):
+        g = items[i + 1][0] - items[i][0]
+        if g > best_gap:
+            best_gap, cut_after = g, i + 1
+    rows = []
+    for i, (_, zid, lab, f) in enumerate(items):
+        part = 0 if i < cut_after else 1
+        tag = f"z{zid:04x}p{part:02x}"
+        rows.append((part, zid, lab, f, tag))
+    rows.sort(key=lambda r: (r[0], r[1]))
+    return rows
 
 
-def _load_quarantine(path: Path) -> dict:
-    assert path.is_file(), f"missing quarantine at {path}"
-    data = json.loads(path.read_text(encoding="utf-8"))
-    assert data.get("version") == SCHEMA_VERSION
-    assert KEY_REJECTED in data
-    return data
+def _load_base_and_journal():
+    base_raw = (ENV / "weights" / "w_base.bin").read_bytes()
+    assert base_raw[:4] == b"WB01"
+    dim = struct.unpack_from("<H", base_raw, 4)[0]
+    off = 6
+    w = list(struct.unpack_from("<" + "d" * dim, base_raw, off))
+    off += 8 * dim
+    b = struct.unpack_from("<d", base_raw, off)[0]
+
+    jraw = (ENV / "weights" / "w_journal.bin").read_bytes()
+    assert jraw[:4] == b"WJ01"
+    jdim, n = struct.unpack_from("<HI", jraw, 4)
+    assert jdim == dim
+    off = 10
+    updates = []
+    for _ in range(n):
+        epoch = struct.unpack_from("<I", jraw, off)[0]
+        off += 4
+        dw = list(struct.unpack_from("<" + "d" * dim, jraw, off))
+        off += 8 * dim
+        db = struct.unpack_from("<d", jraw, off)[0]
+        off += 8
+        updates.append((epoch, dw, db))
+    return w, b, updates
 
 
-def _reason_keys(data: dict, reason: str) -> set[tuple]:
+def _replay(w, b, updates, freeze: int):
+    ww = list(w)
+    bb = b
+    for epoch, dw, db in sorted(updates, key=lambda u: u[0]):
+        if epoch <= freeze:
+            for i in range(len(ww)):
+                ww[i] += dw[i]
+            bb += db
+    return ww, bb
+
+
+def _tip_weights():
+    raw = (ENV / "weights" / "frozen_w.bin").read_bytes()
+    assert raw[:4] == b"FW01"
+    dim = struct.unpack_from("<H", raw, 4)[0]
+    off = 6
+    w = list(struct.unpack_from("<" + "d" * dim, raw, off))
+    off += 8 * dim
+    b = struct.unpack_from("<d", raw, off)[0]
+    return w, b
+
+
+def _hinge(y: int, s: float) -> float:
+    return max(0.0, 1.0 - y * s)
+
+
+def _regret_milli(rows, w, b) -> int:
+    learn = best_pos = best_neg = 0.0
+    for _, _, lab, feats, _ in rows:
+        s = sum(a * x for a, x in zip(w, feats, strict=False)) + b
+        learn += _hinge(lab, s)
+        best_pos += _hinge(lab, 1.0)
+        best_neg += _hinge(lab, -1.0)
+    best = min(best_pos, best_neg)
+    n = max(1, len(rows))
+    return round(1000.0 * (learn - best) / n)
+
+
+def _digest(
+    kind: str,
+    seed: int,
+    arm: str,
+    cites: list[str],
+    regret_milli: int,
+    fuzz_rounds: int = 0,
+) -> str:
+    keys = []
+    for c in cites:
+        if len(c) >= 5 and c[0] == "z":
+            keys.append(c[1:5])
+        else:
+            keys.append(c)
+    keys = sorted(keys)
+    payload = f"{kind}|{seed}|{arm}|{','.join(keys)}|{regret_milli}"
+    if kind == "cluster":
+        payload = "C:" + payload
+    elif kind == "feature":
+        payload = "F:" + payload
+    elif kind == "stream":
+        payload = "S:" + payload
+    elif kind == "fuzz":
+        payload = f"Z:{fuzz_rounds}:{payload}"
+    else:
+        payload = "X:" + payload
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+def _expected():
+    zones = _zones()
+    rows = _eigengap_rows(zones)
+    cites = [r[4] for r in rows]
+    base_w, base_b, updates = _load_base_and_journal()
+    fw, fb = _replay(base_w, base_b, updates, EXPECT_FREEZE)
+    tw, tb = _tip_weights()
+    milli = _regret_milli(rows, fw, fb)
+    tip_milli = _regret_milli(rows, tw, tb)
+    assert milli != tip_milli
     return {
-        (int(e["epoch"]), e["lane"], int(e["ts"]))
-        for e in data["rejected"]
-        if e["reason"] == reason
+        "cites": cites,
+        "regret_milli": milli,
+        "tip_regret_milli": tip_milli,
+        "seed": EXPECT_SEED,
+        "arm": EXPECT_ARM,
+        "digest": _digest("cluster", EXPECT_SEED, EXPECT_ARM, cites, milli),
     }
 
 
+def _run_cli() -> None:
+    env = os.environ.copy()
+    env["PATH"] = "/usr/local/go/bin:/opt/verifier/bin:" + env.get("PATH", "")
+    env.setdefault("GOTOOLCHAIN", "local")
+    subprocess.run(
+        [
+            "go",
+            "build",
+            "-C",
+            "/app/environment",
+            "-o",
+            str(VERIFY_BIN),
+            "./cmd/xdrv",
+        ],
+        check=True,
+        capture_output=True,
+        env=env,
+    )
+    subprocess.run(
+        [
+            str(VERIFY_BIN),
+            "-root",
+            "/app/environment",
+            "-out",
+            "/app/output/invariant.yaml",
+            "-arm",
+            "1",
+        ],
+        check=True,
+        capture_output=True,
+        env=env,
+    )
+
+
+def _load_yaml():
+    assert OUT.is_file(), f"missing {OUT}"
+    return yaml.safe_load(OUT.read_text())
+
+
 @pytest.fixture(scope="module")
-def roster_from_binary() -> dict:
-    """Fresh rebuild + attestation from current /app sources."""
-    return _rebuild_and_attest(VERIFIER_OUT)
+def expect():
+    return _expected()
 
 
 @pytest.fixture(scope="module")
-def quarantine_from_binary(roster_from_binary: dict) -> dict:
-    """Quarantine produced by the same rebuild as roster_from_binary."""
-    _ = roster_from_binary
-    return _load_quarantine(_quarantine_path_for(VERIFIER_OUT))
+def doc(expect):
+    if not OUT.is_file():
+        _run_cli()
+    return _load_yaml()
 
 
-def _status_map(roster: dict) -> dict[str, str]:
-    assert roster.get("version") == SCHEMA_VERSION
-    backends = roster["backends"]
-    return {row["name"]: row["status"] for row in backends}
+def _row(doc):
+    assert doc.get("schema") == "demand-invariant-v1"
+    rows = doc.get("rows") or []
+    assert rows, "no rows"
+    return rows[0]
 
 
-def _epoch_map(roster: dict) -> dict[int, dict]:
-    return {int(row["id"]): row for row in roster["epochs"]}
+def test_a1_zn_layout(doc, expect):
+    """Eigengap packing produces both partitions in contract order."""
+    row = _row(doc)
+    cites = row.get("cites") or []
+    assert cites == expect["cites"]
+    got_parts = {c[-2:] for c in cites}
+    assert "00" in got_parts
+    assert "01" in got_parts
 
 
-def test_roster_structure(roster_from_binary: dict):
-    """Attestation shape plus deep-path signal (not surface-inflated epoch 10)."""
-    assert roster_from_binary["version"] == SCHEMA_VERSION
-    assert KEY_BACKENDS in roster_from_binary
-    assert KEY_EPOCHS in roster_from_binary
-    backends = roster_from_binary["backends"]
-    assert len(backends) == BACKEND_COUNT
-    names = {b["name"] for b in backends}
-    assert names == BACKEND_NAMES
-    for b in backends:
-        assert b["status"] in (STATUS_ACTIVE, STATUS_INACTIVE)
-    epochs = _epoch_map(roster_from_binary)
-    assert CORE_EPOCHS.issubset(epochs.keys())
-    assert int(epochs[EPOCH_TEN]["accepted"]) < SURFACE_EPOCH_10
-    assert int(epochs[EPOCH_TEN]["accepted"]) >= EPOCH_30_ACCEPTED
+def test_a2_zn_cache_stamp(doc, expect):
+    """Warm cache after first eval must still match eigengap cites."""
+    cache = (ENV / "data" / "part_cache.bin").read_bytes()
+    assert cache[:4] == b"PC01"
+    stamp = struct.unpack_from("<I", cache, 4)[0]
+    freeze = struct.unpack_from("<I", cache, 8)[0]
+    zones = _zones()
+    max_stamp = max(z[3] for z in zones)
+    assert stamp == max_stamp
+    assert freeze == EXPECT_FREEZE
+    row = _row(doc)
+    assert (row.get("cites") or []) == expect["cites"]
 
 
-def test_authority_correct_tier(roster_from_binary: dict):
-    """Epoch 10 accepted count matches restored deep attestation."""
-    epochs = _epoch_map(roster_from_binary)
-    assert EPOCH_TEN in epochs
-    accepted_10 = int(epochs[EPOCH_TEN]["accepted"])
-    assert accepted_10 == EPOCH_10_ACCEPTED
+def test_a3_zn_flip(doc, expect):
+    """Partition ids are exactly {0,1} under the cut rule."""
+    _ = expect
+    row = _row(doc)
+    tags = row.get("cites") or []
+    parts = sorted({int(t[-2:], 16) for t in tags})
+    assert parts == [0, 1]
 
 
-def test_keyed_integrity_rejects_injected(roster_from_binary: dict):
-    """Forged frames must not inflate epoch 10 accepted."""
-    epochs = _epoch_map(roster_from_binary)
-    assert int(epochs[EPOCH_TEN]["accepted"]) == EPOCH_10_ACCEPTED
-    assert int(epochs[EPOCH_TEN]["accepted"]) < SURFACE_EPOCH_10
+def test_a4_zn_side(doc, expect):
+    """Active arm and partition-1 cites are present."""
+    row = _row(doc)
+    assert row["arm"] == expect["arm"]
+    assert any(t[-3:] == "p01" for t in (row.get("cites") or []))
 
 
-def test_keyed_integrity_epoch30(roster_from_binary: dict):
-    """Epoch 30 remains published under hold co-presence with reduced tally."""
-    epochs = _epoch_map(roster_from_binary)
-    assert EPOCH_THIRTY in epochs
-    accepted = int(epochs[EPOCH_THIRTY]["accepted"])
-    assert BAND_LO <= accepted <= BAND_HI
-    assert accepted < BAND_CAP
+def test_b1_rg_freeze_unit(doc, expect):
+    """Regret must match freeze-epoch replay, not the tip snapshot."""
+    row = _row(doc)
+    assert int(row["regret_milli"]) == expect["regret_milli"]
+    assert int(row["regret_milli"]) != expect["tip_regret_milli"]
 
 
-def test_keyed_integrity_epoch40(roster_from_binary: dict):
-    """Epoch 40 accepted matches restored attestation."""
-    epochs = _epoch_map(roster_from_binary)
-    assert int(epochs[40]["accepted"]) == EPOCH_40_ACCEPTED
+def test_b2_rg_lane(doc, expect):
+    """Held-out meta arm carries freeze-epoch regret."""
+    row = _row(doc)
+    assert row["arm"] == "hold_meta"
+    assert int(row["regret_milli"]) == expect["regret_milli"]
 
 
-def test_replay_detection_epoch10(roster_from_binary: dict):
-    """Epoch 10 rejects replayed credentials."""
-    epochs = _epoch_map(roster_from_binary)
-    assert int(epochs[10]["accepted"]) == EPOCH_10_ACCEPTED
+def test_b3_rg_flip(doc, expect):
+    """Regret is strictly positive under freeze weights."""
+    row = _row(doc)
+    assert int(row["regret_milli"]) > 0
+    assert int(row["regret_milli"]) == expect["regret_milli"]
 
 
-def test_replay_detection_epoch20(roster_from_binary: dict):
-    """Epoch 20 rejects replayed credentials."""
-    epochs = _epoch_map(roster_from_binary)
-    assert int(epochs[20]["accepted"]) == EPOCH_20_ACCEPTED
+def test_b4_rg_side(doc, expect):
+    """Tip snapshot divergence is observable but must not be emitted."""
+    row = _row(doc)
+    assert expect["tip_regret_milli"] != expect["regret_milli"]
+    assert int(row["regret_milli"]) == expect["regret_milli"]
+    assert row["arm"] == "hold_meta"
 
 
-def test_replay_detection_epoch50(roster_from_binary: dict):
-    """Epoch 50 rejects replayed credentials."""
-    epochs = _epoch_map(roster_from_binary)
-    assert int(epochs[50]["accepted"]) == EPOCH_50_ACCEPTED
-
-
-def test_revocation_epoch20(roster_from_binary: dict):
-    """Epoch 20 reflects ledger revocation."""
-    epochs = _epoch_map(roster_from_binary)
-    assert int(epochs[20]["accepted"]) == EPOCH_20_ACCEPTED
-
-
-def test_hold_semantics_epoch30(roster_from_binary: dict):
-    """Epoch 30 publishes with held co-presence (exact restored accepted)."""
-    epochs = _epoch_map(roster_from_binary)
-    assert EPOCH_THIRTY in epochs
-    assert epochs[EPOCH_THIRTY]["profile"] == PROFILE_A
-    assert int(epochs[EPOCH_THIRTY]["accepted"]) == EPOCH_30_ACCEPTED
-
-
-def test_copresence_backends(roster_from_binary: dict):
-    """Matrix lanes active; off-matrix inactive; deep path not surface-inflated."""
-    statuses = _status_map(roster_from_binary)
-    assert statuses.get("mqtt") == STATUS_ACTIVE
-    assert statuses.get("lora") == STATUS_ACTIVE
-    assert statuses.get("uart") == STATUS_ACTIVE
-    assert statuses.get("canbus") == STATUS_INACTIVE
-    assert statuses.get("zigbee") == STATUS_INACTIVE
-    epochs = _epoch_map(roster_from_binary)
-    surface = json.loads(SURFACE.read_text(encoding="utf-8"))
-    surface_epochs = {int(e["id"]): e for e in surface["epochs"]}
-    assert int(epochs[10]["accepted"]) < int(surface_epochs[10]["accepted"])
-    assert int(epochs[20]["accepted"]) < int(surface_epochs[20]["accepted"])
-
-
-def test_all_epochs_present(roster_from_binary: dict):
-    """All five fleet epochs publish with correct profiles."""
-    epochs = _epoch_map(roster_from_binary)
-    assert set(epochs.keys()) == PUBLISHED_EPOCHS
-    assert epochs[10]["profile"] == PROFILE_A
-    assert epochs[20]["profile"] == PROFILE_A
-    assert epochs[30]["profile"] == PROFILE_A
-    assert epochs[40]["profile"] == PROFILE_B
-    assert epochs[50]["profile"] == PROFILE_B
-
-
-def test_revoked_lane_omits_epoch(roster_from_binary: dict):
-    """Epoch with a required lane only-revoked must not publish."""
-    epochs = _epoch_map(roster_from_binary)
-    assert EPOCH_TWENTY_FIVE not in epochs
-    assert set(epochs.keys()) == PUBLISHED_EPOCHS
-
-
-def test_hold_keeps_epoch_with_reduced_accepted(roster_from_binary: dict):
-    """Suspended co-presence keeps the epoch; accepted is only non-held trust."""
-    epochs = _epoch_map(roster_from_binary)
-    assert EPOCH_THIRTY in epochs
-    assert epochs[EPOCH_THIRTY]["profile"] == PROFILE_A
-    assert int(epochs[EPOCH_THIRTY]["accepted"]) == EPOCH_30_ACCEPTED
-    assert int(epochs[EPOCH_THIRTY]["accepted"]) < BAND_CAP
-
-
-def test_output_differs_from_surface(roster_from_binary: dict):
-    """Deep attestation must disagree with the surface fixture on every shared epoch."""
-    surface = json.loads(SURFACE.read_text(encoding="utf-8"))
-    assert roster_from_binary != surface
-    surface_epochs = {int(e["id"]): e for e in surface["epochs"]}
-    roster_epochs = _epoch_map(roster_from_binary)
-    for eid in sorted(PUBLISHED_EPOCHS):
-        assert eid in roster_epochs
-        assert int(roster_epochs[eid]["accepted"]) < int(surface_epochs[eid]["accepted"])
-
-
-def test_output_matches_rebuilt(roster_from_binary: dict):
-    """On-disk agent output must match rebuilt trusteval."""
-    assert OUTPUT.is_file(), f"missing {OUTPUT}"
-    on_disk = json.loads(OUTPUT.read_text(encoding="utf-8"))
-    assert on_disk == roster_from_binary
-    epochs = _epoch_map(on_disk)
-    assert int(epochs[10]["accepted"]) == EPOCH_10_ACCEPTED
-
-
-def test_attestation_stable_across_runs(roster_from_binary: dict):
-    """Second attest run must match the first and stay below surface tallies."""
-    second = _rebuild_and_attest(Path("/tmp") / "ceremony-ledger-second.json")
-    assert second == roster_from_binary
-    epochs = _epoch_map(second)
-    assert int(epochs[EPOCH_TEN]["accepted"]) < SURFACE_EPOCH_10
-    assert EPOCH_THIRTY in epochs
-
-
-def test_output_differs_from_jarcheck(roster_from_binary: dict):
-    """Agent output must differ from jarcheck and beat surface inflation."""
-    surface_poke = json.loads(SURFACE.read_text(encoding="utf-8"))
-    assert roster_from_binary != surface_poke
-    assert OUTPUT.is_file()
-    on_disk = json.loads(OUTPUT.read_text(encoding="utf-8"))
-    assert on_disk == roster_from_binary
-    assert on_disk != surface_poke
-    assert Path("/app/bin").joinpath("jarcheck").is_file()
-    epochs = _epoch_map(on_disk)
-    poke_epochs = {int(e["id"]): e for e in surface_poke["epochs"]}
-    assert int(epochs[10]["accepted"]) < int(poke_epochs[10]["accepted"])
-
-
-def test_dynamic_frame_injection():
-    """Inject a valid frame and verify the evaluator incorporates it."""
-    seg_path = SEGMENTS / "seg_99.bin"
-    assert DYNAMIC_FRAME.is_file(), "dynamic test frame fixture missing"
-    shutil.copy(DYNAMIC_FRAME, seg_path)
-    try:
-        roster = _rebuild_and_attest(DYNAMIC_OUT)
-        epochs = _epoch_map(roster)
-        assert int(epochs[10]["accepted"]) == EPOCH_10_ACCEPTED + 1, (
-            f"Expected {EPOCH_10_ACCEPTED + 1} after injection, got {epochs[10]['accepted']}"
-        )
-    finally:
-        seg_path.unlink(missing_ok=True)
-
-
-def test_dynamic_injected_frame_rejected():
-    """Inject a forged frame and verify it is rejected."""
-    seg_path = SEGMENTS / "seg_98.bin"
-    assert DYNAMIC_INJECTED.is_file(), "dynamic injected frame fixture missing"
-    shutil.copy(DYNAMIC_INJECTED, seg_path)
-    try:
-        roster = _rebuild_and_attest(DYNAMIC_OUT)
-        epochs = _epoch_map(roster)
-        assert int(epochs[40]["accepted"]) == EPOCH_40_ACCEPTED, (
-            f"Expected {EPOCH_40_ACCEPTED} (injected rejected), got {epochs[40]['accepted']}"
-        )
-    finally:
-        seg_path.unlink(missing_ok=True)
-
-
-def test_dynamic_legacy_binding_rejected():
-    """Payload-only legacy signatures must not raise accepted tallies."""
-    seg_path = SEGMENTS / "seg_97.bin"
-    assert DYNAMIC_LEGACY.is_file(), "dynamic legacy frame fixture missing"
-    shutil.copy(DYNAMIC_LEGACY, seg_path)
-    try:
-        roster = _rebuild_and_attest(DYNAMIC_OUT)
-        epochs = _epoch_map(roster)
-        assert int(epochs[40]["accepted"]) == EPOCH_40_ACCEPTED
-    finally:
-        seg_path.unlink(missing_ok=True)
-
-
-def test_watermark_boundary_included(roster_from_binary: dict):
-    """On-watermark credential at epoch 10 contributes to accepted."""
-    epochs = _epoch_map(roster_from_binary)
-    assert int(epochs[EPOCH_TEN]["accepted"]) == EPOCH_10_ACCEPTED
-
-
-def test_integrity_count_exact(
-    roster_from_binary: dict, quarantine_from_binary: dict
-):
-    """Agent quarantine integrity set matches rebuilt trusteval."""
-    _ = roster_from_binary
-    agent = _load_quarantine(QUARANTINE)
-    assert _reason_keys(agent, REASON_INTEGRITY) == _reason_keys(
-        quarantine_from_binary, REASON_INTEGRITY
+def test_c1_mt_roc(doc, expect):
+    """Cluster metamorphic digest binds freeze-epoch regret and cites."""
+    row = _row(doc)
+    cites = row.get("cites") or []
+    got = _digest(
+        "cluster", int(doc["seed"]), row["arm"], cites, int(row["regret_milli"])
     )
+    assert row["meta_digest"] == got
+    assert got == expect["digest"]
 
 
-def test_quarantine_structure(
-    roster_from_binary: dict, quarantine_from_binary: dict
-):
-    """Quarantine shape and reason vocabulary match rebuilt trusteval."""
-    _ = roster_from_binary
-    assert QUARANTINE.is_file(), f"missing {QUARANTINE}"
-    agent = _load_quarantine(QUARANTINE)
-    assert len(agent["rejected"]) == len(quarantine_from_binary["rejected"])
-    reasons = {e["reason"] for e in agent["rejected"]}
-    assert REASON_INTEGRITY in reasons
-    assert REASON_REPLAY in reasons
-    assert REASON_REVOKED in reasons
-    for entry in agent["rejected"]:
-        assert KEY_EPOCH in entry
-        assert KEY_LANE in entry
-        assert KEY_TS in entry
-        assert entry["reason"] in QUARANTINE_REASONS
+def test_c2_mt_slot(doc, expect):
+    """Seed and arm match the pinned held-out meta arm."""
+    assert int(doc["seed"]) == expect["seed"]
+    row = _row(doc)
+    assert row["arm"] == "hold_meta"
 
 
-def test_quarantine_integrity_failures(
-    roster_from_binary: dict, quarantine_from_binary: dict
-):
-    """integrity_failure rows match the rebuilt oracle set."""
-    _ = roster_from_binary
-    agent = _load_quarantine(QUARANTINE)
-    assert _reason_keys(agent, REASON_INTEGRITY) == _reason_keys(
-        quarantine_from_binary, REASON_INTEGRITY
+def test_c3_mt_flip(doc, expect):
+    """Digest width and recomputation survive tip/weight confusion."""
+    row = _row(doc)
+    assert len(row["meta_digest"]) == 16
+    cites = row.get("cites") or []
+    tip_dig = _digest(
+        "cluster",
+        int(doc["seed"]),
+        row["arm"],
+        cites,
+        expect["tip_regret_milli"],
     )
-    assert len(_reason_keys(agent, REASON_INTEGRITY)) >= 1
-
-
-def test_quarantine_replay_entries(
-    roster_from_binary: dict, quarantine_from_binary: dict
-):
-    """replay rows match the rebuilt oracle set."""
-    _ = roster_from_binary
-    agent = _load_quarantine(QUARANTINE)
-    assert _reason_keys(agent, REASON_REPLAY) == _reason_keys(
-        quarantine_from_binary, REASON_REPLAY
+    got = _digest(
+        "cluster", int(doc["seed"]), row["arm"], cites, int(row["regret_milli"])
     )
-    assert len(_reason_keys(agent, REASON_REPLAY)) >= 1
+    assert row["meta_digest"] == got
+    assert row["meta_digest"] != tip_dig
 
 
-def test_quarantine_revoked_entries(
-    roster_from_binary: dict, quarantine_from_binary: dict
-):
-    """revoked rows match the rebuilt oracle set."""
-    _ = roster_from_binary
-    agent = _load_quarantine(QUARANTINE)
-    assert _reason_keys(agent, REASON_REVOKED) == _reason_keys(
-        quarantine_from_binary, REASON_REVOKED
+def test_c4_mt_side(doc, expect):
+    """Fuzz lane digest is well-formed; primary digest remains cluster."""
+    _ = expect
+    row = _row(doc)
+    cites = row.get("cites") or []
+    got = _digest(
+        "fuzz", 61474, row["arm"], cites, int(row["regret_milli"]), fuzz_rounds=5
     )
-    assert len(_reason_keys(agent, REASON_REVOKED)) >= 1
+    assert len(got) == 16
+    cluster = _digest(
+        "cluster", int(doc["seed"]), row["arm"], cites, int(row["regret_milli"])
+    )
+    assert row["meta_digest"] == cluster
 
 
-def test_quarantine_matches_rebuilt(
-    roster_from_binary: dict, quarantine_from_binary: dict
-):
-    """On-disk quarantine equals rebuilt trusteval quarantine."""
-    _ = roster_from_binary
-    agent = _load_quarantine(QUARANTINE)
-    assert agent == quarantine_from_binary
+def test_d1_yv_cite(doc, expect):
+    """Primary cite is a packed tag present in cites."""
+    _ = expect
+    row = _row(doc)
+    cite = row["cite"]
+    assert isinstance(cite, str)
+    assert cite.startswith("z")
+    assert "p" in cite
+    assert cite in (row.get("cites") or [])
+    assert cite != "MISSING"
 
 
-def test_fixtures_untouched():
-    """Seed and surface fixtures remain as shipped."""
-    data = json.loads(SEED.read_text(encoding="utf-8"))
-    assert data.get("seed") == SEED_NAME
-    assert data.get("preserve") is True
-    surface = json.loads(SURFACE.read_text(encoding="utf-8"))
-    assert surface.get("version") == SCHEMA_VERSION
-    assert int(surface["epochs"][0]["accepted"]) == SURFACE_EPOCH_10
-    audit = (FIXTURES / "pre_incident_audit.log").read_text(encoding="utf-8")
-    assert SAMPLE_A in audit
-    assert SAMPLE_B in audit
-    assert SAMPLE_C in audit
-    assert len(re.findall(r"seed_hex=[0-9a-f]{8}", audit)) >= 3
-    assert len(re.findall(r"sk_hex=[0-9a-f]{64}", audit)) >= 3
-    assert len(re.findall(r"pubkey_hex=[0-9a-f]{64}", audit)) >= 3
-    assert len(re.findall(r"sig_hex=[0-9a-f]{128}", audit)) >= 3
-    assert len(re.findall(r"message_hex=[0-9a-f]+", audit)) >= 3
-    assert "key_dom_hex=" in audit
-    assert "domain_ascii=WAUV" in audit
+def test_d2_yv_bind(doc, expect):
+    """part_tag binds cite suffix; digest and regret are typed observations."""
+    _ = expect
+    row = _row(doc)
+    cites = row.get("cites") or []
+    assert row["cite"] in cites
+    assert row["part_tag"] == row["cite"][-4:]
+    assert isinstance(row["meta_digest"], str)
+    assert len(row["meta_digest"]) == 16
+    assert isinstance(row["regret_milli"], int)
+
+
+def test_d3_yv_flip(doc, expect):
+    """Single schema header; tip residue must not append duplicate docs."""
+    _ = expect
+    text = OUT.read_text()
+    schema_lines = [
+        ln for ln in text.splitlines() if ln.startswith("schema: demand-invariant-v1")
+    ]
+    assert len(schema_lines) == 1
+    row = _row(doc)
+    assert "cites" in row
+    assert len(row["cites"]) >= 1
+
+
+def test_d4_yv_twice(doc, expect):
+    """Consecutive evaluations are byte-identical under warm cache + tip reset."""
+    _ = doc
+    first = OUT.read_bytes()
+    _run_cli()
+    second = OUT.read_bytes()
+    assert first == second
+    schema_lines = [
+        ln
+        for ln in first.splitlines()
+        if ln.startswith(b"schema: demand-invariant-v1")
+    ]
+    assert len(schema_lines) == 1
+    row = yaml.safe_load(second)["rows"][0]
+    assert row["cites"] == expect["cites"]
+    assert int(row["regret_milli"]) == expect["regret_milli"]

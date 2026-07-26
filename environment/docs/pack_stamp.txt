@@ -1,0 +1,2 @@
+Zone pack stamp is part of partition-cache validity together with the active arm freeze epoch.
+Drivers must not treat the stamp as an eigengap cut index. Cut rules and freeze-epoch journal replay live in eval_contract.md.

@@ -1,0 +1,28 @@
+# Held-out metamorphic and property-based fuzz arms
+# kind: cluster | feature | stream | fuzz
+# survival: derived violation count must be 0 under eval_contract predicates
+
+[[lane]]
+name = "hold_cluster"
+kind = "cluster"
+arm = "hold_meta"
+seed = 41246
+
+[[lane]]
+name = "hold_feature"
+kind = "feature"
+arm = "hold_meta"
+seed = 41246
+
+[[lane]]
+name = "hold_stream"
+kind = "stream"
+arm = "hold_meta"
+seed = 41246
+
+[[lane]]
+name = "fuzz_perm"
+kind = "fuzz"
+arm = "hold_fuzz"
+seed = 61474
+fuzz_rounds = 5
