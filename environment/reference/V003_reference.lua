@@ -1,25 +1,3 @@
-#!/bin/bash
-# Reference solution: installs the reference V003 implementation.
-#
-# The same file is used at image-build time (in a discarded Docker stage) to generate
-# expected/registry_export.sha256, so this reproduces the expected digest by construction.
-
-set -euo pipefail
-
-dir="${PWD}"
-if [ ! -f "${dir}/pom.xml" ]; then
-  if [ -f /app/pom.xml ]; then
-    dir=/app
-  else
-    while [ "${dir}" != "/" ] && [ ! -f "${dir}/pom.xml" ]; do
-      dir="$(dirname "${dir}")"
-    done
-  fi
-fi
-
-target="${dir}/migrations/V003_backfill_hf_model_metadata.lua"
-
-cat > "${target}" <<'LUA'
 -- V003: resolve each registered model's pinned Hugging Face checkpoint and backfill its
 -- architecture into model_architecture, pointing that model's version rows at it.
 --
@@ -274,6 +252,3 @@ for _, model in ipairs(models) do
     sql_str(meta.fingerprint) ..
     " WHERE model_name = " .. sql_str(model.name))
 end
-LUA
-
-echo "Implemented ${target}"
