@@ -4,27 +4,24 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "machine-learning"
-tags = ["machine-learning", "tabular", "counterfactual", "typescript", "l0-eval"]
-languages = ["typescript"]
-codebase_size = "small"
-number_of_milestones = 0
+category = "games"
 subcategories = []
-expert_time_estimate_min = 180
-junior_time_estimate_min = 480
+number_of_milestones = 0
+codebase_size = "small"
+languages = ["go"]
+tags = ["go", "golang", "sky-kingdoms", "fleet-campaign", "deterministic-sim", "terminal-game"]
+expert_time_estimate_min = 300
+junior_time_estimate_min = 900
 
-[reference_pattern]
-justification_if_none = "no promoted reference matches TypeScript tabular L0 counterfactual constrained_build with run_fit/run_cf layout+bundle artifacts"
+[environment]
+build_timeout_sec = 600.0
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240
+allow_internet = false
 
 [agent]
 timeout_sec = 1800
 
 [verifier]
-timeout_sec = 600
-
-[environment]
-allow_internet = false
-build_timeout_sec = 400
-cpus = 2
-memory_mb = 4096
-storage_mb = 10240
+timeout_sec = 450.0
