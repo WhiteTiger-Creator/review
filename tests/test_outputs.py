@@ -1,538 +1,434 @@
-"""Verifier for TrustLoom TL-ALS-CONF-1 (nested folds / local R* / sign canon)."""
-
+"""Verifier for edge fleet trust attestation recovery."""
 from __future__ import annotations
 
-import csv
 import json
-import math
+import re
+import shutil
 import subprocess
 from pathlib import Path
 
-ROOT = Path("/opt/trustloom")
-BIN = ROOT / "bin" / "trustloom"
-INTERACTIONS = Path("/app/data/interactions.csv")
-QUERIES = Path("/app/data/queries.csv")
-HOLDOUT = Path("/app/data/holdout.csv")
-OUT = Path("/var/lib/trustloom")
-MODEL = OUT / "model.json"
-SCORES = OUT / "scores.json"
-METRICS = OUT / "metrics.json"
-DIAG = OUT / "diagnostics.json"
-FOLDS = OUT / "folds.json"
-BUILD_PATH = Path("/app/remediation/build-path.txt")
+import pytest
 
-F, LAMBDA, ALPHA, ITERS, INIT_SCALE, K = 4, 0.15, 25.0, 8, 0.02, 3
-FADE, MID, FK, GAMMA, JITTER = 0.994, 4, 4, 5.0, 1e-8
-FNV_OFFSET, FNV_PRIME = 14695981039346656037, 1099511628211
-ABS_TOL, MET_TOL = 1e-9, 1e-12
+OUTPUT = Path("/output/ceremony-ledger.json")
+QUARANTINE = Path("/output/quarantine.json")
+FIXTURES = Path("/app/data/fixtures")
+SURFACE = FIXTURES / "surface_attestation.json"
+SEED = FIXTURES / "seed.json"
+SEGMENTS = Path("/app/data/signed_segments")
+VERIFIER_OUT = Path("/tmp") / "ceremony-ledger-verify.json"
+DYNAMIC_OUT = Path("/tmp") / "ceremony-ledger-dynamic.json"
+DYNAMIC_FRAME = FIXTURES / "dynamic_test_frame.bin"
+DYNAMIC_INJECTED = FIXTURES / "dynamic_test_injected.bin"
 
-
-def _fnv1a64(data: bytes) -> int:
-    h = FNV_OFFSET
-    for b in data:
-        h ^= b
-        h = (h * FNV_PRIME) & 0xFFFFFFFFFFFFFFFF
-    return h
-
-
-def _unit_hash(kind: str, id_: int, f: int) -> float:
-    h = _fnv1a64(f"{kind}|{id_}|{f}".encode("ascii"))
-    return ((h % 1000003) / 1000003.0) * 2.0 - 1.0
-
-
-def _load_pairs(path: Path):
-    with open(path) as fh:
-        rows = list(csv.DictReader(fh))
-    totals_u, totals_i = {}, {}
-    raw = []
-    for row in rows:
-        u, i, c = int(row["user_id"]), int(row["item_id"]), int(row["count"])
-        totals_u[u] = totals_u.get(u, 0) + c
-        totals_i[i] = totals_i.get(i, 0) + c
-        raw.append((u, i, c))
-    keep_u = {u for u, t in totals_u.items() if t >= 2}
-    keep_i = {i for i, t in totals_i.items() if t >= 2}
-    pairs = {}
-    for u, i, c in raw:
-        if u in keep_u and i in keep_i:
-            pairs[(u, i)] = pairs.get((u, i), 0) + c
-    return pairs
-
-
-def _remass(pairs):
-    totals_u, totals_i = {}, {}
-    for (u, i), c in pairs.items():
-        totals_u[u] = totals_u.get(u, 0) + c
-        totals_i[i] = totals_i.get(i, 0) + c
-    keep_u = {u for u, t in totals_u.items() if t >= 2}
-    keep_i = {i for i, t in totals_i.items() if t >= 2}
-    return {(u, i): c for (u, i), c in pairs.items() if u in keep_u and i in keep_i}
+EPOCH_10_ACCEPTED = 8
+EPOCH_20_ACCEPTED = 5
+EPOCH_30_ACCEPTED = 3
+EPOCH_40_ACCEPTED = 5
+EPOCH_50_ACCEPTED = 4
+SURFACE_EPOCH_10 = 10
+SCHEMA_VERSION = 1
+STATUS_ACTIVE = "active"
+STATUS_INACTIVE = "inactive"
+PROFILE_A = "fleet_a"
+PROFILE_B = "fleet_b"
+BACKEND_NAMES = {"mqtt", "lora", "uart", "canbus", "zigbee"}
+PUBLISHED_EPOCHS = {10, 20, 30, 40, 50}
+CORE_EPOCHS = {10, 20, 40, 50}
+REASON_INTEGRITY = "integrity_failure"
+REASON_REPLAY = "replay"
+REASON_REVOKED = "revoked"
+QUARANTINE_REASONS = (REASON_INTEGRITY, REASON_REPLAY, REASON_REVOKED)
+KEY_BACKENDS = "backends"
+KEY_EPOCHS = "epochs"
+KEY_REJECTED = "rejected"
+KEY_EPOCH = "epoch"
+KEY_LANE = "lane"
+KEY_TS = "ts"
+EPOCH_TEN = 10
+EPOCH_THIRTY = 30
+EPOCH_TWENTY_FIVE = 25
+BAND_LO = 2
+BAND_HI = 4
+BAND_CAP = 6
+BACKEND_COUNT = 5
+SAMPLE_A = "sample_a"
+SAMPLE_B = "sample_b"
+SAMPLE_C = "sample_c"
+SEED_NAME = "lane-lattice-v2"
+DYNAMIC_LEGACY = FIXTURES / "dynamic_test_legacy.bin"
 
 
-def _catalog(pairs):
-    users = sorted({u for u, _ in pairs})
-    items = sorted({i for _, i in pairs})
-    u_index = {u: idx for idx, u in enumerate(users)}
-    i_index = {i: idx for idx, i in enumerate(items)}
-    user_obs = {ui: [] for ui in range(len(users))}
-    item_obs = {ii: [] for ii in range(len(items))}
-    for (u, i), r in pairs.items():
-        user_obs[u_index[u]].append((i_index[i], r))
-        item_obs[i_index[i]].append((u_index[u], r))
-    r_star = max(pairs.values()) if pairs else 1
-    return users, items, user_obs, item_obs, u_index, i_index, r_star, len(pairs)
+def _quarantine_path_for(attest_out: Path) -> Path:
+    name = attest_out.name.replace("ceremony-ledger", "quarantine")
+    return attest_out.with_name(name)
 
 
-def _eye(n):
-    return [[1.0 if a == b else 0.0 for b in range(n)] for a in range(n)]
-
-
-def _add(a, b):
-    n = len(a)
-    return [[a[i][j] + b[i][j] for j in range(n)] for i in range(n)]
-
-
-def _scale(a, s):
-    n = len(a)
-    return [[a[i][j] * s for j in range(n)] for i in range(n)]
-
-
-def _outer(v):
-    n = len(v)
-    return [[v[i] * v[j] for j in range(n)] for i in range(n)]
-
-
-def _gram(M):
-    f = len(M[0])
-    g = [[0.0] * f for _ in range(f)]
-    for row in M:
-        for a in range(f):
-            for b in range(f):
-                g[a][b] += row[a] * row[b]
-    return g
-
-
-def _chol_solve(A, b):
-    n = len(b)
-    L = [[0.0] * n for _ in range(n)]
-    for i in range(n):
-        for j in range(i + 1):
-            s = sum(L[i][k] * L[j][k] for k in range(j))
-            if i == j:
-                L[i][j] = math.sqrt(max(A[i][i] - s, 0.0))
-            else:
-                L[i][j] = (A[i][j] - s) / L[j][j]
-    y = [0.0] * n
-    for i in range(n):
-        y[i] = (b[i] - sum(L[i][k] * y[k] for k in range(i))) / L[i][i]
-    x = [0.0] * n
-    for i in range(n - 1, -1, -1):
-        x[i] = (y[i] - sum(L[k][i] * x[k] for k in range(i + 1, n))) / L[i][i]
-    return x
-
-
-def _normalize(M):
-    out = []
-    for row in M:
-        nrm = math.sqrt(sum(v * v for v in row))
-        out.append(list(row) if nrm == 0 else [v / nrm for v in row])
-    return out
-
-
-def _sign_canon(M):
-    out = []
-    for row in M:
-        if row and row[0] < 0:
-            out.append([-v for v in row])
-        else:
-            out.append(list(row))
-    return out
-
-
-def _polarity_align(X, Y):
-    s = sum(row[0] for row in X if row)
-    if s >= 0:
-        return X, Y
-    return [[-v for v in row] for row in X], [[-v for v in row] for row in Y]
-
-
-def _add_jitter(A, lt):
-    j = JITTER * lt
-    n = len(A)
-    out = [row[:] for row in A]
-    for f in range(n):
-        out[f][f] += j
-    return out
-
-
-def _fade(M):
-    return [[v * FADE for v in row] for row in M]
-
-
-def _local_max(obs):
-    return max((r for _, r in obs), default=1)
-
-
-def _conf(r, r_local):
-    return 1.0 + ALPHA * math.log1p(r) / math.log1p(r_local)
-
-
-def _fit(users, items, user_obs, item_obs):
-    u_n, i_n = len(users), len(items)
-    X = [[INIT_SCALE * _unit_hash("user", users[u], f) for f in range(F)] for u in range(u_n)]
-    Y = [[INIT_SCALE * _unit_hash("item", items[i], f) for f in range(F)] for i in range(i_n)]
-    schedule = []
-    for t in range(1, ITERS + 1):
-        lt = LAMBDA if t <= MID else 2 * LAMBDA
-        schedule.append(lt)
-        do_fade = lt == LAMBDA
-        xtx = _gram(X)
-        new_y = []
-        for i in range(i_n):
-            n_i = len(item_obs[i])
-            r_i = _local_max(item_obs[i])
-            A = _add(xtx, _scale(_eye(F), lt * n_i))
-            b = [0.0] * F
-            for ui, r in item_obs[i]:
-                c = _conf(r, r_i)
-                A = _add(A, _scale(_outer(X[ui]), c - 1.0))
-                for f in range(F):
-                    b[f] += c * X[ui][f]
-            new_y.append(_chol_solve(_add_jitter(A, lt), b))
-        Y = _fade(new_y) if do_fade else new_y
-        yty = _gram(Y)
-        new_x = []
-        for u in range(u_n):
-            n_u = len(user_obs[u])
-            r_u = _local_max(user_obs[u])
-            A = _add(yty, _scale(_eye(F), lt * n_u))
-            b = [0.0] * F
-            for ii, r in user_obs[u]:
-                c = _conf(r, r_u)
-                A = _add(A, _scale(_outer(Y[ii]), c - 1.0))
-                for f in range(F):
-                    b[f] += c * Y[ii][f]
-            new_x.append(_chol_solve(_add_jitter(A, lt), b))
-        X = _fade(new_x) if do_fade else new_x
-    xn, yn = _normalize(X), _normalize(Y)
-    xn, yn = _polarity_align(xn, yn)
-    return _sign_canon(xn), _sign_canon(yn), schedule
-
-
-def _dot(a, b):
-    return sum(x * y for x, y in zip(a, b))
-
-
-def _score(X, Y, user_obs, item_obs, u_index, i_index, uid, iid):
-    if uid not in u_index or iid not in i_index:
-        return 0.0
-    ui, ii = u_index[uid], i_index[iid]
-    raw = _dot(X[ui], Y[ii])
-    n_u = len(user_obs[ui])
-    n_i = len(item_obs[ii])
-    return raw * math.sqrt((n_u + n_i) / (n_u + n_i + GAMMA))
-
-
-def _ap_macro(X, Y, user_obs, item_obs, users, items, u_index, i_index, relevant_by_user):
-    aps = []
-    for u in sorted(relevant_by_user):
-        if u not in u_index:
-            continue
-        R = {i for i in relevant_by_user[u] if i in i_index}
-        if not R:
-            continue
-        scored = [(iid, _score(X, Y, user_obs, item_obs, u_index, i_index, u, iid)) for iid in items]
-        scored.sort(key=lambda t: (-t[1], t[0]))
-        top = [iid for iid, _ in scored[:K]]
-        hit_count = 0
-        ap_sum = 0.0
-        for rank, iid in enumerate(top, start=1):
-            if iid in R:
-                hit_count += 1
-                ap_sum += hit_count / rank
-        denom = min(K, len(R))
-        aps.append(ap_sum / denom if hit_count else 0.0)
-    if not aps:
-        return 0.0, 0
-    return sum(aps) / len(aps), len(aps)
-
-
-def _holdout_metrics(X, Y, user_obs, item_obs, users, items, u_index, i_index, holdout_path: Path):
-    by_user = {}
-    with open(holdout_path) as fh:
-        for row in csv.DictReader(fh):
-            u, i, lab = int(row["user_id"]), int(row["item_id"]), int(row["label"])
-            by_user.setdefault(u, []).append((i, lab))
-    precs, aps, ndcgs = [], [], []
-    for u in sorted(by_user):
-        if u not in u_index:
-            continue
-        R = {i for i, lab in by_user[u] if lab == 1 and i in i_index}
-        if not R:
-            continue
-        scored = [(iid, _score(X, Y, user_obs, item_obs, u_index, i_index, u, iid)) for iid in items]
-        scored.sort(key=lambda t: (-t[1], t[0]))
-        top = [iid for iid, _ in scored[:K]]
-        hits = sum(1 for iid in top if iid in R)
-        precs.append(hits / K)
-        hit_count = 0
-        ap_sum = 0.0
-        dcg = 0.0
-        for rank, iid in enumerate(top, start=1):
-            if iid in R:
-                hit_count += 1
-                ap_sum += hit_count / rank
-                dcg += 1.0 / math.log2(rank + 1)
-        denom = min(K, len(R))
-        aps.append(ap_sum / denom if hit_count else 0.0)
-        ideal = min(K, len(R))
-        idcg = sum(1.0 / math.log2(r + 1) for r in range(1, ideal + 1))
-        ndcgs.append(dcg / idcg if idcg else 0.0)
-    n = len(precs)
-    if not n:
-        return 0.0, 0.0, 0.0, 0
-    return sum(precs) / n, sum(aps) / n, sum(ndcgs) / n, n
-
-
-def _folds(global_pairs):
-    _users, _items, _uo, _io, u_index, i_index, _rs, _np = _catalog(global_pairs)
-    out = []
-    for f in range(FK):
-        train, hold = {}, {}
-        for (u, i), c in global_pairs.items():
-            bucket = (2 * u_index[u] + 3 * i_index[i]) % FK
-            (hold if bucket == f else train)[(u, i)] = c
-        train = _remass(train)
-        tu, ti, uo, io, uix, iix, _rs2, npairs = _catalog(train)
-        X, Y, _sched = _fit(tu, ti, uo, io)
-        rel = {}
-        for (u, i) in hold:
-            if u in uix and i in iix:
-                rel.setdefault(u, set()).add(i)
-        m, e = _ap_macro(X, Y, uo, io, tu, ti, uix, iix, rel)
-        out.append(
-            {
-                "fold_index": f,
-                "n_train_users": len(tu),
-                "n_train_items": len(ti),
-                "n_train_pairs": npairs,
-                "eligible_users": e,
-                "map_at_k": m,
-            }
-        )
-    return out
-
-
-def _expected():
-    pairs = _load_pairs(INTERACTIONS)
-    users, items, user_obs, item_obs, u_index, i_index, r_star, n_pairs = _catalog(pairs)
-    X, Y, schedule = _fit(users, items, user_obs, item_obs)
-    with open(QUERIES) as fh:
-        queries = [(int(r["user_id"]), int(r["item_id"])) for r in csv.DictReader(fh)]
-    scores = [_score(X, Y, user_obs, item_obs, u_index, i_index, u, i) for u, i in queries]
-    p, m, n, e = _holdout_metrics(X, Y, user_obs, item_obs, users, items, u_index, i_index, HOLDOUT)
-    mean_abs = sum(abs(_dot(X[u], Y[i])) for u in range(len(users)) for i in range(len(items)))
-    mean_abs /= max(len(users) * len(items), 1)
-    return users, items, X, Y, queries, scores, p, m, n, e, r_star, n_pairs, schedule, mean_abs, _folds(pairs)
-
-
-def _no_active_labals(path: Path) -> None:
-    if not path.exists():
-        return
-    for line in path.read_text().splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#") or stripped == "":
-            continue
-        assert "labals" not in stripped, f"{path} still forces labals: {stripped}"
-
-
-def _rebuild():
-    result = subprocess.run(["make", "clean", "all"], cwd=str(ROOT), capture_output=True, text=True, check=False)
-    assert result.returncode == 0, f"make failed:\n{result.stdout}{result.stderr}"
-    assert BIN.exists()
-
-
-def _run_fit(interactions=INTERACTIONS, queries=QUERIES, holdout=HOLDOUT, out=OUT):
-    if out.exists():
-        for child in out.iterdir():
-            if child.is_file():
-                child.unlink()
-    out.mkdir(parents=True, exist_ok=True)
-    return subprocess.run(
-        [str(BIN), "--interactions", str(interactions), "--queries", str(queries), "--holdout", str(holdout), "--out", str(out)],
+def _rebuild_and_attest(out: Path) -> dict:
+    result = subprocess.run(
+        ["cargo", "build", "-p", "trusteval", "--release"],
+        cwd="/app",
         capture_output=True,
         text=True,
         check=False,
     )
-
-
-def _assert_close(a, b, tol, label):
-    assert abs(float(a) - float(b)) <= tol, f"{label}: got {a}, expected {b}"
-
-
-def _helpers_disabled() -> None:
-    makefile = (ROOT / "Makefile").read_text() if (ROOT / "Makefile").exists() else ""
-    for name in ("tl-coerce.sh", "tl-handbook-sync.sh"):
-        path = ROOT / "scripts" / name
-        if not path.exists():
-            continue
-        for line in makefile.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("#") or stripped == "":
-                continue
-            assert name not in stripped, (
-                f"active Makefile line still invokes {name}: {stripped}"
-            )
-
-
-def test_packaging_and_rebuild():
-    _no_active_labals(ROOT / "staging.mk")
-    _no_active_labals(ROOT / ".cutover.mk")
-    _helpers_disabled()
-    assert BUILD_PATH.read_bytes() == b"default:!labals\n"
-    _rebuild()
-    assert BIN.read_bytes()[:4] == b"\x7fELF"
-    result = _run_fit()
-    assert result.returncode == 0, result.stderr
-    assert MODEL.exists() and SCORES.exists() and METRICS.exists() and DIAG.exists() and FOLDS.exists()
-
-
-def test_model_schema_and_factors():
-    _rebuild()
-    _run_fit()
-    users, items, X, Y = _expected()[:4]
-    doc = json.loads(MODEL.read_text())
-    assert doc["algorithm"] == "tl-als-conf-1"
-    assert [u["id"] for u in doc["users"]] == users
-    assert [i["id"] for i in doc["items"]] == items
-    for idx, u in enumerate(doc["users"]):
-        for f in range(F):
-            _assert_close(u["factors"][f], X[idx][f], ABS_TOL, f"user {u['id']} f{f}")
-        assert u["factors"][0] >= 0.0 or all(abs(v) < ABS_TOL for v in u["factors"])
-        nrm = math.sqrt(sum(v * v for v in u["factors"]))
-        _assert_close(nrm, 1.0, ABS_TOL, f"user {u['id']} norm")
-    for idx, it in enumerate(doc["items"]):
-        for f in range(F):
-            _assert_close(it["factors"][f], Y[idx][f], ABS_TOL, f"item {it['id']} f{f}")
-        assert it["factors"][0] >= 0.0 or all(abs(v) < ABS_TOL for v in it["factors"])
-
-
-def test_scores_match_expected():
-    _rebuild()
-    _run_fit()
-    exp = _expected()
-    queries, scores = exp[4], exp[5]
-    doc = json.loads(SCORES.read_text())
-    for got, (uid, iid), want in zip(doc["scores"], queries, scores):
-        assert got["user_id"] == uid and got["item_id"] == iid
-        _assert_close(got["score"], want, ABS_TOL, f"score {uid},{iid}")
-
-
-def test_metrics_match_expected():
-    _rebuild()
-    _run_fit()
-    exp = _expected()
-    p, m, n, e = exp[6], exp[7], exp[8], exp[9]
-    doc = json.loads(METRICS.read_text())
-    assert doc["k"] == K
-    assert doc["eligible_users"] == e
-    _assert_close(doc["precision_at_k"], p, MET_TOL, "precision")
-    _assert_close(doc["map_at_k"], m, MET_TOL, "map")
-    _assert_close(doc["ndcg_at_k"], n, MET_TOL, "ndcg")
-
-
-def test_diagnostics_match_expected():
-    _rebuild()
-    _run_fit()
-    exp = _expected()
-    users, items = exp[0], exp[1]
-    r_star, n_pairs, schedule, mean_abs = exp[10], exp[11], exp[12], exp[13]
-    doc = json.loads(DIAG.read_text())
-    assert doc["r_star"] == r_star
-    assert doc["n_users"] == len(users)
-    assert doc["n_items"] == len(items)
-    assert doc["n_pairs"] == n_pairs
-    _assert_close(doc["fade"], FADE, ABS_TOL, "fade")
-    assert doc["lambda_schedule"] == schedule
-    _assert_close(doc["mean_abs_score"], mean_abs, ABS_TOL, "mean_abs_score")
-
-
-def test_folds_match_expected():
-    _rebuild()
-    _run_fit()
-    fold_exp = _expected()[14]
-    doc = json.loads(FOLDS.read_text())
-    assert doc["k"] == FK
-    assert len(doc["folds"]) == FK
-    for got, want in zip(doc["folds"], fold_exp):
-        assert got["fold_index"] == want["fold_index"]
-        assert got["n_train_users"] == want["n_train_users"]
-        assert got["n_train_items"] == want["n_train_items"]
-        assert got["n_train_pairs"] == want["n_train_pairs"]
-        assert got["eligible_users"] == want["eligible_users"]
-        _assert_close(got["map_at_k"], want["map_at_k"], MET_TOL, f"fold {want['fold_index']} map")
-
-
-def test_catalog_excludes_low_mass_ids():
-    _rebuild()
-    _run_fit()
-    doc = json.loads(MODEL.read_text())
-    user_ids = {u["id"] for u in doc["users"]}
-    item_ids = {i["id"] for i in doc["items"]}
-    assert 99 not in user_ids and 999 not in item_ids and 70 not in user_ids
-
-
-def test_cold_start_scores_are_zero():
-    _rebuild()
-    _run_fit()
-    by_pair = {(s["user_id"], s["item_id"]): s["score"] for s in json.loads(SCORES.read_text())["scores"]}
-    _assert_close(by_pair[(99, 100)], 0.0, ABS_TOL, "user 99 cold")
-    _assert_close(by_pair[(10, 999)], 0.0, ABS_TOL, "item 999 cold")
-    _assert_close(by_pair[(70, 200)], 0.0, ABS_TOL, "user 70 cold")
-
-
-def test_agent_tree_has_no_verifier_assets():
-    assert not (ROOT / "tests").exists()
-    for path in ROOT.rglob("*"):
-        if path.is_file():
-            assert "test_outputs" not in path.name
-
-
-def test_alternate_interactions_recompute():
-    _rebuild()
-    alt = Path("/tmp/alt_interactions.csv")
-    alt.write_text(
-        "user_id,item_id,count\n"
-        "1,10,3\n1,20,2\n2,10,4\n2,20,1\n2,30,3\n3,20,2\n3,30,5\n3,10,1\n"
-        "4,10,2\n4,30,2\n1,30,1\n"
+    assert result.returncode == 0, f"cargo build failed:\n{result.stderr}"
+    result = subprocess.run(
+        ["/app/target/release/trusteval", "attest", "--out", str(out)],
+        cwd="/app",
+        capture_output=True,
+        text=True,
+        check=False,
     )
-    alt_q = Path("/tmp/alt_queries.csv")
-    alt_q.write_text("user_id,item_id\n1,10\n2,30\n3,20\n9,10\n")
-    alt_h = Path("/tmp/alt_holdout.csv")
-    alt_h.write_text("user_id,item_id,label\n1,10,1\n1,30,0\n2,20,1\n2,30,1\n3,10,0\n3,30,1\n4,10,1\n")
-    alt_out = Path("/tmp/alt_out")
-    assert _run_fit(alt, alt_q, alt_h, alt_out).returncode == 0
+    assert result.returncode == 0, f"trusteval attest failed:\n{result.stderr}"
+    body = out.read_text(encoding="utf-8")
+    data = json.loads(body)
+    assert data.get("version") == SCHEMA_VERSION
+    return data
 
-    pairs = _load_pairs(alt)
-    users, items, user_obs, item_obs, u_index, i_index, _r_star, _n_pairs = _catalog(pairs)
-    X, Y, _schedule = _fit(users, items, user_obs, item_obs)
-    queries = [(1, 10), (2, 30), (3, 20), (9, 10)]
-    exp_scores = [_score(X, Y, user_obs, item_obs, u_index, i_index, u, i) for u, i in queries]
-    p, m, _n, e = _holdout_metrics(X, Y, user_obs, item_obs, users, items, u_index, i_index, alt_h)
-    fold_exp = _folds(pairs)
 
-    got_scores = json.loads((alt_out / "scores.json").read_text())["scores"]
-    for got, exp, (uid, iid) in zip(got_scores, exp_scores, queries):
-        _assert_close(got["score"], exp, ABS_TOL, f"alt score {uid},{iid}")
-    met = json.loads((alt_out / "metrics.json").read_text())
-    _assert_close(met["precision_at_k"], p, MET_TOL, "alt precision")
-    _assert_close(met["map_at_k"], m, MET_TOL, "alt map")
-    assert met["eligible_users"] == e
-    folds_doc = json.loads((alt_out / "folds.json").read_text())
-    for got, exp in zip(folds_doc["folds"], fold_exp):
-        assert got["n_train_pairs"] == exp["n_train_pairs"]
-        _assert_close(got["map_at_k"], exp["map_at_k"], MET_TOL, "alt fold map")
+def _load_quarantine(path: Path) -> dict:
+    assert path.is_file(), f"missing quarantine at {path}"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data.get("version") == SCHEMA_VERSION
+    assert KEY_REJECTED in data
+    return data
 
-    _run_fit()
-    bundled = json.loads(SCORES.read_text())["scores"]
-    assert got_scores[0]["score"] != bundled[0]["score"] or got_scores[1]["score"] != bundled[1]["score"]
+
+def _reason_keys(data: dict, reason: str) -> set[tuple]:
+    return {
+        (int(e["epoch"]), e["lane"], int(e["ts"]))
+        for e in data["rejected"]
+        if e["reason"] == reason
+    }
+
+
+@pytest.fixture(scope="module")
+def roster_from_binary() -> dict:
+    """Fresh rebuild + attestation from current /app sources."""
+    return _rebuild_and_attest(VERIFIER_OUT)
+
+
+@pytest.fixture(scope="module")
+def quarantine_from_binary(roster_from_binary: dict) -> dict:
+    """Quarantine produced by the same rebuild as roster_from_binary."""
+    _ = roster_from_binary
+    return _load_quarantine(_quarantine_path_for(VERIFIER_OUT))
+
+
+def _status_map(roster: dict) -> dict[str, str]:
+    assert roster.get("version") == SCHEMA_VERSION
+    backends = roster["backends"]
+    return {row["name"]: row["status"] for row in backends}
+
+
+def _epoch_map(roster: dict) -> dict[int, dict]:
+    return {int(row["id"]): row for row in roster["epochs"]}
+
+
+def test_roster_structure(roster_from_binary: dict):
+    """Attestation shape plus deep-path signal (not surface-inflated epoch 10)."""
+    assert roster_from_binary["version"] == SCHEMA_VERSION
+    assert KEY_BACKENDS in roster_from_binary
+    assert KEY_EPOCHS in roster_from_binary
+    backends = roster_from_binary["backends"]
+    assert len(backends) == BACKEND_COUNT
+    names = {b["name"] for b in backends}
+    assert names == BACKEND_NAMES
+    for b in backends:
+        assert b["status"] in (STATUS_ACTIVE, STATUS_INACTIVE)
+    epochs = _epoch_map(roster_from_binary)
+    assert CORE_EPOCHS.issubset(epochs.keys())
+    assert int(epochs[EPOCH_TEN]["accepted"]) < SURFACE_EPOCH_10
+    assert int(epochs[EPOCH_TEN]["accepted"]) >= EPOCH_30_ACCEPTED
+
+
+def test_authority_correct_tier(roster_from_binary: dict):
+    """Epoch 10 accepted count matches restored deep attestation."""
+    epochs = _epoch_map(roster_from_binary)
+    assert EPOCH_TEN in epochs
+    accepted_10 = int(epochs[EPOCH_TEN]["accepted"])
+    assert accepted_10 == EPOCH_10_ACCEPTED
+
+
+def test_keyed_integrity_rejects_injected(roster_from_binary: dict):
+    """Forged frames must not inflate epoch 10 accepted."""
+    epochs = _epoch_map(roster_from_binary)
+    assert int(epochs[EPOCH_TEN]["accepted"]) == EPOCH_10_ACCEPTED
+    assert int(epochs[EPOCH_TEN]["accepted"]) < SURFACE_EPOCH_10
+
+
+def test_keyed_integrity_epoch30(roster_from_binary: dict):
+    """Epoch 30 remains published under hold co-presence with reduced tally."""
+    epochs = _epoch_map(roster_from_binary)
+    assert EPOCH_THIRTY in epochs
+    accepted = int(epochs[EPOCH_THIRTY]["accepted"])
+    assert BAND_LO <= accepted <= BAND_HI
+    assert accepted < BAND_CAP
+
+
+def test_keyed_integrity_epoch40(roster_from_binary: dict):
+    """Epoch 40 accepted matches restored attestation."""
+    epochs = _epoch_map(roster_from_binary)
+    assert int(epochs[40]["accepted"]) == EPOCH_40_ACCEPTED
+
+
+def test_replay_detection_epoch10(roster_from_binary: dict):
+    """Epoch 10 rejects replayed credentials."""
+    epochs = _epoch_map(roster_from_binary)
+    assert int(epochs[10]["accepted"]) == EPOCH_10_ACCEPTED
+
+
+def test_replay_detection_epoch20(roster_from_binary: dict):
+    """Epoch 20 rejects replayed credentials."""
+    epochs = _epoch_map(roster_from_binary)
+    assert int(epochs[20]["accepted"]) == EPOCH_20_ACCEPTED
+
+
+def test_replay_detection_epoch50(roster_from_binary: dict):
+    """Epoch 50 rejects replayed credentials."""
+    epochs = _epoch_map(roster_from_binary)
+    assert int(epochs[50]["accepted"]) == EPOCH_50_ACCEPTED
+
+
+def test_revocation_epoch20(roster_from_binary: dict):
+    """Epoch 20 reflects ledger revocation."""
+    epochs = _epoch_map(roster_from_binary)
+    assert int(epochs[20]["accepted"]) == EPOCH_20_ACCEPTED
+
+
+def test_hold_semantics_epoch30(roster_from_binary: dict):
+    """Epoch 30 publishes with held co-presence (exact restored accepted)."""
+    epochs = _epoch_map(roster_from_binary)
+    assert EPOCH_THIRTY in epochs
+    assert epochs[EPOCH_THIRTY]["profile"] == PROFILE_A
+    assert int(epochs[EPOCH_THIRTY]["accepted"]) == EPOCH_30_ACCEPTED
+
+
+def test_copresence_backends(roster_from_binary: dict):
+    """Matrix lanes active; off-matrix inactive; deep path not surface-inflated."""
+    statuses = _status_map(roster_from_binary)
+    assert statuses.get("mqtt") == STATUS_ACTIVE
+    assert statuses.get("lora") == STATUS_ACTIVE
+    assert statuses.get("uart") == STATUS_ACTIVE
+    assert statuses.get("canbus") == STATUS_INACTIVE
+    assert statuses.get("zigbee") == STATUS_INACTIVE
+    epochs = _epoch_map(roster_from_binary)
+    surface = json.loads(SURFACE.read_text(encoding="utf-8"))
+    surface_epochs = {int(e["id"]): e for e in surface["epochs"]}
+    assert int(epochs[10]["accepted"]) < int(surface_epochs[10]["accepted"])
+    assert int(epochs[20]["accepted"]) < int(surface_epochs[20]["accepted"])
+
+
+def test_all_epochs_present(roster_from_binary: dict):
+    """All five fleet epochs publish with correct profiles."""
+    epochs = _epoch_map(roster_from_binary)
+    assert set(epochs.keys()) == PUBLISHED_EPOCHS
+    assert epochs[10]["profile"] == PROFILE_A
+    assert epochs[20]["profile"] == PROFILE_A
+    assert epochs[30]["profile"] == PROFILE_A
+    assert epochs[40]["profile"] == PROFILE_B
+    assert epochs[50]["profile"] == PROFILE_B
+
+
+def test_revoked_lane_omits_epoch(roster_from_binary: dict):
+    """Epoch with a required lane only-revoked must not publish."""
+    epochs = _epoch_map(roster_from_binary)
+    assert EPOCH_TWENTY_FIVE not in epochs
+    assert set(epochs.keys()) == PUBLISHED_EPOCHS
+
+
+def test_hold_keeps_epoch_with_reduced_accepted(roster_from_binary: dict):
+    """Suspended co-presence keeps the epoch; accepted is only non-held trust."""
+    epochs = _epoch_map(roster_from_binary)
+    assert EPOCH_THIRTY in epochs
+    assert epochs[EPOCH_THIRTY]["profile"] == PROFILE_A
+    assert int(epochs[EPOCH_THIRTY]["accepted"]) == EPOCH_30_ACCEPTED
+    assert int(epochs[EPOCH_THIRTY]["accepted"]) < BAND_CAP
+
+
+def test_output_differs_from_surface(roster_from_binary: dict):
+    """Deep attestation must disagree with the surface fixture on every shared epoch."""
+    surface = json.loads(SURFACE.read_text(encoding="utf-8"))
+    assert roster_from_binary != surface
+    surface_epochs = {int(e["id"]): e for e in surface["epochs"]}
+    roster_epochs = _epoch_map(roster_from_binary)
+    for eid in sorted(PUBLISHED_EPOCHS):
+        assert eid in roster_epochs
+        assert int(roster_epochs[eid]["accepted"]) < int(surface_epochs[eid]["accepted"])
+
+
+def test_output_matches_rebuilt(roster_from_binary: dict):
+    """On-disk agent output must match rebuilt trusteval."""
+    assert OUTPUT.is_file(), f"missing {OUTPUT}"
+    on_disk = json.loads(OUTPUT.read_text(encoding="utf-8"))
+    assert on_disk == roster_from_binary
+    epochs = _epoch_map(on_disk)
+    assert int(epochs[10]["accepted"]) == EPOCH_10_ACCEPTED
+
+
+def test_attestation_stable_across_runs(roster_from_binary: dict):
+    """Second attest run must match the first and stay below surface tallies."""
+    second = _rebuild_and_attest(Path("/tmp") / "ceremony-ledger-second.json")
+    assert second == roster_from_binary
+    epochs = _epoch_map(second)
+    assert int(epochs[EPOCH_TEN]["accepted"]) < SURFACE_EPOCH_10
+    assert EPOCH_THIRTY in epochs
+
+
+def test_output_differs_from_jarcheck(roster_from_binary: dict):
+    """Agent output must differ from jarcheck and beat surface inflation."""
+    surface_poke = json.loads(SURFACE.read_text(encoding="utf-8"))
+    assert roster_from_binary != surface_poke
+    assert OUTPUT.is_file()
+    on_disk = json.loads(OUTPUT.read_text(encoding="utf-8"))
+    assert on_disk == roster_from_binary
+    assert on_disk != surface_poke
+    assert Path("/app/bin").joinpath("jarcheck").is_file()
+    epochs = _epoch_map(on_disk)
+    poke_epochs = {int(e["id"]): e for e in surface_poke["epochs"]}
+    assert int(epochs[10]["accepted"]) < int(poke_epochs[10]["accepted"])
+
+
+def test_dynamic_frame_injection():
+    """Inject a valid frame and verify the evaluator incorporates it."""
+    seg_path = SEGMENTS / "seg_99.bin"
+    assert DYNAMIC_FRAME.is_file(), "dynamic test frame fixture missing"
+    shutil.copy(DYNAMIC_FRAME, seg_path)
+    try:
+        roster = _rebuild_and_attest(DYNAMIC_OUT)
+        epochs = _epoch_map(roster)
+        assert int(epochs[10]["accepted"]) == EPOCH_10_ACCEPTED + 1, (
+            f"Expected {EPOCH_10_ACCEPTED + 1} after injection, got {epochs[10]['accepted']}"
+        )
+    finally:
+        seg_path.unlink(missing_ok=True)
+
+
+def test_dynamic_injected_frame_rejected():
+    """Inject a forged frame and verify it is rejected."""
+    seg_path = SEGMENTS / "seg_98.bin"
+    assert DYNAMIC_INJECTED.is_file(), "dynamic injected frame fixture missing"
+    shutil.copy(DYNAMIC_INJECTED, seg_path)
+    try:
+        roster = _rebuild_and_attest(DYNAMIC_OUT)
+        epochs = _epoch_map(roster)
+        assert int(epochs[40]["accepted"]) == EPOCH_40_ACCEPTED, (
+            f"Expected {EPOCH_40_ACCEPTED} (injected rejected), got {epochs[40]['accepted']}"
+        )
+    finally:
+        seg_path.unlink(missing_ok=True)
+
+
+def test_dynamic_legacy_binding_rejected():
+    """Payload-only legacy signatures must not raise accepted tallies."""
+    seg_path = SEGMENTS / "seg_97.bin"
+    assert DYNAMIC_LEGACY.is_file(), "dynamic legacy frame fixture missing"
+    shutil.copy(DYNAMIC_LEGACY, seg_path)
+    try:
+        roster = _rebuild_and_attest(DYNAMIC_OUT)
+        epochs = _epoch_map(roster)
+        assert int(epochs[40]["accepted"]) == EPOCH_40_ACCEPTED
+    finally:
+        seg_path.unlink(missing_ok=True)
+
+
+def test_watermark_boundary_included(roster_from_binary: dict):
+    """On-watermark credential at epoch 10 contributes to accepted."""
+    epochs = _epoch_map(roster_from_binary)
+    assert int(epochs[EPOCH_TEN]["accepted"]) == EPOCH_10_ACCEPTED
+
+
+def test_integrity_count_exact(
+    roster_from_binary: dict, quarantine_from_binary: dict
+):
+    """Agent quarantine integrity set matches rebuilt trusteval."""
+    _ = roster_from_binary
+    agent = _load_quarantine(QUARANTINE)
+    assert _reason_keys(agent, REASON_INTEGRITY) == _reason_keys(
+        quarantine_from_binary, REASON_INTEGRITY
+    )
+
+
+def test_quarantine_structure(
+    roster_from_binary: dict, quarantine_from_binary: dict
+):
+    """Quarantine shape and reason vocabulary match rebuilt trusteval."""
+    _ = roster_from_binary
+    assert QUARANTINE.is_file(), f"missing {QUARANTINE}"
+    agent = _load_quarantine(QUARANTINE)
+    assert len(agent["rejected"]) == len(quarantine_from_binary["rejected"])
+    reasons = {e["reason"] for e in agent["rejected"]}
+    assert REASON_INTEGRITY in reasons
+    assert REASON_REPLAY in reasons
+    assert REASON_REVOKED in reasons
+    for entry in agent["rejected"]:
+        assert KEY_EPOCH in entry
+        assert KEY_LANE in entry
+        assert KEY_TS in entry
+        assert entry["reason"] in QUARANTINE_REASONS
+
+
+def test_quarantine_integrity_failures(
+    roster_from_binary: dict, quarantine_from_binary: dict
+):
+    """integrity_failure rows match the rebuilt oracle set."""
+    _ = roster_from_binary
+    agent = _load_quarantine(QUARANTINE)
+    assert _reason_keys(agent, REASON_INTEGRITY) == _reason_keys(
+        quarantine_from_binary, REASON_INTEGRITY
+    )
+    assert len(_reason_keys(agent, REASON_INTEGRITY)) >= 1
+
+
+def test_quarantine_replay_entries(
+    roster_from_binary: dict, quarantine_from_binary: dict
+):
+    """replay rows match the rebuilt oracle set."""
+    _ = roster_from_binary
+    agent = _load_quarantine(QUARANTINE)
+    assert _reason_keys(agent, REASON_REPLAY) == _reason_keys(
+        quarantine_from_binary, REASON_REPLAY
+    )
+    assert len(_reason_keys(agent, REASON_REPLAY)) >= 1
+
+
+def test_quarantine_revoked_entries(
+    roster_from_binary: dict, quarantine_from_binary: dict
+):
+    """revoked rows match the rebuilt oracle set."""
+    _ = roster_from_binary
+    agent = _load_quarantine(QUARANTINE)
+    assert _reason_keys(agent, REASON_REVOKED) == _reason_keys(
+        quarantine_from_binary, REASON_REVOKED
+    )
+    assert len(_reason_keys(agent, REASON_REVOKED)) >= 1
+
+
+def test_quarantine_matches_rebuilt(
+    roster_from_binary: dict, quarantine_from_binary: dict
+):
+    """On-disk quarantine equals rebuilt trusteval quarantine."""
+    _ = roster_from_binary
+    agent = _load_quarantine(QUARANTINE)
+    assert agent == quarantine_from_binary
+
+
+def test_fixtures_untouched():
+    """Seed and surface fixtures remain as shipped."""
+    data = json.loads(SEED.read_text(encoding="utf-8"))
+    assert data.get("seed") == SEED_NAME
+    assert data.get("preserve") is True
+    surface = json.loads(SURFACE.read_text(encoding="utf-8"))
+    assert surface.get("version") == SCHEMA_VERSION
+    assert int(surface["epochs"][0]["accepted"]) == SURFACE_EPOCH_10
+    audit = (FIXTURES / "pre_incident_audit.log").read_text(encoding="utf-8")
+    assert SAMPLE_A in audit
+    assert SAMPLE_B in audit
+    assert SAMPLE_C in audit
+    assert len(re.findall(r"seed_hex=[0-9a-f]{8}", audit)) >= 3
+    assert len(re.findall(r"sk_hex=[0-9a-f]{64}", audit)) >= 3
+    assert len(re.findall(r"pubkey_hex=[0-9a-f]{64}", audit)) >= 3
+    assert len(re.findall(r"sig_hex=[0-9a-f]{128}", audit)) >= 3
+    assert len(re.findall(r"message_hex=[0-9a-f]+", audit)) >= 3
+    assert "key_dom_hex=" in audit
+    assert "domain_ascii=WAUV" in audit

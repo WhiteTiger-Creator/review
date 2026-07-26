@@ -1,9 +1,0 @@
-ERR-2026-083 — Item-then-user half-steps
-Status: shipping / supersedes model card ALS update order
-
-Each ALS iteration must update ALL item factors first (using the current
-user factors), then update ALL user factors (using the just-updated item
-factors).
-
-The base card's user-then-item order is retired. Fitting user factors first
-in an iteration is a reject.
