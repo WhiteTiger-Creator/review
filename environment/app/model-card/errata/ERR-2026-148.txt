@@ -1,0 +1,11 @@
+ERR-2026-148 — Cholesky ridge jitter
+Status: shipping / extends ALS solves
+
+Before every Cholesky factorization of a normal-equation matrix A for a
+user or item update, add jitter to the diagonal:
+
+  A[f][f] += 1e-8 * lambda_t   for each factor index f in 0..F-1
+
+Apply this after all (c-1) outer-product accumulations and the
+lambda_t * n_* ridge term are already in A. Do not add jitter to YtY/XtX
+themselves before they are copied into A.

@@ -1,35 +1,31 @@
-FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
-
-# Canonical Terminal-Bench Rust runtime; digest-pinned.
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    tmux \
-    asciinema \
-    python3 \
-    python3-pip \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY requirements.in /tmp/requirements.in
-COPY requirements.lock /tmp/requirements.lock
-
-RUN pip3 install --no-cache-dir --break-system-packages \
-    --require-hashes --no-deps \
-    -r /tmp/requirements.lock \
-    && ln -sf /usr/local/cargo/bin/cargo /usr/local/bin/cargo \
-    && ln -sf /usr/local/cargo/bin/rustc /usr/local/bin/rustc \
-    && rm -f /tmp/requirements.in /tmp/requirements.lock
-
-ENV CARGO_HOME="/usr/local/cargo"
-ENV RUSTUP_HOME="/usr/local/rustup"
-ENV PATH="/usr/local/cargo/bin:/usr/local/rustup/bin:/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
-
-COPY app /app
-COPY source_snapshots /app/source_snapshots
+# TrustLoom TL-ALS-CONF-1: implicit-feedback collaborative filtering (ALS).
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
 
 WORKDIR /app
 
-RUN mkdir -p /app/output \
-    && chmod 0777 /app/output
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        tmux \
+        asciinema \
+        python3 \
+        python3-pip \
+        make \
+    && rm -rf /var/lib/apt/lists/*
 
-CMD ["sleep", "infinity"]
+COPY requirements.txt /tmp/requirements.txt
+RUN pip3 install --no-cache-dir --break-system-packages --require-hashes --no-deps -r /tmp/requirements.txt
+
+COPY app/ /app/
+COPY opt/trustloom/ /opt/trustloom/
+
+RUN mkdir -p /var/lib/trustloom /opt/trustloom/bin \
+    && find /opt/trustloom /app -type f \( -name '*.go' -o -name '*.mod' -o -name 'Makefile' -o -name '*.mk' -o -name '*.txt' -o -name '*.md' -o -name '*.csv' -o -name '*.sh' \) -exec sed -i 's/\r$//' {} + \
+    && chmod +x /opt/trustloom/scripts/*.sh 2>/dev/null || true
+
+LABEL org.opencontainers.image.source="https://github.com/snorkel-ai/trustloom-als-conf"
+LABEL org.opencontainers.image.version="1.0.0"
+LABEL org.opencontainers.image.revision="trustloom-als-conf-1"
+LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.created="2026-07-23T00:00:00Z"
+
+WORKDIR /app

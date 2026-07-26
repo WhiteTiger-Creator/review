@@ -1,82 +1,58 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ORACLE_SRC="${SCRIPT_DIR}/oracle_src"
-APP_DIR="/app"
+###############################################################################
+# Packaging: neutralize labals cutover + sync helpers
+###############################################################################
+cat > /opt/trustloom/staging.mk << 'EOF'
+# Staging cutover — DISABLED for production
+# export GOFLAGS := -tags=labals
+EOF
 
-export PATH="/usr/local/cargo/bin:/root/.cargo/bin:${PATH:-}"
+cat > /opt/trustloom/.cutover.mk << 'EOF'
+# Secondary cutover pin — DISABLED for production
+# export GOFLAGS := -tags=labals
+EOF
 
-command -v cargo >/dev/null 2>&1 || {
-  echo "error: cargo not found" >&2
-  exit 1
-}
+cat > /opt/trustloom/Makefile << 'EOF'
+export PATH := /usr/local/go/bin:$(PATH)
 
-test -d "${ORACLE_SRC}/src" || {
-  echo "error: Oracle source missing" >&2
-  exit 1
-}
+.PHONY: all clean
 
-test -f "${ORACLE_SRC}/Cargo.toml" || {
-  echo "error: Oracle Cargo.toml missing" >&2
-  exit 1
-}
+-include staging.mk
+-include .cutover.mk
 
-test -f "${ORACLE_SRC}/Cargo.lock" || {
-  echo "error: Oracle Cargo.lock missing" >&2
-  exit 1
-}
+all:
+	mkdir -p bin
+	go build -o bin/trustloom ./cmd/trustloom
 
-rm -rf "$APP_DIR/src"
-rm -rf "$APP_DIR/target"
+clean:
+	rm -rf bin
+EOF
 
-cp -a "${ORACLE_SRC}/src" "$APP_DIR/src"
-cp "${ORACLE_SRC}/Cargo.toml" "$APP_DIR/Cargo.toml"
-cp "${ORACLE_SRC}/Cargo.lock" "$APP_DIR/Cargo.lock"
+rm -f /opt/trustloom/scripts/tl-coerce.sh
+rm -f /opt/trustloom/scripts/tl-handbook-sync.sh
 
-test -d "$APP_DIR/vendor" || {
-  echo "error: image-provided vendor directory missing" >&2
-  exit 1
-}
+mkdir -p /app/remediation
+printf 'default:!labals\n' > /app/remediation/build-path.txt
 
-test -f "$APP_DIR/.cargo/config.toml" || {
-  echo "error: image-provided Cargo configuration missing" >&2
-  exit 1
-}
+###############################################################################
+# Source: install production recipe
+###############################################################################
+cp /solution/hashinit.go /opt/trustloom/internal/hashinit/hashinit.go
+cp /solution/data.go /opt/trustloom/internal/data/data.go
+cp /solution/als.go /opt/trustloom/internal/als/als.go
+cp /solution/rank.go /opt/trustloom/internal/rank/rank.go
+cp /solution/folds.go /opt/trustloom/internal/folds/folds.go
+cp /solution/main.go /opt/trustloom/cmd/trustloom/main.go
 
-mkdir -p /app/output
-rm -f /app/output/report.json
-rm -f /app/output/report.json.tmp
+make -C /opt/trustloom clean all
 
-cd /app
-cargo build --release --locked --offline
+rm -rf /var/lib/trustloom
+mkdir -p /var/lib/trustloom
 
-BIN="/app/target/release/msrv-lock-recovery-planner"
-test -x "$BIN" || {
-  echo "error: Oracle binary missing: $BIN" >&2
-  exit 1
-}
-
-"$BIN" --data-dir /app/data --output /app/output/report.json
-
-python3 - <<'PY'
-import json
-from pathlib import Path
-
-path = Path("/app/output/report.json")
-assert path.is_file() and path.stat().st_size > 0
-data = json.loads(path.read_text(encoding="utf-8"))
-required = [
-    "request_rows",
-    "package_selection_rows",
-    "patch_rows",
-    "source_replacement_rows",
-    "lock_entry_rows",
-    "invalidation_rows",
-    "conflict_rows",
-    "summary",
-]
-assert list(data.keys()) == required, list(data.keys())
-assert data["summary"]["request_count"] >= 1
-print("oracle smoke ok")
-PY
+/opt/trustloom/bin/trustloom \
+  --interactions /app/data/interactions.csv \
+  --queries /app/data/queries.csv \
+  --holdout /app/data/holdout.csv \
+  --out /var/lib/trustloom

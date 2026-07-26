@@ -1,0 +1,47 @@
+ERR-2026-142 — Interaction stride folds with remass
+Status: shipping / defines folds.json
+
+On every successful run also write folds.json:
+
+{
+  "k": 4,
+  "folds": [
+    {
+      "fold_index": 0,
+      "n_train_users": <int>,
+      "n_train_items": <int>,
+      "n_train_pairs": <int>,
+      "eligible_users": <int>,
+      "map_at_k": <f64>
+    },
+    ... four entries, fold_index 0..3 in order ...
+  ]
+}
+
+Construction for fold_index f in {0,1,2,3}:
+1. Start from the FULL retained catalog pairs after the global min-mass filter
+   (ERR-2026-062) on the original interactions file.
+2. Assign each retained pair to a stride bucket:
+     bucket = (dense_user_index + dense_item_index) % 4
+   using the GLOBAL dense indices from step 1.
+3. TRAIN pairs for fold f = pairs whose bucket != f.
+   HOLD pairs for fold f = pairs whose bucket == f.
+4. REMASS: rebuild a fold training catalog from TRAIN pairs only by
+   re-applying the same min-mass rule (drop user_id / item_id whose total
+   count under TRAIN pairs is < 2, then drop dangling TRAIN edges). Dense
+   indices for the fold fit are recomputed on this remassed train catalog
+   (sorted ascending IDs). Init hashes use original IDs as usual.
+5. Fit the full TL-ALS-CONF-1 recipe on that remassed train catalog
+   (local confidence, schedule, conditional fade, jitter, packing,
+   polarity, sign canon, degree-damped ranking scores).
+6. Eligible users for fold f: users that appear in the remassed train catalog
+   and have at least one HOLD pair whose item_id is also in the remassed
+   train catalog.
+7. For each eligible user, score every remassed-train item, rank as in the
+   holdout metric rules (lower item_id wins ties), k=3. Relevant set R =
+   HOLD items for that user that are in the remassed train catalog.
+   Compute AP@k with ERR-2026-112 denominator. Macro-average AP@k over
+   eligible users -> map_at_k. If eligible_users=0, map_at_k=0.
+8. n_train_* counts refer to the remassed train catalog sizes.
+
+Float tolerance on map_at_k: 1e-12.

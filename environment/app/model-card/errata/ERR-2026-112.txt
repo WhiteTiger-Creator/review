@@ -1,0 +1,10 @@
+ERR-2026-112 — AP@k denominator
+Status: shipping / supersedes base-card AP@k average denominator
+
+AP@k = sum of precision@i over ranks i=1..k where the i-th recommended
+item is relevant, divided by min(k, |R|).
+
+If no relevant item appears in top_k, AP@k = 0.
+
+Do not divide by the hit count inside top_k when that hit count differs
+from min(k, |R|).

@@ -1,0 +1,12 @@
+ERR-2026-071 — Relative log1p confidence (global form — superseded later)
+Status: shipping baseline / later errata may localize R_star
+
+Let R_star be the maximum aggregate count r_ui among retained pairs after
+catalog filtering. If there are no retained pairs, R_star = 1.
+
+For retained observed pairs with aggregate count r_ui >= 1:
+  p_ui = 1
+  c_ui = 1 + alpha * log1p(r_ui) / log1p(R_star)
+
+where log1p(x) = ln(1 + x) in natural log.
+Unobserved pairs remain implicit with c = 1, p = 0.

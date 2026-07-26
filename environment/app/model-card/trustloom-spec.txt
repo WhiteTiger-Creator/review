@@ -1,0 +1,137 @@
+TrustLoom Implicit ALS — Model Card
+Document ID: TL-ALS-CONF-1 / 2026-04
+Owner: Spare-Parts Retrieval ML
+
+Authority
+  This card is the base specification for `/opt/trustloom/bin/trustloom`.
+  Errata under `/app/model-card/errata/` supersede this card on conflict.
+  Apply errata in ascending filename order.
+  Handbook background: `/app/docs/als-handbook.md`. Only section 3.1 Final
+  is otherwise normative, and card+errata always win on conflict.
+  Acceptance rebuilds `/opt/trustloom` from source and scores the resulting
+  trainer binary produced from those sources.
+
+CLI
+  /opt/trustloom/bin/trustloom \
+    --interactions <csv> \
+    --queries <csv> \
+    --holdout <csv> \
+    --out <dir>
+
+  Fixed hyperparameters (CLI must not override; flags for paths only):
+    factors F = 4
+    lambda = 0.15
+    alpha = 25.0
+    iterations T = 8
+    init_scale = 0.02
+    ranking_k = 3
+    fade = 1.0          (no fade in the base card; see errata)
+    lambda mid-point M = T  (no schedule split in the base card; see errata)
+
+Inputs
+  interactions.csv columns: user_id,item_id,count
+    user_id and item_id are positive integers. count is a positive integer.
+  queries.csv columns: user_id,item_id
+    scored in file order.
+  holdout.csv columns: user_id,item_id,label
+    label is 0 or 1.
+
+Catalog construction (base card — see errata for production filter)
+  Collect every distinct user_id and item_id that appears in interactions.csv.
+  Sort each ID list ascending. Map to dense indices 0..U-1 and 0..I-1.
+  Sum duplicate (user_id,item_id) rows by adding counts before fitting.
+
+Preference and confidence (base — see errata)
+  For each retained observed pair with aggregate count r_ui >= 1:
+    p_ui = 1
+    c_ui = 1 + alpha * r_ui
+  Unobserved pairs are never materialized (implicit c=1, p=0).
+
+Factor initialization
+  For user dense index u and factor f in 0..F-1:
+    X[u][f] = init_scale * unit_hash("user", user_id_of(u), f)
+  For item dense index i and factor f:
+    Y[i][f] = init_scale * unit_hash("item", item_id_of(i), f)
+  unit_hash(kind, id, f):
+    Feed FNV-1a 64-bit (offset basis 14695981039346656037, prime 1099511628211)
+    the ASCII bytes of: kind + ":" + decimal(id) + ":" + decimal(f)
+    Let h be the resulting uint64.
+    Return ((h % 1000003) / 1000003.0) * 2.0 - 1.0
+  Do not use a PRNG. (Separator bytes are superseded by errata.)
+
+ALS updates (Hu-style closed form; base order and ridge — see errata)
+  Repeat for iter = 1..T with lambda_t = lambda for every iter in the base card:
+    1) Let YtY = Y^T Y (F x F).
+       For each user u:
+         Let A = YtY + lambda_t * I_F
+         Let b = 0_F
+         For each observed item i of u with confidence c_ui and preference p_ui:
+           A += (c_ui - 1) * (y_i y_i^T)
+           b += c_ui * p_ui * y_i
+         Solve A x_u = b for x_u (symmetric positive definite; use Cholesky).
+    2) Let XtX = X^T X.
+       For each item i: symmetric update for y_i using user factors.
+  Base card does not apply any fade between half-steps.
+
+Scoring
+  s(user_id, item_id) = dot(x_u, y_i) when both IDs are in the fitted catalog;
+  otherwise s = 0.0.
+
+Holdout ranking metrics (macro over eligible users)
+  ranking_k = 3.
+  A holdout user is eligible if the user is in the fitted catalog and the
+  holdout rows for that user contain at least one label=1 whose item_id is
+  also in the fitted catalog.
+  For each eligible user:
+    Score every catalog item with s(user, item).
+    Sort by score descending; ties break toward the lower item_id.
+    Take the top ranking_k item_ids as the recommendation list.
+    Relevant set R = holdout items with label=1 that are in the catalog.
+    precision@k = |top_k ∩ R| / k
+    AP@k = average of (precision@i) over ranks i=1..k where the i-th item is
+           relevant; if no relevant item appears in top_k, AP@k = 0.
+           (Denominator of that average is the number of relevant hits in
+           top_k in the base card; see errata for production denominator.)
+    DCG@k = sum_{i=1..k} rel_i / log2(i+1) with rel_i in {0,1}
+    IDCG@k = DCG@k of an ideal list with min(k, |R|) ones at the front.
+    ndcg@k = DCG@k / IDCG@k if IDCG@k > 0 else 0.
+  Macro-average precision@k, AP@k, and ndcg@k across eligible users.
+  If there are zero eligible users, all three metrics are 0.0.
+
+Output artifacts (all under --out directory)
+  model.json:
+    {
+      "algorithm": "tl-als-conf-1",
+      "factors": 4,
+      "lambda": 0.15,
+      "alpha": 25.0,
+      "iterations": 8,
+      "users": [ {"id": <int>, "factors": [<f64>; F]}, ... ] sorted by id ascending,
+      "items": [ {"id": <int>, "factors": [<f64>; F]}, ... ] sorted by id ascending
+    }
+  scores.json:
+    {
+      "scores": [
+        {"user_id": <int>, "item_id": <int>, "score": <f64>},
+        ...
+      ]
+    }
+    One entry per queries.csv row, same order.
+  metrics.json:
+    {
+      "precision_at_k": <f64>,
+      "map_at_k": <f64>,
+      "ndcg_at_k": <f64>,
+      "k": 3,
+      "eligible_users": <int>
+    }
+  diagnostics.json — required schema is defined by errata.
+  folds.json — required schema is defined by errata.
+
+Acceptance
+  Exit code 0. Artifacts present and schema-valid. Factors, scores,
+  diagnostics floats, and fold map_at_k values must match a correct
+  TL-ALS-CONF-1 fit on the supplied inputs (absolute tolerance 1e-9 on
+  model/score/diagnostics floats; 1e-12 on ranking and fold map metrics).
+  Do not embed bundled answers; results must be computed from the inputs.
+  Packaging requirements in errata also apply.

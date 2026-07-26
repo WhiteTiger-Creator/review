@@ -11,12 +11,9 @@
 **/build/
 **/.venv/
 **/venv/
-**/*.tmp
-**/*.orig
-output/
-out/
+.env
+*.log
 solution/
 tests/
-authoring/
-gate-report/
-pre-submission-review/
+**/*.o
+.DS_Store

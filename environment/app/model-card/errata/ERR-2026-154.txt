@@ -1,0 +1,14 @@
+ERR-2026-154 — Catalog polarity alignment
+Status: shipping / extends packing; runs before leading-factor sign canon
+
+After per-vector L2 packing (ERR-2026-058) and BEFORE leading-factor sign
+canon (ERR-2026-136), compute S = sum over all user vectors of factors[0].
+
+If S < 0, multiply EVERY user factor vector and EVERY item factor vector
+by -1 (full catalog polarity flip).
+
+If S >= 0, leave vectors unchanged.
+
+Then apply ERR-2026-136. The same packing → polarity → canon order applies
+to the global fit and every fold remass fit, before scoring / ranking /
+diagnostics that use those factors.
