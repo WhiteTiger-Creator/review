@@ -1,9 +1,0 @@
-{
-    "class_weights": {
-        "operational": 0.5,
-        "degraded": 0.3,
-        "critical": 0.15,
-        "offline": 0.05
-    },
-    "_reference": "MIL-STD-882E Table A-III risk-priority weighting schema"
-}
