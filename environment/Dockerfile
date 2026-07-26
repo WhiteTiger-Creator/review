@@ -1,38 +1,24 @@
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        bash \
-        coreutils \
-        gawk \
-        grep \
-        sed \
-        ca-certificates \
-        tmux \
-        asciinema \
-    && rm -rf /var/lib/apt/lists/*
+# Canonical Terminal-Bench Java JDK 21 base (docs/PLATFORM_AUTO_EVAL.md).
+FROM public.ecr.aws/docker/library/eclipse-temurin:21-jdk-jammy@sha256:25d1276565738d3c805e632a4542c3a7598866ef967f4def6544c15de3a74b14
 
 WORKDIR /app
 
-COPY requirements.lock /tmp/requirements.lock
-RUN pip3 install --no-cache-dir -r /tmp/requirements.lock \
-    && rm /tmp/requirements.lock
+RUN apt-get update && apt-get install -y --no-install-recommends python3=3.10.6-1~22.04.1 python3-venv=3.10.6-1~22.04.1 make=4.3-4.1build1 tmux=3.2a-4ubuntu0.2 asciinema=2.1.0-1 ca-certificates=20260601~22.04.1 && rm -rf /var/lib/apt/lists/*
 
-COPY data/ /app/data/
-COPY src/ /app/src/
-COPY var/log/period-close/ /var/log/period-close/
-COPY systemd/period-close.service /etc/systemd/system/period-close.service
+RUN python3 -m venv /opt/verifier \
+    && /opt/verifier/bin/pip install --no-cache-dir \
+       pytest==8.4.1 \
+       pytest-json-ctrf==0.3.5 \
+       pytest-randomly==3.16.0
 
-# Intentionally misconfigured host layout for the agent to repair.
-RUN mkdir -p /etc/period-close /var/lib/period-close \
-    && chmod 0644 /app/src/periodctl \
-    && chmod 0755 /app/src/period-reconcile.sh \
-    && chmod 0644 /var/log/period-close/diag.log \
-    && chmod 0777 /etc/systemd/system/period-close.service \
-    && chmod 0700 /var/lib/period-close \
-    && printf '%s\n' '#!/bin/false' > /usr/local/sbin/periodctl \
-    && chmod 0755 /usr/local/sbin/periodctl
+ENV PATH=/opt/verifier/bin:${PATH}
 
-ENV PATH="/usr/local/sbin:/app/src:${PATH}"
+RUN mkdir -p /app/exec /app/output /app/environment
+
+COPY . /app/environment
+
+RUN cp /app/environment/exec/diff_run /app/exec/diff_run \
+    && chmod +x /app/exec/diff_run /app/environment/app/tools/inspect.sh \
+    && chown -R 65534:65534 /app/environment /app/output /app/exec
+
+ENV JAVA_HOME=/opt/java/openjdk
