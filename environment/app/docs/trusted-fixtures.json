@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "files": {
+    "data/report/decision-index.json": "47c5f8a3cbd17a088af8f4d0ed19f6333e65120b60dcaaf86e28803ea543db23",
+    "schemas/decision-index.schema.json": "ed694d15b8bae238e65c53432d680921b576e124f1c89ebc71e8a0aaf5b13923",
+    "schemas/setup-manifest.schema.json": "b167c427eefe5395b1bb0b00f0335e4530100402a03ffcdd900089d9e99e2d3d",
+    "data/providers/provider-metadata.json": "ba3d7fd3b9bc195305371324bad7a9f6958dc2b740c63617bb2d7605da98af22",
+    "data/oci/payments/config.json": "f23fb48a646511feec4316429ed5deeb84152a808eaaebb253c01743b574893b",
+    "data/oci/identity/config.json": "81ff87b89cfa3408c528d812c0d5e942cc2cc7d245245b6b31aa3cc5dd3949c9",
+    "data/oci/analytics/config.json": "99d8b72496024874c3666eae16db173d086e472e707b5582a3b491a740bd8eb9",
+    "data/oci/archival/config.json": "4cffc26c11928ecf65d6b144f667eee5822285638277f0a72aa3075b2805d6ba",
+    "data/oci/legacy-proxy/config.json": "e9343db1573210c9b6e9f534e67648b4cddfd10b17c23c790af4c0bf7643c4f3"
+  }
+}

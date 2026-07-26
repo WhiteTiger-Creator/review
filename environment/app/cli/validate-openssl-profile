@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+PROFILE="" MODE="default"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --profile) PROFILE="$2"; shift 2 ;;
+    --mode) MODE="$2"; shift 2 ;;
+    --help) exit 0 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+export OPENSSL_MODULES=/app/data/providers/modules
+OPENSSL_CONF="${PROFILE}" openssl list -providers >/dev/null
+if [[ "${MODE}" == "fips" ]]; then
+  grep -q 'fips=yes' "${PROFILE}"
+fi

@@ -4,24 +4,31 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "games"
-subcategories = ["tool_specific"]
+category = "system-administration"
+subcategories = ["long_context", "tool_specific"]
 number_of_milestones = 0
-codebase_size = "large"
-languages = ["go", "c", "bash"]
-tags = ["terminal-strategy-game", "simultaneous-turns", "board-state", "replay-adjudication", "collision-resolution", "deterministic-scoring", "lunisolar-terrain"]
-expert_time_estimate_min = 240
-junior_time_estimate_min = 540
-
-[verifier]
-timeout_sec = 300.0
+codebase_size = "small"
+languages = ["awk", "bash"]
+tags = [
+  "openssl",
+  "host-migration",
+  "provider-configuration",
+  "fips",
+  "mount-resolution",
+  "staging-rollout",
+]
+expert_time_estimate_min = 345
+junior_time_estimate_min = 810
 
 [agent]
-timeout_sec = 1800.0
+timeout_sec = 1800
+
+[verifier]
+timeout_sec = 900
 
 [environment]
-build_timeout_sec = 900.0
-cpus = 4
-memory_mb = 4096
-storage_mb = 10240
+build_timeout_sec = 1200
+cpus = 2
+memory_mb = 2048
+storage_mb = 6144
 allow_internet = false

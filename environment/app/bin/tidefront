@@ -1,4 +1,0 @@
-#!/bin/bash
-set -euo pipefail
-root=${APP_ROOT:-/app}
-exec "$root/dist/bin/tidefront" "$@"
