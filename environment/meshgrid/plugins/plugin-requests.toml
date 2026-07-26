@@ -1,0 +1,29 @@
+[[plugins]]
+id = "com.meshgrid.wireloom"
+version = "1.4.2"
+
+[[plugins]]
+id = "com.meshgrid.depknit"
+version = "2.1.0"
+
+[[plugins]]
+id = "com.meshgrid.artifactseal"
+version = "3.0.1"
+min_gradle = "8.11"
+
+[[plugins]]
+id = "com.meshgrid.pluginbridge"
+version = "1.8.0"
+
+[[plugins]]
+id = "com.meshgrid.releasemesh"
+version = "0.9.5"
+
+[[plugins]]
+id = "com.meshgrid.cataloghub"
+version = "5.2.0"
+
+[[plugins]]
+id = "org.gradle.publish-offline"
+version = "1.0.0"
+min_gradle = "8.6"

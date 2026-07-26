@@ -1,67 +1,65 @@
-# BASE_IMAGE_JUSTIFICATION: Julia has no canonical Harbor base image; install the
-# official julialang.org linux/x64 tarball on sanctioned Debian bookworm-slim (same
-# pattern as other Julia scientific tasks). Image builds offline after the pinned tarball is fetched.
-FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
+# Canonical Go image (public.ecr.aws/docker/library/golang:1.24-bookworm digest-pinned).
+# Agent rebuilds gridknit after catalog and lock authorization fixes.
+# Verifier pytest wheels are installed here because allow_internet=false.
+# Runtime make carve-out: verifier and agent reseal gridknit inside this image.
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
 
-ENV JULIA_VERSION=1.11.5
-ENV JULIA_PATH=/opt/julia
-ENV JULIA_DEPOT_PATH=/opt/julia-depot
-ENV JULIA_PKG_OFFLINE=true
-ENV PATH="/opt/julia/bin:/usr/local/bin:/usr/bin:/bin:${PATH}"
+ARG TASK_IMAGE_REVISION=7
+ARG BUILD_DATE=2026-07-25T00:00:00Z
+
+LABEL org.opencontainers.image.source="harbor_tasks/gradle-monorepo-stabilization"
+LABEL org.opencontainers.image.revision="${TASK_IMAGE_REVISION}"
+LABEL org.opencontainers.image.version="${TASK_IMAGE_REVISION}"
+LABEL org.opencontainers.image.created="${BUILD_DATE}"
+LABEL org.opencontainers.image.licenses="MIT"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=UTC \
+    PATH="/usr/local/go/bin:/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    GOTOOLCHAIN=local \
+    GO111MODULE=on \
+    CGO_ENABLED=0 \
+    GOCACHE=/tmp/go-cache \
+    GOPATH=/tmp/go \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    SOURCE_DATE_EPOCH=0
+
+# OS packages first so source and wheel edits do not bust the apt layer.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        asciinema \
+        ca-certificates \
+        make \
+        python-is-python3 \
+        python3 \
+        python3-pip \
+        tmux \
+    && rm -rf /var/lib/apt/lists/* /root/.cache
 
 WORKDIR /app
 
-COPY requirements.lock /environment/requirements.lock
+# Manifests before wheels, then offline verifier install, before source trees.
+COPY requirements.lock /opt/verifier/requirements.lock
+COPY go.mod Makefile /app/
+COPY wheels/ /opt/verifier/wheels/
+RUN test -n "$(ls -A /opt/verifier/wheels/*.whl 2>/dev/null)" \
+    && python3 -m pip install --no-cache-dir --break-system-packages --no-index \
+        --find-links /opt/verifier/wheels \
+        --require-hashes --no-deps -r /opt/verifier/requirements.lock \
+    && ln -sf /usr/bin/python3 /usr/bin/python
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    tmux \
-    asciinema \
-    python3 \
-    python3-venv \
-    && curl -fL -o /tmp/julia.tar.gz \
-        "https://julialang-s3.julialang.org/bin/linux/x64/1.11/julia-${JULIA_VERSION}-linux-x86_64.tar.gz" \
-    && echo "723e878c642220cc0251a0e13758c059a389cadc7f01376feaf1ea7388fe8f9c  /tmp/julia.tar.gz" \
-        | sha256sum --check --strict - \
-    && mkdir -p /opt/julia \
-    && tar -xzf /tmp/julia.tar.gz -C /opt/julia --strip-components=1 \
-    && rm /tmp/julia.tar.gz \
-    && julia --version \
-    && rm -rf /var/lib/apt/lists/* \
-    && tmux -V \
-    && asciinema --version \
-    && python3 -m venv /opt/verifier_venv \
-    && /opt/verifier_venv/bin/pip install --no-cache-dir \
-        -r /environment/requirements.lock
+# Immutable policy and fixtures, then editable stabilizer sources.
+COPY gradle-policy/ /app/gradle-policy/
+COPY meshgrid/ /app/meshgrid/
+COPY gridknit/ /app/gridknit/
+COPY internal/ /app/internal/
 
-COPY app/ ./
-
-RUN find /app -type f \( -name '*.jl' -o -name '*.sh' -o -name '*.toml' -o -name '*.csv' -o -name '*.md' -o -name '*.json' -o -name 'ndref' \) -exec sed -i 's/\r$//' {} + \
-    && chmod +x /app/build.sh \
-    && test -f /app/ndref.jl \
-    && test -f /app/src/peak_load.jl \
-    && test -f /app/src/policy_load.jl \
-    && test -f /app/src/instrument_geom.jl \
-    && test -f /app/src/lattice_metric.jl \
-    && test -f /app/src/refine_ls.jl \
-    && test -f /app/src/report_emit.jl \
-    && test -f /app/config/refine_policy.toml \
-    && test -f /app/data/sealed/production_policy.toml \
-    && test -f /app/data/sample/peaks.csv \
-    && test -f /app/data/sample/instrument.json \
-    && test -f /app/data/sample/reference_structure.json \
-    && test -f /app/docs/cli-contract.md \
-    && test -f /app/docs/lattice-model.md \
-    && test -f /app/docs/peaks-format.md \
-    && test -f /app/docs/instrument-format.md \
-    && test -f /app/docs/structure-format.md \
-    && test -f /app/docs/report-schema.md \
-    && test -f /app/docs/artifact-format.md \
-    && bash /app/build.sh \
-    && chmod a-w /app/data/sample/peaks.csv /app/data/sample/instrument.json /app/data/sample/reference_structure.json /app/data/sealed/production_policy.toml \
-    && /opt/verifier_venv/bin/python3 -m pytest --version
-
-ENV PATH="/app/bin:/app:/opt/julia/bin:${PATH}"
-
-CMD ["sleep", "infinity"]
+# Non-root agent for Harbor [agent].user. Do not pre-create /logs/* — Harbor bind-mounts
+# those paths; baking them into the image breaks reward.txt visibility on the host.
+RUN mkdir -p /app/build \
+    && useradd --create-home --uid 1000 --shell /bin/bash agent \
+    && chown -R agent:agent /app

@@ -1,0 +1,32 @@
+[versions]
+guava = "33.0.0"
+okhttp = "4.12.0"
+jackson = "2.17.1"
+jackson-core = "2.17.1"
+slf4j = "2.0.13"
+wireloom = "1.4.2"
+depknit = "2.1.0"
+artifactseal = "3.0.1"
+pluginbridge = "1.8.0"
+releasemesh = "0.9.5"
+cataloghub = "5.2.0"
+kotlin = "1.9.24"
+shadow = "8.1.1"
+
+[libraries]
+guava = { module = "com.google.guava:guava", version.ref = "guava" }
+okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
+jackson = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
+slf4j = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
+# intentional inline drift vs versions table
+jackson-core = { module = "com.fasterxml.jackson.core:jackson-core", version = "2.16.0" }
+missing-ref = { module = "org.example:missing", version.ref = "does-not-exist" }
+
+[bundles]
+# alias conflict with libraries.guava
+guava = ["guava", "okhttp"]
+logging = ["slf4j"]
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+shadow = { id = "com.github.johnrengelman.shadow", version.ref = "shadow" }

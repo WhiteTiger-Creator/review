@@ -1,0 +1,5 @@
+LOCK1
+1
+2
+com.fasterxml.jackson.core:jackson-databind	2.16.1	3dee5125b58ef9997a589d70432b4193a74a70eca101417db4c8546fba7b42f4	0
+org.slf4j:slf4j-api	2.0.13	42135e7cc055162e89bb480f81a61e98c69ede434bd5faddfa67d78cde574c8b	0

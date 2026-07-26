@@ -1,915 +1,919 @@
-"""Behavioral checks for the powder TOF lattice refinement binary."""
+"""Verification for meshgrid Gradle monorepo gridknit stabilizer."""
 
 from __future__ import annotations
 
-import csv
 import hashlib
 import json
-import math
-import re
+import os
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
-BIN = Path("/app/bin/ndref")
-CFG = Path("/app/config/refine_policy.toml")
-SEALED = Path("/app/data/sealed/production_policy.toml")
-PEAKS = Path("/app/data/sample/peaks.csv")
-INSTR = Path("/app/data/sample/instrument.json")
-STRUCT = Path("/app/data/sample/reference_structure.json")
+import pytest
 
-SAMPLE_SHA256 = {
-    "peaks.csv": "eeb08162dc053b0c400d55135c0f7a7c519e3ed38ad84d4e786f00eb384a706d",
-    "instrument.json": "95a97c5c5a71e5479924d481f45a010cd6a3360e9b08ebe0f88ee6fa8b128cb4",
-    "reference_structure.json": "efa09368d33aeec7145fc980a99692f319fc4c3fa6edabeeb2cbd463722fe21c",
+REPORT_PATH = Path("/app/build/gradle_stabilization_report.json")
+BINARY = Path("/app/build/gridknit")
+ROOT = Path("/app/meshgrid")
+POLICY = Path("/app/gradle-policy")
+
+WORKSPACE_KEYS = [
+    "gradle_major",
+    "gradle_minor",
+    "module_count",
+    "require_offline_vault",
+    "fail_on_project_repos",
+    "max_direct_deps",
+    "strict_bom",
+]
+MODULE_KEYS = [
+    "module_id",
+    "coordinate",
+    "bom_consumer",
+    "direct_deps",
+    "capture",
+    "status",
+]
+CAPTURE_KEYS = [
+    "format_version",
+    "records_total",
+    "records_valid",
+    "records_rejected",
+    "dup_coord_rejects",
+    "payload_bytes",
+]
+FINDING_KEYS = [
+    "finding_id",
+    "module_id",
+    "entity_id",
+    "kind",
+    "event_seq",
+    "detail",
+]
+ROOT_KEYS = [
+    "workspace",
+    "modules",
+    "findings",
+    "duplicate_modules_skipped",
+    "status",
+]
+
+PLUGIN_DEFAULTS = {
+    "com.meshgrid.wireloom": (8, 7),
+    "com.meshgrid.depknit": (8, 8),
+    "com.meshgrid.artifactseal": (8, 10),
+    "com.meshgrid.pluginbridge": (8, 5),
+    "com.meshgrid.releasemesh": (8, 9),
+    "com.meshgrid.cataloghub": (8, 10),
+    "org.gradle.publish-offline": (8, 6),
 }
-SEALED_SHA256 = "4a341fd52cfdb0cfd57dea613b5550732c97b9b64c132c18a8bad2b9734f3cb0"
 
-SHIPPED: dict[str, Any] = {
-    "schema_version": 2,
-    "h_js": 6.62607015e-34,
-    "m_n_kg": 1.67492749804e-27,
-    "intensity_floor": 25.0,
-    "residual_sigma_max": 4.0,
-    "min_admitted_peaks": 4,
-    "admit_mode": "intensity_and_extinction",
-    "extinction_mode": "skip",
-    "extinction_scale": 0.2,
-    "policy_revision": "nd-desk-2026.07",
-}
-
-REPORT_KEYS = [
-    "schema_version",
-    "policy_revision",
-    "crystal_system",
-    "peak_count",
-    "admitted_count",
-    "rejected_count",
-    "chi2",
-    "rms_resid_A",
-    "a_A",
-    "b_A",
-    "c_A",
-    "alpha_deg",
-    "beta_deg",
-    "gamma_deg",
-    "rejected_ids",
-    "residuals",
-    "refine_digest",
-]
-
-RESIDUAL_KEYS = [
-    "peak_id",
-    "h",
-    "k",
-    "l",
-    "d_obs_A",
-    "d_calc_A",
-    "resid_sigma",
-    "rejected",
-]
-
-STRUCT_KEYS = [
-    "a_A",
-    "b_A",
-    "c_A",
-    "alpha_deg",
-    "beta_deg",
-    "gamma_deg",
-    "crystal_system",
-]
-
-PEAK_FIELDS = [
-    "peak_id",
-    "h",
-    "k",
-    "l",
-    "tof_us",
-    "intensity",
-    "sigma_tof",
-    "extinct_flag",
-]
+IMMUTABLE_SHA256: dict[str, str] = {}
 
 
-def fmt10(x: float) -> str:
-    y = 0.0 if x == 0.0 else x
-    text = f"{y:.10f}"
-    return "0.0000000000" if text == "-0.0000000000" else text
-
-
-def fmt8(x: float) -> str:
-    y = 0.0 if x == 0.0 else x
-    text = f"{y:.8f}"
-    return "0.00000000" if text == "-0.00000000" else text
-
-
-def _toml(pol: dict[str, Any]) -> str:
-    lines: list[str] = []
-    for k, v in pol.items():
-        if isinstance(v, str):
-            lines.append(f'{k} = "{v}"')
-        else:
-            lines.append(f"{k} = {v}")
-    return "\n".join(lines) + "\n"
-
-
-def _sha(path: Path) -> str:
+def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [str(BIN), *args],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+def _sha256_coord(coord: str, version: str) -> str:
+    return hashlib.sha256(f"{coord}|{version}".encode()).hexdigest()
 
 
-def _rebuild() -> None:
-    subprocess.run(["bash", "/app/build.sh"], check=True, capture_output=True, text=True)
+def _split_kv(line: str) -> tuple[str, str] | None:
+    if "=" not in line:
+        return None
+    k, v = line.split("=", 1)
+    return k.strip(), v.strip()
 
 
-def _restore_live_policy() -> None:
-    CFG.write_text(SEALED.read_text(encoding="utf-8"), encoding="utf-8")
+def load_catalog(path: Path) -> dict[str, Any]:
+    versions: dict[str, str] = {}
+    libraries: dict[str, dict[str, Any]] = {}
+    bundles: dict[str, list[str]] = {}
+    section = ""
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line.strip("[]")
+            continue
+        kv = _split_kv(line)
+        if not kv:
+            continue
+        k, v = kv
+        if section == "versions":
+            versions[k] = v.strip('"')
+        elif section == "libraries":
+            libraries[k] = _parse_lib(v)
+        elif section == "bundles":
+            inner = v.strip().strip("[]")
+            bundles[k] = [p.strip().strip('"') for p in inner.split(",") if p.strip()]
+    return {"versions": versions, "libraries": libraries, "bundles": bundles}
 
 
-def _write_peaks(path: Path, peaks: list[dict[str, Any]]) -> None:
-    with path.open("w", encoding="utf-8", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=PEAK_FIELDS)
-        writer.writeheader()
-        for peak in peaks:
-            writer.writerow(peak)
-
-
-def load_peaks(text: str) -> list[dict[str, Any]]:
-    rows = list(csv.DictReader(text.splitlines()))
-    out: list[dict[str, Any]] = []
-    for row in rows:
-        out.append(
-            {
-                "peak_id": row["peak_id"],
-                "h": int(row["h"]),
-                "k": int(row["k"]),
-                "l": int(row["l"]),
-                "tof_us": float(row["tof_us"]),
-                "intensity": float(row["intensity"]),
-                "sigma_tof": float(row["sigma_tof"]),
-                "extinct_flag": int(row["extinct_flag"]),
-            }
-        )
+def _parse_lib(rest: str) -> dict[str, Any]:
+    rest = rest.strip().strip("{}")
+    out: dict[str, Any] = {"module": "", "version": "", "version_ref": "", "inline": False}
+    for part in rest.split(","):
+        kv = _split_kv(part.strip())
+        if not kv:
+            continue
+        k, v = kv
+        v = v.strip('"')
+        if k == "module":
+            out["module"] = v
+        elif k == "version.ref":
+            out["version_ref"] = v
+        elif k == "version":
+            out["version"] = v
+            out["inline"] = True
     return out
 
 
-def expect_pack(
-    peaks: list[dict[str, Any]],
-    instr: dict[str, float],
-    crystal_system: str,
-    pol: dict[str, Any],
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    h_js = float(pol["h_js"])
-    m_n = float(pol["m_n_kg"])
-    path_m = float(instr["L1_m"]) + float(instr["L2_m"])
-    sin_theta = math.sin(math.radians(float(instr["two_theta_deg"]) / 2.0))
-    offset = float(instr["pulse_offset_us"])
+def load_plugins(path: Path) -> list[dict[str, Any]]:
+    reqs: list[dict[str, Any]] = []
+    cur: dict[str, Any] | None = None
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line == "[[plugins]]":
+            if cur is not None:
+                reqs.append(cur)
+            cur = {}
+            continue
+        if cur is None:
+            continue
+        kv = _split_kv(line)
+        if not kv:
+            continue
+        k, v = kv
+        v = v.strip('"')
+        if k == "id":
+            cur["id"] = v
+        elif k == "version":
+            cur["version"] = v
+        elif k == "min_gradle":
+            maj, minor = v.split(".")
+            cur["min_gradle"] = (int(maj), int(minor))
+    if cur is not None:
+        reqs.append(cur)
+    return reqs
 
-    states: list[dict[str, Any]] = []
-    for peak in peaks:
-        t_s = (peak["tof_us"] - offset) * 1e-6
-        sigma_t = peak["sigma_tof"] * 1e-6
-        d_m = h_js * t_s / (2.0 * path_m * sin_theta * m_n)
-        sd_m = h_js * sigma_t / (2.0 * path_m * sin_theta * m_n)
-        d_obs = d_m * 1e10
-        sigma_d = sd_m * 1e10
-        primary = peak["intensity"] < float(pol["intensity_floor"])
-        if (
-            pol["admit_mode"] == "intensity_and_extinction"
-            and peak["extinct_flag"] == 1
-            and pol["extinction_mode"] == "skip"
-        ):
-            primary = True
-        sigma_q = 2.0 * sigma_d / (d_obs**3)
-        weight = 1.0 / (sigma_q * sigma_q)
-        if peak["extinct_flag"] == 1 and pol["extinction_mode"] == "downweight":
-            weight *= float(pol["extinction_scale"])
-        states.append(
-            {
-                **peak,
-                "d_obs_A": d_obs,
-                "sigma_d_A": sigma_d,
-                "weight": 0.0 if primary else weight,
-                "primary_reject": primary,
-                "rejected": primary,
-                "residual_reject": False,
-                "d_calc_A": 0.0,
-                "resid_sigma": 0.0,
-            }
-        )
 
-    def design_row(h: int, k: int, ell: int) -> list[float]:
-        if crystal_system == "cubic":
-            return [float(h * h + k * k + ell * ell)]
-        if crystal_system == "tetragonal":
-            return [float(h * h + k * k), float(ell * ell)]
-        if crystal_system == "orthorhombic":
-            return [float(h * h), float(k * k), float(ell * ell)]
-        if crystal_system == "hexagonal":
-            return [(4.0 / 3.0) * (h * h + h * k + k * k), float(ell * ell)]
-        raise AssertionError("unsupported")
-
-    def fit(active: list[dict[str, Any]]) -> dict[str, float]:
-        assert len(active) >= int(pol["min_admitted_peaks"])
-        ncols = len(design_row(active[0]["h"], active[0]["k"], active[0]["l"]))
-        ata = [[0.0] * ncols for _ in range(ncols)]
-        atq = [0.0] * ncols
-        for st in active:
-            row = design_row(st["h"], st["k"], st["l"])
-            q_obs = 1.0 / (st["d_obs_A"] ** 2)
-            weight = st["weight"]
-            for col in range(ncols):
-                atq[col] += weight * row[col] * q_obs
-                for row_i in range(ncols):
-                    ata[row_i][col] += weight * row[row_i] * row[col]
-        aug = [ata[r][:] + [atq[r]] for r in range(ncols)]
-        for col in range(ncols):
-            pivot = max(range(col, ncols), key=lambda r: abs(aug[r][col]))
-            assert abs(aug[pivot][col]) > 0
-            aug[col], aug[pivot] = aug[pivot], aug[col]
-            piv = aug[col][col]
-            for c in range(col, ncols + 1):
-                aug[col][c] /= piv
-            for r in range(ncols):
-                if r == col:
-                    continue
-                factor = aug[r][col]
-                for c in range(col, ncols + 1):
-                    aug[r][c] -= factor * aug[col][c]
-        x = [aug[r][ncols] for r in range(ncols)]
-        if crystal_system == "cubic":
-            a = 1.0 / math.sqrt(x[0])
-            return {
-                "a_A": a,
-                "b_A": a,
-                "c_A": a,
-                "alpha_deg": 90.0,
-                "beta_deg": 90.0,
-                "gamma_deg": 90.0,
-            }
-        if crystal_system == "tetragonal":
-            a = 1.0 / math.sqrt(x[0])
-            c = 1.0 / math.sqrt(x[1])
-            return {
-                "a_A": a,
-                "b_A": a,
-                "c_A": c,
-                "alpha_deg": 90.0,
-                "beta_deg": 90.0,
-                "gamma_deg": 90.0,
-            }
-        if crystal_system == "orthorhombic":
-            return {
-                "a_A": 1.0 / math.sqrt(x[0]),
-                "b_A": 1.0 / math.sqrt(x[1]),
-                "c_A": 1.0 / math.sqrt(x[2]),
-                "alpha_deg": 90.0,
-                "beta_deg": 90.0,
-                "gamma_deg": 90.0,
-            }
-        a = 1.0 / math.sqrt(x[0])
-        c = 1.0 / math.sqrt(x[1])
-        return {
-            "a_A": a,
-            "b_A": a,
-            "c_A": c,
-            "alpha_deg": 90.0,
-            "beta_deg": 90.0,
-            "gamma_deg": 120.0,
-        }
-
-    def d_calc(cell: dict[str, float], h: int, k: int, ell: int) -> float:
-        if crystal_system == "hexagonal":
-            q = (4.0 / 3.0) * (h * h + h * k + k * k) / (cell["a_A"] ** 2) + (ell * ell) / (
-                cell["c_A"] ** 2
-            )
+def load_publish(path: Path) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        kv = _split_kv(line)
+        if not kv:
+            continue
+        k, v = kv
+        v = v.strip('"')
+        if k == "signed_publish":
+            out[k] = v == "true"
         else:
-            q = (h / cell["a_A"]) ** 2 + (k / cell["b_A"]) ** 2 + (ell / cell["c_A"]) ** 2
-        return 1.0 / math.sqrt(q)
+            out[k] = v
+    return out
 
-    def apply_residuals(cell: dict[str, float]) -> None:
-        for st in states:
-            st["d_calc_A"] = d_calc(cell, st["h"], st["k"], st["l"])
-            st["resid_sigma"] = (st["d_obs_A"] - st["d_calc_A"]) / st["sigma_d_A"]
 
-    def refresh_residual_flags() -> None:
-        for st in states:
-            st["residual_reject"] = (not st["primary_reject"]) and abs(st["resid_sigma"]) > float(
-                pol["residual_sigma_max"]
-            )
-            st["rejected"] = st["primary_reject"] or st["residual_reject"]
-
-    cell = fit([st for st in states if not st["rejected"]])
-    apply_residuals(cell)
-    any_resid = False
-    for st in states:
-        if (not st["primary_reject"]) and abs(st["resid_sigma"]) > float(pol["residual_sigma_max"]):
-            st["residual_reject"] = True
-            st["rejected"] = True
-            any_resid = True
-    if any_resid:
-        cell = fit([st for st in states if not st["rejected"]])
-        apply_residuals(cell)
-        refresh_residual_flags()
-
-    admitted = [st for st in states if not st["rejected"]]
-    assert admitted
-    chi2 = sum(st["resid_sigma"] ** 2 for st in admitted)
-    rms = math.sqrt(
-        sum((st["d_obs_A"] - st["d_calc_A"]) ** 2 for st in admitted) / len(admitted)
-    )
-    states.sort(key=lambda st: st["peak_id"])
-    rejected_ids = [st["peak_id"] for st in states if st["rejected"]]
-
-    lines = [f"rev:{pol['policy_revision']}"]
-    for st in states:
-        rej = "1" if st["rejected"] else "0"
-        lines.append(
-            f"{st['peak_id']}:{fmt10(st['d_obs_A'])}:{fmt10(st['d_calc_A'])}:{fmt10(st['resid_sigma'])}:{rej}"
-        )
-    lines.append(
-        f"a:{fmt10(cell['a_A'])}:b:{fmt10(cell['b_A'])}:c:{fmt10(cell['c_A'])}:chi2:{fmt10(chi2)}:rms:{fmt10(rms)}"
-    )
-    digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()
-
-    report = {
-        "schema_version": int(pol["schema_version"]),
-        "policy_revision": pol["policy_revision"],
-        "crystal_system": crystal_system,
-        "peak_count": len(states),
-        "admitted_count": len(admitted),
-        "rejected_count": len(rejected_ids),
-        "chi2": chi2,
-        "rms_resid_A": rms,
-        "a_A": cell["a_A"],
-        "b_A": cell["b_A"],
-        "c_A": cell["c_A"],
-        "alpha_deg": cell["alpha_deg"],
-        "beta_deg": cell["beta_deg"],
-        "gamma_deg": cell["gamma_deg"],
-        "rejected_ids": rejected_ids,
-        "refine_digest": digest,
-        "residuals": [
+def decode_lock(path: Path) -> tuple[dict[str, int], list[dict[str, Any]]]:
+    stats = {
+        "format_version": 0,
+        "records_total": 0,
+        "records_valid": 0,
+        "records_rejected": 0,
+        "dup_coord_rejects": 0,
+        "payload_bytes": 0,
+    }
+    if not path.exists():
+        return stats, []
+    lines = path.read_text().splitlines()
+    if not lines or lines[0] != "LOCK1":
+        raise ValueError("bad magic")
+    stats["format_version"] = int(lines[1])
+    seen: set[str] = set()
+    recs: list[dict[str, Any]] = []
+    for line in lines[3:]:
+        if not line.strip():
+            continue
+        stats["records_total"] += 1
+        parts = line.split("\t")
+        if len(parts) != 4:
+            stats["records_rejected"] += 1
+            continue
+        coord, version, checksum, opt = parts
+        reason = ""
+        if opt not in ("0", "1"):
+            reason = "BAD_OPTIONAL"
+        elif checksum != _sha256_coord(coord, version):
+            reason = "BAD_CHECKSUM"
+        elif coord in seen:
+            reason = "DUP_COORD"
+        seen.add(coord)
+        if reason:
+            stats["records_rejected"] += 1
+            if reason == "DUP_COORD":
+                stats["dup_coord_rejects"] += 1
+            continue
+        recs.append(
             {
-                "peak_id": st["peak_id"],
-                "h": st["h"],
-                "k": st["k"],
-                "l": st["l"],
-                "d_obs_A": st["d_obs_A"],
-                "d_calc_A": st["d_calc_A"],
-                "resid_sigma": st["resid_sigma"],
-                "rejected": st["rejected"],
+                "coordinate": coord,
+                "version": version,
+                "checksum": checksum,
+                "optional": opt == "1",
             }
-            for st in states
-        ],
-    }
-    refined = {
-        "a_A": cell["a_A"],
-        "b_A": cell["b_A"],
-        "c_A": cell["c_A"],
-        "alpha_deg": cell["alpha_deg"],
-        "beta_deg": cell["beta_deg"],
-        "gamma_deg": cell["gamma_deg"],
-        "crystal_system": crystal_system,
-    }
-    return refined, report
+        )
+        stats["records_valid"] += 1
+        stats["payload_bytes"] += len(line)
+    return stats, recs
 
 
-def _top_keys(raw: str) -> list[str]:
-    return re.findall(r'\n  "([^"]+)":', raw)
+def resolve_policy(man: dict[str, Any]) -> tuple[bool, bool, int, bool]:
+    require_offline = bool(man.get("require_offline_vault", True))
+    fail_on_project = bool(man.get("fail_on_project_repos", True))
+    max_deps = int(man.get("max_direct_deps") or 3)
+    strict_bom = bool(man.get("strict_bom", True))
+    ov = man.get("policy_overrides") or {}
+    if "require_offline_vault" in ov:
+        require_offline = bool(ov["require_offline_vault"])
+    if "fail_on_project_repos" in ov:
+        fail_on_project = bool(ov["fail_on_project_repos"])
+    if "strict_bom" in ov:
+        strict_bom = bool(ov["strict_bom"])
+    if "max_direct_deps" in ov:
+        max_deps = int(ov["max_direct_deps"])
+    return require_offline, fail_on_project, max_deps, strict_bom
 
 
-def test_beamline_fixtures_remain_byte_stable():
-    """Shipped sample peaks/instrument/structure and sealed policy must keep verifier hashes."""
-    assert _sha(PEAKS) == SAMPLE_SHA256["peaks.csv"]
-    assert _sha(INSTR) == SAMPLE_SHA256["instrument.json"]
-    assert _sha(STRUCT) == SAMPLE_SHA256["reference_structure.json"]
-    assert _sha(SEALED) == SEALED_SHA256
+def plugin_incompatible(req: dict[str, Any], maj: int, minor: int) -> bool:
+    if "min_gradle" in req:
+        need = req["min_gradle"]
+    elif req["id"] in PLUGIN_DEFAULTS:
+        need = PLUGIN_DEFAULTS[req["id"]]
+    else:
+        return False
+    if maj < need[0]:
+        return True
+    if maj > need[0]:
+        return False
+    return minor < need[1]
 
 
-def test_orthorhombic_desk_pack_writes_cell_and_reject_digest():
-    """Default orthorhombic pack exits 1, rejects P09 only, and matches cell/digest contracts."""
-    _restore_live_policy()
-    _rebuild()
-    refined_path = Path("/tmp/ndref-default-refined.json")
-    report_path = Path("/tmp/ndref-default-report.json")
-    for path in (refined_path, report_path):
-        if path.exists():
-            path.unlink()
-    proc = _run(["--refined", str(refined_path), "--report", str(report_path)])
-    assert proc.returncode == 1, proc.stderr
-    assert proc.stdout == ""
-    peaks = load_peaks(PEAKS.read_text(encoding="utf-8"))
-    instr = json.loads(INSTR.read_text(encoding="utf-8"))
-    exp_ref, exp_rep = expect_pack(peaks, instr, "orthorhombic", SHIPPED)
-    got_ref = json.loads(refined_path.read_text(encoding="utf-8"))
-    got_rep = json.loads(report_path.read_text(encoding="utf-8"))
-    for key in ("a_A", "b_A", "c_A"):
-        assert abs(got_ref[key] - exp_ref[key]) < 1e-8
-        assert abs(float(got_rep[key]) - exp_ref[key]) < 1e-8
-    assert got_rep["rejected_ids"] == ["P09"]
-    assert got_rep["rejected_count"] == 1
-    assert got_rep["refine_digest"] == exp_rep["refine_digest"]
-    assert abs(got_rep["chi2"] - exp_rep["chi2"]) < 1e-8
-    raw_rep = report_path.read_text(encoding="utf-8")
-    assert _top_keys(raw_rep) == REPORT_KEYS
-    assert raw_rep.endswith("}\n")
-    raw_ref = refined_path.read_text(encoding="utf-8")
-    assert _top_keys(raw_ref) == STRUCT_KEYS
-    assert raw_ref.endswith("}\n")
-    assert list(got_rep["residuals"][0].keys()) == RESIDUAL_KEYS
+def fid(mid: str, entity: str, kind: str, seq: int) -> str:
+    return f"{mid}::{entity}::{kind}::{seq:04d}"
 
 
-def test_default_config_path_requires_sealed_byte_match():
-    """Drifted live `/app/config/refine_policy.toml` is fatal and must not clobber outputs."""
-    _rebuild()
-    CFG.write_text(_toml({**SHIPPED, "policy_revision": "drifted"}), encoding="utf-8")
-    out_r = Path("/tmp/ndref-drift-refined.json")
-    out_p = Path("/tmp/ndref-drift-report.json")
-    marker = '{"keep":true}\n'
-    out_r.write_text(marker, encoding="utf-8")
-    out_p.write_text(marker, encoding="utf-8")
-    proc = _run(["--refined", str(out_r), "--report", str(out_p)])
-    assert proc.returncode == 2
-    assert out_r.read_text(encoding="utf-8") == marker
-    assert out_p.read_text(encoding="utf-8") == marker
-    _restore_live_policy()
+def referenced_coords(mf: dict[str, Any], cat: dict[str, Any]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for alias in mf.get("library_aliases") or []:
+        lib = cat["libraries"].get(alias)
+        if not lib:
+            continue
+        if lib["version_ref"]:
+            ver = cat["versions"].get(lib["version_ref"])
+            if ver is None:
+                continue
+        elif lib["inline"]:
+            ver = lib["version"]
+        else:
+            continue
+        out[lib["module"]] = ver
+    for k, v in (mf.get("version_overrides") or {}).items():
+        out[k] = v
+    return out
 
 
-def test_unknown_flag_exits_fatal_without_touching_artifacts():
-    """Unknown flags exit 2 with stderr diagnostics and leave preexisting artifacts intact."""
-    _restore_live_policy()
-    _rebuild()
-    out_r = Path("/tmp/ndref-badflag-refined.json")
-    out_p = Path("/tmp/ndref-badflag-report.json")
-    marker = '{"keep":true}\n'
-    out_r.write_text(marker, encoding="utf-8")
-    out_p.write_text(marker, encoding="utf-8")
-    proc = _run(["--not-a-flag", "x", "--refined", str(out_r), "--report", str(out_p)])
-    assert proc.returncode == 2
-    assert proc.stderr.strip() != ""
-    assert out_r.read_text(encoding="utf-8") == marker
-    assert out_p.read_text(encoding="utf-8") == marker
+def cycle_successors(loaded: dict[str, dict[str, Any]]) -> dict[str, str]:
+    in_cycle: set[str] = set()
+    for start in loaded:
+        visited: set[str] = set()
+
+        def dfs(cur: str, path: list[str], seen: set[str]) -> bool:
+            if cur in path:
+                idx = path.index(cur)
+                in_cycle.update(path[idx:])
+                in_cycle.add(cur)
+                return True
+            if cur in seen:
+                return False
+            seen.add(cur)
+            for dep in loaded[cur].get("dependencies") or []:
+                if dep not in loaded:
+                    continue
+                if dfs(dep, path + [cur], seen):
+                    return True
+            return False
+
+        dfs(start, [], visited)
+    out: dict[str, str] = {}
+    for mid in in_cycle:
+        cands = sorted(
+            d for d in (loaded[mid].get("dependencies") or []) if d in in_cycle
+        )
+        if cands:
+            out[mid] = cands[0]
+    return out
 
 
-def test_duplicate_peak_id_is_fatal_before_emit():
-    """Duplicate peak_id values exit 2 and must not create refined/report paths."""
-    _restore_live_policy()
-    _rebuild()
-    lines = PEAKS.read_text(encoding="utf-8").splitlines()
-    cols = lines[2].split(",")
-    cols[0] = lines[1].split(",")[0]
-    lines[2] = ",".join(cols)
-    bad = Path("/tmp/ndref-dup-peaks.csv")
-    bad.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    out_r = Path("/tmp/ndref-dup-refined.json")
-    out_p = Path("/tmp/ndref-dup-report.json")
-    if out_r.exists():
-        out_r.unlink()
-    if out_p.exists():
-        out_p.unlink()
-    proc = _run(
-        [
-            "--peaks",
-            str(bad),
-            "--config",
-            str(SEALED),
-            "--refined",
-            str(out_r),
-            "--report",
-            str(out_p),
-        ]
-    )
-    assert proc.returncode == 2
-    assert not out_r.exists()
-    assert not out_p.exists()
+def build_expected(root: Path) -> dict[str, Any]:
+    man = json.loads((root / "workspace.manifest.json").read_text())
+    require_offline, fail_on_project, max_deps, strict_bom = resolve_policy(man)
+    cat = load_catalog(root / "catalog" / "libs.versions.toml")
+    reqs = load_plugins(root / "plugins" / "plugin-requests.toml")
+    pub = load_publish(root / "publish" / "offline-vault.toml")
 
+    findings: list[dict[str, Any]] = []
 
-def test_intensity_floor_admit_keeps_bright_extinct_peak():
-    """Under intensity_floor admit_mode, an extinct peak above the floor stays admitted."""
-    _restore_live_policy()
-    _rebuild()
-    pol = {
-        **SHIPPED,
-        "admit_mode": "intensity_floor",
-        "extinction_mode": "skip",
-        "intensity_floor": 10.0,
-        "policy_revision": "floor-only",
-    }
-    cfg = Path("/tmp/ndref-floor.toml")
-    cfg.write_text(_toml(pol), encoding="utf-8")
-    peaks = load_peaks(PEAKS.read_text(encoding="utf-8"))
-    for peak in peaks:
-        if peak["peak_id"] == "P09":
-            peak["intensity"] = 40.0
-            peak["extinct_flag"] = 1
-    peak_path = Path("/tmp/ndref-floor-peaks.csv")
-    _write_peaks(peak_path, peaks)
-    instr = json.loads(INSTR.read_text(encoding="utf-8"))
-    exp_ref, exp_rep = expect_pack(peaks, instr, "orthorhombic", pol)
-    out_r = Path("/tmp/ndref-floor-refined.json")
-    out_p = Path("/tmp/ndref-floor-report.json")
-    proc = _run(
-        [
-            "--peaks",
-            str(peak_path),
-            "--config",
-            str(cfg),
-            "--refined",
-            str(out_r),
-            "--report",
-            str(out_p),
-        ]
-    )
-    assert proc.returncode == (0 if exp_rep["rejected_count"] == 0 else 1)
-    got = json.loads(out_p.read_text(encoding="utf-8"))
-    assert "P09" not in got["rejected_ids"]
-    assert got["refine_digest"] == exp_rep["refine_digest"]
-    assert abs(json.loads(out_r.read_text(encoding="utf-8"))["a_A"] - exp_ref["a_A"]) < 1e-8
-
-
-def test_extinction_downweight_keeps_peak_and_scales_weight():
-    """Under extinction_mode=downweight, an extinct peak stays admitted with scaled weight."""
-    _restore_live_policy()
-    _rebuild()
-    pol = {
-        **SHIPPED,
-        "admit_mode": "intensity_and_extinction",
-        "extinction_mode": "downweight",
-        "extinction_scale": 0.2,
-        "intensity_floor": 10.0,
-        "policy_revision": "downweight-desk",
-    }
-    cfg = Path("/tmp/ndref-downweight.toml")
-    cfg.write_text(_toml(pol), encoding="utf-8")
-    peaks = load_peaks(PEAKS.read_text(encoding="utf-8"))
-    for peak in peaks:
-        if peak["peak_id"] == "P09":
-            peak["intensity"] = 80.0
-            peak["extinct_flag"] = 1
-    peak_path = Path("/tmp/ndref-downweight-peaks.csv")
-    _write_peaks(peak_path, peaks)
-    instr = json.loads(INSTR.read_text(encoding="utf-8"))
-    exp_ref, exp_rep = expect_pack(peaks, instr, "orthorhombic", pol)
-    assert "P09" not in exp_rep["rejected_ids"]
-    skip_pol = {**pol, "extinction_mode": "skip", "policy_revision": "skip-contrast"}
-    _, skip_rep = expect_pack(peaks, instr, "orthorhombic", skip_pol)
-    assert "P09" in skip_rep["rejected_ids"]
-    out_r = Path("/tmp/ndref-downweight-refined.json")
-    out_p = Path("/tmp/ndref-downweight-report.json")
-    proc = _run(
-        [
-            "--peaks",
-            str(peak_path),
-            "--config",
-            str(cfg),
-            "--refined",
-            str(out_r),
-            "--report",
-            str(out_p),
-        ]
-    )
-    assert proc.returncode == (0 if exp_rep["rejected_count"] == 0 else 1), proc.stderr
-    got = json.loads(out_p.read_text(encoding="utf-8"))
-    assert "P09" not in got["rejected_ids"]
-    assert got["refine_digest"] == exp_rep["refine_digest"]
-    assert abs(json.loads(out_r.read_text(encoding="utf-8"))["a_A"] - exp_ref["a_A"]) < 1e-8
-
-
-def test_cubic_and_tetragonal_metric_rows_recover_cell():
-    """Cubic and tetragonal design rows recover locked equal-axis cells with exit 0."""
-    _restore_live_policy()
-    _rebuild()
-    h_js = SHIPPED["h_js"]
-    m_n = SHIPPED["m_n_kg"]
-    instr = {"L1_m": 11.0, "L2_m": 2.5, "two_theta_deg": 90.0, "pulse_offset_us": 12.0}
-    path_m = instr["L1_m"] + instr["L2_m"]
-    sin_theta = math.sin(math.radians(instr["two_theta_deg"] / 2.0))
-
-    def synth(
-        crystal_system: str,
-        a_true: float,
-        c_true: float,
-        miller: list[tuple[int, int, int]],
-        prefix: str,
-    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        peaks: list[dict[str, Any]] = []
-        for idx, (h, k, ell) in enumerate(miller, 1):
-            if crystal_system == "cubic":
-                q = (h * h + k * k + ell * ell) / (a_true * a_true)
-            else:
-                q = (h * h + k * k) / (a_true * a_true) + (ell * ell) / (c_true * c_true)
-            d_a = 1.0 / math.sqrt(q)
-            t_s = (d_a * 1e-10) * 2.0 * path_m * sin_theta * m_n / h_js
-            peaks.append(
+    for req in reqs:
+        if plugin_incompatible(req, man["gradle_major"], man["gradle_minor"]):
+            findings.append(
                 {
-                    "peak_id": f"{prefix}{idx:02d}",
-                    "h": h,
-                    "k": k,
-                    "l": ell,
-                    "tof_us": t_s * 1e6 + instr["pulse_offset_us"],
-                    "intensity": 300.0,
-                    "sigma_tof": 2.0,
-                    "extinct_flag": 0,
+                    "finding_id": fid("meshgrid", req["id"], "PLUGIN_INCOMPATIBLE", 0),
+                    "module_id": "meshgrid",
+                    "entity_id": req["id"],
+                    "kind": "PLUGIN_INCOMPATIBLE",
+                    "event_seq": 0,
+                    "detail": req["version"],
                 }
             )
-        structure = {
-            "a_A": a_true + 0.05,
-            "b_A": a_true + 0.05,
-            "c_A": (a_true + 0.05) if crystal_system == "cubic" else (c_true + 0.08),
-            "alpha_deg": 90.0,
-            "beta_deg": 90.0,
-            "gamma_deg": 90.0,
-            "crystal_system": crystal_system,
-        }
-        return peaks, structure
 
-    cases = [
-        (
-            "cubic",
-            4.0,
-            4.0,
-            [(1, 0, 0), (1, 1, 0), (1, 1, 1), (2, 0, 0), (2, 1, 0), (2, 1, 1)],
-            "C",
-        ),
-        (
-            "tetragonal",
-            3.5,
-            5.0,
-            [(1, 0, 0), (0, 0, 1), (1, 1, 0), (1, 0, 1), (2, 0, 0), (1, 1, 2)],
-            "T",
-        ),
-    ]
-    for crystal_system, a_true, c_true, miller, prefix in cases:
-        peaks, structure = synth(crystal_system, a_true, c_true, miller, prefix)
-        peak_path = Path(f"/tmp/ndref-{crystal_system}-peaks.csv")
-        _write_peaks(peak_path, peaks)
-        instr_path = Path(f"/tmp/ndref-{crystal_system}-instrument.json")
-        instr_path.write_text(json.dumps(instr, indent=2) + "\n", encoding="utf-8")
-        struct_path = Path(f"/tmp/ndref-{crystal_system}-structure.json")
-        struct_path.write_text(json.dumps(structure, indent=2) + "\n", encoding="utf-8")
-        _exp_ref, exp_rep = expect_pack(peaks, instr, crystal_system, SHIPPED)
-        out_r = Path(f"/tmp/ndref-{crystal_system}-refined.json")
-        out_p = Path(f"/tmp/ndref-{crystal_system}-report.json")
-        proc = _run(
-            [
-                "--peaks",
-                str(peak_path),
-                "--instrument",
-                str(instr_path),
-                "--structure",
-                str(struct_path),
-                "--config",
-                str(SEALED),
-                "--refined",
-                str(out_r),
-                "--report",
-                str(out_p),
-            ]
-        )
-        assert proc.returncode == 0, proc.stderr
-        got_ref = json.loads(out_r.read_text(encoding="utf-8"))
-        got_rep = json.loads(out_p.read_text(encoding="utf-8"))
-        assert abs(got_ref["a_A"] - a_true) < 1e-6
-        assert abs(got_ref["b_A"] - a_true) < 1e-6
-        assert abs(got_ref["c_A"] - c_true) < 1e-6
-        assert got_ref["crystal_system"] == crystal_system
-        assert got_rep["refine_digest"] == exp_rep["refine_digest"]
-        assert got_rep["rejected_count"] == 0
-
-
-def test_tof_outlier_refit_clears_collateral_residual_flags():
-    """After the single residual re-fit, reject flags must be refreshed against the final cell.
-
-    A +80 us TOF bump on P07 can make collateral peaks look bad on the first fit; once P07
-    is excluded and the cell is re-solved, those collateral peaks must clear if they now
-    pass residual_sigma_max. Sticky first-pass residual rejects are incorrect.
-    """
-    _restore_live_policy()
-    _rebuild()
-    peaks = load_peaks(PEAKS.read_text(encoding="utf-8"))
-    for peak in peaks:
-        if peak["peak_id"] == "P07":
-            peak["tof_us"] += 80.0
-    peak_path = Path("/tmp/ndref-outlier-peaks.csv")
-    _write_peaks(peak_path, peaks)
-    instr = json.loads(INSTR.read_text(encoding="utf-8"))
-    _, exp_rep = expect_pack(peaks, instr, "orthorhombic", SHIPPED)
-    assert exp_rep["rejected_ids"] == ["P07", "P09"]
-    assert "P01" not in exp_rep["rejected_ids"]
-    out_r = Path("/tmp/ndref-outlier-refined.json")
-    out_p = Path("/tmp/ndref-outlier-report.json")
-    proc = _run(
-        [
-            "--peaks",
-            str(peak_path),
-            "--config",
-            str(SEALED),
-            "--refined",
-            str(out_r),
-            "--report",
-            str(out_p),
-        ]
-    )
-    assert proc.returncode == 1
-    got = json.loads(out_p.read_text(encoding="utf-8"))
-    assert got["rejected_ids"] == ["P07", "P09"]
-    assert "P01" not in got["rejected_ids"]
-    by_id = {row["peak_id"]: row for row in got["residuals"]}
-    assert by_id["P01"]["rejected"] is False
-    assert by_id["P07"]["rejected"] is True
-    assert by_id["P09"]["rejected"] is True
-    assert got["refine_digest"] == exp_rep["refine_digest"]
-
-
-def test_hexagonal_metric_recovers_locked_angles():
-    """Hexagonal 4/3 Q-rows recover a/c with locked angles; digest uses canonical zero text."""
-    _restore_live_policy()
-    _rebuild()
-    a_true, c_true = 3.2, 5.1
-    h_js = SHIPPED["h_js"]
-    m_n = SHIPPED["m_n_kg"]
-    instr = {"L1_m": 10.0, "L2_m": 2.0, "two_theta_deg": 90.0, "pulse_offset_us": 10.0}
-    path_m = instr["L1_m"] + instr["L2_m"]
-    sin_theta = math.sin(math.radians(instr["two_theta_deg"] / 2.0))
-    miller = [(1, 0, 0), (1, 0, 1), (1, 1, 0), (0, 0, 2), (2, 0, 1), (1, 1, 2)]
-    peaks: list[dict[str, Any]] = []
-    for idx, (h, k, ell) in enumerate(miller, 1):
-        q = (4.0 / 3.0) * (h * h + h * k + k * k) / (a_true * a_true) + (ell * ell) / (
-            c_true * c_true
-        )
-        d_a = 1.0 / math.sqrt(q)
-        t_s = (d_a * 1e-10) * 2.0 * path_m * sin_theta * m_n / h_js
-        peaks.append(
+    for alias in sorted(set(cat["bundles"]) & set(cat["libraries"])):
+        findings.append(
             {
-                "peak_id": f"H{idx:02d}",
-                "h": h,
-                "k": k,
-                "l": ell,
-                "tof_us": t_s * 1e6 + instr["pulse_offset_us"],
-                "intensity": 200.0,
-                "sigma_tof": 2.0,
-                "extinct_flag": 0,
+                "finding_id": fid("meshgrid", alias, "CATALOG_ALIAS_CONFLICT", 0),
+                "module_id": "meshgrid",
+                "entity_id": alias,
+                "kind": "CATALOG_ALIAS_CONFLICT",
+                "event_seq": 0,
+                "detail": "bundle",
             }
         )
-    peak_path = Path("/tmp/ndref-hex-peaks.csv")
-    _write_peaks(peak_path, peaks)
-    instr_path = Path("/tmp/ndref-hex-instrument.json")
-    instr_path.write_text(json.dumps(instr, indent=2) + "\n", encoding="utf-8")
-    struct_path = Path("/tmp/ndref-hex-structure.json")
-    struct_path.write_text(
-        json.dumps(
+
+    for alias, lib in sorted(cat["libraries"].items()):
+        if not lib["inline"]:
+            continue
+        if alias in cat["versions"] and cat["versions"][alias] != lib["version"]:
+            findings.append(
+                {
+                    "finding_id": fid("meshgrid", alias, "CATALOG_VERSION_DRIFT", 0),
+                    "module_id": "meshgrid",
+                    "entity_id": alias,
+                    "kind": "CATALOG_VERSION_DRIFT",
+                    "event_seq": 0,
+                    "detail": lib["version"],
+                }
+            )
+
+    if fail_on_project and pub.get("repositories_mode") != "FAIL_ON_PROJECT_REPOS":
+        findings.append(
             {
-                "a_A": 3.25,
-                "b_A": 3.25,
-                "c_A": 5.20,
-                "alpha_deg": 90.0,
-                "beta_deg": 90.0,
-                "gamma_deg": 120.0,
-                "crystal_system": "hexagonal",
-            },
-            indent=2,
+                "finding_id": fid("meshgrid", "repositories_mode", "PROJECT_REPO_FORBIDDEN", 0),
+                "module_id": "meshgrid",
+                "entity_id": "repositories_mode",
+                "kind": "PROJECT_REPO_FORBIDDEN",
+                "event_seq": 0,
+                "detail": pub.get("repositories_mode", ""),
+            }
         )
-        + "\n",
-        encoding="utf-8",
-    )
-    _, exp_rep = expect_pack(peaks, instr, "hexagonal", SHIPPED)
-    out_r = Path("/tmp/ndref-hex-refined.json")
-    out_p = Path("/tmp/ndref-hex-report.json")
-    proc = _run(
-        [
-            "--peaks",
-            str(peak_path),
-            "--instrument",
-            str(instr_path),
-            "--structure",
-            str(struct_path),
-            "--config",
-            str(SEALED),
-            "--refined",
-            str(out_r),
-            "--report",
-            str(out_p),
-        ]
-    )
-    assert proc.returncode == 0, proc.stderr
-    raw_rep = out_p.read_text(encoding="utf-8")
-    got_ref = json.loads(out_r.read_text(encoding="utf-8"))
-    got_rep = json.loads(raw_rep)
-    assert abs(got_ref["a_A"] - a_true) < 1e-6
-    assert abs(got_ref["c_A"] - c_true) < 1e-6
-    assert got_ref["gamma_deg"] == 120.0
-    assert got_rep["refine_digest"] == exp_rep["refine_digest"]
-    assert got_rep["rejected_count"] == 0
-    assert "-0.0000000000" not in raw_rep
+    if require_offline:
+        if pub.get("vault_path") != "/app/meshgrid/offline-vault":
+            findings.append(
+                {
+                    "finding_id": fid("meshgrid", "vault_path", "OFFLINE_REPO_MISCONFIG", 0),
+                    "module_id": "meshgrid",
+                    "entity_id": "vault_path",
+                    "kind": "OFFLINE_REPO_MISCONFIG",
+                    "event_seq": 0,
+                    "detail": pub.get("vault_path", ""),
+                }
+            )
+        if not pub.get("signed_publish"):
+            findings.append(
+                {
+                    "finding_id": fid("meshgrid", "signed_publish", "PUBLISH_UNSIGNED", 0),
+                    "module_id": "meshgrid",
+                    "entity_id": "signed_publish",
+                    "kind": "PUBLISH_UNSIGNED",
+                    "event_seq": 0,
+                    "detail": "",
+                }
+            )
 
+    seen: set[str] = set()
+    dup_skipped = 0
+    max_ord = -1
+    loaded: dict[str, dict[str, Any]] = {}
+    module_order: list[str] = []
+    coords: dict[str, str] = {}
+    finding_count: dict[str, int] = {}
+    captures: dict[str, dict[str, int]] = {}
 
-def test_orthorhombic_angle_lock_violation_is_fatal():
-    """Reference orthorhombic cells with unlocked beta exit 2 without writing artifacts."""
-    _restore_live_policy()
-    _rebuild()
-    bad = Path("/tmp/ndref-bad-angles.json")
-    bad.write_text(
-        json.dumps(
+    for ord_, mid in enumerate(man["modules"]):
+        max_ord = max(max_ord, ord_)
+        if mid in seen:
+            dup_skipped += 1
+            continue
+        seen.add(mid)
+        module_order.append(mid)
+        mf = json.loads((root / "modules" / f"{mid}.module.json").read_text())
+        loaded[mid] = mf
+        coord = f"{mf['group']}:{mf['artifact']}"
+        if coord in coords:
+            findings.append(
+                {
+                    "finding_id": fid(mid, coord, "DUPLICATE_MODULE_COORDINATE", ord_),
+                    "module_id": mid,
+                    "entity_id": coord,
+                    "kind": "DUPLICATE_MODULE_COORDINATE",
+                    "event_seq": ord_,
+                    "detail": coords[coord],
+                }
+            )
+            finding_count[mid] = finding_count.get(mid, 0) + 1
+        else:
+            coords[coord] = mid
+
+        for dep in mf.get("dependencies") or []:
+            if dep == mid:
+                findings.append(
+                    {
+                        "finding_id": fid(mid, mid, "SELF_DEPENDENCY", ord_),
+                        "module_id": mid,
+                        "entity_id": mid,
+                        "kind": "SELF_DEPENDENCY",
+                        "event_seq": ord_,
+                        "detail": "",
+                    }
+                )
+                finding_count[mid] = finding_count.get(mid, 0) + 1
+
+        if len(mf.get("dependencies") or []) > max_deps:
+            findings.append(
+                {
+                    "finding_id": fid(mid, mid, "DEPENDENCY_FANOUT", ord_),
+                    "module_id": mid,
+                    "entity_id": mid,
+                    "kind": "DEPENDENCY_FANOUT",
+                    "event_seq": ord_,
+                    "detail": str(len(mf["dependencies"])),
+                }
+            )
+            finding_count[mid] = finding_count.get(mid, 0) + 1
+
+        overrides = mf.get("version_overrides") or {}
+        if strict_bom and mf.get("bom_consumer") and overrides:
+            k = min(overrides)
+            findings.append(
+                {
+                    "finding_id": fid(mid, k, "BOM_OVERRIDE_FORBIDDEN", ord_),
+                    "module_id": mid,
+                    "entity_id": k,
+                    "kind": "BOM_OVERRIDE_FORBIDDEN",
+                    "event_seq": ord_,
+                    "detail": overrides[k],
+                }
+            )
+            finding_count[mid] = finding_count.get(mid, 0) + 1
+
+        lock_path = root / "locks" / f"{mid}.lock"
+        if not lock_path.exists():
+            findings.append(
+                {
+                    "finding_id": fid(mid, mid, "LOCK_MISSING", ord_),
+                    "module_id": mid,
+                    "entity_id": mid,
+                    "kind": "LOCK_MISSING",
+                    "event_seq": ord_,
+                    "detail": "",
+                }
+            )
+            finding_count[mid] = finding_count.get(mid, 0) + 1
+            captures[mid] = {
+                "format_version": 0,
+                "records_total": 0,
+                "records_valid": 0,
+                "records_rejected": 0,
+                "dup_coord_rejects": 0,
+                "payload_bytes": 0,
+            }
+        else:
+            st, recs = decode_lock(lock_path)
+            captures[mid] = st
+            refs = referenced_coords(mf, cat)
+            for rec in recs:
+                if rec["optional"]:
+                    continue
+                if rec["coordinate"] in refs:
+                    if refs[rec["coordinate"]] != rec["version"]:
+                        findings.append(
+                            {
+                                "finding_id": fid(
+                                    mid, rec["coordinate"], "LOCK_VERSION_DRIFT", ord_
+                                ),
+                                "module_id": mid,
+                                "entity_id": rec["coordinate"],
+                                "kind": "LOCK_VERSION_DRIFT",
+                                "event_seq": ord_,
+                                "detail": rec["version"],
+                            }
+                        )
+                        finding_count[mid] = finding_count.get(mid, 0) + 1
+                else:
+                    findings.append(
+                        {
+                            "finding_id": fid(
+                                mid, rec["coordinate"], "ORPHAN_LOCK_ENTRY", ord_
+                            ),
+                            "module_id": mid,
+                            "entity_id": rec["coordinate"],
+                            "kind": "ORPHAN_LOCK_ENTRY",
+                            "event_seq": ord_,
+                            "detail": "",
+                        }
+                    )
+                    finding_count[mid] = finding_count.get(mid, 0) + 1
+
+    for mid in module_order:
+        mf = loaded[mid]
+        ord_ = man["modules"].index(mid)
+        for dep in mf.get("dependencies") or []:
+            if dep == mid:
+                continue
+            if dep not in loaded:
+                findings.append(
+                    {
+                        "finding_id": fid(mid, dep, "UNKNOWN_DEPENDENCY", ord_),
+                        "module_id": mid,
+                        "entity_id": dep,
+                        "kind": "UNKNOWN_DEPENDENCY",
+                        "event_seq": ord_,
+                        "detail": "UNKNOWN_DEPENDENCY",
+                    }
+                )
+                finding_count[mid] = finding_count.get(mid, 0) + 1
+
+    audit = max_ord + 1
+    for mid, succ in sorted(cycle_successors(loaded).items()):
+        findings.append(
             {
-                "a_A": 5.0,
-                "b_A": 5.1,
-                "c_A": 5.2,
-                "alpha_deg": 90.0,
-                "beta_deg": 91.0,
-                "gamma_deg": 90.0,
-                "crystal_system": "orthorhombic",
-            },
-            indent=2,
+                "finding_id": fid(mid, mid, "MODULE_CYCLE", audit),
+                "module_id": mid,
+                "entity_id": mid,
+                "kind": "MODULE_CYCLE",
+                "event_seq": audit,
+                "detail": succ,
+            }
         )
-        + "\n",
-        encoding="utf-8",
+        finding_count[mid] = finding_count.get(mid, 0) + 1
+
+    unresolved: set[str] = set()
+    for lib in cat["libraries"].values():
+        ref = lib["version_ref"]
+        if ref and ref not in cat["versions"]:
+            unresolved.add(ref)
+    for ref in sorted(unresolved):
+        findings.append(
+            {
+                "finding_id": fid("meshgrid", ref, "CATALOG_UNRESOLVED_REF", audit),
+                "module_id": "meshgrid",
+                "entity_id": ref,
+                "kind": "CATALOG_UNRESOLVED_REF",
+                "event_seq": audit,
+                "detail": "",
+            }
+        )
+
+    modules_out: list[dict[str, Any]] = []
+    for mid in sorted(module_order):
+        mf = loaded[mid]
+        modules_out.append(
+            {
+                "module_id": mid,
+                "coordinate": f"{mf['group']}:{mf['artifact']}:{mf['version']}",
+                "bom_consumer": bool(mf.get("bom_consumer")),
+                "direct_deps": sorted(mf.get("dependencies") or []),
+                "capture": captures[mid],
+                "status": "DRIFT" if finding_count.get(mid, 0) else "STABLE",
+            }
+        )
+
+    findings.sort(key=lambda f: f["finding_id"])
+    status = "DRIFT" if findings else "STABLE"
+    return {
+        "workspace": {
+            "gradle_major": man["gradle_major"],
+            "gradle_minor": man["gradle_minor"],
+            "module_count": len(modules_out),
+            "require_offline_vault": require_offline,
+            "fail_on_project_repos": fail_on_project,
+            "max_direct_deps": max_deps,
+            "strict_bom": strict_bom,
+        },
+        "modules": modules_out,
+        "findings": findings,
+        "duplicate_modules_skipped": dup_skipped,
+        "status": status,
+    }
+
+
+def _run_gridknit(env: dict[str, str] | None = None) -> None:
+    merged = os.environ.copy()
+    if env:
+        merged.update(env)
+    subprocess.run([str(BINARY)], check=True, cwd="/app", env=merged)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _snapshot_immutable() -> None:
+    for path in sorted(POLICY.rglob("*")):
+        if path.is_file():
+            IMMUTABLE_SHA256[str(path)] = _sha256_file(path)
+    for path in sorted(ROOT.rglob("*")):
+        if path.is_file():
+            IMMUTABLE_SHA256[str(path)] = _sha256_file(path)
+
+
+@pytest.fixture(scope="session")
+def expected_report() -> dict[str, Any]:
+    return build_expected(ROOT)
+
+
+@pytest.fixture(scope="session")
+def report(expected_report: dict[str, Any]) -> dict[str, Any]:
+    assert BINARY.exists(), "gridknit binary missing"
+    _run_gridknit()
+    raw = REPORT_PATH.read_bytes()
+    assert raw.endswith(b"\n"), "report must end with newline"
+    assert b"\n\n" not in raw, "report must be compact single trailing newline"
+    data = json.loads(raw.decode())
+    assert data == expected_report
+    return data
+
+
+def test_full_report_equivalence(report: dict[str, Any], expected_report: dict[str, Any]) -> None:
+    """Full graded report must match independent policy replay of the primary meshgrid tree."""
+    assert report == expected_report
+
+
+def test_report_schema_key_order(report: dict[str, Any]) -> None:
+    """Root workspace module capture and finding key orders match REPORT_LAYOUT.md."""
+    assert list(report.keys()) == ROOT_KEYS
+    assert list(report["workspace"].keys()) == WORKSPACE_KEYS
+    for mod in report["modules"]:
+        assert list(mod.keys()) == MODULE_KEYS
+        assert list(mod["capture"].keys()) == CAPTURE_KEYS
+    for finding in report["findings"]:
+        assert list(finding.keys()) == FINDING_KEYS
+
+
+def test_report_compact_json_byte_identical_reruns(report: dict[str, Any]) -> None:
+    """Rerunning gridknit on unchanged inputs yields byte-identical compact JSON with trailing newline."""
+    first = REPORT_PATH.read_bytes()
+    _run_gridknit()
+    second = REPORT_PATH.read_bytes()
+    assert first == second
+    assert first.endswith(b"\n")
+    _ = report
+
+
+def test_immutable_policy_and_meshgrid() -> None:
+    """Policy docs and meshgrid fixtures must remain SHA-256 identical to the session snapshot."""
+    for path, digest in IMMUTABLE_SHA256.items():
+        assert _sha256_file(Path(path)) == digest, path
+
+
+def test_build_dir_only_binary_and_report() -> None:
+    """After the primary graded run, /app/build contains only gridknit and gradle_stabilization_report.json."""
+    names = sorted(p.name for p in Path("/app/build").iterdir())
+    assert names == ["gradle_stabilization_report.json", "gridknit"]
+
+
+def test_duplicate_module_skipped_exact(report: dict[str, Any]) -> None:
+    """Duplicate depknit manifest entry increments skip counter once; module_count equals unique modules."""
+    assert report["duplicate_modules_skipped"] == 1
+    ids = [m["module_id"] for m in report["modules"]]
+    assert ids.count("depknit") == 1
+    assert report["workspace"]["module_count"] == len(report["modules"]) == 6
+
+
+def test_direct_deps_are_sorted_string_lists(report: dict[str, Any]) -> None:
+    """direct_deps is a sorted string array of dependency module ids, never an int count."""
+    for mod in report["modules"]:
+        deps = mod["direct_deps"]
+        assert isinstance(deps, list)
+        assert all(isinstance(d, str) for d in deps)
+        assert deps == sorted(deps)
+    wire = next(m for m in report["modules"] if m["module_id"] == "wireloom")
+    assert wire["direct_deps"] == ["depknit", "pluginbridge"]
+
+
+def test_plugin_artifactseal_incompatible_numeric(report: dict[str, Any]) -> None:
+    """Plugin min_gradle 8.11 is incompatible with numeric Gradle 8.10 (major then minor compare)."""
+    hits = [
+        f
+        for f in report["findings"]
+        if f["kind"] == "PLUGIN_INCOMPATIBLE" and f["entity_id"] == "com.meshgrid.artifactseal"
+    ]
+    assert len(hits) == 1
+    assert hits[0]["detail"] == "3.0.1"
+    assert hits[0]["event_seq"] == 0
+    assert hits[0]["finding_id"] == fid(
+        "meshgrid", "com.meshgrid.artifactseal", "PLUGIN_INCOMPATIBLE", 0
     )
-    out_r = Path("/tmp/ndref-badang-refined.json")
-    out_p = Path("/tmp/ndref-badang-report.json")
-    if out_r.exists():
-        out_r.unlink()
-    if out_p.exists():
-        out_p.unlink()
-    proc = _run(
-        [
-            "--structure",
-            str(bad),
-            "--config",
-            str(SEALED),
-            "--refined",
-            str(out_r),
-            "--report",
-            str(out_p),
-        ]
-    )
-    assert proc.returncode == 2
-    assert not out_r.exists()
-    assert not out_p.exists()
 
 
-def test_flag_permutation_matches_canonical_digest():
-    """Flag order must not change exit status or refine_digest on the sample pack."""
-    _restore_live_policy()
-    _rebuild()
-    out_r = Path("/tmp/ndref-order-refined.json")
-    out_p = Path("/tmp/ndref-order-report.json")
-    proc = _run(
-        [
-            "--report",
-            str(out_p),
-            "--config",
-            str(SEALED),
-            "--refined",
-            str(out_r),
-            "--structure",
-            str(STRUCT),
-            "--instrument",
-            str(INSTR),
-            "--peaks",
-            str(PEAKS),
-        ]
-    )
-    assert proc.returncode == 1
-    assert proc.stdout == ""
-    peaks = load_peaks(PEAKS.read_text(encoding="utf-8"))
-    instr = json.loads(INSTR.read_text(encoding="utf-8"))
-    _, exp_rep = expect_pack(peaks, instr, "orthorhombic", SHIPPED)
-    got = json.loads(out_p.read_text(encoding="utf-8"))
-    assert got["refine_digest"] == exp_rep["refine_digest"]
+def test_catalog_alias_conflict_guava_detail_bundle(report: dict[str, Any]) -> None:
+    """Shared guava alias between libraries and bundles emits CATALOG_ALIAS_CONFLICT with detail bundle."""
+    hits = [f for f in report["findings"] if f["kind"] == "CATALOG_ALIAS_CONFLICT"]
+    assert any(f["entity_id"] == "guava" and f["detail"] == "bundle" for f in hits)
 
 
-def test_admitted_and_reject_paths_keep_stdout_empty():
-    """Exit 0/1 paths must leave stdout empty while still writing both artifacts."""
-    _restore_live_policy()
-    _rebuild()
-    out_r = Path("/tmp/ndref-stdout-refined.json")
-    out_p = Path("/tmp/ndref-stdout-report.json")
-    proc = _run(["--config", str(SEALED), "--refined", str(out_r), "--report", str(out_p)])
-    assert proc.returncode in (0, 1)
-    assert proc.stdout == ""
-    assert out_r.exists() and out_p.exists()
+def test_catalog_version_drift_jackson_core(report: dict[str, Any]) -> None:
+    """Inline jackson-core version disagrees with versions table alias and emits CATALOG_VERSION_DRIFT."""
+    hits = [f for f in report["findings"] if f["kind"] == "CATALOG_VERSION_DRIFT"]
+    assert any(f["entity_id"] == "jackson-core" and f["detail"] == "2.16.0" for f in hits)
 
 
-def test_digest_tracks_refined_cell_not_reference_guess():
-    """refine_digest must reflect the fitted cell, not the scratched reference lengths."""
-    _restore_live_policy()
-    _rebuild()
-    out_r = Path("/tmp/ndref-mut-refined.json")
-    out_p = Path("/tmp/ndref-mut-report.json")
-    proc = _run(["--config", str(SEALED), "--refined", str(out_r), "--report", str(out_p)])
-    assert proc.returncode == 1
-    peaks = load_peaks(PEAKS.read_text(encoding="utf-8"))
-    instr = json.loads(INSTR.read_text(encoding="utf-8"))
-    _, exp_rep = expect_pack(peaks, instr, "orthorhombic", SHIPPED)
-    got = json.loads(out_p.read_text(encoding="utf-8"))
-    assert got["refine_digest"] == exp_rep["refine_digest"]
-    assert got["a_A"] != 5.15
+def test_offline_publish_findings_exact(report: dict[str, Any]) -> None:
+    """Broken offline vault settings emit project-repo vault and unsigned findings with field-name entity_id."""
+    by_kind = {
+        f["kind"]: f
+        for f in report["findings"]
+        if f["module_id"] == "meshgrid"
+        and f["kind"]
+        in ("PROJECT_REPO_FORBIDDEN", "OFFLINE_REPO_MISCONFIG", "PUBLISH_UNSIGNED")
+    }
+    assert by_kind["PROJECT_REPO_FORBIDDEN"]["entity_id"] == "repositories_mode"
+    assert by_kind["PROJECT_REPO_FORBIDDEN"]["detail"] == "PREFER_PROJECT"
+    assert by_kind["OFFLINE_REPO_MISCONFIG"]["entity_id"] == "vault_path"
+    assert by_kind["OFFLINE_REPO_MISCONFIG"]["detail"] == "/tmp/wrong-vault"
+    assert by_kind["PUBLISH_UNSIGNED"]["entity_id"] == "signed_publish"
+    assert by_kind["PUBLISH_UNSIGNED"]["detail"] == ""
+
+
+def test_releasemesh_dependency_fanout_strictly_gt(report: dict[str, Any]) -> None:
+    """Four direct deps exceeds max_direct_deps three using strict greater-than, not greater-or-equal."""
+    hits = [
+        f
+        for f in report["findings"]
+        if f["kind"] == "DEPENDENCY_FANOUT" and f["module_id"] == "releasemesh"
+    ]
+    assert len(hits) == 1
+    assert hits[0]["detail"] == "4"
+
+
+def test_artifactseal_bom_and_lock_finding_ids_distinct(report: dict[str, Any]) -> None:
+    """BOM override and lock drift on the same guava coordinate stay unique via kind in finding_id."""
+    arts = [f for f in report["findings"] if f["module_id"] == "artifactseal"]
+    bom = next(f for f in arts if f["kind"] == "BOM_OVERRIDE_FORBIDDEN")
+    drift = next(f for f in arts if f["kind"] == "LOCK_VERSION_DRIFT")
+    assert bom["entity_id"] == drift["entity_id"] == "com.google.guava:guava"
+    assert bom["event_seq"] == drift["event_seq"] == 0
+    assert bom["finding_id"] == "artifactseal::com.google.guava:guava::BOM_OVERRIDE_FORBIDDEN::0000"
+    assert drift["finding_id"] == "artifactseal::com.google.guava:guava::LOCK_VERSION_DRIFT::0000"
+    assert bom["detail"] == "32.0.0"
+    assert drift["detail"] == "33.0.0"
+    ids = [f["finding_id"] for f in report["findings"]]
+    assert len(ids) == len(set(ids))
+
+
+def test_artifactseal_bom_override_forbidden_first_key(report: dict[str, Any]) -> None:
+    """BOM consumer under strict_bom emits BOM_OVERRIDE_FORBIDDEN for the first sorted override key."""
+    hits = [
+        f
+        for f in report["findings"]
+        if f["kind"] == "BOM_OVERRIDE_FORBIDDEN" and f["module_id"] == "artifactseal"
+    ]
+    assert len(hits) == 1
+    assert hits[0]["entity_id"] == "com.google.guava:guava"
+    assert hits[0]["detail"] == "32.0.0"
+
+
+def test_depknit_lock_version_drift(report: dict[str, Any]) -> None:
+    """Lock version must match module override for jackson-databind; detail is the lock version."""
+    hits = [
+        f
+        for f in report["findings"]
+        if f["kind"] == "LOCK_VERSION_DRIFT" and f["module_id"] == "depknit"
+    ]
+    assert len(hits) == 1
+    assert hits[0]["entity_id"] == "com.fasterxml.jackson.core:jackson-databind"
+    assert hits[0]["detail"] == "2.16.1"
+
+
+def test_artifactseal_orphan_lock_entry(report: dict[str, Any]) -> None:
+    """Required lock coordinates unused by the module referenced map are ORPHAN_LOCK_ENTRY."""
+    hits = [
+        f
+        for f in report["findings"]
+        if f["kind"] == "ORPHAN_LOCK_ENTRY" and f["module_id"] == "artifactseal"
+    ]
+    assert any(f["entity_id"] == "org.example:orphan-lib" for f in hits)
+
+
+def test_pluginbridge_bad_checksum_capture_counters(report: dict[str, Any]) -> None:
+    """Bad checksum lines are rejected and excluded from valid lock records in capture counters."""
+    mod = next(m for m in report["modules"] if m["module_id"] == "pluginbridge")
+    cap = mod["capture"]
+    assert cap["format_version"] == 1
+    assert cap["records_total"] == 2
+    assert cap["records_valid"] == 1
+    assert cap["records_rejected"] == 1
+
+
+def test_cataloghub_unknown_dependency_ghostmod(report: dict[str, Any]) -> None:
+    """Unknown dependency module ids emit UNKNOWN_DEPENDENCY with detail UNKNOWN_DEPENDENCY."""
+    hits = [
+        f
+        for f in report["findings"]
+        if f["kind"] == "UNKNOWN_DEPENDENCY" and f["module_id"] == "cataloghub"
+    ]
+    assert len(hits) == 1
+    assert hits[0]["entity_id"] == "ghostmod"
+    assert hits[0]["detail"] == "UNKNOWN_DEPENDENCY"
+
+
+def test_module_cycle_wireloom_pluginbridge(report: dict[str, Any]) -> None:
+    """Mutual module edges form a cycle reported once per cyclic module at event_seq max_ord+1."""
+    hits = [f for f in report["findings"] if f["kind"] == "MODULE_CYCLE"]
+    mods = {f["module_id"] for f in hits}
+    assert "wireloom" in mods and "pluginbridge" in mods
+    assert all(f["event_seq"] == 7 for f in hits)
+    assert all(f["finding_id"].endswith("::MODULE_CYCLE::0007") for f in hits)
+
+
+def test_unresolved_ref_post_mesh(report: dict[str, Any]) -> None:
+    """Missing version.ref names emit CATALOG_UNRESOLVED_REF at max_ord+1 with entity_id equal to the ref name."""
+    hits = [f for f in report["findings"] if f["kind"] == "CATALOG_UNRESOLVED_REF"]
+    assert len(hits) == 1
+    assert hits[0]["entity_id"] == "does-not-exist"
+    assert hits[0]["event_seq"] == 7
+    assert hits[0]["module_id"] == "meshgrid"
+
+
+def test_root_status_drift_when_findings(report: dict[str, Any]) -> None:
+    """Root status is DRIFT when findings are present and STABLE only when findings is empty."""
+    assert report["findings"]
+    assert report["status"] == "DRIFT"
+
+
+def test_perturbed_lock_changes_report_then_restores(report: dict[str, Any]) -> None:
+    """Temporarily swapping a lock row under the active data root must change then restore the report."""
+    lock = ROOT / "locks" / "wireloom.lock"
+    original = lock.read_bytes()
+    first = REPORT_PATH.read_bytes()
+    try:
+        lock.write_text(
+            "LOCK1\n1\n1\n"
+            "com.google.guava:guava\t99.0.0\t"
+            + _sha256_coord("com.google.guava:guava", "99.0.0")
+            + "\t0\n"
+        )
+        _run_gridknit()
+        second = REPORT_PATH.read_bytes()
+        assert second != first
+    finally:
+        lock.write_bytes(original)
+        _run_gridknit()
+        assert REPORT_PATH.read_bytes() == first
+    _ = report
+
+
+def test_gridknit_data_root_env_swap(report: dict[str, Any]) -> None:
+    """Alternate GRIDKNIT_DATA_ROOT/REPORT_PATH must reseal elsewhere and leave the primary report bytes untouched."""
+    primary_before = REPORT_PATH.read_bytes()
+    with tempfile.TemporaryDirectory() as tmp:
+        alt_root = Path(tmp) / "meshgrid"
+        alt_report = Path(tmp) / "alt_report.json"
+        shutil.copytree(ROOT, alt_root)
+        lock = alt_root / "locks" / "depknit.lock"
+        lock.write_text(
+            "LOCK1\n1\n1\n"
+            "com.fasterxml.jackson.core:jackson-databind\t9.9.9\t"
+            + _sha256_coord("com.fasterxml.jackson.core:jackson-databind", "9.9.9")
+            + "\t0\n"
+        )
+        _run_gridknit(
+            {
+                "GRIDKNIT_DATA_ROOT": str(alt_root),
+                "GRIDKNIT_REPORT_PATH": str(alt_report),
+            }
+        )
+        assert alt_report.is_file(), "alternate report path must be written"
+        assert REPORT_PATH.is_file(), (
+            "primary /app/build/gradle_stabilization_report.json must remain when "
+            "GRIDKNIT_REPORT_PATH points elsewhere"
+        )
+        assert REPORT_PATH.read_bytes() == primary_before, (
+            "primary report bytes must be unchanged during alternate-path reseal"
+        )
+        alt = json.loads(alt_report.read_text())
+        expected_alt = build_expected(alt_root)
+        assert alt == expected_alt
+        assert alt != report
+        assert json.loads(REPORT_PATH.read_text()) == report
