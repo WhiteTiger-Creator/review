@@ -4,27 +4,27 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "system-administration"
-subcategories = ["long_context", "tool_specific", "api_integration", "db_interaction"]
-number_of_milestones = 0
+category = "machine-learning"
+tags = ["machine-learning", "tabular", "counterfactual", "typescript", "l0-eval"]
+languages = ["typescript"]
 codebase_size = "small"
-languages = ["Bash", "SQL", "Python"]
-tags = ["configuration-management", "sqlite", "change-control", "unix-sockets", "service-commissioning", "audit-publication"]
-expert_time_estimate_min = 240
+number_of_milestones = 0
+subcategories = []
+expert_time_estimate_min = 180
 junior_time_estimate_min = 480
 
-[verifier]
-timeout_sec = 600.0
+[reference_pattern]
+justification_if_none = "no promoted reference matches TypeScript tabular L0 counterfactual constrained_build with run_fit/run_cf layout+bundle artifacts"
 
 [agent]
-timeout_sec = 1800.0
+timeout_sec = 1800
+
+[verifier]
+timeout_sec = 600
 
 [environment]
-build_timeout_sec = 900.0
-docker_flags = []
+allow_internet = false
+build_timeout_sec = 400
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-gpus = 0
-gpu_types = []
-allow_internet = false
