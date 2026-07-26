@@ -1,31 +1,88 @@
-# Build context must be environment/ only (Harbor CONTEXT_DIR). Never build from task root.
-FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac AS builder
+FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36 AS rsbuilder
+
+ENV PATH="/usr/local/cargo/bin:${PATH}"
+
 WORKDIR /build
-COPY . /build/environment
-WORKDIR /build/environment
-RUN go build -o /build/out/wave_sched ./cmd/wave_sched
+COPY Cargo.toml Cargo.lock ./
+COPY core/Cargo.toml core/
+COPY vfy/Cargo.toml vfy/
+COPY skim/Cargo.toml skim/
+# Stub sources so dependency fetch is not busted by real source edits.
+RUN mkdir -p core/src vfy/src skim/src \
+    && printf '#![allow(dead_code)]\n' > core/src/lib.rs \
+    && printf 'fn main() {}\n' > vfy/src/main.rs \
+    && printf 'fn main() {}\n' > skim/src/main.rs \
+    && cargo fetch --locked
+COPY core/src/ core/src/
+COPY vfy/src/ vfy/src/
+COPY skim/src/ skim/src/
+RUN cargo build -p trusteval -p skim --release --locked
 
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
-WORKDIR /app
+FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
 
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential=12.9 golang-go=2:1.19~1 make=4.3-4.1 tmux=3.3a-3 asciinema=2.2.0-1 ca-certificates=20230311+deb12u1 \
+LABEL org.opencontainers.image.version="1.0.0"
+LABEL org.opencontainers.image.licenses="MIT"
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        asciinema=2.2.0-1 \
+        bash \
+        ca-certificates=20230311+deb12u1 \
+        python-is-python3 \
+        python3=3.11.2-1+b1 \
+        python3-pip=23.0.1+dfsg-1 \
+        tmux=3.3a-3 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m venv /opt/verifier \
-    && /opt/verifier/bin/pip install --no-cache-dir pytest==8.4.1 pytest-json-ctrf==0.3.5
-ENV PATH=/opt/verifier/bin:${PATH}
+ENV TERM=xterm-256color \
+    HOME=/tmp \
+    RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH="/usr/local/cargo/bin:/app/bin:${PATH}" \
+    CARGO_NET_OFFLINE=true
 
-RUN mkdir -p /app/environment /app/output /app/environment/bin
+RUN tmux -V \
+    && asciinema --version \
+    && tmux new-session -d -s _smoke \
+    && tmux has-session -t _smoke \
+    && tmux kill-session -t _smoke \
+    && rm -rf /tmp/tmux-*
 
-COPY . /app/environment
-COPY --from=builder /usr/local/go /usr/local/go
-COPY --from=builder /build/out/wave_sched /app/environment/bin/wave_sched
-ENV PATH=/usr/local/go/bin:/opt/verifier/bin:${PATH}
+COPY requirements.txt /tmp/requirements.txt
+# Installs pytest==8.4.1 and pytest-json-ctrf==0.3.5 with hash-locked transitive deps.
+RUN python3 -m pip install --no-cache-dir --break-system-packages --require-hashes \
+    -r /tmp/requirements.txt
+RUN rm -f /tmp/requirements.txt
 
-RUN python3 /app/environment/scripts/gen_fixtures.py \
-    && echo -n 0 > /app/environment/pack/seed/.roll_scratch \
-    && echo -n 0 > /app/environment/pack/seed/.storm_gen \
-    && cp /app/environment/pack/seed/token_seed.bin /app/environment/pack/seed/.anchor_staging \
-    && chmod +x /app/environment/scripts/*.sh /app/environment/phase/*.sh
+WORKDIR /app
 
-CMD ["python3", "-c", "print('Environment ready')"]
+COPY --from=rsbuilder /usr/local/cargo /usr/local/cargo
+COPY --from=rsbuilder /usr/local/rustup /usr/local/rustup
+COPY --from=rsbuilder /build/target /app/target
+COPY --from=rsbuilder --chmod=755 /build/target/release/trusteval /app/bin/trusteval
+COPY --from=rsbuilder --chmod=755 /build/target/release/jarcheck /app/bin/jarcheck
+
+# Login shells reset PATH and drop /usr/local/cargo/bin — keep cargo on the default PATH.
+RUN ln -sf /usr/local/cargo/bin/cargo /usr/local/bin/cargo \
+    && ln -sf /usr/local/cargo/bin/rustc /usr/local/bin/rustc \
+    && ln -sf /usr/local/cargo/bin/rustdoc /usr/local/bin/rustdoc
+
+COPY Cargo.toml Cargo.lock /app/
+COPY core/ /app/core/
+COPY vfy/ /app/vfy/
+COPY skim/ /app/skim/
+COPY config/ /app/config/
+COPY data/ /app/data/
+COPY ops/ /app/ops/
+
+# Keep rebuild/output/log paths writable for Harbor agent+verifier mounts.
+# /logs/agent must be creatable: Harbor redirects oracle stdout there.
+# Do NOT chmod -R a+rwX /tmp: that opens /tmp/tmux-* left by the smoke test and
+# terminus-2 aborts with "directory /tmp/tmux-0 has unsafe permissions".
+RUN chmod +x /app/ops/run_mesh.sh \
+    && mkdir -p /output /logs/verifier /logs/agent \
+    && chmod -R a+rX /usr/local/cargo /usr/local/rustup \
+    && chmod a+rw /app/Cargo.toml /app/Cargo.lock \
+    && chmod -R a+rwX /app/core /app/vfy /app/skim /app/target /app/bin /output /logs \
+    && chmod 1777 /tmp \
+    && rm -rf /tmp/tmux-*
