@@ -1,0 +1,16 @@
+{
+  "required": [
+    "given_name",
+    "nationalities"
+  ],
+  "alternatives": [
+    [
+      "contact.person.email",
+      "residence.address.geo.lat"
+    ],
+    [
+      "work.site.phone",
+      "residence.address.geo.lon"
+    ]
+  ]
+}
