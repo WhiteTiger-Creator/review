@@ -1,27 +1,5 @@
-A build tool resolves a stream of scenarios, one version per queried module.
-`main.go` wires I/O and `make` builds `resolve` (stdin→stdout); complete
-`resolveStream` in `select.go`. `docs/` fixes the row grammar and output
-layout.
+Hey, I need an exact undo counter for Arimaa positions. The scaffold in /app reads query lines and prints one integer per line, but the counting function in /app/src/retro.cpp is an empty stub. The forward rules are already implemented in /app/src/rules.hpp, which applies one legal step, push, or pull to a board with captures resolved, so you can focus on the counting rather than the movement rules.
 
-A module's answer is its selected version, `NONE` if it never joins the main
-module's reachable set, or `CONFLICT` if reachable but over-constrained.
+Each query gives a board in the usual eight rank slash separated form, uppercase Gold and lowercase Silver, plus the color that just moved. For each query it prints how many distinct boards could have stood before that turn: lawful standing positions that one complete legal turn by that color can transform into the queried board, containing at most one piece more than it. Different turns from the same earlier board count once, and a query can answer zero. /app/docs/io_contract.md pins the definition down, /app/docs/rules.md is the rule set, and /app/data/sample_positions.txt holds sample queries with answers.
 
-- **Floors, not pins.** A `LOCK` and any carried version are floors: they raise
-  a selection, never cap it.
-- **Session carry.** Scenarios share tables until a `RESET`. Each module's
-  selected version becomes its floor in every later scenario; a module never
-  built carries nothing.
-- **Demand first.** Compute *demand* as the least fixed point of floors and
-  requirement edges with every ceiling ignored. A requirement or ceiling
-  declared by version U of a module applies only once that module's **demand**
-  reaches U; the main module's always apply.
-- **Then retract.** Demand alone decides conflict: a module whose demand exceeds
-  its lowest in-force ceiling (a `CAP` or a scar) is over-constrained. Recompute
-  the fixed point with those modules contributing no requirement edges, so
-  modules reachable only through them are `NONE`. Ceilings are *not* re-derived
-  from that second pass — a conflicted module's own `CAP` rows keep binding, and
-  can themselves conflict a module reachable elsewhere.
-- **Conflict scars.** A conflicted module lifts no floor; its binding ceiling is
-  remembered session-wide, ratcheting only lower and re-imposed every later
-  scenario until `RESET`, even absent a `CAP`. A carried floor above a scar keeps
-  re-conflicting.
+Build with make in /app to get a binary called retro. The grader rebuilds the sources, runs one batch of hidden queries dominated by dense and busy boards like the last samples, under the time budget in /app/docs/build_and_run.md, and compares every integer exactly. Correct but slow strategies will not fit, so treat speed on the dense samples as a first-class requirement: /app/run_samples.sh reports per query timings and caps runaway queries. Never leave a query running unbounded; wrap manual runs in timeout. Please write the counting engine yourself.
