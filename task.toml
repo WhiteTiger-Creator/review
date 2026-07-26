@@ -1,27 +1,38 @@
 version = "2.0"
 
 [metadata]
-author_name = "anonymous"
-author_email = "anonymous"
+author_name = "Bhagyawanth"
+author_email = "J26.0898.adl@airdawglabs.com"
 difficulty = "hard"
-category = "games"
+category = "system-administration"
+legacy_category = "data-processing"
 subcategories = []
-languages = ["go"]
-codebase_size = "small"
+languages = ["bash"]
+tags = [
+  "bash",
+  "system-administration",
+  "systemd",
+  "permissions",
+  "file-operations",
+  "ops-tooling",
+]
+expert_time_estimate_min = 90
+junior_time_estimate_min = 180
 number_of_milestones = 0
-tags = ["fog-chess", "relay-drops", "linked-boards", "belief-state"]
-expert_time_estimate_min = 240
-junior_time_estimate_min = 480
-
-[verifier]
-timeout_sec = 900.0
-
-[agent]
-timeout_sec = 1800.0
+codebase_size = "minimal"
 
 [environment]
-allow_internet = false
-build_timeout_sec = 900.0
-cpus = 4
-memory_mb = 8192
+build_timeout_sec = 600
+cpus = 1
+memory_mb = 2048
 storage_mb = 10240
+allow_internet = false
+
+[verifier]
+timeout_sec = 300
+
+[agent]
+timeout_sec = 1800
+
+[oracle]
+timeout_sec = 600

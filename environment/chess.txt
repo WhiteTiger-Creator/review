@@ -1,5 +1,0 @@
-Fog Chess Relay uses standard chess movement on each board. Kings move one square, knights jump in L shapes, bishops stay on diagonals, rooks on ranks and files, queens combine both, and pawns step forward, capture diagonally, may double-step from their home rank, promote on the far rank, and may capture en passant for one reply after a double step.
-
-Castling is legal only when the king and chosen rook are unmoved, the path is empty, and the king does not pass through or finish in check. A move is illegal if it leaves your king in check. Pins, discovered attacks, and double checks follow ordinary chess. Promotion must name a queen, rook, bishop, or knight.
-
-Drops place a ready relay piece on an empty square you control under the active board rules. Pawns may not be dropped on the first or last rank. A drop is illegal if it leaves your king in check. Occupied squares cannot be dropped onto. Terminal outcomes prefer checkmate over stalemate, then repetition, then horizon scoring.

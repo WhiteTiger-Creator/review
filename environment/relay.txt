@@ -1,5 +1,0 @@
-When a non-king piece is captured it enters the capturing team’s relay pipeline for the teammate board after a fixed delay measured in activation steps. Kings never enter the queue. Each team queue has a capacity; when full, further captures are scored as material transfer but are not added until space opens.
-
-A piece becomes droppable only after its delay elapses and only on the teammate board that owns that queue. Piece requests are public messages that bias teammate capture choices without forcing them. Drop restrictions may forbid certain files, ranks, or piece kinds for a scenario. Board priority and sacrifice timing matter: capturing the wrong unit can fill the queue and delay a defensive drop the other board needs.
-
-Sacrifice on one board is sometimes correct when it prevents an observed mating net on the other. Promotion choices should weigh whether the resulting capture would clog a full queue versus keeping a needed relay type available.

@@ -1,9 +1,0 @@
-Example observation excerpt: type observation, board alpha, side white, visible pieces on e2 e4 g1, stale sighting of a black knight last seen on f6 age 2, relay ready list empty, legal moves include e2e4 and g1f3.
-
-Example action: type action, board alpha, side white, move g1f3.
-
-Example drop after delay: type action, board beta, side black, drop piece n square f6 when the knight is ready in the team queue and f6 is empty and the drop does not leave the black king in check.
-
-Example request: type action, board alpha, side white, request q. Long linked campaigns must emit at least one such request before the match ends so the teammate bias appears in the ply log.
-
-Example hold: type action, board beta, side black, hold true only when legal_moves and legal_drops are both empty for that observation.

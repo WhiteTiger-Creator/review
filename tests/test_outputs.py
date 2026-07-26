@@ -1,577 +1,464 @@
-"""Verifier suite for Fog Chess Relay."""
-
-from __future__ import annotations
-
-import json
+import hashlib
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
-ROOT = Path("/opt/fog-chess-relay")
-BIN = ROOT / "bin" / "relaymatch"
-BOT = Path("/app/work/relaybot")
-OUTPUT = Path("/app/output")
-HIDDEN = Path("/tests/fixtures/hidden")
-APP_REFS = [
-    Path("/app/chess.txt"),
-    Path("/app/fog.txt"),
-    Path("/app/relay.txt"),
-    Path("/app/scoring.txt"),
-    Path("/app/protocol.txt"),
-    Path("/app/notation.txt"),
-    Path("/app/examples.txt"),
+import pytest
+
+PERIODCTL = "/app/src/periodctl"
+DATA_DIR = Path("/app/data")
+JOURNALS = DATA_DIR / "journals"
+CHART = DATA_DIR / "chart.tsv"
+WINDOW = DATA_DIR / "window.json"
+ETC_WINDOW = Path("/etc/period-close/window.json")
+SBIN_LINK = Path("/usr/local/sbin/periodctl")
+SYSTEMD_UNIT = Path("/etc/systemd/system/period-close.service")
+VAR_LIB = Path("/var/lib/period-close")
+LOCKFILE = Path("/tmp/periodctl.lock")
+
+EXPECTED_LINES = [
+    "CA-1000;53000;DR",
+    "CA-2000;8000;CR",
+    "EQ-3000;15000;CR",
+    "EXP-5000;20000;DR",
+    "REV-4000;50000;CR",
 ]
 
 
-def _run(cmd: list[str], cwd: str | None = None, env: dict | None = None, timeout: int = 180) -> subprocess.CompletedProcess[str]:
-    base = os.environ.copy()
-    if env:
-        base.update(env)
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8192), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def run_periodctl(
+    snapshot_path: Path,
+    postings_dir: Path = JOURNALS,
+    accounts: Path = CHART,
+    window: Path = WINDOW,
+) -> subprocess.CompletedProcess:
     return subprocess.run(
-        cmd,
-        cwd=cwd,
-        env=base,
-        text=True,
+        [
+            PERIODCTL,
+            "--postings",
+            str(postings_dir),
+            "--accounts",
+            str(accounts),
+            "--window",
+            str(window),
+            "--snapshot",
+            str(snapshot_path),
+        ],
         capture_output=True,
-        timeout=timeout,
-        check=False,
+        text=True,
     )
 
 
-def _isolated_bot(tmp: Path) -> Path:
-    dest = tmp / "relaybot"
-    shutil.copytree(BOT, dest)
-    return dest
+@pytest.fixture
+def data_hashes():
+    hashes = {}
+    for path in DATA_DIR.rglob("*"):
+        if path.is_file():
+            hashes[str(path.relative_to(DATA_DIR))] = sha256_file(path)
+    return hashes
 
 
-def _run_match(position: str | Path, bot_dir: Path, out_root: Path, inject: str = "") -> subprocess.CompletedProcess[str]:
-    out_root.mkdir(parents=True, exist_ok=True)
-    (out_root / "generations").mkdir(parents=True, exist_ok=True)
-    cmd = [
-        str(BIN),
-        "-match",
-        str(position),
-        "-bot",
-        str(bot_dir),
-        "-compile=true",
+def _mode(path: Path) -> str:
+    return oct(path.stat().st_mode & 0o777)
+
+
+def test_periodctl_binary_mode_0755():
+    """Verify /app/src/periodctl exists and has executable mode 0755."""
+    assert Path(PERIODCTL).is_file()
+    assert _mode(Path(PERIODCTL)) == "0o755"
+
+
+def test_sbin_periodctl_symlink():
+    """Verify /usr/local/sbin/periodctl is a symlink to /app/src/periodctl."""
+    assert SBIN_LINK.is_symlink()
+    assert SBIN_LINK.resolve() == Path(PERIODCTL).resolve()
+
+
+def test_etc_window_installed():
+    """Verify /etc/period-close/window.json is a byte-identical install with mode 0644."""
+    assert ETC_WINDOW.is_file()
+    assert ETC_WINDOW.read_bytes() == WINDOW.read_bytes()
+    assert _mode(ETC_WINDOW) == "0o644"
+
+
+def test_var_lib_period_close_mode_0755():
+    """Verify /var/lib/period-close exists as a directory with mode 0755."""
+    assert VAR_LIB.is_dir()
+    assert _mode(VAR_LIB) == "0o755"
+
+
+def test_systemd_unit_mode_and_targets():
+    """Verify period-close.service is mode 0644 and references correct paths."""
+    assert SYSTEMD_UNIT.is_file()
+    assert _mode(SYSTEMD_UNIT) == "0o644"
+    text = SYSTEMD_UNIT.read_text(encoding="utf-8")
+    assert "/usr/local/sbin/periodctl" in text
+    assert "/etc/period-close/window.json" in text
+    assert "/var/lib/period-close/snapshot.tsv" in text
+    assert "Type=oneshot" in text
+
+
+def test_etc_window_path_produces_same_snapshot(tmp_path):
+    """Verify snapshots match whether --window points at data or etc install."""
+    via_data = tmp_path / "from_data.txt"
+    via_etc = tmp_path / "from_etc.txt"
+    code_data = run_periodctl(via_data, window=WINDOW).returncode
+    code_etc = run_periodctl(via_etc, window=ETC_WINDOW).returncode
+    assert code_data == code_etc == 1
+    assert via_data.read_text(encoding="utf-8") == via_etc.read_text(encoding="utf-8")
+
+
+def test_exit_code_with_unknown_account(tmp_path):
+    """Verify unknown in-window accounts yield exit code 1."""
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot)
+    assert result.returncode == 1, result.stderr
+
+
+def test_snapshot_line_count(tmp_path):
+    """Verify the shipped journals produce exactly five snapshot rows."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    lines = snapshot.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 5
+
+
+def test_snapshot_exact_content(tmp_path):
+    """Verify snapshot lines match expected account balances and sides."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    lines = snapshot.read_text(encoding="utf-8").splitlines()
+    assert lines == EXPECTED_LINES
+
+
+def test_snapshot_schema(tmp_path):
+    """Verify each snapshot line has ACCOUNT_ID;positive_cents;DR|CR format."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    for line in snapshot.read_text(encoding="utf-8").splitlines():
+        account_id, balance, side = line.split(";")
+        assert account_id
+        assert balance.isdigit()
+        assert int(balance) > 0
+        assert side in {"DR", "CR"}
+
+
+def test_case_insensitive_account_resolution(tmp_path):
+    """Verify journal account IDs resolve to canonical chart IDs case-insensitively."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    text = snapshot.read_text(encoding="utf-8")
+    assert "CA-1000;53000;DR" in text
+    assert "EQ-3000;15000;CR" in text
+    assert "ca-1000" not in text
+    assert "eq-3000" not in text
+
+
+def test_out_of_window_entries_excluded(tmp_path):
+    """Verify postings outside the fiscal window do not affect balances."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    text = snapshot.read_text(encoding="utf-8")
+    cash_balance = int(
+        [line for line in text.splitlines() if line.startswith("CA-1000;")][0].split(";")[1]
+    )
+    assert cash_balance == 53000
+
+
+def test_sort_order_case_insensitive(tmp_path):
+    """Verify snapshot rows are sorted by account ID case-insensitively."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    account_ids = [line.split(";")[0] for line in snapshot.read_text(encoding="utf-8").splitlines()]
+    assert account_ids == sorted(account_ids, key=str.casefold)
+
+
+def test_window_boundary_dates_inclusive(tmp_path):
+    """Verify start_date and end_date boundary postings are included in the window."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "boundary.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-01-01,CA-1000,100,0,start boundary\n"
+        "2025-01-01,REV-4000,0,100,start boundary\n"
+        "2025-03-31,CA-1000,0,200,end boundary\n"
+        "2025-03-31,EXP-5000,200,0,end boundary\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+    lines = {line.split(";")[0]: line for line in snapshot.read_text(encoding="utf-8").splitlines()}
+    assert lines["CA-1000"] == "CA-1000;100;CR"
+    assert lines["REV-4000"] == "REV-4000;100;CR"
+    assert lines["EXP-5000"] == "EXP-5000;200;DR"
+
+
+def test_deterministic_output(tmp_path):
+    """Verify repeated runs produce identical snapshots and exit codes."""
+    first = tmp_path / "first.tsv"
+    second = tmp_path / "second.tsv"
+    code_one = run_periodctl(first).returncode
+    code_two = run_periodctl(second).returncode
+    assert code_one == code_two == 1
+    assert first.read_text(encoding="utf-8") == second.read_text(encoding="utf-8")
+
+
+def test_data_files_not_modified(data_hashes):
+    """Verify periodctl does not modify files under /app/data/."""
+    snapshot = Path(tempfile.mkdtemp()) / "snapshot.tsv"
+    run_periodctl(snapshot)
+    for path in DATA_DIR.rglob("*"):
+        if path.is_file():
+            rel = str(path.relative_to(DATA_DIR))
+            assert sha256_file(path) == data_hashes[rel]
+
+
+def test_exit_code_all_clean(tmp_path):
+    """Verify a balanced window with no unknown accounts yields exit code 0."""
+    postings = tmp_path / "clean"
+    postings.mkdir()
+    shutil.copytree(JOURNALS, postings, dirs_exist_ok=True)
+    (postings / "legacy.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-03-15,EQ-3000,0,15000,Owner draw\n"
+        "2025-03-15,CA-1000,15000,0,Cash transfer for draw\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+
+
+def test_zero_balance_excluded(tmp_path):
+    """Verify accounts whose net balance is zero are omitted from the snapshot."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "zero.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-01,CA-1000,5000,0,payment\n"
+        "2025-02-01,REV-4000,0,5000,revenue\n"
+        "2025-02-15,CA-1000,0,5000,refund\n"
+        "2025-02-15,REV-4000,5000,0,rev reversal\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0
+    assert snapshot.read_text(encoding="utf-8").strip() == ""
+
+
+def test_exit_code_unbalanced_journals(tmp_path):
+    """Verify unbalanced in-window postings yield exit code 1."""
+    postings = tmp_path / "bad"
+    postings.mkdir()
+    (postings / "skew.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-10,CA-1000,5000,0,orphan debit\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 1, result.stderr
+
+
+def test_exit_code_invalid_arguments(tmp_path):
+    """Verify missing required CLI arguments yield exit code 2."""
+    snapshot = tmp_path / "snapshot.tsv"
+    result = subprocess.run(
+        [PERIODCTL, "--postings", str(JOURNALS), "--snapshot", str(snapshot)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+
+
+def test_exit_code_unreadable_accounts_path(tmp_path):
+    """Verify unreadable but existing accounts path yields exit code 2."""
+    unreadable = tmp_path / "locked.tsv"
+    unreadable.write_text("account_id\tname\ttype\tnormal_balance\n", encoding="utf-8")
+    unreadable.chmod(0o000)
+    snapshot = tmp_path / "snapshot.tsv"
+    try:
+        result = run_periodctl(snapshot, accounts=unreadable)
+        assert result.returncode == 2
+    finally:
+        unreadable.chmod(0o644)
+
+
+def test_whitespace_trimmed_and_blank_lines_ignored(tmp_path):
+    """Verify whitespace is trimmed and blank journal lines are ignored."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "messy.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "\n"
+        "2025-02-03,  ca-1000  , 700 , 0 ,cash receipt\n"
+        "2025-02-03, REV-4000 ,0, 700 , revenue booking\n"
+        "\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+    assert snapshot.read_text(encoding="utf-8").splitlines() == [
+        "CA-1000;700;DR",
+        "REV-4000;700;CR",
     ]
-    if inject:
-        cmd.append(f"-inject-fail={inject}")
-    return _run(
-        cmd,
-        env={"FOG_CHESS_ROOT": str(ROOT), "FOG_CHESS_OUTPUT": str(out_root)},
-        timeout=240,
+
+
+def test_invalid_in_window_rows_fail_but_valid_rows_still_snapshot(tmp_path):
+    """Verify invalid rows fail the run but valid known-account rows still appear."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "mixed.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-10,CA-1000,700,0,valid debit\n"
+        "2025-02-10,REV-4000,0,700,valid credit\n"
+        "2025-02-11,CA-1000,10,10,both sides set\n"
+        "2025-02-12,EXP-5000,foo,0,non numeric debit\n"
+        "2025-02-13,CA-1000,-5,0,negative debit\n",
+        encoding="utf-8",
     )
-
-
-def _read_json(path: Path) -> dict:
-    return json.loads(path.read_text())
-
-
-def _current_gen(out_root: Path) -> Path:
-    cur = (out_root / "current").read_text().strip()
-    return out_root / cur
-
-
-def _normalized_bytes(out_root: Path) -> bytes:
-    gen = _current_gen(out_root)
-    parts = []
-    for name in ("summary.json", "plies.jsonl", "terminal.json"):
-        parts.append((gen / name).read_bytes())
-    return b"".join(parts)
-
-
-def _score_a(out_root: Path) -> int:
-    term = _read_json(_current_gen(out_root) / "terminal.json")
-    return int(term["scores"]["team_a"])
-
-
-def _winner(out_root: Path) -> str:
-    return str(_read_json(_current_gen(out_root) / "terminal.json")["winner"])
-
-
-# ---------------------------------------------------------------------------
-# 3 protected-engine and integrity tests
-# ---------------------------------------------------------------------------
-
-
-def test_protected_binary_and_layout_exist():
-    """Protected relaymatch binary and asset directories are installed under /opt."""
-    assert BIN.is_file()
-    for rel in ("positions/public", "opponents", "contracts", "notation", "integrity"):
-        assert (ROOT / rel).exists()
-
-
-def test_integrity_manifest_verifies_clean_assets():
-    """Controller asset verification succeeds against the sealed integrity manifest."""
-    proc = _run([str(BIN), "-verify-assets"], env={"FOG_CHESS_ROOT": str(ROOT)})
-    assert proc.returncode == 0, proc.stderr
-    assert "ok" in proc.stdout
-
-
-def test_integrity_rejects_mutated_position_asset(tmp_path: Path):
-    """Mutating a protected public position causes integrity verification to fail."""
-    shadow = tmp_path / "shadow-root"
-    shutil.copytree(ROOT, shadow, ignore=shutil.ignore_patterns("bin"))
-    # binary still needed only as verifier entrypoint; assets come from shadow root
-    target = shadow / "positions" / "public" / "promotion-race.json"
-    data = json.loads(target.read_bytes())
-    data["seed"] = int(data.get("seed", 0)) + 999
-    target.write_text(json.dumps(data, indent=2) + "\n")
-    proc = _run([str(BIN), "-verify-assets"], env={"FOG_CHESS_ROOT": str(shadow)})
-    assert proc.returncode != 0
-    # live protected tree must remain untouched
-    live = _run([str(BIN), "-verify-assets"], env={"FOG_CHESS_ROOT": str(ROOT)})
-    assert live.returncode == 0, live.stderr
-
-
-# ---------------------------------------------------------------------------
-# 6 protocol, fog-secrecy, legality, determinism, and publication tests
-# ---------------------------------------------------------------------------
-
-
-def test_player_reference_documents_are_plain_text():
-    """Player references exist as plain text without markdown heading markers."""
-    for path in APP_REFS:
-        assert path.is_file()
-        text = path.read_text()
-        assert "#" not in text
-        assert "```" not in text
-        assert "\n- " not in text
-
-
-def test_starter_bot_compiles_offline(tmp_path: Path):
-    """Starter relaybot sources compile with the retained Go toolchain offline."""
-    bot = _isolated_bot(tmp_path)
-    proc = _run(["go", "build", "-o", str(tmp_path / "bot"), "."], cwd=str(bot))
-    assert proc.returncode == 0, proc.stderr
-
-
-def test_match_hides_full_occupancy_from_observations(tmp_path: Path):
-    """Observations never include full-board FEN or hidden occupancy maps."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    proc = _run_match("material-imbalance", bot, out)
-    assert proc.returncode == 0, proc.stderr
-    vis = (_current_gen(out) / "visibility.jsonl").read_text()
-    assert "alpha_fen" not in vis
-    assert "/8/" not in vis  # fen-like ranks
-    for line in vis.splitlines():
-        obj = json.loads(line)
-        assert "visible_squares" in obj
-        assert len(obj["visible_squares"]) <= 64
-
-
-def test_illegal_action_does_not_corrupt_prior_current(tmp_path: Path):
-    """A prior successful generation pointer survives a later injected publication failure."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    first = _run_match("promotion-race", bot, out)
-    assert first.returncode == 0, first.stderr
-    prior = (out / "current").read_text()
-    prior_bytes = _normalized_bytes(out)
-    bad = _run_match("material-imbalance", bot, out, inject="pointer")
-    assert bad.returncode != 0
-    assert (out / "current").read_text() == prior
-    assert _normalized_bytes(out) == prior_bytes
-
-
-def test_determinism_identical_inputs_byte_identical(tmp_path: Path):
-    """Identical engine, position, seed, opponent, and bot yield identical normalized bytes."""
-    bot = _isolated_bot(tmp_path)
-    out1 = tmp_path / "o1"
-    out2 = tmp_path / "o2"
-    a = _run_match("promotion-race", bot, out1)
-    b = _run_match("promotion-race", bot, out2)
-    assert a.returncode == 0 and b.returncode == 0, a.stderr + b.stderr
-    assert _normalized_bytes(out1) == _normalized_bytes(out2)
-
-
-def test_generation_contains_required_artifacts(tmp_path: Path):
-    """Each published generation contains the seven required authoritative record files."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    proc = _run_match("kingside-relay-attack", bot, out)
-    assert proc.returncode == 0, proc.stderr
-    gen = _current_gen(out)
-    for name in (
-        "summary.json",
-        "plies.jsonl",
-        "boards.json",
-        "visibility.jsonl",
-        "relay.jsonl",
-        "terminal.json",
-        "bot-diagnostics.json",
-    ):
-        assert (gen / name).is_file()
-
-
-# ---------------------------------------------------------------------------
-# 11 public relay-chess behavior tests
-# ---------------------------------------------------------------------------
-
-
-def _plies(out_root: Path) -> list[dict]:
-    lines = (_current_gen(out_root) / "plies.jsonl").read_text().splitlines()
-    return [json.loads(line) for line in lines if line.strip()]
-
-
-def _has_action(out_root: Path, action: str) -> bool:
-    return any(p.get("action") == action for p in _plies(out_root))
-
-
-def _has_drop_uci(out_root: Path) -> bool:
-    for p in _plies(out_root):
-        uci = str(p.get("uci", ""))
-        if uci.startswith("drop:") or p.get("action") == "drop":
-            return True
-        if p.get("drop"):
-            return True
-    # drops may be recorded only as uci empty with piece in relay; also scan visibility
-    for line in (_current_gen(out_root) / "visibility.jsonl").read_text().splitlines():
-        pass
-    for p in _plies(out_root):
-        uci = str(p.get("uci", ""))
-        if len(uci) >= 5 and uci[0].isalpha() and uci[1].isdigit() is False:
-            # drop UCI from engine is often "drop:n e4" style via Move.UCI
-            return "drop" in uci
-    return any("drop" in str(p.get("uci", "")) for p in _plies(out_root))
-
-
-def _summary(out_root: Path) -> dict:
-    return _read_json(_current_gen(out_root) / "summary.json")
-
-
-def _accepted(out_root: Path) -> bool:
-    return bool(_summary(out_root).get("accepted"))
-
-
-def test_public_legal_moves_on_both_boards(tmp_path: Path):
-    """Bot produces legal moves on both linked boards during a public match."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    proc = _run_match("kingside-relay-attack", bot, out)
-    assert proc.returncode == 0, proc.stderr
-    boards = {p.get("board") for p in _plies(out) if p.get("board")}
-    assert "alpha" in boards and "beta" in boards
-    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
-    assert diag["protocol_ok"] is True
-    assert diag["bot_faults"] == 0
-    assert diag.get("belief_faults", 0) == 0
-    assert _accepted(out)
-
-
-def test_public_evade_observed_check(tmp_path: Path):
-    """Bot evades check pressure on defensive-drop without hold-in-check faults."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    proc = _run_match("defensive-drop-fog", bot, out)
-    assert proc.returncode == 0, proc.stderr
-    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
-    assert diag["bot_faults"] == 0
-    assert diag["bot_legal_actions"] >= 1
-    assert _summary(out)["reason"] != "hold_in_check"
-    assert _accepted(out)
-
-
-def test_public_rejects_unseen_blocked_capture_assumption(tmp_path: Path):
-    """Bot only plays engine-listed legal moves under material pressure."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    proc = _run_match("material-imbalance", bot, out)
-    assert proc.returncode == 0, proc.stderr
-    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
-    assert diag["protocol_ok"] is True
-    assert diag["bot_faults"] == 0
-    assert _score_a(out) >= 100
-    assert _accepted(out)
-
-
-def test_public_defensive_relay_drop_after_delay(tmp_path: Path):
-    """Bot actually uses a ready relay drop on the defensive-drop public match."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    proc = _run_match("defensive-drop-fog", bot, out)
-    assert proc.returncode == 0, proc.stderr
-    found_ready = False
-    for line in (_current_gen(out) / "visibility.jsonl").read_text().splitlines():
-        obj = json.loads(line)
-        if obj.get("team") == "team_a" and "n" in obj.get("ready_drops", []):
-            found_ready = True
-    assert found_ready
-    assert _has_drop_uci(out) or any(
-        "drop" in str(p) for p in _plies(out)
-    ), "expected a drop action in plies"
-    assert _score_a(out) >= 8
-    assert _accepted(out)
-
-
-def test_public_teammate_request_timing(tmp_path: Path):
-    """Bot emits at least one teammate piece request on a long public match."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    proc = _run_match("kingside-relay-attack", bot, out)
-    assert proc.returncode == 0, proc.stderr
-    assert _has_action(out, "request"), "expected request action in plies"
-    assert _accepted(out)
-
-
-def test_public_sacrifice_prevents_cross_board_mate_net(tmp_path: Path):
-    """Cross-board kingside attack meets acceptance without protocol faults."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    proc = _run_match("kingside-relay-attack", bot, out)
-    assert proc.returncode == 0, proc.stderr
-    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
-    assert diag["bot_faults"] == 0
-    assert _score_a(out) >= 60
-    assert _accepted(out)
-
-
-def test_public_promotion_preserves_relay_needs(tmp_path: Path):
-    """Promotion race promotes and clears the campaign acceptance floor."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    proc = _run_match("promotion-race", bot, out)
-    assert proc.returncode == 0, proc.stderr
-    plies = (_current_gen(out) / "plies.jsonl").read_text()
-    assert any(ch in plies for ch in ("q", "n", "r", "b"))
-    assert _score_a(out) >= 9
-    assert _accepted(out)
-
-
-def test_public_repetition_avoidance_when_behind(tmp_path: Path):
-    """Under material pressure the bot does not idle into a punished repetition."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    proc = _run_match("material-imbalance", bot, out)
-    assert proc.returncode == 0, proc.stderr
-    term = _read_json(_current_gen(out) / "terminal.json")
-    assert "reason" in term
-    if str(term["reason"]).startswith("repetition:"):
-        assert _score_a(out) >= 95
-    else:
-        assert _score_a(out) >= 100
-    assert _accepted(out)
-
-
-def test_public_safe_after_stale_sighting(tmp_path: Path):
-    """Fog sightings appear and belief faults stay zero on defensive-drop."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    proc = _run_match("defensive-drop-fog", bot, out)
-    assert proc.returncode == 0, proc.stderr
-    vis = (_current_gen(out) / "visibility.jsonl").read_text()
-    assert "stale_sightings" in vis
-    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
-    assert diag["bot_faults"] == 0
-    assert diag.get("belief_faults", 0) == 0
-    assert _accepted(out)
-
-
-def test_public_cross_board_mate_priority(tmp_path: Path):
-    """All four public campaigns meet acceptance with a high aggregate score."""
-    bot = _isolated_bot(tmp_path)
-    total = 0
-    floors = {
-        "kingside-relay-attack": 60,
-        "defensive-drop-fog": 8,
-        "promotion-race": 9,
-        "material-imbalance": 100,
-    }
-    for name, floor in floors.items():
-        out = tmp_path / f"prio-{name}"
-        proc = _run_match(name, bot, out)
-        assert proc.returncode == 0, proc.stderr
-        assert _read_json(_current_gen(out) / "bot-diagnostics.json")["bot_faults"] == 0
-        assert _score_a(out) >= floor, f"{name}: {_score_a(out)} < {floor}"
-        assert _accepted(out)
-        total += _score_a(out)
-    assert total >= 200
-
-
-def test_public_queue_capacity_and_team_score_reconciliation(tmp_path: Path):
-    """Queue capacity fields and acceptance reconcile in the final records."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    proc = _run_match("defensive-drop-fog", bot, out)
-    assert proc.returncode == 0, proc.stderr
-    term = _read_json(_current_gen(out) / "terminal.json")
-    assert set(term["scores"]) >= {"team_a", "team_b"}
-    summary = _summary(out)
-    assert summary["plies"] >= 1
-    assert "acceptance_floor" in summary
-    assert summary["accepted"] is True
-
-
-# ---------------------------------------------------------------------------
-# 12 isolated hidden composite match tests
-# ---------------------------------------------------------------------------
-
-
-def _hidden_match(tmp_path: Path, name: str) -> Path:
-    out = tmp_path / f"out-{name}"
-    bot = _isolated_bot(tmp_path / f"bot-{name}")
-    pos = HIDDEN / f"{name}.json"
-    assert pos.is_file(), name
-    proc = _run_match(pos, bot, out)
-    assert proc.returncode == 0, proc.stderr + proc.stdout
-    return out
-
-
-def test_hidden_wrong_relay_mate(tmp_path: Path):
-    """Hidden: capacity-one relay match finishes legally with non-negative score."""
-    out = _hidden_match(tmp_path, "wrong_relay_mate")
-    assert _score_a(out) >= 0
-    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["bot_faults"] == 0
-    assert _read_json(_current_gen(out) / "bot-diagnostics.json").get("belief_faults", 0) == 0
-
-
-def test_hidden_unseen_blocker_check(tmp_path: Path):
-    """Hidden: belief-aware defense under check completes without faults."""
-    out = _hidden_match(tmp_path, "unseen_blocker_check")
-    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
-    assert diag["protocol_ok"] is True
-    assert diag["bot_faults"] == 0
-
-
-def test_hidden_knight_vs_pawn_drop(tmp_path: Path):
-    """Hidden: delayed knight queue still yields a drop when inventory is ready."""
-    out = _hidden_match(tmp_path, "knight_vs_pawn_drop")
-    relay = (_current_gen(out) / "relay.jsonl").read_text()
-    assert "team_a" in relay
-    assert _has_drop_uci(out) or any("drop" in str(p) for p in _plies(out))
-
-
-def test_hidden_promo_fills_queue(tmp_path: Path):
-    """Hidden: promotion path interacting with a full relay queue remains valid."""
-    out = _hidden_match(tmp_path, "promo_fills_queue")
-    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["bot_faults"] == 0
-
-
-def test_hidden_repetition_with_attack(tmp_path: Path):
-    """Hidden: repetition versus continuing a visible attack yields a terminal reason."""
-    out = _hidden_match(tmp_path, "repetition_with_attack")
-    term = _read_json(_current_gen(out) / "terminal.json")
-    assert term["reason"]
-    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["bot_faults"] == 0
-
-
-def test_hidden_stale_queen_unsafe(tmp_path: Path):
-    """Hidden: stale queen sightings do not produce belief faults."""
-    out = _hidden_match(tmp_path, "stale_queen_unsafe")
-    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
-    assert diag["bot_faults"] == 0
-    assert diag.get("belief_faults", 0) == 0
-
-
-def test_hidden_renamed_ids_reordered(tmp_path: Path):
-    """Hidden: renamed piece identifiers still allow a complete legal match."""
-    out = _hidden_match(tmp_path, "renamed_ids_reordered")
-    assert _score_a(out) >= 0
-    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["protocol_ok"] is True
-
-
-def test_hidden_file_reflected(tmp_path: Path):
-    """Hidden: file-reflected geometry is handled without protocol faults."""
-    out = _hidden_match(tmp_path, "file_reflected")
-    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["protocol_ok"] is True
-
-
-def test_hidden_color_board_swap(tmp_path: Path):
-    """Hidden: color-and-board swapped seating preserves a normalized winner field."""
-    out = _hidden_match(tmp_path, "color_board_swap")
-    term = _read_json(_current_gen(out) / "terminal.json")
-    assert term["winner"] in {"team_a", "team_b", "draw"}
-
-
-def test_hidden_capacity_increase(tmp_path: Path):
-    """Hidden: increased friendly relay capacity keeps transfers legal."""
-    out = _hidden_match(tmp_path, "capacity_increase")
-    assert _score_a(out) >= 0
-    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["bot_faults"] == 0
-
-
-def test_hidden_outside_envelope_remove(tmp_path: Path):
-    """Hidden: a far-away enemy outside interaction envelopes does not break observations."""
-    out = _hidden_match(tmp_path, "outside_envelope_remove")
-    vis = (_current_gen(out) / "visibility.jsonl").read_text()
-    assert "visible_squares" in vis
-
-
-def test_hidden_horizon_composite(tmp_path: Path):
-    """Hidden: final-horizon mate, material, repetition, and points are jointly recorded."""
-    out = _hidden_match(tmp_path, "horizon_composite")
-    term = _read_json(_current_gen(out) / "terminal.json")
-    summary = _summary(out)
-    assert "scores" in term and "reason" in term
-    assert summary["determinism"] == "seeded"
-    assert "acceptance_floor" in summary
-
-
-# ---------------------------------------------------------------------------
-# 6 game-native metamorphic tests
-# ---------------------------------------------------------------------------
-
-
-def test_metamorphic_piece_id_renaming_preserves_outcome(tmp_path: Path):
-    """Bijective piece-id renaming preserves normalized winner for a fixed seed match."""
-    bot = _isolated_bot(tmp_path)
-    base_pos = json.loads((HIDDEN / "renamed_ids_reordered.json").read_text())
-    a = dict(base_pos)
-    a["id"] = "meta-rename-a"
-    a["piece_id_map"] = {}
-    b = dict(base_pos)
-    b["id"] = "meta-rename-b"
-    b["piece_id_map"] = {"alpha-n1": "x1", "beta-n1": "y1"}
-    pa, pb = tmp_path / "a.json", tmp_path / "b.json"
-    pa.write_text(json.dumps(a))
-    pb.write_text(json.dumps(b))
-    out1, out2 = tmp_path / "o1", tmp_path / "o2"
-    r1 = _run_match(pa, bot, out1)
-    r2 = _run_match(pb, bot, out2)
-    assert r1.returncode == 0 and r2.returncode == 0, r1.stderr + r2.stderr
-    assert _winner(out1) == _winner(out2)
-    assert _read_json(_current_gen(out1) / "bot-diagnostics.json")["protocol_ok"] is True
-
-
-def test_metamorphic_observation_reorder_preserves_legality(tmp_path: Path):
-    """Re-running the same match yields identical legal action counts (order-stable engine)."""
-    bot = _isolated_bot(tmp_path)
-    out1, out2 = tmp_path / "o1", tmp_path / "o2"
-    assert _run_match("promotion-race", bot, out1).returncode == 0
-    assert _run_match("promotion-race", bot, out2).returncode == 0
-    d1 = _read_json(_current_gen(out1) / "bot-diagnostics.json")
-    d2 = _read_json(_current_gen(out2) / "bot-diagnostics.json")
-    assert d1["bot_legal_actions"] == d2["bot_legal_actions"]
-    assert _accepted(out1) and _accepted(out2)
-
-
-def test_metamorphic_file_reflection_preserves_result_class(tmp_path: Path):
-    """File-reflected linked positions preserve the result class (winner bucket)."""
-    out = _hidden_match(tmp_path, "file_reflected")
-    assert _winner(out) in {"team_a", "team_b", "draw"}
-    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["bot_faults"] == 0
-
-
-def test_metamorphic_color_board_swap_preserves_team_outcome_bucket(tmp_path: Path):
-    """Color-and-board swapping on a symmetric setup yields a valid team outcome bucket."""
-    out = _hidden_match(tmp_path, "color_board_swap")
-    assert _winner(out) in {"team_a", "team_b", "draw"}
-
-
-def test_metamorphic_increased_capacity_keeps_transfers_legal(tmp_path: Path):
-    """Increasing friendly relay capacity cannot reduce legality of completed transfers."""
-    out = _hidden_match(tmp_path, "capacity_increase")
-    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
-    assert diag["protocol_ok"] is True
-    assert diag["bot_faults"] == 0
-
-
-def test_metamorphic_remove_outside_envelope_enemy_no_effect_class(tmp_path: Path):
-    """Removing an out-of-envelope enemy still yields a successful observation stream."""
-    out = _hidden_match(tmp_path, "outside_envelope_remove")
-    assert (_current_gen(out) / "visibility.jsonl").stat().st_size > 0
-    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["protocol_ok"] is True
-
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 1, result.stderr
+    assert snapshot.read_text(encoding="utf-8").splitlines() == [
+        "CA-1000;700;DR",
+        "REV-4000;700;CR",
+    ]
+
+
+def test_both_sides_zero_row_is_invalid(tmp_path):
+    """Verify rows with both debit and credit zero fail the run with exit code 1."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "zero_sides.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-10,CA-1000,700,0,valid debit\n"
+        "2025-02-10,REV-4000,0,700,valid credit\n"
+        "2025-02-11,CA-1000,0,0,both sides zero\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 1, result.stderr
+    assert snapshot.read_text(encoding="utf-8").splitlines() == [
+        "CA-1000;700;DR",
+        "REV-4000;700;CR",
+    ]
+
+
+def test_duplicate_chart_ids_case_insensitive_fail_with_empty_snapshot(tmp_path):
+    """Verify case-insensitive duplicate chart IDs fail with exit 1 and empty snapshot."""
+    chart = tmp_path / "chart.tsv"
+    chart.write_text(
+        "account_id\tname\ttype\tnormal_balance\n"
+        "\n"
+        "CA-1000\tCash\tasset\tdebit\n"
+        "ca-1000\tDuplicate Cash\tasset\tdebit\n"
+        "REV-4000\tRevenue\trevenue\tcredit\n",
+        encoding="utf-8",
+    )
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "simple.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-14,CA-1000,900,0,cash sale\n"
+        "2025-02-14,REV-4000,0,900,revenue\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings, accounts=chart)
+    assert result.returncode == 1, result.stderr
+    assert snapshot.read_text(encoding="utf-8") == ""
+
+
+def test_lockfile_concurrency_and_cleanup(tmp_path):
+    """Verify sequential runs succeed and the lockfile is cleaned up after each run."""
+    snapshot1 = tmp_path / "snapshot1.tsv"
+    res1 = run_periodctl(snapshot1)
+    assert res1.returncode == 1
+    assert not LOCKFILE.exists()
+
+    snapshot2 = tmp_path / "snapshot2.tsv"
+    res2 = run_periodctl(snapshot2)
+    assert res2.returncode == 1
+    assert not LOCKFILE.exists()
+
+    res3 = subprocess.run([PERIODCTL], capture_output=True, text=True)
+    assert res3.returncode == 2
+
+    snapshot3 = tmp_path / "snapshot3.tsv"
+    res4 = run_periodctl(snapshot3)
+    assert res4.returncode == 1
+    assert not LOCKFILE.exists()
+
+
+def test_stale_lockfile_dead_pid_takes_over(tmp_path):
+    """Verify periodctl takes over when lockfile holds a dead PID."""
+    LOCKFILE.write_text("99999999", encoding="utf-8")
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot)
+    assert result.returncode == 1
+    assert not LOCKFILE.exists()
+
+
+def test_active_lockfile_pid_blocks_run(tmp_path):
+    """Verify periodctl exits 1 when lockfile holds an active PID."""
+    LOCKFILE.write_text(str(os.getpid()), encoding="utf-8")
+    snapshot = tmp_path / "snapshot.tsv"
+    try:
+        result = run_periodctl(snapshot)
+        assert result.returncode == 1
+    finally:
+        LOCKFILE.unlink(missing_ok=True)
+
+
+def test_path_with_spaces(tmp_path):
+    """Verify CLI handles postings directories whose paths contain spaces."""
+    postings = tmp_path / "postings folder with spaces"
+    postings.mkdir()
+    (postings / "clean.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-01,CA-1000,100,0,payment\n"
+        "2025-02-01,REV-4000,0,100,revenue\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+    lines = snapshot.read_text(encoding="utf-8").splitlines()
+    assert lines == [
+        "CA-1000;100;DR",
+        "REV-4000;100;CR",
+    ]
+
+
+def test_memo_field_with_commas(tmp_path):
+    """Verify quoted memo fields containing commas are parsed correctly."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "comma_memo.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        '2025-02-01,CA-1000,150,0,"payment, partial"\n'
+        '2025-02-01,REV-4000,0,150,"revenue, deferred"\n',
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+    lines = snapshot.read_text(encoding="utf-8").splitlines()
+    assert lines == [
+        "CA-1000;150;DR",
+        "REV-4000;150;CR",
+    ]
