@@ -1,0 +1,145 @@
+{
+  "module": "example.com/wk",
+  "retired": [
+    "example.com/wk/legacy"
+  ],
+  "packages": [
+    {
+      "import_path": "example.com/wk/app",
+      "tag_sets": [
+        []
+      ],
+      "imports": [
+        "example.com/wk/core",
+        "example.com/wk/bridge",
+        "example.com/wk/platform/linux",
+        "example.com/wk/platform/generic"
+      ],
+      "optional": false
+    },
+    {
+      "import_path": "example.com/wk/core",
+      "tag_sets": [
+        []
+      ],
+      "imports": [
+        "example.com/wk/util"
+      ],
+      "optional": false
+    },
+    {
+      "import_path": "example.com/wk/util",
+      "tag_sets": [
+        []
+      ],
+      "imports": [],
+      "optional": false
+    },
+    {
+      "import_path": "example.com/wk/bridge",
+      "tag_sets": [
+        [
+          "integration"
+        ]
+      ],
+      "imports": [
+        "example.com/wk/plugin"
+      ],
+      "optional": false
+    },
+    {
+      "import_path": "example.com/wk/plugin",
+      "tag_sets": [
+        [
+          "integration"
+        ]
+      ],
+      "imports": [
+        "example.com/wk/util"
+      ],
+      "optional": false
+    },
+    {
+      "import_path": "example.com/wk/platform/linux",
+      "tag_sets": [
+        [
+          "linux"
+        ]
+      ],
+      "imports": [
+        "example.com/wk/util"
+      ],
+      "optional": false
+    },
+    {
+      "import_path": "example.com/wk/platform/generic",
+      "tag_sets": [
+        [
+          "!linux"
+        ]
+      ],
+      "imports": [
+        "example.com/wk/util"
+      ],
+      "optional": false
+    },
+    {
+      "import_path": "example.com/wk/shim/client",
+      "tag_sets": [
+        []
+      ],
+      "imports": [
+        "example.com/shim"
+      ],
+      "optional": false
+    },
+    {
+      "import_path": "example.com/shim/api",
+      "tag_sets": [
+        []
+      ],
+      "imports": [],
+      "optional": false,
+      "module_root": "vendor_tree/shim"
+    },
+    {
+      "import_path": "example.com/wk/legacy",
+      "tag_sets": [
+        []
+      ],
+      "imports": [
+        "example.com/wk/util"
+      ],
+      "optional": false
+    },
+    {
+      "import_path": "example.com/wk/optional/cache",
+      "tag_sets": [
+        []
+      ],
+      "imports": [
+        "example.com/wk/util"
+      ],
+      "optional": true
+    },
+    {
+      "import_path": "example.com/wk/optional/metrics",
+      "tag_sets": [
+        [
+          "integration"
+        ]
+      ],
+      "imports": [
+        "example.com/wk/util"
+      ],
+      "optional": true
+    }
+  ],
+  "replaces": [
+    {
+      "old": "example.com/shim",
+      "new": "example.com/shim/api",
+      "local": "vendor_tree/shim"
+    }
+  ]
+}

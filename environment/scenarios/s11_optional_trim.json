@@ -1,0 +1,9 @@
+{
+  "scenario_id": "s11_optional_trim",
+  "tags": [],
+  "roots": [
+    "example.com/wk/app",
+    "example.com/wk/optional/cache"
+  ],
+  "ceiling": 5
+}

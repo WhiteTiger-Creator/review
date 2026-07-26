@@ -1,0 +1,8 @@
+{
+  "scenario_id": "s01_base",
+  "tags": [],
+  "roots": [
+    "example.com/wk/app"
+  ],
+  "ceiling": 4
+}

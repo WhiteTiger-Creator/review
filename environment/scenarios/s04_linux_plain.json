@@ -1,0 +1,11 @@
+{
+  "scenario_id": "s04_linux_plain",
+  "tags": [
+    "linux",
+    "!integration"
+  ],
+  "roots": [
+    "example.com/wk/app"
+  ],
+  "ceiling": 4
+}

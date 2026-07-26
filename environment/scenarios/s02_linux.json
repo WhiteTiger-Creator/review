@@ -1,0 +1,10 @@
+{
+  "scenario_id": "s02_linux",
+  "tags": [
+    "linux"
+  ],
+  "roots": [
+    "example.com/wk/app"
+  ],
+  "ceiling": 5
+}

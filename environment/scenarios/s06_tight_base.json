@@ -1,0 +1,8 @@
+{
+  "scenario_id": "s06_tight_base",
+  "tags": [],
+  "roots": [
+    "example.com/wk/app"
+  ],
+  "ceiling": 4
+}

@@ -1,0 +1,11 @@
+{
+  "scenario_id": "s08_dual_int",
+  "tags": [
+    "integration"
+  ],
+  "roots": [
+    "example.com/wk/app",
+    "example.com/wk/plugin"
+  ],
+  "ceiling": 6
+}

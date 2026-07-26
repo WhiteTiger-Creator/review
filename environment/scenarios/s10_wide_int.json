@@ -1,0 +1,10 @@
+{
+  "scenario_id": "s10_wide_int",
+  "tags": [
+    "integration"
+  ],
+  "roots": [
+    "example.com/wk/app"
+  ],
+  "ceiling": 8
+}
