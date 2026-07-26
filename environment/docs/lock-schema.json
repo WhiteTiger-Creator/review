@@ -1,0 +1,105 @@
+{
+  "schema": "slate-lock/1",
+  "note": "Every document is canonical JSON: UTF-8, two-space indent, no HTML escaping of < > &, exactly one trailing newline. Keys appear in the propertyOrder given here.",
+  "documents": {
+    "lock": {
+      "path": "<out>/<project>.lock.json",
+      "propertyOrder": ["protocol", "project", "allow_yanked", "packages", "waived", "stats", "digest"],
+      "properties": {
+        "protocol": {"const": "slate/1"},
+        "project": {"type": "string"},
+        "allow_yanked": {"type": "boolean"},
+        "packages": {
+          "type": "array",
+          "order": "by name ascending",
+          "items": {
+            "propertyOrder": ["name", "version", "yanked", "features", "requires", "required_by"],
+            "properties": {
+              "name": {"type": "string"},
+              "version": {"type": "string"},
+              "yanked": {"type": "boolean", "note": "the yanked flag of the selected release"},
+              "features": {"type": "array", "items": {"type": "string"}, "order": "ascending, unique, empty array when none"},
+              "requires": {
+                "type": "array",
+                "order": "registry order of the selected release: base requires, then the edges of each enabled feature the release declares, features ascending",
+                "items": {"propertyOrder": ["name", "range"]}
+              },
+              "required_by": {
+                "type": "array",
+                "items": {"type": "string"},
+                "note": "requirer labels of the active constraints on this package: 'root' or '<name>@<version>'",
+                "order": "ascending, unique"
+              }
+            }
+          }
+        },
+        "waived": {"type": "array", "items": {"type": "string"}, "order": "ascending, unique, empty array when none"},
+        "stats": {
+          "propertyOrder": ["assignments", "backtracks"],
+          "properties": {"assignments": {"type": "integer"}, "backtracks": {"type": "integer"}}
+        },
+        "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "trail": {
+      "path": "<out>/staging/<project>.trail.json",
+      "propertyOrder": ["protocol", "project", "steps", "digest"],
+      "properties": {
+        "protocol": {"const": "slate/1"},
+        "project": {"type": "string"},
+        "steps": {
+          "type": "array",
+          "order": "assignment order, step numbering starts at 1",
+          "items": {
+            "propertyOrder": ["step", "package", "version", "candidates"],
+            "properties": {
+              "step": {"type": "integer"},
+              "package": {"type": "string"},
+              "version": {"type": "string"},
+              "candidates": {"type": "array", "items": {"type": "string"}, "note": "the candidate list as computed when the package was picked, newest first"}
+            }
+          }
+        },
+        "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "conflict": {
+      "path": "<out>/<project>.conflict.json",
+      "propertyOrder": ["protocol", "project", "package", "constraints", "backtracks", "digest"],
+      "properties": {
+        "protocol": {"const": "slate/1"},
+        "project": {"type": "string"},
+        "package": {"type": "string", "note": "the package of the last conflict the exhausted search recorded"},
+        "constraints": {
+          "type": "array",
+          "order": "by requirer ascending",
+          "items": {"propertyOrder": ["requirer", "range"]}
+        },
+        "backtracks": {"type": "integer"},
+        "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "index": {
+      "path": "<out>/index.json",
+      "propertyOrder": ["protocol", "projects", "digest"],
+      "properties": {
+        "protocol": {"const": "slate/1"},
+        "projects": {
+          "type": "array",
+          "order": "by project ascending",
+          "items": {
+            "propertyOrder": ["project", "status", "packages", "backtracks", "digest"],
+            "properties": {
+              "project": {"type": "string"},
+              "status": {"enum": ["locked", "unsatisfiable"]},
+              "packages": {"type": "integer", "note": "0 for an unsatisfiable project"},
+              "backtracks": {"type": "integer"},
+              "digest": {"type": "string", "note": "the digest of that project's lock, or of its conflict document when unsatisfiable"}
+            }
+          }
+        },
+        "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

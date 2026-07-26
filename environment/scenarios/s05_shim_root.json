@@ -1,8 +1,0 @@
-{
-  "scenario_id": "s05_shim_root",
-  "tags": [],
-  "roots": [
-    "example.com/wk/shim/client"
-  ],
-  "ceiling": 3
-}

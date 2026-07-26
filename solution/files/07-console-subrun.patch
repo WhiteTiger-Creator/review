@@ -1,0 +1,99 @@
+--- /dev/null
++++ b/cmd/console/subrun.go
+@@ -0,0 +1,96 @@
++package main
++
++import (
++	"fmt"
++
++	"slate/internal/scribe"
++	"slate/internal/manifest"
++	"slate/internal/registry"
++	"slate/internal/course"
++)
++
++func cmdResolve(o *opts) int {
++	all := o.flags["all"]
++	if all && len(o.args) != 0 {
++		return fail(exitUsage, "resolve takes a project name or --all, not both")
++	}
++	if !all && len(o.args) != 1 {
++		return fail(exitUsage, "resolve takes one project name or --all")
++	}
++	idx, err := registry.Ingest(o.registryDir)
++	if err != nil {
++		return fail(exitInput, "%v", err)
++	}
++	projects := o.args
++	if all {
++		projects, err = manifest.List(o.manifestsDir)
++		if err != nil {
++			return fail(exitInput, "%v", err)
++		}
++	}
++
++	// Parse every manifest before publishing anything, so an unusable input
++	// leaves the output directory as it was instead of half a library.
++	parsed := make([]*manifest.Manifest, 0, len(projects))
++	for _, project := range projects {
++		m, err := manifest.Load(o.manifestsDir, project)
++		if err != nil {
++			return fail(exitInput, "%v", err)
++		}
++		parsed = append(parsed, m)
++	}
++
++	entries := []scribe.IndexEntry{}
++	unsatisfied := ""
++	for _, m := range parsed {
++		project := m.Project
++		res, err := course.Resolve(idx, m)
++		if err != nil {
++			return fail(exitInput, "%v", err)
++		}
++		if !res.OK {
++			doc := scribe.BuildConflict(res)
++			if err := scribe.WriteConflict(o.outDir, doc); err != nil {
++				return fail(exitInput, "%v", err)
++			}
++			entries = append(entries, scribe.IndexEntry{
++				Project:    project,
++				Status:     "unsatisfiable",
++				Packages:   0,
++				Backtracks: doc.Backtracks,
++				Digest:     doc.Digest,
++			})
++			unsatisfied = doc.Package
++			fmt.Printf("resolve %s unsatisfiable package=%s backtracks=%d\n",
++				project, doc.Package, doc.Backtracks)
++			continue
++		}
++		lock := scribe.BuildLock(res)
++		trail := scribe.BuildTrail(res)
++		if err := scribe.WriteLocked(o.outDir, lock, trail); err != nil {
++			return fail(exitInput, "%v", err)
++		}
++		entries = append(entries, scribe.IndexEntry{
++			Project:    project,
++			Status:     "locked",
++			Packages:   lock.Stats.Assignments,
++			Backtracks: lock.Stats.Backtracks,
++			Digest:     lock.Digest,
++		})
++		fmt.Printf("resolve %s packages=%d backtracks=%d digest=%s\n",
++			project, lock.Stats.Assignments, lock.Stats.Backtracks, lock.Digest)
++	}
++
++	if all {
++		index := scribe.BuildIndex(entries)
++		if err := scribe.WriteIndex(o.outDir, index); err != nil {
++			return fail(exitInput, "%v", err)
++		}
++		fmt.Printf("index projects=%d digest=%s\n", len(index.Projects), index.Digest)
++		return exitOK
++	}
++	if unsatisfied != "" {
++		return fail(exitConflict, "unsatisfiable %s: %s", projects[0], unsatisfied)
++	}
++	return exitOK
++}

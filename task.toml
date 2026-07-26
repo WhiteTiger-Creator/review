@@ -5,24 +5,24 @@ author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
 category = "build-and-dependency-management"
-tags = ["go", "build-tags", "import-closure", "replace-directive", "package-budget"]
-languages = ["go", "bash"]
-codebase_size = "small"
-number_of_milestones = 0
 subcategories = []
-expert_time_estimate_min = 90
+number_of_milestones = 0
+codebase_size = "small"
+languages = ["go", "bash"]
+tags = ["lockfile", "dependency-resolution", "reproducible-builds", "registry", "supply-chain"]
+expert_time_estimate_min = 110
 junior_time_estimate_min = 300
 
-
 [agent]
-timeout_sec = 1800
+timeout_sec = 1800.0
 
 [verifier]
-timeout_sec = 1800
+timeout_sec = 900.0
 
 [environment]
 allow_internet = false
-build_timeout_sec = 600
+build_timeout_sec = 900.0
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
+workdir = "/app"

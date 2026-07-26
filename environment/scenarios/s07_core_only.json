@@ -1,8 +1,0 @@
-{
-  "scenario_id": "s07_core_only",
-  "tags": [],
-  "roots": [
-    "example.com/wk/core"
-  ],
-  "ceiling": 2
-}

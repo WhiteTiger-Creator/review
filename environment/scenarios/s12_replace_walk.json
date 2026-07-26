@@ -1,8 +1,0 @@
-{
-  "scenario_id": "s12_replace_walk",
-  "tags": [],
-  "roots": [
-    "example.com/wk/shim/client"
-  ],
-  "ceiling": 2
-}

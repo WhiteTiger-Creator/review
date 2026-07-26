@@ -1,0 +1,20 @@
+{
+  "name": "tuff",
+  "releases": [
+    {
+      "version": "0.4.3",
+      "yanked": false,
+      "requires": []
+    },
+    {
+      "version": "0.4.1",
+      "yanked": false,
+      "requires": []
+    },
+    {
+      "version": "0.3.9",
+      "yanked": false,
+      "requires": []
+    }
+  ]
+}

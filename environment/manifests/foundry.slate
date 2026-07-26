@@ -1,0 +1,4 @@
+# The main build: everything the yard ships.
+project foundry
+require schist ^5.0.0
+require flint ~0.9.0

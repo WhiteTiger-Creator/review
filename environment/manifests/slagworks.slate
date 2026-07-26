@@ -1,0 +1,4 @@
+# The old marl line is pinned by policy.
+project slagworks
+require gabbro ^4.0.0
+require marl ~1.8.0

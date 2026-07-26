@@ -1,0 +1,4 @@
+# sealed: the newest birchwood cannot stand
+project saltmarsh
+require birchwood ^1.0.0
+require cobalt ~1.1.0
