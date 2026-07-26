@@ -1,21 +1,5 @@
-Our wallet used to lean on a third-party SD-JWT library, and now that data minimisation is
-contractual I need `/app/broker` finished in-house. `mvn -f /app/broker/pom.xml package` has to
-produce `/app/broker/target/sd-jwt-broker.jar`, run as
+Materials beamline powder TOF work needs `/app/bin/ndref` again: turn Miller-indexed flight times into Bragg d-spacings with the sealed neutron constants, build reciprocal-metric Q rows for the declared crystal system, apply intensity/extinction admission, run one residual-sigma least-squares re-fit, then refresh residual reject flags on the final cell so collateral peaks clear when they now pass the threshold. Schemas and numerics are under `/app/docs/` (`lattice-model.md`, `peaks-format.md`, `instrument-format.md`, `structure-format.md`, `report-schema.md`, `artifact-format.md`, `cli-contract.md`). Live `/app/config/refine_policy.toml` must equal the schema_version-2 sealed file at `/app/data/sealed/production_policy.toml`. Leave `/app/docs/` and `/app/data/sample/` alone. Offline only.
 
-```
-java -jar /app/broker/target/sd-jwt-broker.jar --config <cfg> --credentials <dir> --policy <file> --out <dir>
-```
+Flags `--peaks` `--instrument` `--structure` `--config` `--refined` `--report` in any order; defaults `/app/data/sample/peaks.csv`, `/app/data/sample/instrument.json`, `/app/data/sample/reference_structure.json`, `/app/config/refine_policy.toml`, `/app/refined_structure.json`, `/app/refinement_report.json`. Exit `0` when valid with zero rejects, `1` when valid with ≥1 reject (still write both artifacts), `2` on fatal CLI/input/policy. Empty stdout on `0`/`1`; fatal must not create or clobber the two output paths.
 
-No third-party JOSE, JWT or crypto code may reach that jar or its classpath: JDK crypto and a JSON
-parser only. The stored credentials carry the MicroProfile claim contract documented under
-`/app/microprofile-jwt-auth/api`. The issuer's signing keys are not on this box: the config names
-the key set the issuer publishes, and a run reads it from there.
-
-`/app/broker/PRESENTATION_PROFILE.md` is the profile to implement: the acceptance ladder, how
-disclosures resolve, how the smallest release satisfying the policy is picked, and the key binding
-on the way out. Match it exactly. `<dir>/report.json` is checked byte for byte and every released
-credential lands in `<dir>/presentations/<id>.sdjwt`.
-
-`/app/broker/wallet.properties`, `/app/credentials` and `/app/broker/policy.json` are what we run
-against today. A run only exits non-zero when that published key set cannot be read, and then it
-writes nothing at all.
+Use the CSV/JSON field names, crystal-system angle locks, and policy weighting from the docs. Residual rows sort by `peak_id`. Lengths `%.10f`, angles `%.8f`. After printf, if a field text is exactly `-0.0000000000` (or `-0.00000000` for angles)—including tiny values that round to that string—emit `0.0000000000` / `0.00000000` instead. Report key order and `refine_digest` (SHA-256 over `rev:<policy_revision>`, then each `peak_id:d_obs:d_calc:resid:rejected`, then `a:…:chi2:…`) follow the report docs.

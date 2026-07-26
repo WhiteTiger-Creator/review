@@ -1,27 +1,17 @@
 #!/bin/bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PKG_DIR=/app/broker/src/main/java/com/acme/wallet/sdjwt
+solution_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-# Replace the stub with the JDK-only implementation: canonical JSON, base64url and digest helpers,
-# JWK handling with RFC 7638 thumbprints, SD-JWT disclosure resolution, the minimal release search
-# and the key binding JWT.
-mkdir -p "$PKG_DIR"
-rm -f "$PKG_DIR"/*.java
-cp "$SCRIPT_DIR"/src/*.java "$PKG_DIR"/
+install -m 0644 "$solution_dir/reference/peak_load.jl" /app/src/peak_load.jl
+install -m 0644 "$solution_dir/reference/policy_load.jl" /app/src/policy_load.jl
+install -m 0644 "$solution_dir/reference/instrument_geom.jl" /app/src/instrument_geom.jl
+install -m 0644 "$solution_dir/reference/lattice_metric.jl" /app/src/lattice_metric.jl
+install -m 0644 "$solution_dir/reference/refine_ls.jl" /app/src/refine_ls.jl
+install -m 0644 "$solution_dir/reference/report_emit.jl" /app/src/report_emit.jl
+install -m 0644 "$solution_dir/reference/ndref.jl" /app/ndref.jl
 
-cd /app/broker
-mvn -B -q clean package
+install -m 0644 /app/data/sealed/production_policy.toml /app/config/refine_policy.toml
 
-test -f /app/broker/target/sd-jwt-broker.jar
-
-# Prove the packaged broker runs against the batch shipped with the environment.
-java -jar /app/broker/target/sd-jwt-broker.jar \
-    --config /app/broker/wallet.properties \
-    --credentials /app/credentials \
-    --policy /app/broker/policy.json \
-    --out /app/out
-
-test -f /app/out/report.json
-echo "built /app/broker/target/sd-jwt-broker.jar"
+bash /app/build.sh
+/app/bin/ndref --refined /tmp/oracle-refined.json --report /tmp/oracle-report.json

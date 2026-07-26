@@ -1,37 +1,67 @@
-# Canonical Maven + Temurin JDK 21 image on Ubuntu 24.04, pinned to the multi-arch manifest digest.
-FROM public.ecr.aws/docker/library/maven:3.9.9-eclipse-temurin-21@sha256:3a4ab3276a087bf276f79cae96b1af04f53731bec53fb2e651aca79e4b10211e
+# BASE_IMAGE_JUSTIFICATION: Julia has no canonical Harbor base image; install the
+# official julialang.org linux/x64 tarball on sanctioned Debian bookworm-slim (same
+# pattern as other Julia scientific tasks). Image builds offline after the pinned tarball is fetched.
+FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
 
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Terminal recording utilities the harness needs, plus the Python runtime used below.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      ca-certificates=20260601~24.04.1 \
-      python3=3.12.3-0ubuntu2.1 \
-      python3-venv=3.12.3-0ubuntu2.1 \
-      tmux=3.4-1ubuntu0.1 \
-      asciinema=2.4.0-1 \
- && rm -rf /var/lib/apt/lists/*
-
-# Generic verifier tooling (pytest, a CTRF reporter and a crypto library) in its own virtualenv.
-# The grading logic is not here: it is mounted at /tests only when the verifier runs.
-COPY requirements.lock /tmp/requirements.lock
-RUN python3 -m venv /opt/verifier-venv \
- && /opt/verifier-venv/bin/python -m pip install --no-cache-dir --require-hashes -r /tmp/requirements.lock \
- && rm -f /tmp/requirements.lock
+ENV JULIA_VERSION=1.11.5
+ENV JULIA_PATH=/opt/julia
+ENV JULIA_DEPOT_PATH=/opt/julia-depot
+ENV JULIA_PKG_OFFLINE=true
+ENV PATH="/opt/julia/bin:/usr/local/bin:/usr/bin:/bin:${PATH}"
 
 WORKDIR /app
 
-# The MicroProfile JWT sources at release commit d729a3f276a530ce5c471f23dbb2d253b891eb8f. The TCK
-# key material is not vendored: issuer keys are read from the key set the issuer publishes.
-COPY microprofile-jwt-auth /app/microprofile-jwt-auth
-COPY broker /app/broker
-COPY credentials /app/credentials
+COPY requirements.lock /environment/requirements.lock
 
-# Warm the local repository: install the MicroProfile JWT API from source, then run one complete
-# build of the stub module so every plugin and dependency the broker build needs is already on disk.
-RUN mvn -B -q -f /app/microprofile-jwt-auth/pom.xml -pl api -am install -DskipTests \
- && mvn -B -q -f /app/broker/pom.xml clean package \
- && rm -rf /app/broker/target
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    tmux \
+    asciinema \
+    python3 \
+    python3-venv \
+    && curl -fL -o /tmp/julia.tar.gz \
+        "https://julialang-s3.julialang.org/bin/linux/x64/1.11/julia-${JULIA_VERSION}-linux-x86_64.tar.gz" \
+    && echo "723e878c642220cc0251a0e13758c059a389cadc7f01376feaf1ea7388fe8f9c  /tmp/julia.tar.gz" \
+        | sha256sum --check --strict - \
+    && mkdir -p /opt/julia \
+    && tar -xzf /tmp/julia.tar.gz -C /opt/julia --strip-components=1 \
+    && rm /tmp/julia.tar.gz \
+    && julia --version \
+    && rm -rf /var/lib/apt/lists/* \
+    && tmux -V \
+    && asciinema --version \
+    && python3 -m venv /opt/verifier_venv \
+    && /opt/verifier_venv/bin/pip install --no-cache-dir \
+        -r /environment/requirements.lock
 
-COPY settings.xml /root/.m2/settings.xml
+COPY app/ ./
+
+RUN find /app -type f \( -name '*.jl' -o -name '*.sh' -o -name '*.toml' -o -name '*.csv' -o -name '*.md' -o -name '*.json' -o -name 'ndref' \) -exec sed -i 's/\r$//' {} + \
+    && chmod +x /app/build.sh \
+    && test -f /app/ndref.jl \
+    && test -f /app/src/peak_load.jl \
+    && test -f /app/src/policy_load.jl \
+    && test -f /app/src/instrument_geom.jl \
+    && test -f /app/src/lattice_metric.jl \
+    && test -f /app/src/refine_ls.jl \
+    && test -f /app/src/report_emit.jl \
+    && test -f /app/config/refine_policy.toml \
+    && test -f /app/data/sealed/production_policy.toml \
+    && test -f /app/data/sample/peaks.csv \
+    && test -f /app/data/sample/instrument.json \
+    && test -f /app/data/sample/reference_structure.json \
+    && test -f /app/docs/cli-contract.md \
+    && test -f /app/docs/lattice-model.md \
+    && test -f /app/docs/peaks-format.md \
+    && test -f /app/docs/instrument-format.md \
+    && test -f /app/docs/structure-format.md \
+    && test -f /app/docs/report-schema.md \
+    && test -f /app/docs/artifact-format.md \
+    && bash /app/build.sh \
+    && chmod a-w /app/data/sample/peaks.csv /app/data/sample/instrument.json /app/data/sample/reference_structure.json /app/data/sealed/production_policy.toml \
+    && /opt/verifier_venv/bin/python3 -m pytest --version
+
+ENV PATH="/app/bin:/app:/opt/julia/bin:${PATH}"
+
+CMD ["sleep", "infinity"]
