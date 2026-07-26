@@ -1,0 +1,6 @@
+{
+  "visibility": "own_pieces_and_attacks",
+  "stale_sighting": true,
+  "public_relay_events": true,
+  "hidden_queries_forbidden": true
+}

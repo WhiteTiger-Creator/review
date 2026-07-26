@@ -4,31 +4,24 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "system-administration"
-subcategories = ["long_context", "tool_specific"]
-number_of_milestones = 0
+category = "games"
+subcategories = []
+languages = ["go"]
 codebase_size = "small"
-languages = ["awk", "bash"]
-tags = [
-  "openssl",
-  "host-migration",
-  "provider-configuration",
-  "fips",
-  "mount-resolution",
-  "staging-rollout",
-]
-expert_time_estimate_min = 345
-junior_time_estimate_min = 810
-
-[agent]
-timeout_sec = 1800
+number_of_milestones = 0
+tags = ["fog-chess", "relay-drops", "linked-boards", "belief-state"]
+expert_time_estimate_min = 240
+junior_time_estimate_min = 480
 
 [verifier]
-timeout_sec = 900
+timeout_sec = 900.0
+
+[agent]
+timeout_sec = 1800.0
 
 [environment]
-build_timeout_sec = 1200
-cpus = 2
-memory_mb = 2048
-storage_mb = 6144
 allow_internet = false
+build_timeout_sec = 900.0
+cpus = 4
+memory_mb = 8192
+storage_mb = 10240
