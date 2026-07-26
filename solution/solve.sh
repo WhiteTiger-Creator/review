@@ -1,15 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_ROOT="${APP_ROOT:-/app/skykingdom}"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-FILES_DIR="${SCRIPT_DIR}/files"
+export PATH="/usr/local/go/bin:/go/bin:${PATH:-/usr/bin:/bin}"
 
-mkdir -p "${APP_ROOT}"
-cp -f "${FILES_DIR}/go.mod" "${APP_ROOT}/go.mod"
-cp -f "${FILES_DIR}/"*.go "${APP_ROOT}/"
+ROOT="/app/opaline"
+SRC_DIR="$(cd "$(dirname "$0")" && pwd)/complete"
 
-# Preserve normative docs and scenarios already present in the image.
-export PATH="/usr/local/go/bin:${PATH}"
-cd "${APP_ROOT}"
-go build -o skykingdom .
+if [ ! -f "$ROOT/go.mod" ]; then
+  echo "missing opaline module at $ROOT" >&2
+  exit 1
+fi
+
+# Replace starter sources with the complete cartographer implementation.
+cp "$SRC_DIR/board.go" "$ROOT/board.go"
+cp "$SRC_DIR/cartographer.go" "$ROOT/cartographer.go"
+cp "$SRC_DIR/validation.go" "$ROOT/validation.go"
+cp "$SRC_DIR/engine.go" "$ROOT/engine.go"
+
+# Remove starter stub units superseded by engine.go to avoid duplicate symbols.
+rm -f \
+  "$ROOT/state.go" \
+  "$ROOT/movement.go" \
+  "$ROOT/portals.go" \
+  "$ROOT/routes.go" \
+  "$ROOT/counting.go" \
+  "$ROOT/canonical.go" \
+  "$ROOT/metrics.go" \
+  "$ROOT/trace.go"
+
+gofmt -w "$ROOT"/*.go
+
+cd "$ROOT"
+GOWORK=off GOPROXY=off GOSUMDB=off go vet ./...
+GOWORK=off GOPROXY=off GOSUMDB=off go build ./...

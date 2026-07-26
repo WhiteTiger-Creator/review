@@ -1,21 +1,39 @@
 FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
 
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    GOTOOLCHAIN=local
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        tmux=3.3a-3 \
-        asciinema=2.2.0-1 \
-        python3=3.11.2-1+b1 \
-        python3-pip=23.0.1+dfsg-1 \
+        asciinema \
+        ca-certificates \
+        python3 \
+        python3-pip \
+        python3-venv \
+        tmux \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.lock /tmp/requirements.lock
-RUN python3 -m pip install --break-system-packages --no-cache-dir \
-        --require-hashes --no-deps -r /tmp/requirements.lock \
-    && rm -f /tmp/requirements.lock
 
-COPY docs /app/docs
-COPY skykingdom /app/skykingdom
-COPY requirements.txt /app/requirements.txt
-COPY requirements.lock /app/requirements.lock
+RUN python3 -m venv /opt/verifier_venv \
+    && /opt/verifier_venv/bin/pip install --no-cache-dir \
+        --require-hashes \
+        -r /tmp/requirements.lock \
+    && rm -f /tmp/requirements.lock \
+    && /opt/verifier_venv/bin/python -m pytest --version
 
-WORKDIR /app
+WORKDIR /app/opaline
+
+COPY go.mod README.md ./
+COPY *.go ./
+COPY docs/ ./docs/
+COPY examples/ ./examples/
+
+RUN GOPROXY=off GOSUMDB=off GOWORK=off go test ./... \
+    && GOPROXY=off GOSUMDB=off GOWORK=off go vet ./...
+
+CMD ["sleep", "infinity"]
