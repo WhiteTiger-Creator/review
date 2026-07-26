@@ -4,27 +4,24 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "machine-learning"
-tags = ["inference", "online-learning", "regret", "spectral-clustering", "metamorphic", "held-out"]
-languages = ["go"]
-codebase_size = "small"
+category = "games"
+subcategories = ["tool_specific"]
 number_of_milestones = 0
-subcategories = ["api_integration", "tool_specific"]
-expert_time_estimate_min = 360
-junior_time_estimate_min = 960
-
-[agent]
-timeout_sec = 1800
+codebase_size = "large"
+languages = ["go", "c", "bash"]
+tags = ["terminal-strategy-game", "simultaneous-turns", "board-state", "replay-adjudication", "collision-resolution", "deterministic-scoring", "lunisolar-terrain"]
+expert_time_estimate_min = 240
+junior_time_estimate_min = 540
 
 [verifier]
-timeout_sec = 900
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 1800.0
 
 [environment]
-allow_internet = false
-build_timeout_sec = 600
-cpus = 2
+build_timeout_sec = 900.0
+cpus = 4
 memory_mb = 4096
 storage_mb = 10240
-
-[reference_pattern]
-justification_if_none = "No promoted reference task in docs/reference_tasks/index.json matches Go ambulance-demand freeze-epoch journal replay spectral-eigengap metamorphic regret invariant YAML; agent brief reports none promoted."
+allow_internet = false

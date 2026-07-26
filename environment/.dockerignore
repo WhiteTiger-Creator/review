@@ -6,8 +6,9 @@
 **/.mypy_cache/
 **/.ruff_cache/
 **/node_modules/
+**/dist/
+**/*.o
+**/*.so
 .env
 solution/
 tests/
-**/.git
-tools/build_fixtures.py

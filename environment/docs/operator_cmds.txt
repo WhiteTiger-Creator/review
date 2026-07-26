@@ -1,9 +1,0 @@
-Offline ambulance-demand online-learner evaluation entrypoint
-
-Capability surface (flags accepted by the published ML evaluation entrypoint under /app/environment):
-
-  -root   environment root for zone features, model weights/journals, caches, and split locks (default /app/environment)
-  -out    demand-invariant evaluation YAML path (default /app/output/invariant.yaml)
-  -arm    pinned_split.lock arm index (default 1 = first held-out arm, hold_meta)
-
-The entrypoint must run freeze-epoch online-learner inference over spectral zone packs: rematerialize eigengap packing under a valid partition cache, reconstruct the freeze-epoch checkpoint from the weight journal (not the tip snapshot alone), score hinge regret on held-out labels, bind metamorphic digests, and rewrite the artifact at -out only when pack/weight/regret tips agree. Exit status 0 on success. Writes only that artifact path. Consecutive identical evaluations must leave byte-identical YAML.

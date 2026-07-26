@@ -1,15 +1,14 @@
 #!/bin/bash
-
-if [ "$PWD" = "/" ]; then
-    echo "Error: No working directory set. Please set a WORKDIR in your Dockerfile."
-    exit 1
-fi
-
-# Don't change anything below this line except the test file path or pytest flags.
-pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
+set -uo pipefail
+mkdir -p /logs/verifier
+echo 0 > /logs/verifier/reward.txt
+export PYTHONSAFEPATH=1
+export PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
+cd /tests
+/usr/bin/python3 -m pytest -rA -c /dev/null --confcutdir=/tests /tests/test_outputs.py
 rc=$?
 if [ "$rc" -eq 0 ]; then
-  echo 1 > /logs/verifier/reward.txt
+    echo 1 > /logs/verifier/reward.txt
 else
-  echo 0 > /logs/verifier/reward.txt
+    echo 0 > /logs/verifier/reward.txt
 fi
