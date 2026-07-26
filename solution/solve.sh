@@ -1,35 +1,31 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
-export PATH="/usr/local/go/bin:/go/bin:${PATH:-/usr/bin:/bin}"
+APP_ROOT="${APP_ROOT:-/app}"
+SRC_DIR="${APP_ROOT}/src"
+# Harbor mounts the solution at /solution (not /app/solution); resolve relative to this script.
+SOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-ROOT="/app/opaline"
-SRC_DIR="$(cd "$(dirname "$0")" && pwd)/complete"
+echo "[oracle] repairing periodctl and host control plane"
 
-if [ ! -f "$ROOT/go.mod" ]; then
-  echo "missing opaline module at $ROOT" >&2
-  exit 1
+# Copy corrected files to the target directory
+cp "${SOL_DIR}/periodctl" "${SRC_DIR}/periodctl"
+cp "${SOL_DIR}/reconciler.py" "${SRC_DIR}/reconciler.py"
+cp "${SOL_DIR}/ledger.py" "${SRC_DIR}/ledger.py"
+
+chmod 0755 "${SRC_DIR}/periodctl"
+chmod 0644 "${SRC_DIR}/reconciler.py"
+chmod 0644 "${SRC_DIR}/ledger.py"
+
+echo "[oracle] restoring period-close host layout"
+mkdir -p /etc/period-close /var/lib/period-close
+cp "${APP_ROOT}/data/window.json" /etc/period-close/window.json
+chmod 0644 /etc/period-close/window.json
+chmod 0755 /var/lib/period-close
+ln -sfn "${SRC_DIR}/periodctl" /usr/local/sbin/periodctl
+
+if [[ -f /etc/systemd/system/period-close.service ]]; then
+    chmod 0644 /etc/systemd/system/period-close.service
 fi
 
-# Replace starter sources with the complete cartographer implementation.
-cp "$SRC_DIR/board.go" "$ROOT/board.go"
-cp "$SRC_DIR/cartographer.go" "$ROOT/cartographer.go"
-cp "$SRC_DIR/validation.go" "$ROOT/validation.go"
-cp "$SRC_DIR/engine.go" "$ROOT/engine.go"
-
-# Remove starter stub units superseded by engine.go to avoid duplicate symbols.
-rm -f \
-  "$ROOT/state.go" \
-  "$ROOT/movement.go" \
-  "$ROOT/portals.go" \
-  "$ROOT/routes.go" \
-  "$ROOT/counting.go" \
-  "$ROOT/canonical.go" \
-  "$ROOT/metrics.go" \
-  "$ROOT/trace.go"
-
-gofmt -w "$ROOT"/*.go
-
-cd "$ROOT"
-GOWORK=off GOPROXY=off GOSUMDB=off go vet ./...
-GOWORK=off GOPROXY=off GOSUMDB=off go build ./...
+echo "[oracle] solution applied successfully"

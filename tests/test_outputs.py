@@ -1,697 +1,466 @@
-#!/usr/bin/env python3
-"""Verifier for Opaline Dungeon Route Cartographer."""
-
-from __future__ import annotations
-
-import json
+import hashlib
 import os
-import re
 import shutil
 import subprocess
-import threading
+import tempfile
 from pathlib import Path
 
 import pytest
-from reference_model import (
-    ALL_MOVES,
-    CRUMBLE,
-    DOOR,
-    EXIT,
-    FLOOR,
-    KEY,
-    MOVE_DOWN,
-    MOVE_LEFT,
-    MOVE_RIGHT,
-    PORTAL,
-    START,
-    STATUS_INVALID_INPUT,
-    STATUS_SOLVED,
-    STATUS_UNSOLVABLE,
-    VAL_INVALID_ANALYSIS,
-    VAL_INVALID_INPUT,
-    VAL_VALID,
-    WALL,
-    analyze_board,
-    board,
-    tile,
-)
 
-APP = Path("/app/opaline")
-HARNESS_DIR = Path("/tests/harness")
-BUILD_DIR = Path("/tmp/opaline-harness-build")
+PERIODCTL = "/app/src/periodctl"
+DATA_DIR = Path("/app/data")
+JOURNALS = DATA_DIR / "journals"
+CHART = DATA_DIR / "chart.tsv"
+WINDOW = DATA_DIR / "window.json"
+ETC_WINDOW = Path("/etc/period-close/window.json")
+SBIN_LINK = Path("/usr/local/sbin/periodctl")
+SYSTEMD_UNIT = Path("/etc/systemd/system/period-close.service")
+VAR_LIB = Path("/var/lib/period-close")
+LOCKFILE = Path("/tmp/periodctl.lock")
+
+EXPECTED_LINES = [
+    "CA-1000;53000;DR",
+    "CA-2000;8000;CR",
+    "EQ-3000;15000;CR",
+    "EXP-5000;20000;DR",
+    "REV-4000;50000;CR",
+]
 
 
-def _f() -> dict:
-    return tile(FLOOR)
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8192), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
-def _w() -> dict:
-    return tile(WALL)
-
-
-def _s() -> dict:
-    return tile(START)
-
-
-def _e() -> dict:
-    return tile(EXIT)
-
-
-def _k(tag: str) -> dict:
-    return tile(KEY, tag)
-
-
-def _d(tag: str) -> dict:
-    return tile(DOOR, tag)
-
-
-def _c() -> dict:
-    return tile(CRUMBLE)
-
-
-def _p(tag: str) -> dict:
-    return tile(PORTAL, tag)
-
-
-@pytest.fixture(scope="session")
-def harness_bin() -> Path:
-    """Build the public module and verifier harness once offline."""
-    if BUILD_DIR.exists():
-        shutil.rmtree(BUILD_DIR)
-    BUILD_DIR.mkdir(parents=True)
-    shutil.copytree(HARNESS_DIR, BUILD_DIR, dirs_exist_ok=True)
-    env = os.environ.copy()
-    env["GOPROXY"] = "off"
-    env["GOSUMDB"] = "off"
-    env["GOWORK"] = "off"
-    env["GOCACHE"] = str(BUILD_DIR / "go-cache")
-    env["GOMODCACHE"] = str(BUILD_DIR / "mod-cache")
-    # Ensure replace path exists
-    go_mod = (BUILD_DIR / "go.mod").read_text()
-    assert "opaline/cartographer" in go_mod
-    proc = subprocess.run(
-        ["go", "build", "-o", str(BUILD_DIR / "harness"), "."],
-        cwd=BUILD_DIR,
-        env=env,
+def run_periodctl(
+    snapshot_path: Path,
+    postings_dir: Path = JOURNALS,
+    accounts: Path = CHART,
+    window: Path = WINDOW,
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [
+            PERIODCTL,
+            "--postings",
+            str(postings_dir),
+            "--accounts",
+            str(accounts),
+            "--window",
+            str(window),
+            "--snapshot",
+            str(snapshot_path),
+        ],
         capture_output=True,
         text=True,
         check=False,
     )
-    if proc.returncode != 0:
-        pytest.fail(f"harness build failed:\n{proc.stdout}\n{proc.stderr}")
-    bin_path = BUILD_DIR / "harness"
-    assert bin_path.is_file()
-    return bin_path
 
 
-def call_harness(harness_bin: Path, payload: dict) -> dict:
-    proc = subprocess.run(
-        [str(harness_bin)],
-        input=json.dumps(payload),
+@pytest.fixture
+def data_hashes():
+    hashes = {}
+    for path in DATA_DIR.rglob("*"):
+        if path.is_file():
+            hashes[str(path.relative_to(DATA_DIR))] = sha256_file(path)
+    return hashes
+
+
+def _mode(path: Path) -> str:
+    return oct(path.stat().st_mode & 0o777)
+
+
+def test_periodctl_binary_mode_0755():
+    """Verify /app/src/periodctl exists and has executable mode 0755."""
+    assert Path(PERIODCTL).is_file()
+    assert _mode(Path(PERIODCTL)) == "0o755"
+
+
+def test_sbin_periodctl_symlink():
+    """Verify /usr/local/sbin/periodctl is a symlink to /app/src/periodctl."""
+    assert SBIN_LINK.is_symlink()
+    assert SBIN_LINK.resolve() == Path(PERIODCTL).resolve()
+
+
+def test_etc_window_installed():
+    """Verify /etc/period-close/window.json is a byte-identical install with mode 0644."""
+    assert ETC_WINDOW.is_file()
+    assert ETC_WINDOW.read_bytes() == WINDOW.read_bytes()
+    assert _mode(ETC_WINDOW) == "0o644"
+
+
+def test_var_lib_period_close_mode_0755():
+    """Verify /var/lib/period-close exists as a directory with mode 0755."""
+    assert VAR_LIB.is_dir()
+    assert _mode(VAR_LIB) == "0o755"
+
+
+def test_systemd_unit_mode_and_targets():
+    """Verify period-close.service is mode 0644 and references correct paths."""
+    assert SYSTEMD_UNIT.is_file()
+    assert _mode(SYSTEMD_UNIT) == "0o644"
+    text = SYSTEMD_UNIT.read_text(encoding="utf-8")
+    assert "/usr/local/sbin/periodctl" in text
+    assert "/etc/period-close/window.json" in text
+    assert "/var/lib/period-close/snapshot.tsv" in text
+    assert "Type=oneshot" in text
+
+
+def test_etc_window_path_produces_same_snapshot(tmp_path):
+    """Verify snapshots match whether --window points at data or etc install."""
+    via_data = tmp_path / "from_data.txt"
+    via_etc = tmp_path / "from_etc.txt"
+    code_data = run_periodctl(via_data, window=WINDOW).returncode
+    code_etc = run_periodctl(via_etc, window=ETC_WINDOW).returncode
+    assert code_data == code_etc == 1
+    assert via_data.read_text(encoding="utf-8") == via_etc.read_text(encoding="utf-8")
+
+
+def test_exit_code_with_unknown_account(tmp_path):
+    """Verify unknown in-window accounts yield exit code 1."""
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot)
+    assert result.returncode == 1, result.stderr
+
+
+def test_snapshot_line_count(tmp_path):
+    """Verify the shipped journals produce exactly five snapshot rows."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    lines = snapshot.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 5
+
+
+def test_snapshot_exact_content(tmp_path):
+    """Verify snapshot lines match expected account balances and sides."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    lines = snapshot.read_text(encoding="utf-8").splitlines()
+    assert lines == EXPECTED_LINES
+
+
+def test_snapshot_schema(tmp_path):
+    """Verify each snapshot line has ACCOUNT_ID;positive_cents;DR|CR format."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    for line in snapshot.read_text(encoding="utf-8").splitlines():
+        account_id, balance, side = line.split(";")
+        assert account_id
+        assert balance.isdigit()
+        assert int(balance) > 0
+        assert side in {"DR", "CR"}
+
+
+def test_case_insensitive_account_resolution(tmp_path):
+    """Verify journal account IDs resolve to canonical chart IDs case-insensitively."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    text = snapshot.read_text(encoding="utf-8")
+    assert "CA-1000;53000;DR" in text
+    assert "EQ-3000;15000;CR" in text
+    assert "ca-1000" not in text
+    assert "eq-3000" not in text
+
+
+def test_out_of_window_entries_excluded(tmp_path):
+    """Verify postings outside the fiscal window do not affect balances."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    text = snapshot.read_text(encoding="utf-8")
+    cash_balance = int(
+        next(line for line in text.splitlines() if line.startswith("CA-1000;")).split(";")[1]
+    )
+    assert cash_balance == 53000
+
+
+def test_sort_order_case_insensitive(tmp_path):
+    """Verify snapshot rows are sorted by account ID case-insensitively."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    account_ids = [line.split(";")[0] for line in snapshot.read_text(encoding="utf-8").splitlines()]
+    assert account_ids == sorted(account_ids, key=str.casefold)
+
+
+def test_window_boundary_dates_inclusive(tmp_path):
+    """Verify start_date and end_date boundary postings are included in the window."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "boundary.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-01-01,CA-1000,100,0,start boundary\n"
+        "2025-01-01,REV-4000,0,100,start boundary\n"
+        "2025-03-31,CA-1000,0,200,end boundary\n"
+        "2025-03-31,EXP-5000,200,0,end boundary\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+    lines = {line.split(";")[0]: line for line in snapshot.read_text(encoding="utf-8").splitlines()}
+    assert lines["CA-1000"] == "CA-1000;100;CR"
+    assert lines["REV-4000"] == "REV-4000;100;CR"
+    assert lines["EXP-5000"] == "EXP-5000;200;DR"
+
+
+def test_deterministic_output(tmp_path):
+    """Verify repeated runs produce identical snapshots and exit codes."""
+    first = tmp_path / "first.tsv"
+    second = tmp_path / "second.tsv"
+    code_one = run_periodctl(first).returncode
+    code_two = run_periodctl(second).returncode
+    assert code_one == code_two == 1
+    assert first.read_text(encoding="utf-8") == second.read_text(encoding="utf-8")
+
+
+def test_data_files_not_modified(data_hashes):
+    """Verify periodctl does not modify files under /app/data/."""
+    snapshot = Path(tempfile.mkdtemp()) / "snapshot.tsv"
+    run_periodctl(snapshot)
+    for path in DATA_DIR.rglob("*"):
+        if path.is_file():
+            rel = str(path.relative_to(DATA_DIR))
+            assert sha256_file(path) == data_hashes[rel]
+
+
+def test_exit_code_all_clean(tmp_path):
+    """Verify a balanced window with no unknown accounts yields exit code 0."""
+    postings = tmp_path / "clean"
+    postings.mkdir()
+    shutil.copytree(JOURNALS, postings, dirs_exist_ok=True)
+    (postings / "legacy.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-03-15,EQ-3000,0,15000,Owner draw\n"
+        "2025-03-15,CA-1000,15000,0,Cash transfer for draw\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+
+
+def test_zero_balance_excluded(tmp_path):
+    """Verify accounts whose net balance is zero are omitted from the snapshot."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "zero.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-01,CA-1000,5000,0,payment\n"
+        "2025-02-01,REV-4000,0,5000,revenue\n"
+        "2025-02-15,CA-1000,0,5000,refund\n"
+        "2025-02-15,REV-4000,5000,0,rev reversal\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0
+    assert snapshot.read_text(encoding="utf-8").strip() == ""
+
+
+def test_exit_code_unbalanced_journals(tmp_path):
+    """Verify unbalanced in-window postings yield exit code 1."""
+    postings = tmp_path / "bad"
+    postings.mkdir()
+    (postings / "skew.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-10,CA-1000,5000,0,orphan debit\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 1, result.stderr
+
+
+def test_exit_code_invalid_arguments(tmp_path):
+    """Verify missing required CLI arguments yield exit code 2."""
+    snapshot = tmp_path / "snapshot.tsv"
+    result = subprocess.run(
+        [PERIODCTL, "--postings", str(JOURNALS), "--snapshot", str(snapshot)],
         capture_output=True,
         text=True,
-        env={**os.environ, "GOPROXY": "off", "GOSUMDB": "off"},
         check=False,
     )
-    if proc.returncode != 0:
-        pytest.fail(f"harness exit {proc.returncode}: {proc.stderr}\n{proc.stdout}")
-    data = json.loads(proc.stdout)
-    if data.get("error"):
-        pytest.fail(data["error"])
-    assert data.get("board_unchanged") is True
-    return data
+    assert result.returncode == 2
 
 
-def analyze(harness_bin: Path, b: dict) -> dict:
-    data = call_harness(harness_bin, {"op": "analyze", "board": b})
-    return data["analysis"]
+def test_exit_code_unreadable_accounts_path(tmp_path):
+    """Verify unreadable but existing accounts path yields exit code 2."""
+    unreadable = tmp_path / "locked.tsv"
+    unreadable.write_text("account_id\tname\ttype\tnormal_balance\n", encoding="utf-8")
+    unreadable.chmod(0o000)
+    snapshot = tmp_path / "snapshot.tsv"
+    try:
+        result = run_periodctl(snapshot, accounts=unreadable)
+        assert result.returncode == 2
+    finally:
+        unreadable.chmod(0o644)
 
 
-def validate(harness_bin: Path, b: dict, candidate: dict) -> int:
-    data = call_harness(
-        harness_bin, {"op": "validate", "board": b, "candidate": candidate}
+def test_whitespace_trimmed_and_blank_lines_ignored(tmp_path):
+    """Verify whitespace is trimmed and blank journal lines are ignored."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "messy.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "\n"
+        "2025-02-03,  ca-1000  , 700 , 0 ,cash receipt\n"
+        "2025-02-03, REV-4000 ,0, 700 , revenue booking\n"
+        "\n",
+        encoding="utf-8",
     )
-    return int(data["validation"])
-
-
-def assert_match(got: dict, expected: dict) -> None:
-    assert got["status"] == expected["status"]
-    assert got["distance"] == expected["distance"]
-    assert got["shortest_count"] == expected["shortest_count"]
-    assert got["canonical_moves"] == expected["canonical_moves"]
-    assert got["trace"] == expected["trace"]
-    assert got["mandatory_landings"] == expected["mandatory_landings"]
-    assert got["decision_points"] == expected["decision_points"]
-    assert got["canonical_moves"] is not None
-    assert got["trace"] is not None
-    assert got["mandatory_landings"] is not None
-    assert got["decision_points"] is not None
-
-
-def test_public_module_and_harness_compile_offline(harness_bin: Path) -> None:
-    """The Go library and verifier harness build offline with the exact package, exported types, constants, fields, and function signatures."""
-    assert harness_bin.is_file()
-    sources = "\n".join(p.read_text() for p in APP.glob("*.go"))
-    for name in (
-        "type Coord struct",
-        "TileFloor",
-        "TilePortal",
-        "MoveUp",
-        "StatusSolved",
-        "StatusNotImplemented",
-        "type TraceStep struct",
-        "type MandatoryLanding struct",
-        "type DecisionPoint struct",
-        "type Analysis struct",
-        "ValidationValid",
-        "func Analyze(",
-        "func Validate(",
-    ):
-        assert name in sources
-    mod = (APP / "go.mod").read_text()
-    assert "module opaline/cartographer" in mod
-    # Compile package offline again
-    env = {**os.environ, "GOPROXY": "off", "GOSUMDB": "off", "GOWORK": "off"}
-    proc = subprocess.run(
-        ["go", "vet", "./..."],
-        cwd=APP,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert proc.returncode == 0, proc.stderr
-
-
-def test_environment_remains_library_only() -> None:
-    """The public module remains a level-analysis library with no renderer, generator, parser, interactive game, server, filesystem access, or executable package."""
-    go_files = list(APP.rglob("*.go"))
-    assert go_files
-    for path in go_files:
-        text = path.read_text()
-        assert "package main" not in text
-        for banned in (
-            "os.Open",
-            "os.ReadFile",
-            "os.WriteFile",
-            "os.Getenv",
-            "http.Listen",
-            "exec.Command",
-            "net.Listen",
-        ):
-            assert banned not in text, f"{path} contains {banned}"
-    assert not (APP / "main.go").exists()
-
-
-def test_straight_floor_corridor_unique_route(harness_bin: Path) -> None:
-    """A straight floor corridor returns its unique shortest route, count, trace, and unanimous landings."""
-    b = board(1, 3, [_s(), _f(), _e()])  # invalid rows=1
-    # use 2x3 with wall row
-    b = board(2, 3, [_s(), _f(), _e(), _w(), _w(), _w()])
-    exp = analyze_board(b)
-    got = analyze(harness_bin, b)
-    assert_match(got, exp)
-    assert got["status"] == STATUS_SOLVED
-    assert got["shortest_count"] == "1"
-    assert len(got["mandatory_landings"]) == got["distance"]
-
-
-def test_walls_force_shortest_detour(harness_bin: Path) -> None:
-    """Walls force the independently verified shortest detour without admitting illegal steps."""
-    # S . E
-    # . # .
-    # . . .
-    b = board(
-        3,
-        3,
-        [
-            _s(),
-            _f(),
-            _e(),
-            _f(),
-            _w(),
-            _f(),
-            _f(),
-            _f(),
-            _f(),
-        ],
-    )
-    exp = analyze_board(b)
-    got = analyze(harness_bin, b)
-    assert_match(got, exp)
-    assert got["distance"] == 2
-    # Direct right from start hits... start(0,0) right (0,1) right (0,2)=exit. Distance 2, wall doesn't block top.
-    # Need wall blocking top path:
-    b = board(
-        3,
-        3,
-        [
-            _s(),
-            _w(),
-            _e(),
-            _f(),
-            _f(),
-            _f(),
-            _f(),
-            _f(),
-            _f(),
-        ],
-    )
-    exp = analyze_board(b)
-    got = analyze(harness_bin, b)
-    assert_match(got, exp)
-    assert got["distance"] > 2
-    assert all(m in ALL_MOVES for m in got["canonical_moves"])
-
-
-def test_lexicographically_smallest_among_equal_routes(harness_bin: Path) -> None:
-    """Equal-length routes choose the lexicographically smallest sequence under Up, Right, Down, Left."""
-    # S .
-    # . E
-    b = board(2, 2, [_s(), _f(), _f(), _e()])
-    exp = analyze_board(b)
-    got = analyze(harness_bin, b)
-    assert_match(got, exp)
-    assert got["canonical_moves"] == [MOVE_RIGHT, MOVE_DOWN]
-    assert got["shortest_count"] == "2"
-
-
-def test_counts_distinct_sequences_sharing_later_state(harness_bin: Path) -> None:
-    """Several shortest move sequences are counted exactly even when they reach the same later state."""
-    b = board(2, 2, [_s(), _f(), _f(), _e()])
-    exp = analyze_board(b)
-    got = analyze(harness_bin, b)
-    assert_match(got, exp)
-    assert int(got["shortest_count"]) == 2
-
-
-def test_key_enables_matching_door(harness_bin: Path) -> None:
-    """Entering a key enables its matching door on subsequent moves."""
-    # S a
-    # D E
-    b = board(2, 2, [_s(), _k("a"), _d("a"), _e()])
-    exp = analyze_board(b)
-    got = analyze(harness_bin, b)
-    assert_match(got, exp)
-    assert got["status"] == STATUS_SOLVED
-    assert "a" in got["trace"][-1]["keys"]
-
-
-def test_key_persists_through_portals_crumbles_and_floors(harness_bin: Path) -> None:
-    """A collected key persists through portals, crumble departures, and revisited ordinary floor."""
-    # S a C .
-    # # # # Pa
-    # . Pb D E
-    b = board(
-        3,
-        4,
-        [
-            _s(),
-            _k("a"),
-            _c(),
-            _f(),
-            _w(),
-            _w(),
-            _w(),
-            _p("a"),
-            _f(),
-            _p("a"),
-            _d("a"),
-            _e(),
-        ],
-    )
-    exp = analyze_board(b)
-    got = analyze(harness_bin, b)
-    assert_match(got, exp)
-    assert got["status"] == STATUS_SOLVED
-    assert "a" in got["trace"][-1]["keys"]
-
-
-def test_unreachable_key_makes_door_unsolvable(harness_bin: Path) -> None:
-    """A door whose key cannot be reached makes the exit unsolvable when it blocks every route."""
-    # S #
-    # D E   key absent / unreachable
-    b = board(2, 2, [_s(), _w(), _d("a"), _e()])
-    exp = analyze_board(b)
-    got = analyze(harness_bin, b)
-    assert_match(got, exp)
-    assert got["status"] == STATUS_UNSOLVABLE
-    assert got["distance"] == -1
-    assert got["shortest_count"] == "0"
-
-
-def test_crumble_collapses_after_departure(harness_bin: Path) -> None:
-    """Leaving a crumble tile collapses it after the successful move and prevents later re-entry."""
-    # S C E
-    # . . .
-    b = board(2, 3, [_s(), _c(), _e(), _f(), _f(), _f()])
-    exp = analyze_board(b)
-    got = analyze(harness_bin, b)
-    assert_match(got, exp)
-    assert got["status"] == STATUS_SOLVED
-    # Canonical prefers up... from (0,0) right onto crumble then right to exit.
-    assert any(step["collapsed"] for step in got["trace"])
-
-
-def test_collapsed_set_distinguishes_states(harness_bin: Path) -> None:
-    """Identical coordinates with different collapsed sets remain distinct states and produce the correct solvability and count."""
-    # S C .
-    # C # E
-    # . . .
-    b = board(
-        3,
-        3,
-        [
-            _s(),
-            _c(),
-            _f(),
-            _c(),
-            _w(),
-            _e(),
-            _f(),
-            _f(),
-            _f(),
-        ],
-    )
-    exp = analyze_board(b)
-    got = analyze(harness_bin, b)
-    assert_match(got, exp)
-    assert got["status"] == STATUS_SOLVED
-
-
-def test_portal_consumes_one_move_to_partner(harness_bin: Path) -> None:
-    """Entering a portal consumes one move and traces the paired endpoint as the landing coordinate."""
-    # S Pa
-    # # #
-    # Pb E
-    b = board(3, 2, [_s(), _p("a"), _w(), _w(), _p("a"), _e()])
-    exp = analyze_board(b)
-    got = analyze(harness_bin, b)
-    assert_match(got, exp)
-    assert got["status"] == STATUS_SOLVED
-    # First move right enters portal, lands on partner
-    assert got["trace"][0]["to"] == {"row": 2, "col": 0}
-
-
-def test_portal_shortcut_competes_with_ordinary_route(harness_bin: Path) -> None:
-    """A portal shortcut competes correctly with an ordinary route under shortest distance and canonical move order."""
-    # S . .
-    # Pa # .
-    # . Pb E
-    b = board(
-        3,
-        3,
-        [
-            _s(),
-            _f(),
-            _f(),
-            _p("a"),
-            _w(),
-            _f(),
-            _f(),
-            _p("a"),
-            _e(),
-        ],
-    )
-    exp = analyze_board(b)
-    got = analyze(harness_bin, b)
-    assert_match(got, exp)
-    assert got["status"] == STATUS_SOLVED
-
-
-def test_combined_key_door_crumble_portal_level(harness_bin: Path) -> None:
-    """A combined key, door, crumble, and portal level matches the independent complete-state route analysis."""
-    b = board(
-        4,
-        4,
-        [
-            _s(),
-            _k("a"),
-            _c(),
-            _p("a"),
-            _f(),
-            _w(),
-            _w(),
-            _f(),
-            _f(),
-            _d("a"),
-            _f(),
-            _p("a"),
-            _f(),
-            _f(),
-            _c(),
-            _e(),
-        ],
-    )
-    exp = analyze_board(b)
-    got = analyze(harness_bin, b)
-    assert_match(got, exp)
-
-
-def test_canonical_trace_reports_complete_sorted_state(harness_bin: Path) -> None:
-    """Every canonical trace step reports exact indices, moves, from/to coordinates, sorted held keys, and sorted cumulative collapses."""
-    b = board(
-        3,
-        4,
-        [
-            _s(),
-            _k("b"),
-            _k("a"),
-            _c(),
-            _f(),
-            _f(),
-            _f(),
-            _c(),
-            _f(),
-            _f(),
-            _f(),
-            _e(),
-        ],
-    )
-    exp = analyze_board(b)
-    got = analyze(harness_bin, b)
-    assert_match(got, exp)
-    for i, step in enumerate(got["trace"], start=1):
-        assert step["index"] == i
-        assert step["keys"] == sorted(step["keys"])
-        cols = step["collapsed"]
-        assert cols == sorted(cols, key=lambda c: (c["row"], c["col"]))
-
-
-def test_mandatory_landings_only_same_step_coords(harness_bin: Path) -> None:
-    """Mandatory landings include only coordinates shared at the same step by every shortest route."""
-    b = board(2, 2, [_s(), _f(), _f(), _e()])
-    exp = analyze_board(b)
-    got = analyze(harness_bin, b)
-    assert_match(got, exp)
-    # Step1 splits between (0,1) and (1,0); step2 both at exit.
-    steps = {l["step"]: l["at"] for l in got["mandatory_landings"]}
-    assert 1 not in steps
-    assert steps[2] == {"row": 1, "col": 1}
-
-
-def test_split_then_rejoin_landings(harness_bin: Path) -> None:
-    """Routes that split and later rejoin produce nonmandatory branch landings followed by mandatory merged landings."""
-    # S . E
-    # . . .
-    b = board(2, 3, [_s(), _f(), _e(), _f(), _f(), _f()])
-    exp = analyze_board(b)
-    got = analyze(harness_bin, b)
-    assert_match(got, exp)
-    mandatory_steps = [l["step"] for l in got["mandatory_landings"]]
-    assert got["distance"] in mandatory_steps  # exit landing unanimous
-
-
-def test_decision_points_list_shortest_winning_alternatives(harness_bin: Path) -> None:
-    """Decision points on the canonical route list every and only shortest-winning next move from that exact complete state."""
-    b = board(2, 2, [_s(), _f(), _f(), _e()])
-    exp = analyze_board(b)
-    got = analyze(harness_bin, b)
-    assert_match(got, exp)
-    assert got["decision_points"]
-    dp0 = got["decision_points"][0]
-    assert dp0["step"] == 1
-    assert dp0["alternatives"] == [MOVE_RIGHT, MOVE_DOWN]
-
-
-def test_distinct_prefixes_contribute_to_count(harness_bin: Path) -> None:
-    """Distinct move prefixes that converge on one state still contribute separately to the arbitrary-precision shortest count."""
-    # Open 3x3 corner to corner: C(4,2)=6
-    b = board(
-        3,
-        3,
-        [
-            _s(),
-            _f(),
-            _f(),
-            _f(),
-            _f(),
-            _f(),
-            _f(),
-            _f(),
-            _e(),
-        ],
-    )
-    exp = analyze_board(b)
-    got = analyze(harness_bin, b)
-    assert_match(got, exp)
-    assert got["shortest_count"] == "6"
-
-
-def test_unsolvable_canonical_shape(harness_bin: Path) -> None:
-    """A valid unsolvable board returns the exact canonical negative-distance and non-nil empty-slice shape."""
-    b = board(2, 2, [_s(), _w(), _w(), _e()])
-    exp = analyze_board(b)
-    got = analyze(harness_bin, b)
-    assert_match(got, exp)
-    assert got["status"] == STATUS_UNSOLVABLE
-    assert got["distance"] == -1
-    assert got["shortest_count"] == "0"
-    assert got["canonical_moves"] == []
-    assert got["trace"] == []
-    assert got["mandatory_landings"] == []
-    assert got["decision_points"] == []
-
-
-def test_validate_accepts_exact_solved_and_unsolvable(harness_bin: Path) -> None:
-    """Validate accepts exact solved and unsolvable analyses."""
-    solved_b = board(2, 2, [_s(), _f(), _f(), _e()])
-    solved = analyze_board(solved_b)
-    assert validate(harness_bin, solved_b, solved) == VAL_VALID
-    hard_b = board(2, 2, [_s(), _w(), _w(), _e()])
-    hard = analyze_board(hard_b)
-    assert validate(harness_bin, hard_b, hard) == VAL_VALID
-
-
-def test_validate_rejects_forged_and_malformed_candidates(harness_bin: Path) -> None:
-    """Validation rejects forged distance or count, noncanonical moves, illegal routes, incomplete trace state, false landings, missing alternatives, nil slices, and wrong ordering."""
-    b = board(2, 2, [_s(), _f(), _f(), _e()])
-    good = analyze_board(b)
-    forged = dict(good)
-    forged["distance"] = good["distance"] + 1
-    assert validate(harness_bin, b, forged) == VAL_INVALID_ANALYSIS
-    forged = dict(good)
-    forged["shortest_count"] = "99"
-    assert validate(harness_bin, b, forged) == VAL_INVALID_ANALYSIS
-    forged = dict(good)
-    forged["canonical_moves"] = [MOVE_DOWN, MOVE_RIGHT]  # noncanonical
-    assert validate(harness_bin, b, forged) == VAL_INVALID_ANALYSIS
-    forged = dict(good)
-    forged["mandatory_landings"] = [{"step": 1, "at": {"row": 0, "col": 1}}]
-    assert validate(harness_bin, b, forged) == VAL_INVALID_ANALYSIS
-    forged = dict(good)
-    forged["decision_points"] = []
-    assert validate(harness_bin, b, forged) == VAL_INVALID_ANALYSIS
-
-
-def test_determinism_ownership_concurrency(harness_bin: Path) -> None:
-    """Repeated and concurrent calls are identical, leave board tiles unchanged, and return independently owned slices."""
-    b = board(2, 2, [_s(), _f(), _f(), _e()])
-    results = []
-
-    def worker() -> None:
-        results.append(analyze(harness_bin, b))
-
-    threads = [threading.Thread(target=worker) for _ in range(4)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    assert len(results) == 4
-    for r in results[1:]:
-        assert_match(r, results[0])
-    # Mutating one result must not affect another
-    results[0]["canonical_moves"].append(MOVE_LEFT)
-    assert results[1]["canonical_moves"][-1] != MOVE_LEFT
-
-
-def test_invalid_dimensions_tiles_kinds_tags(harness_bin: Path) -> None:
-    """Invalid dimensions, tile counts, start/exit multiplicity, kinds, and ordinary-tile tags return canonical invalid input."""
-    cases = [
-        board(1, 2, [_s(), _e()]),
-        board(2, 2, [_s(), _e()]),  # wrong tile count
-        board(2, 2, [_s(), _f(), _f(), _f()]),  # no exit
-        board(2, 2, [_s(), _s(), _e(), _f()]),  # two starts
-        board(2, 2, [_s(), _f(), _f(), tile(99)]),
-        board(2, 2, [_s(), tile(FLOOR, "x"), _f(), _e()]),
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+    assert snapshot.read_text(encoding="utf-8").splitlines() == [
+        "CA-1000;700;DR",
+        "REV-4000;700;CR",
     ]
-    for b in cases:
-        exp = analyze_board(b)
-        got = analyze(harness_bin, b)
-        assert_match(got, exp)
-        assert got["status"] == STATUS_INVALID_INPUT
-        assert validate(harness_bin, b, got) == VAL_VALID
-        assert validate(harness_bin, b, analyze_board(board(2, 2, [_s(), _f(), _f(), _e()]))) == VAL_INVALID_INPUT
 
 
-def test_invalid_keys_doors_portals_crumbles(harness_bin: Path) -> None:
-    """Duplicate or malformed keys, malformed doors, unpaired portals, and excessive crumble tiles return canonical invalid input."""
-    cases = [
-        board(2, 2, [_s(), _k("a"), _k("a"), _e()]),
-        board(2, 2, [_s(), _k("z"), _f(), _e()]),
-        board(2, 2, [_s(), _d("Z"), _f(), _e()]),
-        board(2, 2, [_s(), _p("a"), _f(), _e()]),  # unpaired portal
-        board(
-            2,
-            8,
-            [_s()]
-            + [_c()] * 13
-            + [_e()]
-            + [_f()] * (16 - 15),
-        ),
+def test_invalid_in_window_rows_fail_but_valid_rows_still_snapshot(tmp_path):
+    """Verify invalid rows fail the run but valid known-account rows still appear."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "mixed.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-10,CA-1000,700,0,valid debit\n"
+        "2025-02-10,REV-4000,0,700,valid credit\n"
+        "2025-02-11,CA-1000,10,10,both sides set\n"
+        "2025-02-12,EXP-5000,foo,0,non numeric debit\n"
+        "2025-02-13,CA-1000,-5,0,negative debit\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 1, result.stderr
+    assert snapshot.read_text(encoding="utf-8").splitlines() == [
+        "CA-1000;700;DR",
+        "REV-4000;700;CR",
     ]
-    # fix last board to be 2x8 = 16 tiles with 13 crumbles
-    cases[-1] = board(2, 8, [_s()] + [_c()] * 13 + [_e(), _f()])
-    for b in cases:
-        exp = analyze_board(b)
-        got = analyze(harness_bin, b)
-        assert_match(got, exp)
-        assert got["status"] == STATUS_INVALID_INPUT
 
 
-def test_eight_by_eight_boundary_full_analysis(harness_bin: Path) -> None:
-    """An eight-by-eight boundary board with keys, doors, portals, crumbles, route convergence, and a count above 64 bits matches an independently derived complete analysis."""
-    # 8x8 open lattice from corner to corner has C(14,7)=3432 shortest routes (combinatorial
-    # derivation). Overlay keys/doors/portals/crumbles and a split/rejoin wall notch so every
-    # mechanic appears while the independent complete-state model still derives the count as a
-    # decimal string (bigint-capable; values may exceed 64-bit registers on other boards).
-    cells: list[dict] = [_f() for _ in range(64)]
+def test_both_sides_zero_row_is_invalid(tmp_path):
+    """Verify rows with both debit and credit zero fail the run with exit code 1."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "zero_sides.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-10,CA-1000,700,0,valid debit\n"
+        "2025-02-10,REV-4000,0,700,valid credit\n"
+        "2025-02-11,CA-1000,0,0,both sides zero\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 1, result.stderr
+    assert snapshot.read_text(encoding="utf-8").splitlines() == [
+        "CA-1000;700;DR",
+        "REV-4000;700;CR",
+    ]
 
-    def put(r: int, c: int, t: dict) -> None:
-        cells[r * 8 + c] = t
 
-    put(0, 0, _s())
-    put(7, 7, _e())
-    # Soft features that preserve many converging lattice routes:
-    put(0, 2, _k("a"))
-    put(2, 0, _k("b"))
-    put(7, 5, _d("a"))
-    put(5, 7, _d("b"))
-    put(3, 5, _p("a"))
-    put(5, 3, _p("a"))
-    put(1, 4, _p("b"))
-    put(4, 1, _p("b"))
-    put(2, 2, _c())
-    put(2, 3, _c())
-    put(3, 2, _c())
-    put(5, 5, _c())
-    put(6, 6, _c())
-    put(4, 6, _c())
-    # Notch walls creating local split/rejoin without sealing the lattice:
-    put(3, 3, _w())
-    put(3, 4, _w())
+def test_duplicate_chart_ids_case_insensitive_fail_with_empty_snapshot(tmp_path):
+    """Verify case-insensitive duplicate chart IDs fail with exit 1 and empty snapshot."""
+    chart = tmp_path / "chart.tsv"
+    chart.write_text(
+        "account_id\tname\ttype\tnormal_balance\n"
+        "\n"
+        "CA-1000\tCash\tasset\tdebit\n"
+        "ca-1000\tDuplicate Cash\tasset\tdebit\n"
+        "REV-4000\tRevenue\trevenue\tcredit\n",
+        encoding="utf-8",
+    )
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "simple.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-14,CA-1000,900,0,cash sale\n"
+        "2025-02-14,REV-4000,0,900,revenue\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings, accounts=chart)
+    assert result.returncode == 1, result.stderr
+    assert snapshot.read_text(encoding="utf-8") == ""
 
-    b = board(8, 8, cells)
-    exp = analyze_board(b)
-    assert exp["status"] == STATUS_SOLVED
-    got = analyze(harness_bin, b)
-    assert_match(got, exp)
-    assert re.fullmatch(r"[1-9][0-9]*", got["shortest_count"])
-    count = int(got["shortest_count"])
-    assert count == int(exp["shortest_count"])
-    assert got["shortest_count"] == str(count)
-    # Decimal string protocol must round-trip beyond fixed-width integers.
-    assert str(count + (1 << 64)) != str(count)
-    assert validate(harness_bin, b, got) == VAL_VALID
-    assert got["decision_points"] is not None
-    assert got["mandatory_landings"] is not None
+
+def test_lockfile_concurrency_and_cleanup(tmp_path):
+    """Verify sequential runs succeed and the lockfile is cleaned up after each run."""
+    snapshot1 = tmp_path / "snapshot1.tsv"
+    res1 = run_periodctl(snapshot1)
+    assert res1.returncode == 1
+    assert not LOCKFILE.exists()
+
+    snapshot2 = tmp_path / "snapshot2.tsv"
+    res2 = run_periodctl(snapshot2)
+    assert res2.returncode == 1
+    assert not LOCKFILE.exists()
+
+    res3 = subprocess.run([PERIODCTL], capture_output=True, text=True, check=False)
+    assert res3.returncode == 2
+
+    snapshot3 = tmp_path / "snapshot3.tsv"
+    res4 = run_periodctl(snapshot3)
+    assert res4.returncode == 1
+    assert not LOCKFILE.exists()
+
+
+def test_stale_lockfile_dead_pid_takes_over(tmp_path):
+    """Verify periodctl takes over when lockfile holds a dead PID."""
+    LOCKFILE.write_text("99999999", encoding="utf-8")
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot)
+    assert result.returncode == 1
+    assert not LOCKFILE.exists()
+
+
+def test_active_lockfile_pid_blocks_run(tmp_path):
+    """Verify periodctl exits 1 when lockfile holds an active PID."""
+    LOCKFILE.write_text(str(os.getpid()), encoding="utf-8")
+    snapshot = tmp_path / "snapshot.tsv"
+    try:
+        result = run_periodctl(snapshot)
+        assert result.returncode == 1
+    finally:
+        LOCKFILE.unlink(missing_ok=True)
+
+
+def test_path_with_spaces(tmp_path):
+    """Verify CLI handles postings directories whose paths contain spaces."""
+    postings = tmp_path / "postings folder with spaces"
+    postings.mkdir()
+    (postings / "clean.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-01,CA-1000,100,0,payment\n"
+        "2025-02-01,REV-4000,0,100,revenue\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+    lines = snapshot.read_text(encoding="utf-8").splitlines()
+    assert lines == [
+        "CA-1000;100;DR",
+        "REV-4000;100;CR",
+    ]
+
+
+def test_memo_field_with_commas(tmp_path):
+    """Verify quoted memo fields containing commas are parsed correctly."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "comma_memo.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        '2025-02-01,CA-1000,150,0,"payment, partial"\n'
+        '2025-02-01,REV-4000,0,150,"revenue, deferred"\n',
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+    lines = snapshot.read_text(encoding="utf-8").splitlines()
+    assert lines == [
+        "CA-1000;150;DR",
+        "REV-4000;150;CR",
+    ]

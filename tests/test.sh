@@ -1,25 +1,17 @@
-#!/usr/bin/env bash
-set -u
+#!/bin/bash
 
-export PATH="/usr/local/go/bin:/go/bin:${PATH:-/usr/bin:/bin}"
+if [ "$PWD" = "/" ]; then
+    echo "Error: No working directory set." >&2
+    exit 1
+fi
 
 mkdir -p /logs/verifier
 
-if [ "${PWD:-/}" = "/" ]; then
-  echo "Error: No working directory set. Please set a WORKDIR in the Dockerfile before running this script."
-  echo 0 > /logs/verifier/reward.txt
-  exit 1
-fi
+cd /app
 
-set +e
-export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} -o cache_dir=/tmp/pytest-cache"
-/opt/verifier_venv/bin/python3 -m pytest \
-  --ctrf /logs/verifier/ctrf.json \
-  /tests/test_outputs.py -rA
-rc=$?
-
-if [ "$rc" -eq 0 ]; then
-  echo 1 > /logs/verifier/reward.txt
+pytest -rA /tests/test_outputs.py
+if [ $? -eq 0 ]; then
+    echo 1 > /logs/verifier/reward.txt
 else
-  echo 0 > /logs/verifier/reward.txt
+    echo 0 > /logs/verifier/reward.txt
 fi
