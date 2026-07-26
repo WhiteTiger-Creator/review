@@ -1,8 +1,0 @@
-scalbn 3ff0000000000000 1 b64 rne def ta
-scalbn 3ff0000000000000 -1 b64 rtz def ta
-scalbn 4000000000000000 3 b64 rtp def tb
-scalbn 3ff8000000000000 10 b64 rtn def ta
-scalbn c008000000000000 -2 b64 rna def tb
-scalbn 3ff0000000000000 0 b64 rne wrap ta
-scalbn 4090000000000000 -4 b64 rtz def ta
-scalbn bff0000000000000 5 b64 rtp wrap tb

@@ -3,22 +3,15 @@ version = "2.0"
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
-category = "scientific-computing"
+category = "machine-learning"
 subcategories = []
-difficulty = "medium"
-codebase_size = "small"
+difficulty = "hard"
+codebase_size = "minimal"
 number_of_milestones = 0
-languages = ["rust"]
-tags = [
-  "ieee-754",
-  "floating-point",
-  "exception-flags",
-  "rounding-modes",
-  "numerical-computation",
-  "standards-conformance",
-]
-expert_time_estimate_min = 300
-junior_time_estimate_min = 720
+languages = ["r"]
+tags = ["hawkes-process", "model-training", "policy-evaluation", "reinforcement-learning"]
+expert_time_estimate_min = 360
+junior_time_estimate_min = 1080
 
 [verifier]
 timeout_sec = 1800
@@ -27,8 +20,8 @@ timeout_sec = 1800
 timeout_sec = 1800
 
 [environment]
-build_timeout_sec = 1800
+build_timeout_sec = 1200
 cpus = 2
-memory_mb = 4096
-storage_mb = 8192
+memory_mb = 2048
+storage_mb = 4096
 allow_internet = false

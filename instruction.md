@@ -1,26 +1,18 @@
-IEEE 754-2019 pins down what logb and scalbn deliver and which exceptions they
-raise. Reproduce both exactly.
+Train and evaluate an importance-weighted marked Hawkes policy model in R through
+/app/run.sh. Learn held-out event scores and marked excitation from clustered
+histories, enforce the joint branching, support, and deletion-stability
+constraints, choose the policy under the required tie order, and certify it by
+fully refitting every cluster-deletion surface.
 
-logb answers the radix two exponent of a binary64 operand, itself in binary64.
-scalbn multiplies its binary64 operand by two raised to a signed integer power,
-mapping that exact product in a single rounding into the interchange format the
-request names: binary16, binary32, or binary64. Three attributes ride with every
-scalbn and move the answer: one of five rounding directions, an exception
-handling that is either the default or the exponent adjusted alternate of
-clause 8.2, and tininess detected before or after rounding.
+Read the input bundle from the first argument, defaulting to /app/data, and
+atomically replace the CSV at the second argument, defaulting to
+/app/outputs/results.csv. The complete input, validation, numerical, ordering,
+deletion-certificate, and audit-signature contract is in
+/app/docs/OUTPUT-CONTRACT.md.
 
-Operands are sixteen hexadecimal characters spelling all 64 bits, so signed
-zeros, infinities, quiet and signalling Not a Number operands, and every
-destination's subnormal boundary and exponent extremes are in range. Those
-corners separate a conforming result from a plausible one: there the attributes
-decide what an overflow delivers and which tiny results raise Underflow. Five
-exceptions are tracked in one unchanging order: Invalid, DivByZero, Overflow,
-Underflow, ineXact.
-
-A request reads logb x, or scalbn x n dest mode handling tininess. Blank lines,
-hash comments, and anything that fails to parse are passed over in silence.
-Each accepted request answers with one line: the result's hexadecimal encoding,
-lower case and padded to the width of the format it was delivered in, then the
-five character mask of the exceptions signalled. The crate under /app is fed
-this stream on standard input; docs states the semantics, data holds worked
-samples.
+Derive every result from the supplied bundle. Hidden bundles vary identifiers,
+marked-event geometry, time scales, overlap, feasibility boundaries,
+influential clusters, and physical row and column order. Valid results must be
+deterministic and invariant to irrelevant representations. Malformed bundles
+must be rejected without replacing prior output. Internet access is
+unavailable; only base R is guaranteed.
