@@ -1,4 +1,0 @@
-# sealed: a withdrawn release, on purpose
-project dunemoor
-require dunite =0.4.9
-allow-yanked true

@@ -1,27 +1,26 @@
-/app holds slate, the read-only front end for the package registry a build team keeps offline as JSON files. It can already print a package with its releases and edges, list versions newest first, echo back a parsed project manifest, and total up the registry. Planning a build is the one thing it cannot do: nothing here walks the dependency edges and turns a manifest into a lockfile of pinned versions, so every project is assembled by hand and no artifact says what went into it.
+IEEE 754-2019 pins down what logb and scalbn deliver and which exceptions they
+raise. Reproduce both exactly.
 
-Your job is to give slate a resolve subcommand that produces those artifacts.
+logb answers the radix two exponent of a binary64 operand, itself in binary64.
+scalbn multiplies its binary64 operand by two raised to a signed integer power,
+mapping that exact product in a single rounding into the interchange format the
+request names: binary16, binary32, or binary64. Three attributes ride with every
+scalbn and move the answer: one of five rounding directions, an exception
+handling that is either the default or the exponent adjusted alternate of
+clause 8.2, and tininess detected before or after rounding.
 
-Running slate resolve with a project name picks one version per package for that project — honouring the ranges every selected release declares, the features the manifest switches on, the pins it forces and its policy on withdrawn releases — then publishes the lockfile /app/out/<project>.lock.json together with the search walk in /app/out/staging/<project>.trail.json. Where no assignment exists it writes /app/out/<project>.conflict.json and exits 3 instead.
+Operands are sixteen hexadecimal characters spelling all 64 bits, so signed
+zeros, infinities, quiet and signalling Not a Number operands, and every
+destination's subnormal boundary and exponent extremes are in range. Those
+corners separate a conforming result from a plausible one: there the attributes
+decide what an overflow delivers and which tiny results raise Underflow. Five
+exceptions are tracked in one unchanging order: Invalid, DivByZero, Overflow,
+Underflow, ineXact.
 
-Running slate resolve --all does the same for every project in /app/manifests and finishes by writing the ladder over the whole library, /app/out/index.json.
-
-Four contracts decide what counts as correct:
-
-/app/docs/resolution-algorithm.md is the one that matters most — which package the search picks next, in which order candidates are tried, how a retreat is counted, and which artifacts each outcome leaves behind.
-
-/app/docs/constraint-grammar.md covers version ordering, the five range forms, and the rule that keeps release candidates out of sight.
-
-/app/docs/registry-format.md covers the package files and the manifest directives, and what makes either one unusable.
-
-/app/docs/digest-spec.md gives the tab-separated payload behind every fingerprint field, byte for byte.
-
-Flags, exit codes and the shape of each artifact are in /app/docs/slate-cli.md and /app/docs/lock-schema.json.
-
-Resolution has to be reproducible: the same inputs give the same bytes on every run. Two assignments can both honour every range without both being the answer, and an artifact only counts when the fingerprint it carries agrees with what that same artifact publishes.
-
-Code sits in /app/cmd and /app/internal. The module compiles with make all from /app, and packages you add under /app/internal need no Makefile edit. Leave a working /app/bin/slate behind.
-
-The browsing commands — show, versions, manifest, audit, version — must answer exactly as they answer now, the directory overrides must keep working everywhere, and nothing under /app/registry or /app/manifests may change.
-
-Nothing in this image reaches the network. Finish by running slate resolve --all, so /app/out carries a lock or a conflict for every project plus the ladder.
+A request reads logb x, or scalbn x n dest mode handling tininess. Blank lines,
+hash comments, and anything that fails to parse are passed over in silence.
+Each accepted request answers with one line: the result's hexadecimal encoding,
+lower case and padded to the width of the format it was delivered in, then the
+five character mask of the exceptions signalled. The crate under /app is fed
+this stream on standard input; docs states the semantics, data holds worked
+samples.

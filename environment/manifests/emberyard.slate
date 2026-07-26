@@ -1,4 +1,0 @@
-# Legacy line held next to the current quartz.
-project emberyard
-require schist ^4.7.0
-require quartz ^2.2.0

@@ -1,4 +1,0 @@
-# Reproducing an old report against a withdrawn release.
-project driftworks
-require gneiss =1.2.0
-allow-yanked true
