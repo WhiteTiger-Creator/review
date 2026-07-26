@@ -1,1100 +1,340 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
-cd /app
+# Deterministic oracle: bring the services up, write the PHP provisioning
+# tool the task asks for, and run it. Everything the tool emits is computed
+# from the live API and the raw registry bytes in Redis; nothing is
+# hardcoded.
 
-cat > /app/gridknit/main.go <<'EOF'
-package main
+/app/scripts/start-services.sh
 
-import (
-	"fmt"
-	"os"
-	"path/filepath"
+mkdir -p /app/bin /app/out
 
-	"meshgrid.fix/internal/mesh"
-)
+cat > /app/bin/provision-link-rates <<'PHP'
+#!/usr/bin/env php
+<?php
 
-func main() {
-	root := "/app/meshgrid"
-	if v := os.Getenv("GRIDKNIT_DATA_ROOT"); v != "" {
-		root = v
-	}
-	outPath := "/app/build/gradle_stabilization_report.json"
-	if v := os.Getenv("GRIDKNIT_REPORT_PATH"); v != "" {
-		outPath = v
-	}
-	report, err := mesh.Analyze(root)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "analyze: %v\n", err)
-		os.Exit(1)
-	}
-	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "mkdir: %v\n", err)
-		os.Exit(1)
-	}
-	if err := mesh.WriteReport(outPath, report); err != nil {
-		fmt.Fprintf(os.Stderr, "write: %v\n", err)
-		os.Exit(1)
-	}
-}
-EOF
+declare(strict_types=1);
 
-cat > /app/internal/catalog/resolve.go <<'EOF'
-package catalog
+const API_BASE = 'http://127.0.0.1:8080';
+const UNIT = 1500;
+const BURST_DIVISOR = 5500;
+const BURST_MIN = 24;
+const RATE_DIVISOR = 40000;
 
-import (
-	"bufio"
-	"os"
-	"strings"
-)
+const TIER_BASE = ['background' => 2000, 'general' => 5000, 'express' => 12000];
+const TIER_CEIL = ['background' => 3500, 'general' => 8000, 'express' => 18000];
 
-type Catalog struct {
-	Versions  map[string]string
-	Libraries map[string]Library
-	Bundles   map[string][]string
-	Plugins   map[string]PluginAlias
+function apiFetch(string $path): array
+{
+    $raw = file_get_contents(API_BASE . $path);
+    if ($raw === false) {
+        fwrite(STDERR, "api request failed: {$path}\n");
+        exit(1);
+    }
+
+    return json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
 }
 
-type Library struct {
-	Module     string
-	Version    string
-	VersionRef string
-	Inline     bool
+/** Minimal binary-safe RESP client. */
+function redisOpen()
+{
+    $sock = fsockopen('127.0.0.1', 6379, $errno, $errstr, 5.0);
+    if ($sock === false) {
+        fwrite(STDERR, "redis connect failed: {$errstr}\n");
+        exit(1);
+    }
+
+    return $sock;
 }
 
-type PluginAlias struct {
-	ID         string
-	VersionRef string
+function redisCommand($sock, string ...$args)
+{
+    $wire = '*' . count($args) . "\r\n";
+    foreach ($args as $a) {
+        $wire .= '$' . strlen($a) . "\r\n" . $a . "\r\n";
+    }
+    fwrite($sock, $wire);
+
+    return readReply($sock);
 }
 
-func Load(path string) (*Catalog, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	c := &Catalog{
-		Versions:  map[string]string{},
-		Libraries: map[string]Library{},
-		Bundles:   map[string][]string{},
-		Plugins:   map[string]PluginAlias{},
-	}
-	section := ""
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			section = strings.Trim(line, "[]")
-			continue
-		}
-		switch section {
-		case "versions":
-			k, v, ok := splitKV(line)
-			if ok {
-				c.Versions[k] = strings.Trim(v, `"`)
-			}
-		case "libraries":
-			name, rest, ok := splitKV(line)
-			if !ok {
-				continue
-			}
-			c.Libraries[name] = parseLibrary(rest)
-		case "bundles":
-			name, rest, ok := splitKV(line)
-			if !ok {
-				continue
-			}
-			rest = strings.TrimSpace(rest)
-			rest = strings.TrimPrefix(rest, "[")
-			rest = strings.TrimSuffix(rest, "]")
-			parts := strings.Split(rest, ",")
-			out := make([]string, 0, len(parts))
-			for _, p := range parts {
-				p = strings.TrimSpace(p)
-				p = strings.Trim(p, `"`)
-				if p != "" {
-					out = append(out, p)
-				}
-			}
-			c.Bundles[name] = out
-		case "plugins":
-			name, rest, ok := splitKV(line)
-			if !ok {
-				continue
-			}
-			c.Plugins[name] = parsePluginAlias(rest)
-		}
-	}
-	return c, sc.Err()
+function readReply($sock)
+{
+    $line = rtrim(fgets($sock), "\r\n");
+    $kind = $line[0];
+    $rest = substr($line, 1);
+    if ($kind === '+') {
+        return $rest;
+    }
+    if ($kind === ':') {
+        return (int) $rest;
+    }
+    if ($kind === '-') {
+        fwrite(STDERR, "redis error: {$rest}\n");
+        exit(1);
+    }
+    if ($kind === '$') {
+        $len = (int) $rest;
+        if ($len < 0) {
+            return null;
+        }
+        $buf = '';
+        while (strlen($buf) < $len + 2) {
+            $buf .= fread($sock, $len + 2 - strlen($buf));
+        }
+
+        return substr($buf, 0, $len);
+    }
+    if ($kind === '*') {
+        $n = (int) $rest;
+        $items = [];
+        for ($i = 0; $i < $n; $i++) {
+            $items[] = readReply($sock);
+        }
+
+        return $items;
+    }
+    fwrite(STDERR, "unexpected redis reply\n");
+    exit(1);
 }
 
-func splitKV(line string) (string, string, bool) {
-	idx := strings.Index(line, "=")
-	if idx < 0 {
-		return "", "", false
-	}
-	return strings.TrimSpace(line[:idx]), strings.TrimSpace(line[idx+1:]), true
+/** Parse one LKR1 ledger blob into [detached, dayValues[]]. */
+function parseLedger(string $blob): array
+{
+    if (substr($blob, 0, 4) !== 'LKR1' || ord($blob[4]) !== 1) {
+        fwrite(STDERR, "bad ledger header\n");
+        exit(1);
+    }
+    $flags = ord($blob[5]);
+    $count = ord($blob[6]) | (ord($blob[7]) << 8);
+    $payload = substr($blob, 8, strlen($blob) - 10);
+    $sum = 0;
+    for ($i = 0, $n = strlen($payload); $i < $n; $i++) {
+        $sum = ($sum + ord($payload[$i])) % 65521;
+    }
+    if (((ord($blob[-2]) << 8) | ord($blob[-1])) !== $sum) {
+        fwrite(STDERR, "ledger trailer mismatch\n");
+        exit(1);
+    }
+    $values = [];
+    $v = 0;
+    for ($i = 0, $n = strlen($payload); $i < $n; $i++) {
+        $b = ord($payload[$i]);
+        $v = ($v << 7) | ($b & 0x7F);
+        if (($b & 0x80) === 0) {
+            $values[] = $v;
+            $v = 0;
+        }
+    }
+    if (count($values) !== $count) {
+        fwrite(STDERR, "ledger varint count mismatch\n");
+        exit(1);
+    }
+
+    return [($flags & 1) === 1, $values];
 }
 
-func parseLibrary(rest string) Library {
-	lib := Library{}
-	rest = strings.TrimSpace(rest)
-	rest = strings.TrimPrefix(rest, "{")
-	rest = strings.TrimSuffix(rest, "}")
-	for _, part := range strings.Split(rest, ",") {
-		part = strings.TrimSpace(part)
-		k, v, ok := splitKV(part)
-		if !ok {
-			continue
-		}
-		v = strings.Trim(v, `"`)
-		switch k {
-		case "module":
-			lib.Module = v
-		case "version.ref":
-			lib.VersionRef = v
-		case "version":
-			lib.Version = v
-			lib.Inline = true
-		}
-	}
-	return lib
+function applyOps(int $v, array $ops): int
+{
+    foreach ($ops as $op) {
+        if ($op['op'] === 'scale') {
+            $v = intdiv($v * $op['num'], $op['den']);
+        } elseif ($op['op'] === 'add') {
+            $v = $v + $op['k'];
+        } elseif ($op['op'] === 'floor') {
+            $v = max($v, $op['k']);
+        } else {
+            fwrite(STDERR, "unknown op\n");
+            exit(1);
+        }
+    }
+
+    return $v;
 }
 
-func parsePluginAlias(rest string) PluginAlias {
-	p := PluginAlias{}
-	rest = strings.TrimSpace(rest)
-	rest = strings.TrimPrefix(rest, "{")
-	rest = strings.TrimSuffix(rest, "}")
-	for _, part := range strings.Split(rest, ",") {
-		part = strings.TrimSpace(part)
-		k, v, ok := splitKV(part)
-		if !ok {
-			continue
-		}
-		v = strings.Trim(v, `"`)
-		switch k {
-		case "id":
-			p.ID = v
-		case "version.ref":
-			p.VersionRef = v
-		}
-	}
-	return p
+/** Carried-remainder smoothing of the adjusted series. */
+function smoothVolumes(array $adjusted): array
+{
+    $s = [$adjusted[0]];
+    $carry = 0;
+    $n = count($adjusted);
+    for ($d = 1; $d < $n; $d++) {
+        $t = 5 * $s[$d - 1] + $adjusted[$d] + $carry;
+        $s[] = intdiv($t, 6);
+        $carry = $t % 6;
+    }
+
+    return $s;
 }
 
-func ResolveLibraryVersion(c *Catalog, lib Library) (string, string, bool) {
-	if lib.VersionRef != "" {
-		if v, ok := c.Versions[lib.VersionRef]; ok {
-			return v, lib.VersionRef, true
-		}
-		return "", lib.VersionRef, false
-	}
-	if lib.Inline {
-		return lib.Version, "", true
-	}
-	return "", "", false
+/**
+ * Little-endian bytes of a GMP value. Native PHP 64-bit multiplication
+ * promotes to float and corrupts the fold, so every seal quantity stays in
+ * GMP.
+ */
+function gmpLe(\GMP $v, int $width): string
+{
+    $out = '';
+    for ($i = 0; $i < $width; $i++) {
+        $out .= chr(gmp_intval(gmp_and(gmp_div_q($v, gmp_pow(2, 8 * $i)), gmp_init(255))));
+    }
+
+    return $out;
 }
 
-func AliasConflicts(c *Catalog) []string {
-	out := []string{}
-	for alias := range c.Bundles {
-		if _, ok := c.Libraries[alias]; ok {
-			out = append(out, alias)
-		}
-	}
-	sortStrings(out)
-	return out
+function main(): void
+{
+    $mod = gmp_pow(2, 64);
+    $prime = gmp_init('1099511628211');
+
+    $links = apiFetch('/links')['links'];
+    $meta = [];
+    foreach ($links as $link) {
+        $meta[$link['iface_id']] = $link;
+    }
+
+    $sock = redisOpen();
+    $registryOrder = redisCommand($sock, 'LRANGE', 'link:index', '0', '-1');
+
+    $detached = [];
+    $smoothed = [];
+    $weights = [];
+    $rowCount = 0;
+    foreach ($registryOrder as $id) {
+        $blob = redisCommand($sock, 'GET', 'link:ledger:' . $id);
+        [$isDetached, $raws] = parseLedger($blob);
+        $ops = apiFetch('/shaping/' . $id)['ops'];
+        $adjusted = array_map(fn (int $v): int => applyOps($v, $ops), $raws);
+        $smoothed[$id] = smoothVolumes($adjusted);
+        $weights[$id] = array_map(
+            fn (int $s): int => intdiv($s + UNIT - 1, UNIT),
+            $smoothed[$id]
+        );
+        $detached[$id] = $isDetached;
+        $rowCount += count($raws);
+    }
+    fclose($sock);
+
+    // Seal: fold every ledger row in registry order. The accumulator byte
+    // folded at the end of each row is its value as the row's fold began.
+    $acc = gmp_init('14695981039346656037');
+    $sub = gmp_init(0);
+    foreach ($registryOrder as $pos => $id) {
+        foreach ($smoothed[$id] as $day => $s) {
+            $w = $weights[$id][$day];
+            $sub = gmp_mod(gmp_add($sub, gmp_add(gmp_init($s), gmp_init($w))), $mod);
+            $snap = $acc;
+            $body = gmpLe(gmp_init($pos), 2)
+                . gmpLe(gmp_init($day), 2)
+                . gmpLe(gmp_init($s), 8)
+                . gmpLe($sub, 8)
+                . gmpLe($snap, 8);
+            for ($i = 0, $n = strlen($body); $i < $n; $i++) {
+                $acc = gmp_mod(gmp_mul(gmp_xor($acc, gmp_init(ord($body[$i]))), $prime), $mod);
+            }
+        }
+    }
+    $sealHex = str_pad(gmp_strval($acc, 16), 16, '0', STR_PAD_LEFT);
+
+    // Provision the active interfaces in API list order.
+    $active = [];
+    foreach ($links as $link) {
+        $id = $link['iface_id'];
+        if ($detached[$id]) {
+            continue;
+        }
+        $peak = max($smoothed[$id]);
+        $units = array_sum($weights[$id]);
+        $tier = $link['tier'];
+        $rate = min(TIER_BASE[$tier] + intdiv($units, RATE_DIVISOR), TIER_CEIL[$tier]);
+        $burst = max(intdiv($peak + BURST_DIVISOR - 1, BURST_DIVISOR), BURST_MIN);
+        $uid = (int) $link['uid'];
+        $stateDir = '/var/lib/link-rate/' . $id;
+
+        if (trim((string) shell_exec('getent group ' . escapeshellarg($id) . ' || true')) === '') {
+            run('groupadd -g ' . $uid . ' ' . escapeshellarg($id));
+        }
+        if (trim((string) shell_exec('getent passwd ' . escapeshellarg($id) . ' || true')) === '') {
+            run(
+                'useradd -M -u ' . $uid . ' -g ' . $uid
+                . ' -d ' . escapeshellarg($stateDir)
+                . ' -s /usr/sbin/nologin ' . escapeshellarg($id)
+            );
+        }
+        run('mkdir -p ' . escapeshellarg($stateDir));
+        run('chown ' . $uid . ':' . $uid . ' ' . escapeshellarg($stateDir));
+        run('chmod 0750 ' . escapeshellarg($stateDir));
+
+        $dropin = "[Match]\n"
+            . "Name={$id}\n"
+            . "\n"
+            . "[TokenBucketFilter]\n"
+            . "Parent=root\n"
+            . "Rate={$rate}K\n"
+            . "BurstBytes={$burst}K\n"
+            . "LatencySec=0.05\n";
+        writeIfChanged('/etc/systemd/network/40-' . $id . '.network', $dropin);
+
+        $env = "IFACE={$id}\n"
+            . "LINK_UID={$uid}\n"
+            . "TIER={$tier}\n"
+            . "PEAK={$peak}\n"
+            . "TOTAL_UNITS={$units}\n"
+            . "RATE_KBIT={$rate}\n"
+            . "BURST_KIB={$burst}\n";
+        writeIfChanged('/etc/link-rate.d/' . $id . '.env', $env);
+
+        $active[$id] = [
+            'iface_id' => $id,
+            'uid' => $uid,
+            'tier' => $tier,
+            'peak' => $peak,
+            'total_units' => $units,
+            'rate_kbit' => $rate,
+            'burst_kib' => $burst,
+        ];
+    }
+
+    ksort($active);
+    $detachedIds = array_keys(array_filter($detached));
+    sort($detachedIds);
+
+    $manifest = [
+        'interfaces' => array_values($active),
+        'detached' => $detachedIds,
+        'row_count' => $rowCount,
+        'seal' => $sealHex,
+    ];
+    writeIfChanged(
+        '/app/out/link-manifest.json',
+        json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n"
+    );
+    writeIfChanged('/app/out/seal.hex', $sealHex . "\n");
+
+    echo "provisioned " . count($active) . " interfaces, seal {$sealHex}\n";
 }
 
-func UnresolvedRefs(c *Catalog) []string {
-	seen := map[string]struct{}{}
-	out := []string{}
-	for _, lib := range c.Libraries {
-		if lib.VersionRef == "" {
-			continue
-		}
-		if _, ok := c.Versions[lib.VersionRef]; ok {
-			continue
-		}
-		if _, ok := seen[lib.VersionRef]; ok {
-			continue
-		}
-		seen[lib.VersionRef] = struct{}{}
-		out = append(out, lib.VersionRef)
-	}
-	sortStrings(out)
-	return out
+function run(string $cmd): void
+{
+    exec($cmd . ' 2>&1', $out, $rc);
+    if ($rc !== 0) {
+        fwrite(STDERR, "command failed ({$cmd}): " . implode("\n", $out) . "\n");
+        exit(1);
+    }
 }
 
-func InlineDrifts(c *Catalog) []string {
-	out := []string{}
-	for alias, lib := range c.Libraries {
-		if !lib.Inline {
-			continue
-		}
-		if v, ok := c.Versions[alias]; ok && v != lib.Version {
-			out = append(out, alias)
-		}
-	}
-	sortStrings(out)
-	return out
+function writeIfChanged(string $path, string $content): void
+{
+    if (is_file($path) && file_get_contents($path) === $content) {
+        return;
+    }
+    file_put_contents($path, $content);
 }
 
-func sortStrings(in []string) {
-	for i := 0; i < len(in); i++ {
-		for j := i + 1; j < len(in); j++ {
-			if in[j] < in[i] {
-				in[i], in[j] = in[j], in[i]
-			}
-		}
-	}
-}
-EOF
+main();
+PHP
 
-cat > /app/internal/plugins/compat.go <<'EOF'
-package plugins
+chmod +x /app/bin/provision-link-rates
 
-import (
-	"bufio"
-	"os"
-	"strconv"
-	"strings"
-)
-
-type Request struct {
-	ID       string
-	Version  string
-	MinMajor int
-	MinMinor int
-	HasMin   bool
-}
-
-var defaults = map[string][2]int{
-	"com.meshgrid.wireloom":      {8, 7},
-	"com.meshgrid.depknit":       {8, 8},
-	"com.meshgrid.artifactseal":  {8, 10},
-	"com.meshgrid.pluginbridge":  {8, 5},
-	"com.meshgrid.releasemesh":   {8, 9},
-	"com.meshgrid.cataloghub":    {8, 10},
-	"org.gradle.publish-offline": {8, 6},
-}
-
-func LoadRequests(path string) ([]Request, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	var reqs []Request
-	var cur *Request
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if line == "[[plugins]]" {
-			if cur != nil {
-				reqs = append(reqs, *cur)
-			}
-			cur = &Request{}
-			continue
-		}
-		if cur == nil {
-			continue
-		}
-		k, v, ok := splitKV(line)
-		if !ok {
-			continue
-		}
-		v = strings.Trim(v, `"`)
-		switch k {
-		case "id":
-			cur.ID = v
-		case "version":
-			cur.Version = v
-		case "min_gradle":
-			maj, min, ok := parseMajMin(v)
-			if ok {
-				cur.MinMajor = maj
-				cur.MinMinor = min
-				cur.HasMin = true
-			}
-		}
-	}
-	if cur != nil {
-		reqs = append(reqs, *cur)
-	}
-	return reqs, sc.Err()
-}
-
-func splitKV(line string) (string, string, bool) {
-	idx := strings.Index(line, "=")
-	if idx < 0 {
-		return "", "", false
-	}
-	return strings.TrimSpace(line[:idx]), strings.TrimSpace(line[idx+1:]), true
-}
-
-func parseMajMin(s string) (int, int, bool) {
-	parts := strings.Split(s, ".")
-	if len(parts) != 2 {
-		return 0, 0, false
-	}
-	a, err1 := strconv.Atoi(parts[0])
-	b, err2 := strconv.Atoi(parts[1])
-	if err1 != nil || err2 != nil {
-		return 0, 0, false
-	}
-	return a, b, true
-}
-
-func Incompatible(req Request, gradleMajor, gradleMinor int) bool {
-	minMaj, minMin := 0, 0
-	if req.HasMin {
-		minMaj, minMin = req.MinMajor, req.MinMinor
-	} else if d, ok := defaults[req.ID]; ok {
-		minMaj, minMin = d[0], d[1]
-	} else {
-		return false
-	}
-	if gradleMajor < minMaj {
-		return true
-	}
-	if gradleMajor > minMaj {
-		return false
-	}
-	return gradleMinor < minMin
-}
-EOF
-
-cat > /app/internal/locks/decode.go <<'EOF'
-package locks
-
-import (
-	"bufio"
-	"crypto/sha256"
-	"encoding/hex"
-	"fmt"
-	"os"
-	"strconv"
-	"strings"
-)
-
-type Stats struct {
-	FormatVersion   int
-	RecordsTotal    int
-	RecordsValid    int
-	RecordsRejected int
-	DupCoordRejects int
-	PayloadBytes    int
-}
-
-type Record struct {
-	Coordinate string
-	Version    string
-	Checksum   string
-	Optional   bool
-}
-
-func Decode(path string) ([]Record, Stats, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, Stats{}, err
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	stats := Stats{}
-	if !sc.Scan() || sc.Text() != "LOCK1" {
-		return nil, stats, fmt.Errorf("bad magic")
-	}
-	if !sc.Scan() {
-		return nil, stats, fmt.Errorf("missing version")
-	}
-	ver, err := strconv.Atoi(strings.TrimSpace(sc.Text()))
-	if err != nil {
-		return nil, stats, err
-	}
-	stats.FormatVersion = ver
-	if ver != 1 {
-		return nil, stats, fmt.Errorf("unsupported format")
-	}
-	if !sc.Scan() {
-		return nil, stats, fmt.Errorf("missing count")
-	}
-	_, _ = strconv.Atoi(strings.TrimSpace(sc.Text()))
-
-	seen := map[string]struct{}{}
-	out := []Record{}
-	for sc.Scan() {
-		line := sc.Text()
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		stats.RecordsTotal++
-		parts := strings.Split(line, "\t")
-		if len(parts) != 4 {
-			stats.RecordsRejected++
-			continue
-		}
-		coord, version, checksum, opt := parts[0], parts[1], parts[2], parts[3]
-		reason := ""
-		if opt != "0" && opt != "1" {
-			reason = "BAD_OPTIONAL"
-		} else if checksum != sha256Hex(coord, version) {
-			reason = "BAD_CHECKSUM"
-		} else if _, ok := seen[coord]; ok {
-			reason = "DUP_COORD"
-		}
-		seen[coord] = struct{}{}
-		if reason != "" {
-			stats.RecordsRejected++
-			if reason == "DUP_COORD" {
-				stats.DupCoordRejects++
-			}
-			continue
-		}
-		rec := Record{Coordinate: coord, Version: version, Checksum: checksum, Optional: opt == "1"}
-		out = append(out, rec)
-		stats.RecordsValid++
-		stats.PayloadBytes += len(line)
-	}
-	return out, stats, sc.Err()
-}
-
-func sha256Hex(coord, version string) string {
-	sum := sha256.Sum256([]byte(coord + "|" + version))
-	return hex.EncodeToString(sum[:])
-}
-EOF
-
-cat > /app/internal/publish/offline.go <<'EOF'
-package publish
-
-import (
-	"bufio"
-	"os"
-	"strings"
-)
-
-type Settings struct {
-	RepositoriesMode string
-	VaultPath        string
-	SignedPublish    bool
-}
-
-func Load(path string) (Settings, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return Settings{}, err
-	}
-	defer f.Close()
-	s := Settings{}
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		idx := strings.Index(line, "=")
-		if idx < 0 {
-			continue
-		}
-		k := strings.TrimSpace(line[:idx])
-		v := strings.Trim(strings.TrimSpace(line[idx+1:]), `"`)
-		switch k {
-		case "repositories_mode":
-			s.RepositoriesMode = v
-		case "vault_path":
-			s.VaultPath = v
-		case "signed_publish":
-			s.SignedPublish = v == "true"
-		}
-	}
-	return s, sc.Err()
-}
-
-type Issue struct {
-	Kind     string
-	EntityID string
-	Detail   string
-}
-
-func Check(s Settings, requireOffline, failOnProject bool) []Issue {
-	out := []Issue{}
-	if failOnProject && s.RepositoriesMode != "FAIL_ON_PROJECT_REPOS" {
-		out = append(out, Issue{Kind: "PROJECT_REPO_FORBIDDEN", EntityID: "repositories_mode", Detail: s.RepositoriesMode})
-	}
-	if requireOffline {
-		if s.VaultPath != "/app/meshgrid/offline-vault" {
-			out = append(out, Issue{Kind: "OFFLINE_REPO_MISCONFIG", EntityID: "vault_path", Detail: s.VaultPath})
-		}
-		if !s.SignedPublish {
-			out = append(out, Issue{Kind: "PUBLISH_UNSIGNED", EntityID: "signed_publish", Detail: ""})
-		}
-	}
-	return out
-}
-EOF
-
-cat > /app/internal/mesh/analyze.go <<'EOF'
-package mesh
-
-import (
-	"bytes"
-	"encoding/json"
-	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
-	"strconv"
-
-	"meshgrid.fix/internal/catalog"
-	"meshgrid.fix/internal/locks"
-	"meshgrid.fix/internal/plugins"
-	"meshgrid.fix/internal/publish"
-)
-
-type Manifest struct {
-	GradleMajor         int                    `json:"gradle_major"`
-	GradleMinor         int                    `json:"gradle_minor"`
-	Modules             []string               `json:"modules"`
-	RequireOfflineVault bool                   `json:"require_offline_vault"`
-	FailOnProjectRepos   bool                   `json:"fail_on_project_repos"`
-	MaxDirectDeps       int                    `json:"max_direct_deps"`
-	StrictBOM           bool                   `json:"strict_bom"`
-	PolicyOverrides     map[string]interface{} `json:"policy_overrides"`
-}
-
-type ModuleFile struct {
-	ModuleID         string            `json:"module_id"`
-	Group            string            `json:"group"`
-	Artifact         string            `json:"artifact"`
-	Version          string            `json:"version"`
-	BOMConsumer      bool              `json:"bom_consumer"`
-	Dependencies     []string          `json:"dependencies"`
-	LibraryAliases   []string          `json:"library_aliases"`
-	VersionOverrides map[string]string `json:"version_overrides"`
-}
-
-type CaptureOut struct {
-	FormatVersion   int `json:"format_version"`
-	RecordsTotal    int `json:"records_total"`
-	RecordsValid    int `json:"records_valid"`
-	RecordsRejected int `json:"records_rejected"`
-	DupCoordRejects int `json:"dup_coord_rejects"`
-	PayloadBytes    int `json:"payload_bytes"`
-}
-
-type ModuleOut struct {
-	ModuleID    string     `json:"module_id"`
-	Coordinate  string     `json:"coordinate"`
-	BOMConsumer bool       `json:"bom_consumer"`
-	DirectDeps  []string   `json:"direct_deps"`
-	Capture     CaptureOut `json:"capture"`
-	Status      string     `json:"status"`
-}
-
-type Finding struct {
-	FindingID string `json:"finding_id"`
-	ModuleID  string `json:"module_id"`
-	EntityID  string `json:"entity_id"`
-	Kind      string `json:"kind"`
-	EventSeq  int    `json:"event_seq"`
-	Detail    string `json:"detail"`
-}
-
-type WorkspaceOut struct {
-	GradleMajor         int  `json:"gradle_major"`
-	GradleMinor         int  `json:"gradle_minor"`
-	ModuleCount         int  `json:"module_count"`
-	RequireOfflineVault bool `json:"require_offline_vault"`
-	FailOnProjectRepos   bool `json:"fail_on_project_repos"`
-	MaxDirectDeps       int  `json:"max_direct_deps"`
-	StrictBOM           bool `json:"strict_bom"`
-}
-
-type Report struct {
-	Workspace               WorkspaceOut `json:"workspace"`
-	Modules                 []ModuleOut  `json:"modules"`
-	Findings                []Finding    `json:"findings"`
-	DuplicateModulesSkipped int          `json:"duplicate_modules_skipped"`
-	Status                  string       `json:"status"`
-}
-
-func Analyze(root string) (*Report, error) {
-	man, err := loadManifest(filepath.Join(root, "workspace.manifest.json"))
-	if err != nil {
-		return nil, err
-	}
-	requireOffline, failOnProject, maxDeps, strictBOM := resolvePolicy(man)
-
-	cat, err := catalog.Load(filepath.Join(root, "catalog", "libs.versions.toml"))
-	if err != nil {
-		return nil, err
-	}
-	reqs, err := plugins.LoadRequests(filepath.Join(root, "plugins", "plugin-requests.toml"))
-	if err != nil {
-		return nil, err
-	}
-	pub, err := publish.Load(filepath.Join(root, "publish", "offline-vault.toml"))
-	if err != nil {
-		return nil, err
-	}
-
-	findings := []Finding{}
-	for _, req := range reqs {
-		if plugins.Incompatible(req, man.GradleMajor, man.GradleMinor) {
-			findings = append(findings, Finding{
-				FindingID: fid("meshgrid", req.ID, "PLUGIN_INCOMPATIBLE", 0),
-				ModuleID:  "meshgrid",
-				EntityID:  req.ID,
-				Kind:      "PLUGIN_INCOMPATIBLE",
-				EventSeq:  0,
-				Detail:    req.Version,
-			})
-		}
-	}
-
-	for _, alias := range catalog.AliasConflicts(cat) {
-		findings = append(findings, Finding{
-			FindingID: fid("meshgrid", alias, "CATALOG_ALIAS_CONFLICT", 0),
-			ModuleID:  "meshgrid",
-			EntityID:  alias,
-			Kind:      "CATALOG_ALIAS_CONFLICT",
-			EventSeq:  0,
-			Detail:    "bundle",
-		})
-	}
-
-	for _, alias := range catalog.InlineDrifts(cat) {
-		lib := cat.Libraries[alias]
-		findings = append(findings, Finding{
-			FindingID: fid("meshgrid", alias, "CATALOG_VERSION_DRIFT", 0),
-			ModuleID:  "meshgrid",
-			EntityID:  alias,
-			Kind:      "CATALOG_VERSION_DRIFT",
-			EventSeq:  0,
-			Detail:    lib.Version,
-		})
-	}
-
-	for _, issue := range publish.Check(pub, requireOffline, failOnProject) {
-		findings = append(findings, Finding{
-			FindingID: fid("meshgrid", issue.EntityID, issue.Kind, 0),
-			ModuleID:  "meshgrid",
-			EntityID:  issue.EntityID,
-			Kind:      issue.Kind,
-			EventSeq:  0,
-			Detail:    issue.Detail,
-		})
-	}
-
-	seenMod := map[string]struct{}{}
-	dupSkipped := 0
-	maxOrd := -1
-	loaded := map[string]*ModuleFile{}
-	moduleOrder := []string{}
-	coords := map[string]string{}
-	moduleFindingCount := map[string]int{}
-	captures := map[string]CaptureOut{}
-
-	for ord, mid := range man.Modules {
-		if ord > maxOrd {
-			maxOrd = ord
-		}
-		if _, ok := seenMod[mid]; ok {
-			dupSkipped++
-			continue
-		}
-		seenMod[mid] = struct{}{}
-		moduleOrder = append(moduleOrder, mid)
-
-		mf, err := loadModule(filepath.Join(root, "modules", mid+".module.json"))
-		if err != nil {
-			return nil, err
-		}
-		loaded[mid] = mf
-
-		coord := mf.Group + ":" + mf.Artifact
-		if prev, ok := coords[coord]; ok {
-			findings = append(findings, Finding{
-				FindingID: fid(mid, coord, "DUPLICATE_MODULE_COORDINATE", ord),
-				ModuleID:  mid,
-				EntityID:  coord,
-				Kind:      "DUPLICATE_MODULE_COORDINATE",
-				EventSeq:  ord,
-				Detail:    prev,
-			})
-			moduleFindingCount[mid]++
-		} else {
-			coords[coord] = mid
-		}
-
-		for _, dep := range mf.Dependencies {
-			if dep == mid {
-				findings = append(findings, Finding{
-					FindingID: fid(mid, mid, "SELF_DEPENDENCY", ord),
-					ModuleID:  mid,
-					EntityID:  mid,
-					Kind:      "SELF_DEPENDENCY",
-					EventSeq:  ord,
-					Detail:    "",
-				})
-				moduleFindingCount[mid]++
-			}
-		}
-
-		if len(mf.Dependencies) > maxDeps {
-			findings = append(findings, Finding{
-				FindingID: fid(mid, mid, "DEPENDENCY_FANOUT", ord),
-				ModuleID:  mid,
-				EntityID:  mid,
-				Kind:      "DEPENDENCY_FANOUT",
-				EventSeq:  ord,
-				Detail:    strconv.Itoa(len(mf.Dependencies)),
-			})
-			moduleFindingCount[mid]++
-		}
-
-		if strictBOM && mf.BOMConsumer && len(mf.VersionOverrides) > 0 {
-			keys := make([]string, 0, len(mf.VersionOverrides))
-			for k := range mf.VersionOverrides {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			k := keys[0]
-			findings = append(findings, Finding{
-				FindingID: fid(mid, k, "BOM_OVERRIDE_FORBIDDEN", ord),
-				ModuleID:  mid,
-				EntityID:  k,
-				Kind:      "BOM_OVERRIDE_FORBIDDEN",
-				EventSeq:  ord,
-				Detail:    mf.VersionOverrides[k],
-			})
-			moduleFindingCount[mid]++
-		}
-
-		capOut := CaptureOut{}
-		lockPath := filepath.Join(root, "locks", mid+".lock")
-		recs, st, err := locks.Decode(lockPath)
-		if err != nil {
-			findings = append(findings, Finding{
-				FindingID: fid(mid, mid, "LOCK_MISSING", ord),
-				ModuleID:  mid,
-				EntityID:  mid,
-				Kind:      "LOCK_MISSING",
-				EventSeq:  ord,
-				Detail:    "",
-			})
-			moduleFindingCount[mid]++
-		} else {
-			capOut = CaptureOut{
-				FormatVersion:   st.FormatVersion,
-				RecordsTotal:    st.RecordsTotal,
-				RecordsValid:    st.RecordsValid,
-				RecordsRejected: st.RecordsRejected,
-				DupCoordRejects: st.DupCoordRejects,
-				PayloadBytes:    st.PayloadBytes,
-			}
-			refs := referencedCoords(mf, cat)
-			for _, rec := range recs {
-				if rec.Optional {
-					continue
-				}
-				if exp, ok := refs[rec.Coordinate]; ok {
-					if exp != rec.Version {
-						findings = append(findings, Finding{
-							FindingID: fid(mid, rec.Coordinate, "LOCK_VERSION_DRIFT", ord),
-							ModuleID:  mid,
-							EntityID:  rec.Coordinate,
-							Kind:      "LOCK_VERSION_DRIFT",
-							EventSeq:  ord,
-							Detail:    rec.Version,
-						})
-						moduleFindingCount[mid]++
-					}
-				} else {
-					findings = append(findings, Finding{
-						FindingID: fid(mid, rec.Coordinate, "ORPHAN_LOCK_ENTRY", ord),
-						ModuleID:  mid,
-						EntityID:  rec.Coordinate,
-						Kind:      "ORPHAN_LOCK_ENTRY",
-						EventSeq:  ord,
-						Detail:    "",
-					})
-					moduleFindingCount[mid]++
-				}
-			}
-		}
-		captures[mid] = capOut
-	}
-
-	for _, mid := range moduleOrder {
-		mf := loaded[mid]
-		ord := firstIndex(man.Modules, mid)
-		for _, dep := range mf.Dependencies {
-			if dep == mid {
-				continue
-			}
-			if _, ok := loaded[dep]; !ok {
-				findings = append(findings, Finding{
-					FindingID: fid(mid, dep, "UNKNOWN_DEPENDENCY", ord),
-					ModuleID:  mid,
-					EntityID:  dep,
-					Kind:      "UNKNOWN_DEPENDENCY",
-					EventSeq:  ord,
-					Detail:    "UNKNOWN_DEPENDENCY",
-				})
-				moduleFindingCount[mid]++
-			}
-		}
-	}
-
-	audit := maxOrd + 1
-	cycleSucc := findCycleSuccessors(loaded)
-	cycleMods := make([]string, 0, len(cycleSucc))
-	for mid := range cycleSucc {
-		cycleMods = append(cycleMods, mid)
-	}
-	sort.Strings(cycleMods)
-	for _, mid := range cycleMods {
-		findings = append(findings, Finding{
-			FindingID: fid(mid, mid, "MODULE_CYCLE", audit),
-			ModuleID:  mid,
-			EntityID:  mid,
-			Kind:      "MODULE_CYCLE",
-			EventSeq:  audit,
-			Detail:    cycleSucc[mid],
-		})
-		moduleFindingCount[mid]++
-	}
-
-	for _, ref := range catalog.UnresolvedRefs(cat) {
-		findings = append(findings, Finding{
-			FindingID: fid("meshgrid", ref, "CATALOG_UNRESOLVED_REF", audit),
-			ModuleID:  "meshgrid",
-			EntityID:  ref,
-			Kind:      "CATALOG_UNRESOLVED_REF",
-			EventSeq:  audit,
-			Detail:    "",
-		})
-	}
-
-	moduleOut := make([]ModuleOut, 0, len(moduleOrder))
-	sortedIDs := append([]string{}, moduleOrder...)
-	sort.Strings(sortedIDs)
-	for _, mid := range sortedIDs {
-		mf := loaded[mid]
-		depsCopy := append([]string{}, mf.Dependencies...)
-		sort.Strings(depsCopy)
-		status := "STABLE"
-		if moduleFindingCount[mid] > 0 {
-			status = "DRIFT"
-		}
-		moduleOut = append(moduleOut, ModuleOut{
-			ModuleID:    mid,
-			Coordinate:  mf.Group + ":" + mf.Artifact + ":" + mf.Version,
-			BOMConsumer: mf.BOMConsumer,
-			DirectDeps:  depsCopy,
-			Capture:     captures[mid],
-			Status:      status,
-		})
-	}
-
-	sort.Slice(findings, func(i, j int) bool { return findings[i].FindingID < findings[j].FindingID })
-
-	status := "STABLE"
-	if len(findings) > 0 {
-		status = "DRIFT"
-	}
-
-	return &Report{
-		Workspace: WorkspaceOut{
-			GradleMajor:         man.GradleMajor,
-			GradleMinor:         man.GradleMinor,
-			ModuleCount:         len(moduleOut),
-			RequireOfflineVault: requireOffline,
-			FailOnProjectRepos:   failOnProject,
-			MaxDirectDeps:       maxDeps,
-			StrictBOM:           strictBOM,
-		},
-		Modules:                 moduleOut,
-		Findings:                findings,
-		DuplicateModulesSkipped: dupSkipped,
-		Status:                  status,
-	}, nil
-}
-
-func WriteReport(path string, rep *Report) error {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(rep); err != nil {
-		return err
-	}
-	// Encode already adds trailing newline
-	return os.WriteFile(path, buf.Bytes(), 0o644)
-}
-
-func resolvePolicy(man Manifest) (bool, bool, int, bool) {
-	requireOffline := man.RequireOfflineVault
-	failOnProject := man.FailOnProjectRepos
-	maxDeps := man.MaxDirectDeps
-	if maxDeps == 0 {
-		maxDeps = 3
-	}
-	strictBOM := man.StrictBOM
-	ov := man.PolicyOverrides
-	if ov == nil {
-		return requireOffline, failOnProject, maxDeps, strictBOM
-	}
-	if v, ok := ov["require_offline_vault"]; ok {
-		if b, ok := v.(bool); ok {
-			requireOffline = b
-		}
-	}
-	if v, ok := ov["fail_on_project_repos"]; ok {
-		if b, ok := v.(bool); ok {
-			failOnProject = b
-		}
-	}
-	if v, ok := ov["strict_bom"]; ok {
-		if b, ok := v.(bool); ok {
-			strictBOM = b
-		}
-	}
-	if v, ok := ov["max_direct_deps"]; ok {
-		switch n := v.(type) {
-		case float64:
-			maxDeps = int(n)
-		case int:
-			maxDeps = n
-		}
-	}
-	return requireOffline, failOnProject, maxDeps, strictBOM
-}
-
-func loadManifest(path string) (Manifest, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return Manifest{}, err
-	}
-	var m Manifest
-	if err := json.Unmarshal(b, &m); err != nil {
-		return Manifest{}, err
-	}
-	return m, nil
-}
-
-func loadModule(path string) (*ModuleFile, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var m ModuleFile
-	if err := json.Unmarshal(b, &m); err != nil {
-		return nil, err
-	}
-	if m.VersionOverrides == nil {
-		m.VersionOverrides = map[string]string{}
-	}
-	return &m, nil
-}
-
-func referencedCoords(mf *ModuleFile, cat *catalog.Catalog) map[string]string {
-	out := map[string]string{}
-	for _, alias := range mf.LibraryAliases {
-		lib, ok := cat.Libraries[alias]
-		if !ok {
-			continue
-		}
-		ver, _, ok := catalog.ResolveLibraryVersion(cat, lib)
-		if !ok {
-			continue
-		}
-		out[lib.Module] = ver
-	}
-	for k, v := range mf.VersionOverrides {
-		out[k] = v
-	}
-	return out
-}
-
-func findCycleSuccessors(loaded map[string]*ModuleFile) map[string]string {
-	nodes := make([]string, 0, len(loaded))
-	for mid := range loaded {
-		nodes = append(nodes, mid)
-	}
-	sort.Strings(nodes)
-	inCycle := map[string]bool{}
-	for _, start := range nodes {
-		visited := map[string]bool{}
-		var dfs func(string, []string) bool
-		dfs = func(cur string, path []string) bool {
-			for i, p := range path {
-				if p == cur {
-					for _, n := range path[i:] {
-						inCycle[n] = true
-					}
-					inCycle[cur] = true
-					return true
-				}
-			}
-			if visited[cur] {
-				return false
-			}
-			visited[cur] = true
-			mf := loaded[cur]
-			if mf == nil {
-				return false
-			}
-			for _, dep := range mf.Dependencies {
-				if _, ok := loaded[dep]; !ok {
-					continue
-				}
-				if dfs(dep, append(path, cur)) {
-					return true
-				}
-			}
-			return false
-		}
-		dfs(start, nil)
-	}
-	out := map[string]string{}
-	for mid := range inCycle {
-		mf := loaded[mid]
-		cands := []string{}
-		for _, dep := range mf.Dependencies {
-			if inCycle[dep] {
-				cands = append(cands, dep)
-			}
-		}
-		sort.Strings(cands)
-		if len(cands) > 0 {
-			out[mid] = cands[0]
-		}
-	}
-	return out
-}
-
-func fid(mid, entity, kind string, seq int) string {
-	return fmt.Sprintf("%s::%s::%s::%04d", mid, entity, kind, seq)
-}
-
-func firstIndex(list []string, mid string) int {
-	for i, v := range list {
-		if v == mid {
-			return i
-		}
-	}
-	return 0
-}
-EOF
-
-make -C /app build
-/app/build/gridknit
+/app/bin/provision-link-rates

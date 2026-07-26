@@ -1,919 +1,428 @@
-"""Verification for meshgrid Gradle monorepo gridknit stabilizer."""
+"""Verifier for the link rate provisioner.
 
-from __future__ import annotations
+Recomputes every derived figure independently from the raw Redis registry
+bytes and the API's backing documents, then checks the provisioned system
+state, the manifest, and the seal against that recomputation.
+"""
 
+import functools
+import grp
 import hashlib
 import json
 import os
-import shutil
+import pwd
+import socket
+import stat
+import struct
 import subprocess
-import tempfile
-from pathlib import Path
-from typing import Any
 
-import pytest
+MANIFEST_PATH = "/app/out/link-manifest.json"
+SEAL_PATH = "/app/out/seal.hex"
+TOOL_PATH = "/app/bin/provision-link-rates"
+PRIVATE_DIR = "/opt/api-private"
+STATE_BASE = "/var/lib/link-rate"
 
-REPORT_PATH = Path("/app/build/gradle_stabilization_report.json")
-BINARY = Path("/app/build/gridknit")
-ROOT = Path("/app/meshgrid")
-POLICY = Path("/app/gradle-policy")
-
-WORKSPACE_KEYS = [
-    "gradle_major",
-    "gradle_minor",
-    "module_count",
-    "require_offline_vault",
-    "fail_on_project_repos",
-    "max_direct_deps",
-    "strict_bom",
-]
-MODULE_KEYS = [
-    "module_id",
-    "coordinate",
-    "bom_consumer",
-    "direct_deps",
-    "capture",
-    "status",
-]
-CAPTURE_KEYS = [
-    "format_version",
-    "records_total",
-    "records_valid",
-    "records_rejected",
-    "dup_coord_rejects",
-    "payload_bytes",
-]
-FINDING_KEYS = [
-    "finding_id",
-    "module_id",
-    "entity_id",
-    "kind",
-    "event_seq",
-    "detail",
-]
-ROOT_KEYS = [
-    "workspace",
-    "modules",
-    "findings",
-    "duplicate_modules_skipped",
-    "status",
-]
-
-PLUGIN_DEFAULTS = {
-    "com.meshgrid.wireloom": (8, 7),
-    "com.meshgrid.depknit": (8, 8),
-    "com.meshgrid.artifactseal": (8, 10),
-    "com.meshgrid.pluginbridge": (8, 5),
-    "com.meshgrid.releasemesh": (8, 9),
-    "com.meshgrid.cataloghub": (8, 10),
-    "org.gradle.publish-offline": (8, 6),
-}
-
-IMMUTABLE_SHA256: dict[str, str] = {}
+MASK64 = (1 << 64) - 1
+FNV_OFFSET = 0xCBF29CE484222325
+FNV_PRIME = 0x100000001B3
+UNIT = 1500
+BURST_DIVISOR = 5500
+BURST_MIN = 24
+RATE_DIVISOR = 40000
+TIER_BASE = {"background": 2000, "general": 5000, "express": 12000}
+TIER_CEIL = {"background": 3500, "general": 8000, "express": 18000}
 
 
-def _sha256_file(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def _redis_cmd(sock_file, sock, *args):
+    out = b"*%d\r\n" % len(args)
+    for a in args:
+        if isinstance(a, str):
+            a = a.encode()
+        out += b"$%d\r\n%s\r\n" % (len(a), a)
+    sock.sendall(out)
+    return _redis_reply(sock_file)
 
 
-def _sha256_coord(coord: str, version: str) -> str:
-    return hashlib.sha256(f"{coord}|{version}".encode()).hexdigest()
+def _redis_reply(sock_file):
+    line = sock_file.readline().rstrip(b"\r\n")
+    kind, rest = line[:1], line[1:]
+    if kind == b"+":
+        return rest.decode()
+    if kind == b":":
+        return int(rest)
+    if kind == b"-":
+        raise AssertionError(f"redis error: {rest.decode()}")
+    if kind == b"$":
+        n = int(rest)
+        if n < 0:
+            return None
+        data = sock_file.read(n + 2)
+        return data[:n]
+    if kind == b"*":
+        return [_redis_reply(sock_file) for _ in range(int(rest))]
+    raise AssertionError("unexpected redis reply")
 
 
-def _split_kv(line: str) -> tuple[str, str] | None:
-    if "=" not in line:
-        return None
-    k, v = line.split("=", 1)
-    return k.strip(), v.strip()
+def _parse_ledger(blob):
+    assert blob[:4] == b"LKR1", "bad ledger magic"
+    assert blob[4] == 1, "bad ledger version"
+    flags = blob[5]
+    count = struct.unpack("<H", blob[6:8])[0]
+    payload = blob[8:-2]
+    assert struct.unpack(">H", blob[-2:])[0] == sum(payload) % 65521, (
+        "ledger trailer mismatch"
+    )
+    values, v = [], 0
+    for b in payload:
+        v = (v << 7) | (b & 0x7F)
+        if not (b & 0x80):
+            values.append(v)
+            v = 0
+    assert len(values) == count, "ledger varint count mismatch"
+    return (flags & 1) == 1, values
 
 
-def load_catalog(path: Path) -> dict[str, Any]:
-    versions: dict[str, str] = {}
-    libraries: dict[str, dict[str, Any]] = {}
-    bundles: dict[str, list[str]] = {}
-    section = ""
-    for raw in path.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            section = line.strip("[]")
-            continue
-        kv = _split_kv(line)
-        if not kv:
-            continue
-        k, v = kv
-        if section == "versions":
-            versions[k] = v.strip('"')
-        elif section == "libraries":
-            libraries[k] = _parse_lib(v)
-        elif section == "bundles":
-            inner = v.strip().strip("[]")
-            bundles[k] = [p.strip().strip('"') for p in inner.split(",") if p.strip()]
-    return {"versions": versions, "libraries": libraries, "bundles": bundles}
-
-
-def _parse_lib(rest: str) -> dict[str, Any]:
-    rest = rest.strip().strip("{}")
-    out: dict[str, Any] = {"module": "", "version": "", "version_ref": "", "inline": False}
-    for part in rest.split(","):
-        kv = _split_kv(part.strip())
-        if not kv:
-            continue
-        k, v = kv
-        v = v.strip('"')
-        if k == "module":
-            out["module"] = v
-        elif k == "version.ref":
-            out["version_ref"] = v
-        elif k == "version":
-            out["version"] = v
-            out["inline"] = True
-    return out
-
-
-def load_plugins(path: Path) -> list[dict[str, Any]]:
-    reqs: list[dict[str, Any]] = []
-    cur: dict[str, Any] | None = None
-    for raw in path.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line == "[[plugins]]":
-            if cur is not None:
-                reqs.append(cur)
-            cur = {}
-            continue
-        if cur is None:
-            continue
-        kv = _split_kv(line)
-        if not kv:
-            continue
-        k, v = kv
-        v = v.strip('"')
-        if k == "id":
-            cur["id"] = v
-        elif k == "version":
-            cur["version"] = v
-        elif k == "min_gradle":
-            maj, minor = v.split(".")
-            cur["min_gradle"] = (int(maj), int(minor))
-    if cur is not None:
-        reqs.append(cur)
-    return reqs
-
-
-def load_publish(path: Path) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for raw in path.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        kv = _split_kv(line)
-        if not kv:
-            continue
-        k, v = kv
-        v = v.strip('"')
-        if k == "signed_publish":
-            out[k] = v == "true"
+def _apply_ops(value, ops):
+    v = value
+    for op in ops:
+        if op["op"] == "scale":
+            v = (v * op["num"]) // op["den"]
+        elif op["op"] == "add":
+            v = v + op["k"]
+        elif op["op"] == "floor":
+            v = max(v, op["k"])
         else:
-            out[k] = v
-    return out
+            raise AssertionError("unknown op")
+    return v
 
 
-def decode_lock(path: Path) -> tuple[dict[str, int], list[dict[str, Any]]]:
-    stats = {
-        "format_version": 0,
-        "records_total": 0,
-        "records_valid": 0,
-        "records_rejected": 0,
-        "dup_coord_rejects": 0,
-        "payload_bytes": 0,
-    }
-    if not path.exists():
-        return stats, []
-    lines = path.read_text().splitlines()
-    if not lines or lines[0] != "LOCK1":
-        raise ValueError("bad magic")
-    stats["format_version"] = int(lines[1])
-    seen: set[str] = set()
-    recs: list[dict[str, Any]] = []
-    for line in lines[3:]:
-        if not line.strip():
-            continue
-        stats["records_total"] += 1
-        parts = line.split("\t")
-        if len(parts) != 4:
-            stats["records_rejected"] += 1
-            continue
-        coord, version, checksum, opt = parts
-        reason = ""
-        if opt not in ("0", "1"):
-            reason = "BAD_OPTIONAL"
-        elif checksum != _sha256_coord(coord, version):
-            reason = "BAD_CHECKSUM"
-        elif coord in seen:
-            reason = "DUP_COORD"
-        seen.add(coord)
-        if reason:
-            stats["records_rejected"] += 1
-            if reason == "DUP_COORD":
-                stats["dup_coord_rejects"] += 1
-            continue
-        recs.append(
-            {
-                "coordinate": coord,
-                "version": version,
-                "checksum": checksum,
-                "optional": opt == "1",
-            }
-        )
-        stats["records_valid"] += 1
-        stats["payload_bytes"] += len(line)
-    return stats, recs
+def _smooth(adjusted, drop_carry=False):
+    s = [adjusted[0]]
+    carry = 0
+    for d in range(1, len(adjusted)):
+        t = 5 * s[-1] + adjusted[d] + (0 if drop_carry else carry)
+        s.append(t // 6)
+        carry = t % 6
+    return s
 
 
-def resolve_policy(man: dict[str, Any]) -> tuple[bool, bool, int, bool]:
-    require_offline = bool(man.get("require_offline_vault", True))
-    fail_on_project = bool(man.get("fail_on_project_repos", True))
-    max_deps = int(man.get("max_direct_deps") or 3)
-    strict_bom = bool(man.get("strict_bom", True))
-    ov = man.get("policy_overrides") or {}
-    if "require_offline_vault" in ov:
-        require_offline = bool(ov["require_offline_vault"])
-    if "fail_on_project_repos" in ov:
-        fail_on_project = bool(ov["fail_on_project_repos"])
-    if "strict_bom" in ov:
-        strict_bom = bool(ov["strict_bom"])
-    if "max_direct_deps" in ov:
-        max_deps = int(ov["max_direct_deps"])
-    return require_offline, fail_on_project, max_deps, strict_bom
+def _weight(s_value):
+    return (s_value + UNIT - 1) // UNIT
 
 
-def plugin_incompatible(req: dict[str, Any], maj: int, minor: int) -> bool:
-    if "min_gradle" in req:
-        need = req["min_gradle"]
-    elif req["id"] in PLUGIN_DEFAULTS:
-        need = PLUGIN_DEFAULTS[req["id"]]
-    else:
-        return False
-    if maj < need[0]:
-        return True
-    if maj > need[0]:
-        return False
-    return minor < need[1]
+def _le(value, width):
+    return int(value).to_bytes(width, "little")
 
 
-def fid(mid: str, entity: str, kind: str, seq: int) -> str:
-    return f"{mid}::{entity}::{kind}::{seq:04d}"
+def _fold(acc, data):
+    for b in data:
+        acc = ((acc ^ b) * FNV_PRIME) & MASK64
+    return acc
 
 
-def referenced_coords(mf: dict[str, Any], cat: dict[str, Any]) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for alias in mf.get("library_aliases") or []:
-        lib = cat["libraries"].get(alias)
-        if not lib:
-            continue
-        if lib["version_ref"]:
-            ver = cat["versions"].get(lib["version_ref"])
-            if ver is None:
-                continue
-        elif lib["inline"]:
-            ver = lib["version"]
+def _seal_chain(rows, mode="pre"):
+    acc = FNV_OFFSET
+    sub = 0
+    for pos, day, s_val, w_val in rows:
+        sub = (sub + s_val + w_val) & MASK64
+        snap = acc
+        body = _le(pos, 2) + _le(day, 2) + _le(s_val, 8) + _le(sub, 8)
+        if mode == "pre":
+            acc = _fold(acc, body + _le(snap, 8))
         else:
-            continue
-        out[lib["module"]] = ver
-    for k, v in (mf.get("version_overrides") or {}).items():
-        out[k] = v
-    return out
+            acc = _fold(acc, body)
+            acc = _fold(acc, _le(acc, 8))
+    return acc
 
 
-def cycle_successors(loaded: dict[str, dict[str, Any]]) -> dict[str, str]:
-    in_cycle: set[str] = set()
-    for start in loaded:
-        visited: set[str] = set()
-
-        def dfs(cur: str, path: list[str], seen: set[str]) -> bool:
-            if cur in path:
-                idx = path.index(cur)
-                in_cycle.update(path[idx:])
-                in_cycle.add(cur)
-                return True
-            if cur in seen:
-                return False
-            seen.add(cur)
-            for dep in loaded[cur].get("dependencies") or []:
-                if dep not in loaded:
-                    continue
-                if dfs(dep, path + [cur], seen):
-                    return True
-            return False
-
-        dfs(start, [], visited)
-    out: dict[str, str] = {}
-    for mid in in_cycle:
-        cands = sorted(
-            d for d in (loaded[mid].get("dependencies") or []) if d in in_cycle
-        )
-        if cands:
-            out[mid] = cands[0]
-    return out
-
-
-def build_expected(root: Path) -> dict[str, Any]:
-    man = json.loads((root / "workspace.manifest.json").read_text())
-    require_offline, fail_on_project, max_deps, strict_bom = resolve_policy(man)
-    cat = load_catalog(root / "catalog" / "libs.versions.toml")
-    reqs = load_plugins(root / "plugins" / "plugin-requests.toml")
-    pub = load_publish(root / "publish" / "offline-vault.toml")
-
-    findings: list[dict[str, Any]] = []
-
-    for req in reqs:
-        if plugin_incompatible(req, man["gradle_major"], man["gradle_minor"]):
-            findings.append(
-                {
-                    "finding_id": fid("meshgrid", req["id"], "PLUGIN_INCOMPATIBLE", 0),
-                    "module_id": "meshgrid",
-                    "entity_id": req["id"],
-                    "kind": "PLUGIN_INCOMPATIBLE",
-                    "event_seq": 0,
-                    "detail": req["version"],
-                }
-            )
-
-    for alias in sorted(set(cat["bundles"]) & set(cat["libraries"])):
-        findings.append(
-            {
-                "finding_id": fid("meshgrid", alias, "CATALOG_ALIAS_CONFLICT", 0),
-                "module_id": "meshgrid",
-                "entity_id": alias,
-                "kind": "CATALOG_ALIAS_CONFLICT",
-                "event_seq": 0,
-                "detail": "bundle",
-            }
-        )
-
-    for alias, lib in sorted(cat["libraries"].items()):
-        if not lib["inline"]:
-            continue
-        if alias in cat["versions"] and cat["versions"][alias] != lib["version"]:
-            findings.append(
-                {
-                    "finding_id": fid("meshgrid", alias, "CATALOG_VERSION_DRIFT", 0),
-                    "module_id": "meshgrid",
-                    "entity_id": alias,
-                    "kind": "CATALOG_VERSION_DRIFT",
-                    "event_seq": 0,
-                    "detail": lib["version"],
-                }
-            )
-
-    if fail_on_project and pub.get("repositories_mode") != "FAIL_ON_PROJECT_REPOS":
-        findings.append(
-            {
-                "finding_id": fid("meshgrid", "repositories_mode", "PROJECT_REPO_FORBIDDEN", 0),
-                "module_id": "meshgrid",
-                "entity_id": "repositories_mode",
-                "kind": "PROJECT_REPO_FORBIDDEN",
-                "event_seq": 0,
-                "detail": pub.get("repositories_mode", ""),
-            }
-        )
-    if require_offline:
-        if pub.get("vault_path") != "/app/meshgrid/offline-vault":
-            findings.append(
-                {
-                    "finding_id": fid("meshgrid", "vault_path", "OFFLINE_REPO_MISCONFIG", 0),
-                    "module_id": "meshgrid",
-                    "entity_id": "vault_path",
-                    "kind": "OFFLINE_REPO_MISCONFIG",
-                    "event_seq": 0,
-                    "detail": pub.get("vault_path", ""),
-                }
-            )
-        if not pub.get("signed_publish"):
-            findings.append(
-                {
-                    "finding_id": fid("meshgrid", "signed_publish", "PUBLISH_UNSIGNED", 0),
-                    "module_id": "meshgrid",
-                    "entity_id": "signed_publish",
-                    "kind": "PUBLISH_UNSIGNED",
-                    "event_seq": 0,
-                    "detail": "",
-                }
-            )
-
-    seen: set[str] = set()
-    dup_skipped = 0
-    max_ord = -1
-    loaded: dict[str, dict[str, Any]] = {}
-    module_order: list[str] = []
-    coords: dict[str, str] = {}
-    finding_count: dict[str, int] = {}
-    captures: dict[str, dict[str, int]] = {}
-
-    for ord_, mid in enumerate(man["modules"]):
-        max_ord = max(max_ord, ord_)
-        if mid in seen:
-            dup_skipped += 1
-            continue
-        seen.add(mid)
-        module_order.append(mid)
-        mf = json.loads((root / "modules" / f"{mid}.module.json").read_text())
-        loaded[mid] = mf
-        coord = f"{mf['group']}:{mf['artifact']}"
-        if coord in coords:
-            findings.append(
-                {
-                    "finding_id": fid(mid, coord, "DUPLICATE_MODULE_COORDINATE", ord_),
-                    "module_id": mid,
-                    "entity_id": coord,
-                    "kind": "DUPLICATE_MODULE_COORDINATE",
-                    "event_seq": ord_,
-                    "detail": coords[coord],
-                }
-            )
-            finding_count[mid] = finding_count.get(mid, 0) + 1
-        else:
-            coords[coord] = mid
-
-        for dep in mf.get("dependencies") or []:
-            if dep == mid:
-                findings.append(
-                    {
-                        "finding_id": fid(mid, mid, "SELF_DEPENDENCY", ord_),
-                        "module_id": mid,
-                        "entity_id": mid,
-                        "kind": "SELF_DEPENDENCY",
-                        "event_seq": ord_,
-                        "detail": "",
-                    }
-                )
-                finding_count[mid] = finding_count.get(mid, 0) + 1
-
-        if len(mf.get("dependencies") or []) > max_deps:
-            findings.append(
-                {
-                    "finding_id": fid(mid, mid, "DEPENDENCY_FANOUT", ord_),
-                    "module_id": mid,
-                    "entity_id": mid,
-                    "kind": "DEPENDENCY_FANOUT",
-                    "event_seq": ord_,
-                    "detail": str(len(mf["dependencies"])),
-                }
-            )
-            finding_count[mid] = finding_count.get(mid, 0) + 1
-
-        overrides = mf.get("version_overrides") or {}
-        if strict_bom and mf.get("bom_consumer") and overrides:
-            k = min(overrides)
-            findings.append(
-                {
-                    "finding_id": fid(mid, k, "BOM_OVERRIDE_FORBIDDEN", ord_),
-                    "module_id": mid,
-                    "entity_id": k,
-                    "kind": "BOM_OVERRIDE_FORBIDDEN",
-                    "event_seq": ord_,
-                    "detail": overrides[k],
-                }
-            )
-            finding_count[mid] = finding_count.get(mid, 0) + 1
-
-        lock_path = root / "locks" / f"{mid}.lock"
-        if not lock_path.exists():
-            findings.append(
-                {
-                    "finding_id": fid(mid, mid, "LOCK_MISSING", ord_),
-                    "module_id": mid,
-                    "entity_id": mid,
-                    "kind": "LOCK_MISSING",
-                    "event_seq": ord_,
-                    "detail": "",
-                }
-            )
-            finding_count[mid] = finding_count.get(mid, 0) + 1
-            captures[mid] = {
-                "format_version": 0,
-                "records_total": 0,
-                "records_valid": 0,
-                "records_rejected": 0,
-                "dup_coord_rejects": 0,
-                "payload_bytes": 0,
-            }
-        else:
-            st, recs = decode_lock(lock_path)
-            captures[mid] = st
-            refs = referenced_coords(mf, cat)
-            for rec in recs:
-                if rec["optional"]:
-                    continue
-                if rec["coordinate"] in refs:
-                    if refs[rec["coordinate"]] != rec["version"]:
-                        findings.append(
-                            {
-                                "finding_id": fid(
-                                    mid, rec["coordinate"], "LOCK_VERSION_DRIFT", ord_
-                                ),
-                                "module_id": mid,
-                                "entity_id": rec["coordinate"],
-                                "kind": "LOCK_VERSION_DRIFT",
-                                "event_seq": ord_,
-                                "detail": rec["version"],
-                            }
-                        )
-                        finding_count[mid] = finding_count.get(mid, 0) + 1
-                else:
-                    findings.append(
-                        {
-                            "finding_id": fid(
-                                mid, rec["coordinate"], "ORPHAN_LOCK_ENTRY", ord_
-                            ),
-                            "module_id": mid,
-                            "entity_id": rec["coordinate"],
-                            "kind": "ORPHAN_LOCK_ENTRY",
-                            "event_seq": ord_,
-                            "detail": "",
-                        }
-                    )
-                    finding_count[mid] = finding_count.get(mid, 0) + 1
-
-    for mid in module_order:
-        mf = loaded[mid]
-        ord_ = man["modules"].index(mid)
-        for dep in mf.get("dependencies") or []:
-            if dep == mid:
-                continue
-            if dep not in loaded:
-                findings.append(
-                    {
-                        "finding_id": fid(mid, dep, "UNKNOWN_DEPENDENCY", ord_),
-                        "module_id": mid,
-                        "entity_id": dep,
-                        "kind": "UNKNOWN_DEPENDENCY",
-                        "event_seq": ord_,
-                        "detail": "UNKNOWN_DEPENDENCY",
-                    }
-                )
-                finding_count[mid] = finding_count.get(mid, 0) + 1
-
-    audit = max_ord + 1
-    for mid, succ in sorted(cycle_successors(loaded).items()):
-        findings.append(
-            {
-                "finding_id": fid(mid, mid, "MODULE_CYCLE", audit),
-                "module_id": mid,
-                "entity_id": mid,
-                "kind": "MODULE_CYCLE",
-                "event_seq": audit,
-                "detail": succ,
-            }
-        )
-        finding_count[mid] = finding_count.get(mid, 0) + 1
-
-    unresolved: set[str] = set()
-    for lib in cat["libraries"].values():
-        ref = lib["version_ref"]
-        if ref and ref not in cat["versions"]:
-            unresolved.add(ref)
-    for ref in sorted(unresolved):
-        findings.append(
-            {
-                "finding_id": fid("meshgrid", ref, "CATALOG_UNRESOLVED_REF", audit),
-                "module_id": "meshgrid",
-                "entity_id": ref,
-                "kind": "CATALOG_UNRESOLVED_REF",
-                "event_seq": audit,
-                "detail": "",
-            }
-        )
-
-    modules_out: list[dict[str, Any]] = []
-    for mid in sorted(module_order):
-        mf = loaded[mid]
-        modules_out.append(
-            {
-                "module_id": mid,
-                "coordinate": f"{mf['group']}:{mf['artifact']}:{mf['version']}",
-                "bom_consumer": bool(mf.get("bom_consumer")),
-                "direct_deps": sorted(mf.get("dependencies") or []),
-                "capture": captures[mid],
-                "status": "DRIFT" if finding_count.get(mid, 0) else "STABLE",
-            }
-        )
-
-    findings.sort(key=lambda f: f["finding_id"])
-    status = "DRIFT" if findings else "STABLE"
+def _shaping_values(smoothed, weights, tier):
+    peak = max(smoothed)
+    total_units = sum(weights)
+    rate = min(TIER_BASE[tier] + total_units // RATE_DIVISOR, TIER_CEIL[tier])
+    burst = max((peak + BURST_DIVISOR - 1) // BURST_DIVISOR, BURST_MIN)
     return {
-        "workspace": {
-            "gradle_major": man["gradle_major"],
-            "gradle_minor": man["gradle_minor"],
-            "module_count": len(modules_out),
-            "require_offline_vault": require_offline,
-            "fail_on_project_repos": fail_on_project,
-            "max_direct_deps": max_deps,
-            "strict_bom": strict_bom,
-        },
-        "modules": modules_out,
-        "findings": findings,
-        "duplicate_modules_skipped": dup_skipped,
-        "status": status,
+        "peak": peak,
+        "total_units": total_units,
+        "rate_kbit": rate,
+        "burst_kib": burst,
     }
 
 
-def _run_gridknit(env: dict[str, str] | None = None) -> None:
-    merged = os.environ.copy()
-    if env:
-        merged.update(env)
-    subprocess.run([str(BINARY)], check=True, cwd="/app", env=merged)
+@functools.lru_cache(maxsize=1)
+def _reference():
+    """Recompute the whole pipeline from raw registry bytes and API docs."""
+    with open(PRIVATE_DIR + "/links.json") as f:
+        links = json.load(f)["links"]
+    with open(PRIVATE_DIR + "/shaping.json") as f:
+        shaping = json.load(f)
+    meta = {link["iface_id"]: link for link in links}
 
-
-@pytest.fixture(scope="session", autouse=True)
-def _snapshot_immutable() -> None:
-    for path in sorted(POLICY.rglob("*")):
-        if path.is_file():
-            IMMUTABLE_SHA256[str(path)] = _sha256_file(path)
-    for path in sorted(ROOT.rglob("*")):
-        if path.is_file():
-            IMMUTABLE_SHA256[str(path)] = _sha256_file(path)
-
-
-@pytest.fixture(scope="session")
-def expected_report() -> dict[str, Any]:
-    return build_expected(ROOT)
-
-
-@pytest.fixture(scope="session")
-def report(expected_report: dict[str, Any]) -> dict[str, Any]:
-    assert BINARY.exists(), "gridknit binary missing"
-    _run_gridknit()
-    raw = REPORT_PATH.read_bytes()
-    assert raw.endswith(b"\n"), "report must end with newline"
-    assert b"\n\n" not in raw, "report must be compact single trailing newline"
-    data = json.loads(raw.decode())
-    assert data == expected_report
-    return data
-
-
-def test_full_report_equivalence(report: dict[str, Any], expected_report: dict[str, Any]) -> None:
-    """Full graded report must match independent policy replay of the primary meshgrid tree."""
-    assert report == expected_report
-
-
-def test_report_schema_key_order(report: dict[str, Any]) -> None:
-    """Root workspace module capture and finding key orders match REPORT_LAYOUT.md."""
-    assert list(report.keys()) == ROOT_KEYS
-    assert list(report["workspace"].keys()) == WORKSPACE_KEYS
-    for mod in report["modules"]:
-        assert list(mod.keys()) == MODULE_KEYS
-        assert list(mod["capture"].keys()) == CAPTURE_KEYS
-    for finding in report["findings"]:
-        assert list(finding.keys()) == FINDING_KEYS
-
-
-def test_report_compact_json_byte_identical_reruns(report: dict[str, Any]) -> None:
-    """Rerunning gridknit on unchanged inputs yields byte-identical compact JSON with trailing newline."""
-    first = REPORT_PATH.read_bytes()
-    _run_gridknit()
-    second = REPORT_PATH.read_bytes()
-    assert first == second
-    assert first.endswith(b"\n")
-    _ = report
-
-
-def test_immutable_policy_and_meshgrid() -> None:
-    """Policy docs and meshgrid fixtures must remain SHA-256 identical to the session snapshot."""
-    for path, digest in IMMUTABLE_SHA256.items():
-        assert _sha256_file(Path(path)) == digest, path
-
-
-def test_build_dir_only_binary_and_report() -> None:
-    """After the primary graded run, /app/build contains only gridknit and gradle_stabilization_report.json."""
-    names = sorted(p.name for p in Path("/app/build").iterdir())
-    assert names == ["gradle_stabilization_report.json", "gridknit"]
-
-
-def test_duplicate_module_skipped_exact(report: dict[str, Any]) -> None:
-    """Duplicate depknit manifest entry increments skip counter once; module_count equals unique modules."""
-    assert report["duplicate_modules_skipped"] == 1
-    ids = [m["module_id"] for m in report["modules"]]
-    assert ids.count("depknit") == 1
-    assert report["workspace"]["module_count"] == len(report["modules"]) == 6
-
-
-def test_direct_deps_are_sorted_string_lists(report: dict[str, Any]) -> None:
-    """direct_deps is a sorted string array of dependency module ids, never an int count."""
-    for mod in report["modules"]:
-        deps = mod["direct_deps"]
-        assert isinstance(deps, list)
-        assert all(isinstance(d, str) for d in deps)
-        assert deps == sorted(deps)
-    wire = next(m for m in report["modules"] if m["module_id"] == "wireloom")
-    assert wire["direct_deps"] == ["depknit", "pluginbridge"]
-
-
-def test_plugin_artifactseal_incompatible_numeric(report: dict[str, Any]) -> None:
-    """Plugin min_gradle 8.11 is incompatible with numeric Gradle 8.10 (major then minor compare)."""
-    hits = [
-        f
-        for f in report["findings"]
-        if f["kind"] == "PLUGIN_INCOMPATIBLE" and f["entity_id"] == "com.meshgrid.artifactseal"
+    sock = socket.create_connection(("127.0.0.1", 6379), timeout=5.0)
+    sock_file = sock.makefile("rb")
+    registry_order = [
+        x.decode() for x in _redis_cmd(sock_file, sock, "LRANGE", "link:index", "0", "-1")
     ]
-    assert len(hits) == 1
-    assert hits[0]["detail"] == "3.0.1"
-    assert hits[0]["event_seq"] == 0
-    assert hits[0]["finding_id"] == fid(
-        "meshgrid", "com.meshgrid.artifactseal", "PLUGIN_INCOMPATIBLE", 0
+    ledgers = {
+        iface: _redis_cmd(sock_file, sock, "GET", "link:ledger:" + iface)
+        for iface in registry_order
+    }
+    sock.close()
+
+    detached, smoothed, naive_nocarry, naive_revops, weights = {}, {}, {}, {}, {}
+    for iface in registry_order:
+        is_detached, raws = _parse_ledger(ledgers[iface])
+        ops = shaping[iface]["ops"]
+        adjusted = [_apply_ops(v, ops) for v in raws]
+        adjusted_rev = [_apply_ops(v, list(reversed(ops))) for v in raws]
+        detached[iface] = is_detached
+        smoothed[iface] = _smooth(adjusted)
+        naive_nocarry[iface] = _smooth(adjusted, drop_carry=True)
+        naive_revops[iface] = _smooth(adjusted_rev)
+        weights[iface] = [_weight(s) for s in smoothed[iface]]
+
+    rows = []
+    for pos, iface in enumerate(registry_order):
+        for day, s_val in enumerate(smoothed[iface]):
+            rows.append((pos, day, s_val, weights[iface][day]))
+
+    values = {}
+    for iface in registry_order:
+        if not detached[iface]:
+            values[iface] = _shaping_values(
+                smoothed[iface], weights[iface], meta[iface]["tier"]
+            )
+
+    return {
+        "registry_order": registry_order,
+        "meta": meta,
+        "detached": detached,
+        "smoothed": smoothed,
+        "naive_nocarry": naive_nocarry,
+        "naive_revops": naive_revops,
+        "weights": weights,
+        "rows": rows,
+        "values": values,
+        "seal": f'{_seal_chain(rows, "pre"):016x}',
+    }
+
+
+def _manifest():
+    with open(MANIFEST_PATH) as f:
+        return json.load(f)
+
+
+def _active_ids(ref):
+    return sorted(iface for iface, d in ref["detached"].items() if not d)
+
+
+def _expected_dropin(iface, vals):
+    return (
+        "[Match]\n"
+        f"Name={iface}\n"
+        "\n"
+        "[TokenBucketFilter]\n"
+        "Parent=root\n"
+        f'Rate={vals["rate_kbit"]}K\n'
+        f'BurstBytes={vals["burst_kib"]}K\n'
+        "LatencySec=0.05\n"
     )
 
 
-def test_catalog_alias_conflict_guava_detail_bundle(report: dict[str, Any]) -> None:
-    """Shared guava alias between libraries and bundles emits CATALOG_ALIAS_CONFLICT with detail bundle."""
-    hits = [f for f in report["findings"] if f["kind"] == "CATALOG_ALIAS_CONFLICT"]
-    assert any(f["entity_id"] == "guava" and f["detail"] == "bundle" for f in hits)
+def _expected_env(iface, uid, tier, vals):
+    return (
+        f"IFACE={iface}\n"
+        f"LINK_UID={uid}\n"
+        f"TIER={tier}\n"
+        f'PEAK={vals["peak"]}\n'
+        f'TOTAL_UNITS={vals["total_units"]}\n'
+        f'RATE_KBIT={vals["rate_kbit"]}\n'
+        f'BURST_KIB={vals["burst_kib"]}\n'
+    )
 
 
-def test_catalog_version_drift_jackson_core(report: dict[str, Any]) -> None:
-    """Inline jackson-core version disagrees with versions table alias and emits CATALOG_VERSION_DRIFT."""
-    hits = [f for f in report["findings"] if f["kind"] == "CATALOG_VERSION_DRIFT"]
-    assert any(f["entity_id"] == "jackson-core" and f["detail"] == "2.16.0" for f in hits)
+def test_manifest_shape():
+    """The manifest exists with the documented schema and ordering, and seal.hex mirrors its seal."""
+    manifest = _manifest()
+    assert set(manifest) == {"interfaces", "detached", "row_count", "seal"}
+    ids = [e["iface_id"] for e in manifest["interfaces"]]
+    assert ids == sorted(ids)
+    assert manifest["detached"] == sorted(manifest["detached"])
+    for entry in manifest["interfaces"]:
+        assert set(entry) == {
+            "iface_id", "uid", "tier", "peak", "total_units",
+            "rate_kbit", "burst_kib",
+        }
+    seal = manifest["seal"]
+    assert isinstance(seal, str) and len(seal) == 16
+    assert seal == seal.lower() and all(c in "0123456789abcdef" for c in seal)
+    with open(SEAL_PATH) as f:
+        assert f.read() == seal + "\n"
 
 
-def test_offline_publish_findings_exact(report: dict[str, Any]) -> None:
-    """Broken offline vault settings emit project-repo vault and unsigned findings with field-name entity_id."""
-    by_kind = {
-        f["kind"]: f
-        for f in report["findings"]
-        if f["module_id"] == "meshgrid"
-        and f["kind"]
-        in ("PROJECT_REPO_FORBIDDEN", "OFFLINE_REPO_MISCONFIG", "PUBLISH_UNSIGNED")
-    }
-    assert by_kind["PROJECT_REPO_FORBIDDEN"]["entity_id"] == "repositories_mode"
-    assert by_kind["PROJECT_REPO_FORBIDDEN"]["detail"] == "PREFER_PROJECT"
-    assert by_kind["OFFLINE_REPO_MISCONFIG"]["entity_id"] == "vault_path"
-    assert by_kind["OFFLINE_REPO_MISCONFIG"]["detail"] == "/tmp/wrong-vault"
-    assert by_kind["PUBLISH_UNSIGNED"]["entity_id"] == "signed_publish"
-    assert by_kind["PUBLISH_UNSIGNED"]["detail"] == ""
+def test_accounts_provisioned():
+    """Every active interface has its group and nologin user with the fixed uid and state home."""
+    ref = _reference()
+    for iface in _active_ids(ref):
+        uid = ref["meta"][iface]["uid"]
+        group = grp.getgrnam(iface)
+        assert group.gr_gid == uid, iface
+        user = pwd.getpwnam(iface)
+        assert user.pw_uid == uid and user.pw_gid == uid, iface
+        assert user.pw_shell == "/usr/sbin/nologin", iface
+        assert user.pw_dir == STATE_BASE + "/" + iface, iface
 
 
-def test_releasemesh_dependency_fanout_strictly_gt(report: dict[str, Any]) -> None:
-    """Four direct deps exceeds max_direct_deps three using strict greater-than, not greater-or-equal."""
-    hits = [
-        f
-        for f in report["findings"]
-        if f["kind"] == "DEPENDENCY_FANOUT" and f["module_id"] == "releasemesh"
-    ]
-    assert len(hits) == 1
-    assert hits[0]["detail"] == "4"
+def test_state_directories():
+    """Every active interface's state directory exists with mode 0750 and the right owner."""
+    ref = _reference()
+    for iface in _active_ids(ref):
+        uid = ref["meta"][iface]["uid"]
+        st = os.stat(STATE_BASE + "/" + iface)
+        assert stat.S_ISDIR(st.st_mode), iface
+        assert stat.S_IMODE(st.st_mode) == 0o750, iface
+        assert st.st_uid == uid and st.st_gid == uid, iface
 
 
-def test_artifactseal_bom_and_lock_finding_ids_distinct(report: dict[str, Any]) -> None:
-    """BOM override and lock drift on the same guava coordinate stay unique via kind in finding_id."""
-    arts = [f for f in report["findings"] if f["module_id"] == "artifactseal"]
-    bom = next(f for f in arts if f["kind"] == "BOM_OVERRIDE_FORBIDDEN")
-    drift = next(f for f in arts if f["kind"] == "LOCK_VERSION_DRIFT")
-    assert bom["entity_id"] == drift["entity_id"] == "com.google.guava:guava"
-    assert bom["event_seq"] == drift["event_seq"] == 0
-    assert bom["finding_id"] == "artifactseal::com.google.guava:guava::BOM_OVERRIDE_FORBIDDEN::0000"
-    assert drift["finding_id"] == "artifactseal::com.google.guava:guava::LOCK_VERSION_DRIFT::0000"
-    assert bom["detail"] == "32.0.0"
-    assert drift["detail"] == "33.0.0"
-    ids = [f["finding_id"] for f in report["findings"]]
-    assert len(ids) == len(set(ids))
+def test_networkd_dropins():
+    """Every active interface's networkd drop-in carries exactly the documented lines."""
+    ref = _reference()
+    for iface in _active_ids(ref):
+        with open("/etc/systemd/network/40-" + iface + ".network") as f:
+            assert f.read() == _expected_dropin(iface, ref["values"][iface]), iface
 
 
-def test_artifactseal_bom_override_forbidden_first_key(report: dict[str, Any]) -> None:
-    """BOM consumer under strict_bom emits BOM_OVERRIDE_FORBIDDEN for the first sorted override key."""
-    hits = [
-        f
-        for f in report["findings"]
-        if f["kind"] == "BOM_OVERRIDE_FORBIDDEN" and f["module_id"] == "artifactseal"
-    ]
-    assert len(hits) == 1
-    assert hits[0]["entity_id"] == "com.google.guava:guava"
-    assert hits[0]["detail"] == "32.0.0"
+def test_policy_env_files():
+    """Every active interface's env file carries exactly the documented lines in order."""
+    ref = _reference()
+    for iface in _active_ids(ref):
+        meta = ref["meta"][iface]
+        with open("/etc/link-rate.d/" + iface + ".env") as f:
+            content = f.read()
+        assert content == _expected_env(
+            iface, meta["uid"], meta["tier"], ref["values"][iface]
+        ), iface
 
 
-def test_depknit_lock_version_drift(report: dict[str, Any]) -> None:
-    """Lock version must match module override for jackson-databind; detail is the lock version."""
-    hits = [
-        f
-        for f in report["findings"]
-        if f["kind"] == "LOCK_VERSION_DRIFT" and f["module_id"] == "depknit"
-    ]
-    assert len(hits) == 1
-    assert hits[0]["entity_id"] == "com.fasterxml.jackson.core:jackson-databind"
-    assert hits[0]["detail"] == "2.16.1"
+def test_detached_absent():
+    """Detached interfaces left no account and no files, yet appear in the manifest list."""
+    ref = _reference()
+    manifest = _manifest()
+    detached = sorted(iface for iface, d in ref["detached"].items() if d)
+    assert manifest["detached"] == detached
+    active_ids = {e["iface_id"] for e in manifest["interfaces"]}
+    for iface in detached:
+        assert iface not in active_ids
+        for lookup, name in ((pwd.getpwnam, "user"), (grp.getgrnam, "group")):
+            try:
+                lookup(iface)
+                raise AssertionError(f"{name} {iface} exists for detached interface")
+            except KeyError:
+                pass
+        assert not os.path.exists(STATE_BASE + "/" + iface), iface
+        assert not os.path.exists("/etc/systemd/network/40-" + iface + ".network"), iface
+        assert not os.path.exists("/etc/link-rate.d/" + iface + ".env"), iface
 
 
-def test_artifactseal_orphan_lock_entry(report: dict[str, Any]) -> None:
-    """Required lock coordinates unused by the module referenced map are ORPHAN_LOCK_ENTRY."""
-    hits = [
-        f
-        for f in report["findings"]
-        if f["kind"] == "ORPHAN_LOCK_ENTRY" and f["module_id"] == "artifactseal"
-    ]
-    assert any(f["entity_id"] == "org.example:orphan-lib" for f in hits)
+def test_manifest_values_match_recomputed():
+    """Every manifest entry matches the values recomputed from raw registry bytes and shaping ops."""
+    ref = _reference()
+    manifest = _manifest()
+    entries = {e["iface_id"]: e for e in manifest["interfaces"]}
+    assert set(entries) == set(_active_ids(ref))
+    for iface, vals in ref["values"].items():
+        entry = entries[iface]
+        assert entry["uid"] == ref["meta"][iface]["uid"], iface
+        assert entry["tier"] == ref["meta"][iface]["tier"], iface
+        for key, expected in vals.items():
+            assert entry[key] == expected, (iface, key)
 
 
-def test_pluginbridge_bad_checksum_capture_counters(report: dict[str, Any]) -> None:
-    """Bad checksum lines are rejected and excluded from valid lock records in capture counters."""
-    mod = next(m for m in report["modules"] if m["module_id"] == "pluginbridge")
-    cap = mod["capture"]
-    assert cap["format_version"] == 1
-    assert cap["records_total"] == 2
-    assert cap["records_valid"] == 1
-    assert cap["records_rejected"] == 1
+def test_values_not_from_naive_models():
+    """The delivered values track the correct pipeline, not its naive misreadings."""
+    ref = _reference()
+    manifest = _manifest()
+    entries = {e["iface_id"]: e for e in manifest["interfaces"]}
+    for naive_key in ("naive_nocarry", "naive_revops"):
+        diverged = 0
+        for iface in _active_ids(ref):
+            tier = ref["meta"][iface]["tier"]
+            naive_smoothed = ref[naive_key][iface]
+            naive_vals = _shaping_values(
+                naive_smoothed, [_weight(s) for s in naive_smoothed], tier
+            )
+            if any(entries[iface][k] != naive_vals[k] for k in naive_vals):
+                diverged += 1
+        assert diverged >= 4, (naive_key, diverged)
 
 
-def test_cataloghub_unknown_dependency_ghostmod(report: dict[str, Any]) -> None:
-    """Unknown dependency module ids emit UNKNOWN_DEPENDENCY with detail UNKNOWN_DEPENDENCY."""
-    hits = [
-        f
-        for f in report["findings"]
-        if f["kind"] == "UNKNOWN_DEPENDENCY" and f["module_id"] == "cataloghub"
-    ]
-    assert len(hits) == 1
-    assert hits[0]["entity_id"] == "ghostmod"
-    assert hits[0]["detail"] == "UNKNOWN_DEPENDENCY"
+def test_row_count_covers_registry():
+    """row_count counts every ledger row of every registry interface, active and detached."""
+    ref = _reference()
+    manifest = _manifest()
+    assert manifest["row_count"] == len(ref["rows"])
+    detached_rows = sum(
+        len(ref["smoothed"][iface]) for iface, d in ref["detached"].items() if d
+    )
+    assert detached_rows > 0
+    assert manifest["row_count"] > detached_rows
 
 
-def test_module_cycle_wireloom_pluginbridge(report: dict[str, Any]) -> None:
-    """Mutual module edges form a cycle reported once per cyclic module at event_seq max_ord+1."""
-    hits = [f for f in report["findings"] if f["kind"] == "MODULE_CYCLE"]
-    mods = {f["module_id"] for f in hits}
-    assert "wireloom" in mods and "pluginbridge" in mods
-    assert all(f["event_seq"] == 7 for f in hits)
-    assert all(f["finding_id"].endswith("::MODULE_CYCLE::0007") for f in hits)
+def test_seal_matches():
+    """The manifest seal equals the chain replayed over every recomputed ledger row."""
+    ref = _reference()
+    manifest = _manifest()
+    assert manifest["seal"] == ref["seal"]
 
 
-def test_unresolved_ref_post_mesh(report: dict[str, Any]) -> None:
-    """Missing version.ref names emit CATALOG_UNRESOLVED_REF at max_ord+1 with entity_id equal to the ref name."""
-    hits = [f for f in report["findings"] if f["kind"] == "CATALOG_UNRESOLVED_REF"]
-    assert len(hits) == 1
-    assert hits[0]["entity_id"] == "does-not-exist"
-    assert hits[0]["event_seq"] == 7
-    assert hits[0]["module_id"] == "meshgrid"
+def test_seal_is_coupled_to_values():
+    """The delivered seal tracks the full-chain reading and diverges from every naive variant of it."""
+    ref = _reference()
+    rows = ref["rows"]
+    submitted = _manifest()["seal"]
+    assert submitted == f'{_seal_chain(rows, "pre"):016x}'
+    assert f'{_seal_chain(rows, "mid"):016x}' != submitted
+    active_rows = [r for r in rows if not ref["detached"][ref["registry_order"][r[0]]]]
+    assert f'{_seal_chain(active_rows, "pre"):016x}' != submitted
+    perturbed = list(rows)
+    pos, day, s_val, w_val = perturbed[len(perturbed) // 2]
+    perturbed[len(perturbed) // 2] = (pos, day, s_val + 1, w_val)
+    assert f'{_seal_chain(perturbed, "pre"):016x}' != submitted
+    by_name = sorted(range(len(ref["registry_order"])), key=lambda i: ref["registry_order"][i])
+    sorted_rows = []
+    for i in by_name:
+        iface = ref["registry_order"][i]
+        for day, s_val in enumerate(ref["smoothed"][iface]):
+            sorted_rows.append((i, day, s_val, ref["weights"][iface][day]))
+    assert f'{_seal_chain(sorted_rows, "pre"):016x}' != submitted
 
 
-def test_root_status_drift_when_findings(report: dict[str, Any]) -> None:
-    """Root status is DRIFT when findings are present and STABLE only when findings is empty."""
-    assert report["findings"]
-    assert report["status"] == "DRIFT"
+def test_reprovision_is_idempotent():
+    """Running the provisioner again changes no account, file bytes, ownership or mode."""
+    ref = _reference()
 
+    def state():
+        digest = hashlib.sha256()
+        for iface in _active_ids(ref):
+            for path in (
+                "/etc/systemd/network/40-" + iface + ".network",
+                "/etc/link-rate.d/" + iface + ".env",
+            ):
+                with open(path, "rb") as f:
+                    digest.update(path.encode() + b"\0" + f.read() + b"\0")
+            st = os.stat(STATE_BASE + "/" + iface)
+            digest.update(
+                f"{iface} {st.st_uid} {st.st_gid} {stat.S_IMODE(st.st_mode):o}".encode()
+            )
+            user = pwd.getpwnam(iface)
+            digest.update(f"{user.pw_uid} {user.pw_shell} {user.pw_dir}".encode())
+        for path in (MANIFEST_PATH, SEAL_PATH):
+            with open(path, "rb") as f:
+                digest.update(f.read())
+        return digest.hexdigest()
 
-def test_perturbed_lock_changes_report_then_restores(report: dict[str, Any]) -> None:
-    """Temporarily swapping a lock row under the active data root must change then restore the report."""
-    lock = ROOT / "locks" / "wireloom.lock"
-    original = lock.read_bytes()
-    first = REPORT_PATH.read_bytes()
-    try:
-        lock.write_text(
-            "LOCK1\n1\n1\n"
-            "com.google.guava:guava\t99.0.0\t"
-            + _sha256_coord("com.google.guava:guava", "99.0.0")
-            + "\t0\n"
-        )
-        _run_gridknit()
-        second = REPORT_PATH.read_bytes()
-        assert second != first
-    finally:
-        lock.write_bytes(original)
-        _run_gridknit()
-        assert REPORT_PATH.read_bytes() == first
-    _ = report
-
-
-def test_gridknit_data_root_env_swap(report: dict[str, Any]) -> None:
-    """Alternate GRIDKNIT_DATA_ROOT/REPORT_PATH must reseal elsewhere and leave the primary report bytes untouched."""
-    primary_before = REPORT_PATH.read_bytes()
-    with tempfile.TemporaryDirectory() as tmp:
-        alt_root = Path(tmp) / "meshgrid"
-        alt_report = Path(tmp) / "alt_report.json"
-        shutil.copytree(ROOT, alt_root)
-        lock = alt_root / "locks" / "depknit.lock"
-        lock.write_text(
-            "LOCK1\n1\n1\n"
-            "com.fasterxml.jackson.core:jackson-databind\t9.9.9\t"
-            + _sha256_coord("com.fasterxml.jackson.core:jackson-databind", "9.9.9")
-            + "\t0\n"
-        )
-        _run_gridknit(
-            {
-                "GRIDKNIT_DATA_ROOT": str(alt_root),
-                "GRIDKNIT_REPORT_PATH": str(alt_report),
-            }
-        )
-        assert alt_report.is_file(), "alternate report path must be written"
-        assert REPORT_PATH.is_file(), (
-            "primary /app/build/gradle_stabilization_report.json must remain when "
-            "GRIDKNIT_REPORT_PATH points elsewhere"
-        )
-        assert REPORT_PATH.read_bytes() == primary_before, (
-            "primary report bytes must be unchanged during alternate-path reseal"
-        )
-        alt = json.loads(alt_report.read_text())
-        expected_alt = build_expected(alt_root)
-        assert alt == expected_alt
-        assert alt != report
-        assert json.loads(REPORT_PATH.read_text()) == report
+    before = state()
+    result = subprocess.run(
+        [TOOL_PATH], capture_output=True, text=True, timeout=300, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    assert state() == before

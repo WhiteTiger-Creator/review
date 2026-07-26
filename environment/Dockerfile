@@ -1,65 +1,62 @@
-# Canonical Go image (public.ecr.aws/docker/library/golang:1.24-bookworm digest-pinned).
-# Agent rebuilds gridknit after catalog and lock authorization fixes.
-# Verifier pytest wheels are installed here because allow_internet=false.
-# Runtime make carve-out: verifier and agent reseal gridknit inside this image.
-FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
-
-ARG TASK_IMAGE_REVISION=7
-ARG BUILD_DATE=2026-07-25T00:00:00Z
-
-LABEL org.opencontainers.image.source="harbor_tasks/gradle-monorepo-stabilization"
-LABEL org.opencontainers.image.revision="${TASK_IMAGE_REVISION}"
-LABEL org.opencontainers.image.version="${TASK_IMAGE_REVISION}"
-LABEL org.opencontainers.image.created="${BUILD_DATE}"
-LABEL org.opencontainers.image.licenses="MIT"
-
-ENV DEBIAN_FRONTEND=noninteractive \
-    TZ=UTC \
-    PATH="/usr/local/go/bin:/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-    GOTOOLCHAIN=local \
-    GO111MODULE=on \
-    CGO_ENABLED=0 \
-    GOCACHE=/tmp/go-cache \
-    GOPATH=/tmp/go \
-    LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1 \
-    SOURCE_DATE_EPOCH=0
-
-# OS packages first so source and wheel edits do not bust the apt layer.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        asciinema \
-        ca-certificates \
-        make \
-        python-is-python3 \
-        python3 \
-        python3-pip \
-        tmux \
-    && rm -rf /var/lib/apt/lists/* /root/.cache
+FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
 
 WORKDIR /app
 
-# Manifests before wheels, then offline verifier install, before source trees.
-COPY requirements.lock /opt/verifier/requirements.lock
-COPY go.mod Makefile /app/
-COPY wheels/ /opt/verifier/wheels/
-RUN test -n "$(ls -A /opt/verifier/wheels/*.whl 2>/dev/null)" \
-    && python3 -m pip install --no-cache-dir --break-system-packages --no-index \
-        --find-links /opt/verifier/wheels \
-        --require-hashes --no-deps -r /opt/verifier/requirements.lock \
-    && ln -sf /usr/bin/python3 /usr/bin/python
+# tmux + asciinema are required by the terminus-2 harness. Everything else is
+# what the task itself needs: the PHP toolchain the provisioning tool is
+# written against, the Redis server holding the link ledger registry, and
+# composer for the Slim API.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        tmux=3.3a-* \
+        asciinema=2.2.0-* \
+        curl=7.88.1-* \
+        ca-certificates=20230311* \
+        unzip=6.0-* \
+        procps=2:4.0.2-* \
+        redis-server=5:7.0.* \
+        redis-tools=5:7.0.* \
+        php-cli=2:8.2+* \
+        php-mbstring=2:8.2+* \
+        php-curl=2:8.2+* \
+        php-xml=2:8.2+* \
+        php-gmp=2:8.2+* \
+        composer=2.5.* \
+    && rm -rf /var/lib/apt/lists/*
 
-# Immutable policy and fixtures, then editable stabilizer sources.
-COPY gradle-policy/ /app/gradle-policy/
-COPY meshgrid/ /app/meshgrid/
-COPY gridknit/ /app/gridknit/
-COPY internal/ /app/internal/
+# Verifier toolchain, baked at build time because the task runs offline.
+RUN python -m pip install --no-cache-dir \
+    pytest==8.4.1 \
+    pytest-json-ctrf==0.3.5
 
-# Non-root agent for Harbor [agent].user. Do not pre-create /logs/* — Harbor bind-mounts
-# those paths; baking them into the image breaks reward.txt visibility on the host.
-RUN mkdir -p /app/build \
-    && useradd --create-home --uid 1000 --shell /bin/bash agent \
-    && chown -R agent:agent /app
+COPY app/ /app/
+
+RUN chmod +x /app/scripts/start-services.sh \
+    && mkdir -p /app/out /app/bin /var/log/linkreg-api /var/lib/redis \
+        /etc/systemd/network /etc/link-rate.d /var/lib/link-rate
+
+# Slim + predis for the link registry API, installed from the committed
+# composer.lock so the dependency tree is byte-identical on every build. The
+# container never reaches the network again.
+RUN cd /app/api \
+    && COMPOSER_ALLOW_SUPERUSER=1 composer install --no-interaction --no-dev --prefer-dist --no-progress \
+    && composer clear-cache
+
+# Generate the ledger records and the private metadata the API serves, then
+# load the records into Redis and persist the snapshot. The fixture
+# self-asserts inside gen_data.py fail the build if any stated rule stops
+# firing in the data.
+COPY build/redis-linkreg.conf /etc/redis/linkreg.conf
+COPY build/gen_data.py /tmp/build/gen_data.py
+RUN set -eu; \
+    python /tmp/build/gen_data.py; \
+    redis-server /etc/redis/linkreg.conf; \
+    for _ in $(seq 1 60); do redis-cli ping >/dev/null 2>&1 && break; sleep 0.25; done; \
+    redis-cli --pipe < /tmp/build/seed.resp; \
+    redis-cli save; \
+    redis-cli shutdown nosave || true; \
+    sleep 1; \
+    test -s /var/lib/redis/dump.rdb; \
+    rm -rf /tmp/build /root/.composer /root/.cache
+
+CMD ["/bin/bash", "-c", "/app/scripts/start-services.sh >/dev/null 2>&1 || true; sleep infinity"]
