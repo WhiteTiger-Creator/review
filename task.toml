@@ -4,31 +4,27 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "machine-learning"
-codebase_size = "small"
+category = "system-administration"
 subcategories = ["tool_specific"]
 number_of_milestones = 0
-languages = ["r"]
-tags = [
-  "r",
-  "regression",
-  "ecology",
-  "counts",
-  "tabular"
-]
-expert_time_estimate_min = 120
-junior_time_estimate_min = 340
+codebase_size = "small"
+languages = ["go"]
+tags = ["go", "restart-budget", "digest", "replay", "convergence"]
+expert_time_estimate_min = 60
+junior_time_estimate_min = 180
 
 [verifier]
-timeout_sec = 900
+timeout_sec = 1800
 
 [agent]
-timeout_sec = 1200
-user = 65534
+timeout_sec = 1800
 
 [environment]
-build_timeout_sec = 900
+allow_internet = false
+build_timeout_sec = 600
 cpus = 2
 memory_mb = 4096
-storage_mb = 8192
-allow_internet = false
+storage_mb = 10240
+docker_flags = []
+gpus = 0
+gpu_types = []

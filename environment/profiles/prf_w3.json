@@ -1,0 +1,9 @@
+{
+  "family": "wave_gamma",
+  "budget": 3,
+  "unit_slice": "sg",
+  "incident_wave": "sg",
+  "permute": true,
+  "swap_masks": false,
+  "band_limit": 32
+}

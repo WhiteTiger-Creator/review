@@ -1,733 +1,681 @@
-"""Deterministic artifact and held-out checks for a generated R MLE task."""
+"""Storm budget verifier — expectations derived from public overlay/ledger contracts.
 
+Distinct n3_v1 storm-budget grid contract fingerprint for collapse hygiene.
+"""
+
+from __future__ import annotations
+
+import hashlib
 import json
 import os
-import shutil
+import struct
 import subprocess
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
 import pytest
-from sklearn.metrics import (
-    accuracy_score,
-    f1_score,
-    mean_absolute_error,
-    mean_squared_error,
-    r2_score,
-)
 
-DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
-CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/app/config"))
-OUT = Path(os.environ.get("OUT_DIR", os.environ.get("OUTPUT_DIR", "/app/outputs")))
-LABELS = Path(os.environ.get("EVAL_LABELS_PATH", "/tests/eval/test_labels.csv"))
-ANALYSIS = Path(os.environ.get("ANALYSIS_PATH", "/app/analysis.R"))
-
-
-def read_key_values(path):
-    frame = pd.read_csv(path)
-    return dict(zip(frame["key"], frame["value"]))
-
-
-def cfg_int(config, key, default):
-    value = str(config.get(key, default)).strip()
-    return int(value) if value else int(default)
-
-
-def write_config_with_updates(src_dir, dst_dir, updates):
-    shutil.copytree(src_dir, dst_dir)
-    frame = pd.read_csv(dst_dir / "model_config.csv")
-    for key, value in updates.items():
-        mask = frame["key"] == key
-        if mask.any():
-            frame.loc[mask, "value"] = str(value)
-        else:
-            frame = pd.concat([frame, pd.DataFrame([{"key": key, "value": str(value)}])], ignore_index=True)
-    frame.to_csv(dst_dir / "model_config.csv", index=False)
+ENV = Path("/app/environment")
+REPORT = Path("/app/output/storm_trace.json")
+AUDIT = Path("/app/output/replay_audit.json")
+UNIT_SG = ENV / "pack/w8/sg.slice"
+UNIT_SD = ENV / "pack/w8/sd.slice"
+INC_SG = ENV / "pack/incidents/sg.inc"
+INC_SD = ENV / "pack/incidents/sd.inc"
+STAGING = ENV / "pack/seed/.anchor_staging"
+LEDGER = ENV / "pack/ledger/waves.ndjson"
+POLICY_DIR = ENV / "pack/policy"
+INTER = ENV / "pack/inter_m5.json"
+BUNDLES = ("wave_alpha", "wave_beta", "wave_gamma", "wave_delta")
+PROFILE_FILES = {
+    "wave_alpha": "prf_w1.json",
+    "wave_beta": "prf_w2.json",
+    "wave_gamma": "prf_w3.json",
+    "wave_delta": "prf_w4.json",
+}
+STAGING_ANCHOR_DISTINCT = b"HOTSTG01"
+DIGEST_HEX_LEN = 64
+_PROBE_STATE: dict[str, str | None] = {"bin": None}
 
 
-def class_probability_columns(classes):
-    return ["prob_" + "".join(ch.lower() if ch.isalnum() else "_" for ch in c).strip("_") for c in classes]
+def _burst_require(condition: bool, message: str = "") -> None:
+    if not condition:
+        raise AssertionError(message)
 
 
-def macro_f1(actual, predicted, classes):
-    return f1_score(actual, predicted, labels=classes, average="macro", zero_division=0)
-
-
-MISSING_TOKENS = {"", "NA", "NaN", "nan", "null", "?", "MISSING"}
-
-
-def is_missing(value):
-    if pd.isna(value):
-        return True
-    return str(value).strip() in MISSING_TOKENS
-
-
-def clean_numeric(series):
-    values = pd.to_numeric(series, errors="coerce").astype(float)
-    values[~np.isfinite(values)] = np.nan
-    return values
-
-
-def feature_rows(roles):
-    return roles.loc[roles["role"] == "feature"].reset_index(drop=True)
-
-
-def learn_encoder(frame, roles):
-    encoders = {}
-    for _, role in feature_rows(roles).iterrows():
-        feature = role["feature"]
-        if role["data_type"] == "numeric":
-            values = clean_numeric(frame[feature])
-            finite = values.dropna()
-            med = float(finite.median()) if len(finite) else 0.0
-            imputed = values.fillna(med).astype(float)
-            center = float(imputed.mean())
-            scale = float(imputed.std(ddof=1)) if len(imputed) > 1 else 1.0
-            if not np.isfinite(scale) or scale < 1e-9:
-                scale = 1.0
-            encoders[feature] = {"type": "numeric", "median": med, "mean": center, "sd": scale}
-        else:
-            vals = ["__missing__" if is_missing(value) else str(value).strip() for value in frame[feature]]
-            levels = sorted(set(vals))
-            for extra in ["__missing__", "__other__"]:
-                if extra not in levels:
-                    levels.append(extra)
-            encoders[feature] = {"type": "categorical", "levels": levels}
-    return encoders
-
-
-def apply_encoder(frame, encoders):
-    parts = []
-    for feature, encoder in encoders.items():
-        if encoder["type"] == "numeric":
-            values = clean_numeric(frame[feature]).fillna(encoder["median"]).astype(float)
-            parts.append(((values - encoder["mean"]) / encoder["sd"]).to_numpy().reshape(-1, 1))
-        else:
-            vals = ["__missing__" if is_missing(value) else str(value).strip() for value in frame[feature]]
-            vals = [value if value in encoder["levels"] else "__other__" for value in vals]
-            mat = np.zeros((len(frame), len(encoder["levels"])), dtype=float)
-            for idx, level in enumerate(encoder["levels"]):
-                mat[:, idx] = [1.0 if value == level else 0.0 for value in vals]
-            parts.append(mat)
-    return np.column_stack(parts) if parts else np.zeros((len(frame), 0), dtype=float)
-
-
-def fit_ridge(x, y, lambda_value):
-    design = np.column_stack([np.ones(len(x)), x])
-    penalty = np.eye(design.shape[1])
-    penalty[0, 0] = 0.0
-    return np.linalg.solve(design.T @ design + float(lambda_value) * penalty, design.T @ y)
-
-
-def predict_ridge(beta, x):
-    design = np.column_stack([np.ones(len(x)), x])
-    return design @ beta
-
-
-def target_for_model(y, use_log):
-    return np.log1p(np.maximum(y, 0.0)) if use_log else y
-
-
-def target_from_model(y, use_log):
-    return np.maximum(0.0, np.expm1(y)) if use_log else y
-
-
-def expected_selection_report(public_data, config, roles):
-    """Recompute validation k selection with group-stability ranking."""
-    split_col = config["split_column"]
-    target_col = config["target_column"]
-    group_col = config["group_column"]
-    fit = public_data[public_data[split_col] == "fit"].reset_index(drop=True)
-    validation = public_data[public_data[split_col] == "validation"].reset_index(drop=True)
-    encoders = learn_encoder(fit, roles)
-    fit_x = apply_encoder(fit, encoders)
-    validation_x = apply_encoder(validation, encoders)
-    fit_y = clean_numeric(fit[target_col]).to_numpy(float)
-    validation_y = clean_numeric(validation[target_col]).to_numpy(float)
-    use_log = bool(np.nanmin(np.concatenate([fit_y, validation_y])) >= 0.0)
-    groups = validation[group_col].fillna("__missing__").astype(str).replace({"": "__missing__"})
-    rows = []
-    for candidate_k in [int(value) for value in str(config["k_grid"]).split("|")]:
-        beta = fit_ridge(fit_x, target_for_model(fit_y, use_log), candidate_k)
-        prediction = target_from_model(predict_ridge(beta, validation_x), use_log)
-        rmse = float(np.sqrt(mean_squared_error(validation_y, prediction)))
-        group_rmse = []
-        for group in sorted(groups.unique()):
-            mask = (groups == group).to_numpy()
-            group_rmse.append(float(np.sqrt(mean_squared_error(validation_y[mask], prediction[mask]))))
-        rows.append(
-            {
-                "candidate_k": candidate_k,
-                "validation_metric": rmse,
-                "worst_group_rmse": max(group_rmse),
-                "best_group_rmse": min(group_rmse),
-                "stability_gap": max(group_rmse) - min(group_rmse),
-                "selected": False,
-            }
-        )
-    selected_idx = min(
-        range(len(rows)),
-        key=lambda idx: (
-            rows[idx]["stability_gap"],
-            rows[idx]["validation_metric"],
-            rows[idx]["candidate_k"],
-        ),
-    )
-    rows[selected_idx]["selected"] = True
-    return pd.DataFrame(rows)
-
-
-def selected_lambda(public_data, config, roles):
-    expected = expected_selection_report(public_data, config, roles)
-    selected = expected[expected["selected"]]
-    assert len(selected) == 1
-    return int(selected["candidate_k"].iloc[0])
-
-
-def expected_ridge_predictions(public_data, config, roles, split_name):
-    """Recompute row-level ridge predictions for validation or test rows."""
-    split_col = config["split_column"]
-    target_col = config["target_column"]
-    lambda_value = selected_lambda(public_data, config, roles)
-    if split_name == "validation":
-        train = public_data[public_data[split_col] == "fit"].reset_index(drop=True)
-        evaluation = public_data[public_data[split_col] == "validation"].reset_index(drop=True)
-        log_source = public_data[public_data[split_col].isin(["fit", "validation"])][target_col]
-    elif split_name == "test":
-        train = public_data[public_data[split_col].isin(["fit", "validation"])].reset_index(drop=True)
-        evaluation = public_data[public_data[split_col] == "test"].reset_index(drop=True)
-        log_source = train[target_col]
-    else:
-        raise ValueError(f"Unsupported split_name: {split_name}")
-    encoders = learn_encoder(train, roles)
-    train_x = apply_encoder(train, encoders)
-    evaluation_x = apply_encoder(evaluation, encoders)
-    train_y = clean_numeric(train[target_col]).to_numpy(float)
-    log_values = clean_numeric(log_source).dropna().to_numpy(float)
-    use_log = bool(len(log_values) and np.nanmin(log_values) >= 0.0)
-    beta = fit_ridge(train_x, target_for_model(train_y, use_log), lambda_value)
-    prediction = target_from_model(predict_ridge(beta, evaluation_x), use_log)
-    return pd.DataFrame({"row_id": evaluation["row_id"], "expected_prediction": prediction}).sort_values("row_id")
-
-
-def validation_interval_report(public_data, config, roles, selected_k):
-    """Recompute validation interval coverage and width from fit-row neighbors."""
-    split_col = config["split_column"]
-    target_col = config["target_column"]
-    fit = public_data[public_data[split_col] == "fit"].reset_index(drop=True)
-    validation = public_data[public_data[split_col] == "validation"].reset_index(drop=True)
-    encoders = learn_encoder(fit, roles)
-    fit_x = apply_encoder(fit, encoders)
-    validation_x = apply_encoder(validation, encoders)
-    fit_y = clean_numeric(fit[target_col]).to_numpy(float)
-    validation_y = clean_numeric(validation[target_col]).to_numpy(float)
-    positions = np.arange(len(fit_x))
-    k = min(int(selected_k), len(fit_x))
-    lower = []
-    upper = []
-    for idx in range(len(validation_x)):
-        distances = np.sqrt(((fit_x - validation_x[idx, :]) ** 2).sum(axis=1))
-        nearest = np.lexsort((positions, distances))[:k]
-        lower.append(float(np.quantile(fit_y[nearest], 0.08, method="median_unbiased")))
-        upper.append(float(np.quantile(fit_y[nearest], 0.92, method="median_unbiased")))
-    lower = np.asarray(lower)
-    upper = np.asarray(upper)
-    return pd.DataFrame(
-        {
-            "split": ["validation"],
-            "interval_coverage": [round(float(np.mean((validation_y >= lower) & (validation_y <= upper))), 6)],
-            "mean_width": [round(float(np.mean(upper - lower)), 6)],
-        }
-    )
-
-
-def expected_residual_bins(validation_predictions):
-    """Recompute prediction-quantile residual bins from serialized validation rows."""
-    values = validation_predictions["prediction"].astype(float).to_numpy()
-    errors = validation_predictions["abs_error"].astype(float).to_numpy()
-    cuts = np.quantile(values, np.linspace(0, 1, 6), method="median_unbiased")
-    cuts = np.unique(cuts)
-    if len(cuts) < 2:
-        cuts = np.array([values.min(), values.max() + 1e-6])
-    rows = []
-    for idx in range(len(cuts) - 1):
-        lower = cuts[idx]
-        upper = cuts[idx + 1]
-        if idx == 0:
-            mask = (values >= lower) & (values <= upper)
-        else:
-            mask = (values > lower) & (values <= upper)
-        if np.any(mask):
-            rows.append({"mean_abs_error": float(errors[mask].mean()), "count": int(mask.sum())})
-    return pd.DataFrame(rows)
-
-
-def expected_feature_pair_stress(public_data, config, roles):
-    """Recompute final test prediction shifts from paired feature replacement."""
-    split_col = config["split_column"]
-    target_col = config["target_column"]
-    train = public_data[public_data[split_col].isin(["fit", "validation"])].reset_index(drop=True)
-    evaluation = public_data[public_data[split_col] == "test"].sort_values("row_id").reset_index(drop=True)
-    encoders = learn_encoder(train, roles)
-    train_x = apply_encoder(train, encoders)
-    train_y = clean_numeric(train[target_col]).to_numpy(float)
-    log_values = clean_numeric(train[target_col]).dropna().to_numpy(float)
-    use_log = bool(len(log_values) and np.nanmin(log_values) >= 0.0)
-    beta = fit_ridge(train_x, target_for_model(train_y, use_log), selected_lambda(public_data, config, roles))
-    baseline_x = apply_encoder(evaluation, encoders)
-    baseline = target_from_model(predict_ridge(beta, baseline_x), use_log)
-    rows = []
-    selected_features = feature_rows(roles).head(cfg_int(config, "feature_pair_stress_feature_count", 5)).reset_index(drop=True)
-    for i, role_a in selected_features.iterrows():
-        for _, role_b in selected_features.iloc[i + 1 :].iterrows():
-            feature_a = role_a["feature"]
-            feature_b = role_b["feature"]
-            stressed = evaluation.copy()
-            for role in [role_a, role_b]:
-                feature = role["feature"]
-                if role["data_type"] == "numeric":
-                    stressed[feature] = encoders[feature]["median"]
-                else:
-                    stressed[feature] = encoders[feature]["levels"][0]
-            stressed_x = apply_encoder(stressed, encoders)
-            prediction = target_from_model(predict_ridge(beta, stressed_x), use_log)
-            shift = prediction - baseline
-            rows.append(
-                {
-                    "feature_a": feature_a,
-                    "feature_b": feature_b,
-                    "baseline_mean_prediction": float(np.mean(baseline)),
-                    "stressed_mean_prediction": float(np.mean(prediction)),
-                    "mean_prediction_shift": float(np.mean(shift)),
-                    "mean_abs_prediction_shift": float(np.mean(np.abs(shift))),
-                    "max_abs_prediction_shift": float(np.max(np.abs(shift))),
-                }
-            )
-    rows.sort(
-        key=lambda row: (
-            -row["mean_abs_prediction_shift"],
-            -row["max_abs_prediction_shift"],
-            row["feature_a"],
-            row["feature_b"],
-        )
-    )
-    for rank, row in enumerate(rows, start=1):
-        row["rank"] = rank
-    return pd.DataFrame(
-        rows,
-        columns=[
-            "rank",
-            "feature_a",
-            "feature_b",
-            "baseline_mean_prediction",
-            "stressed_mean_prediction",
-            "mean_prediction_shift",
-            "mean_abs_prediction_shift",
-            "max_abs_prediction_shift",
-        ],
-    )
-
-
-def expected_feature_summary(public_data, config, roles):
-    """Recompute feature missingness counts by split."""
-    rows = []
-    split_col = config["split_column"]
-    for _, role in feature_rows(roles).iterrows():
-        feature = role["feature"]
-        row = {"feature": feature, "data_type": role["data_type"]}
-        for split_name, column in [
-            ("fit", "missing_fit"),
-            ("validation", "missing_validation"),
-            ("test", "missing_test"),
-        ]:
-            values = public_data.loc[public_data[split_col] == split_name, feature]
-            row[column] = int(sum(is_missing(value) for value in values))
-        rows.append(row)
-    return pd.DataFrame(rows)
-
-
-def expected_group_error_report(validation_predictions):
-    """Recompute validation group mean absolute errors."""
-    source = validation_predictions.copy()
-    groups = source["group_key"].apply(lambda value: "__missing__" if is_missing(value) else str(value).strip())
-    source["group_key"] = groups
-    return (
-        source.groupby("group_key", sort=True)
-        .agg(mean_abs_error=("abs_error", "mean"), n_validation=("abs_error", "size"))
-        .reset_index()
-    )
-
-
-def expected_neighbor_evidence(public_data, config, roles):
-    """Recompute nearest final-reference row for the neighbor evidence report."""
-    split_col = config["split_column"]
-    lambda_value = selected_lambda(public_data, config, roles)
-    _ = lambda_value  # The selected k/lambda fixes the final model; nearest row uses the same final encoding.
-    train = public_data[public_data[split_col].isin(["fit", "validation"])].reset_index(drop=True)
-    evaluation = (
-        public_data[public_data[split_col] == "test"]
-        .sort_values("row_id")
-        .reset_index(drop=True)
-    )
-    encoders = learn_encoder(train, roles)
-    train_x = apply_encoder(train, encoders)
-    evaluation_x = apply_encoder(evaluation, encoders)
-    rows = []
-    for idx in range(min(50, len(evaluation))):
-        distances = np.sqrt(((train_x - evaluation_x[idx, :]) ** 2).sum(axis=1))
-        nearest = int(np.argsort(distances, kind="mergesort")[0])
-        rows.append(
-            {
-                "row_id": evaluation["row_id"].iloc[idx],
-                "nearest_fit_index": nearest + 1,
-                "nearest_distance": round(float(distances[nearest]), 6),
-            }
-        )
-    return pd.DataFrame(rows)
-
-
-def run_analysis(data_dir, out_dir, config_dir=None):
-    env = os.environ.copy()
-    config_dir = CONFIG_DIR if config_dir is None else Path(config_dir)
-    env["DATA_DIR"] = str(data_dir)
-    env["DATA_PATH"] = str(data_dir / "train.csv")
-    env["CONFIG_DIR"] = str(config_dir)
-    env["OUT_DIR"] = str(out_dir)
-    env["OUTPUT_DIR"] = str(out_dir)
-    result = subprocess.run(
-        ["Rscript", str(ANALYSIS)],
-        text=True,
+def compile_workspace() -> None:
+    proc = subprocess.run(
+        ["bash", "/app/environment/scripts/build_all.sh"],
         capture_output=True,
-        timeout=420,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"build failed:\n{proc.stderr}")
+
+
+def _ensure_probe_built() -> str:
+    probe_bin = "/app/environment/.libprobe"
+    cached = _PROBE_STATE["bin"]
+    if cached is not None:
+        return cached
+    env = {
+        **os.environ,
+        "PATH": "/usr/local/go/bin:" + os.environ.get("PATH", ""),
+        "GOWORK": "off",
+        "GOCACHE": "/tmp/tb-gocache",
+    }
+    build = subprocess.run(
+        ["go", "build", "-a", "-o", probe_bin, "."],
+        cwd=str(Path("/tests") / "lib_probe"),
+        capture_output=True,
+        text=True,
         check=False,
         env=env,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
-    return out_dir
-
-
-@pytest.fixture(scope="module")
-def config():
-    return read_key_values(CONFIG_DIR / "model_config.csv")
-
-
-@pytest.fixture(scope="module")
-def thresholds():
-    return read_key_values(CONFIG_DIR / "evaluation_thresholds.csv")
-
-
-@pytest.fixture(scope="module")
-def roles():
-    return pd.read_csv(CONFIG_DIR / "feature_roles.csv")
-
-
-@pytest.fixture(scope="module")
-def public_data():
-    return pd.read_csv(DATA_DIR / "train.csv")
-
-
-@pytest.fixture(scope="module")
-def labels():
-    return pd.read_csv(LABELS)
-
-
-@pytest.fixture(scope="module")
-def predictions():
-    return pd.read_csv(OUT / "predictions.csv")
-
-
-@pytest.fixture(scope="module")
-def validation_predictions():
-    return pd.read_csv(OUT / "validation_predictions.csv")
-
-
-@pytest.fixture(scope="module")
-def metrics():
-    return json.loads((OUT / "metrics.json").read_text())
-
-
-class TestPublicSurface:
-    def test_required_artifacts_exist(self):
-        """The required output files are present after the R analysis runs."""
-        required = [
-            "predictions.csv",
-            "validation_predictions.csv",
-            "metrics.json",
-            "selection_report.csv",
-            "feature_summary.csv",
-            "group_error_report.csv",
-            "neighbor_evidence.csv",
-            "interval_report.csv",
-            "residual_bins.csv",
-            "feature_pair_stress_report.csv",
-        ]
-        missing = [name for name in required if not (OUT / name).exists()]
-        assert not missing
-
-    def test_public_test_targets_are_blank(self, public_data, config):
-        """The public data does not reveal target values for held-out test rows."""
-        test_rows = public_data[public_data[config["split_column"]] == "test"]
-        assert test_rows[config["target_column"]].isna().all()
-
-    def test_feature_summary_matches_configured_features(self, public_data, config, roles):
-        """feature_summary.csv covers features and split-specific missing counts."""
-        summary = pd.read_csv(OUT / "feature_summary.csv")
-        assert list(summary.columns) == [
-            "feature",
-            "data_type",
-            "missing_fit",
-            "missing_validation",
-            "missing_test",
-        ]
-        expected = expected_feature_summary(public_data, config, roles)
-        summary = summary.sort_values("feature").reset_index(drop=True)
-        expected = expected.sort_values("feature").reset_index(drop=True)
-        pd.testing.assert_frame_equal(summary, expected, check_dtype=False)
-
-
-class TestPredictionContract:
-    def test_predictions_cover_heldout_rows(self, predictions, labels):
-        """predictions.csv covers every held-out row_id exactly once."""
-        assert predictions["row_id"].is_unique
-        assert set(predictions["row_id"]) == set(labels["row_id"])
-
-    def test_predictions_are_sorted(self, predictions):
-        """predictions.csv is sorted by row_id for deterministic upload checks."""
-        values = predictions["row_id"].to_numpy()
-        assert np.all(values[:-1] <= values[1:])
-
-    def test_prediction_columns_match_task_mode(self, predictions, config):
-        """The prediction schema matches the declared modeling mode."""
-        if config["task_mode"] == "regression":
-            assert {"prediction", "lower", "upper", "group_key"}.issubset(predictions)
-            assert np.isfinite(predictions["prediction"]).all()
-            assert (predictions["lower"] <= predictions["upper"]).all()
-        else:
-            classes = config["class_order"].split("|")
-            prob_cols = class_probability_columns(classes)
-            assert {"pred_label", "group_key"}.issubset(predictions)
-            assert set(prob_cols).issubset(predictions)
-            sums = predictions[prob_cols].sum(axis=1).to_numpy()
-            np.testing.assert_allclose(sums, np.ones(len(sums)), atol=1e-4)
-
-
-class TestValidationEvidence:
-    def test_selection_report_has_one_selected_k(self, public_data, config, roles, metrics):
-        """selection_report.csv recomputes validation group stability and marks the chosen k."""
-        report = pd.read_csv(OUT / "selection_report.csv")
-        assert list(report.columns) == [
-            "candidate_k",
-            "validation_metric",
-            "worst_group_rmse",
-            "best_group_rmse",
-            "stability_gap",
-            "selected",
-        ]
-        expected = expected_selection_report(public_data, config, roles)
-        for column in [
-            "candidate_k",
-            "validation_metric",
-            "worst_group_rmse",
-            "best_group_rmse",
-            "stability_gap",
-        ]:
-            np.testing.assert_allclose(report[column].astype(float), expected[column].astype(float), atol=5e-5)
-        selected = report[report["selected"].astype(str).str.lower().isin(["true", "1"])]
-        assert len(selected) == 1
-        assert int(selected["candidate_k"].iloc[0]) == int(metrics["selected_k"])
-        expected_selected = expected[expected["selected"]]
-        assert int(selected["candidate_k"].iloc[0]) == int(expected_selected["candidate_k"].iloc[0])
-
-    def test_group_report_uses_validation_groups(self, validation_predictions):
-        """group_error_report.csv recomputes validation group mean errors."""
-        report = pd.read_csv(OUT / "group_error_report.csv")
-        assert list(report.columns) == ["group_key", "mean_abs_error", "n_validation"]
-        assert report["group_key"].is_unique
-        assert (report["n_validation"] > 0).all()
-        expected = expected_group_error_report(validation_predictions)
-        report = report.sort_values("group_key").reset_index(drop=True)
-        expected = expected.sort_values("group_key").reset_index(drop=True)
-        assert report["group_key"].tolist() == expected["group_key"].tolist()
-        assert report["n_validation"].astype(int).tolist() == expected["n_validation"].astype(int).tolist()
-        np.testing.assert_allclose(report["mean_abs_error"], expected["mean_abs_error"], atol=1e-6)
-
-    def test_neighbor_evidence_matches_reference(self, public_data, config, roles):
-        """neighbor_evidence.csv recomputes nearest final-reference rows."""
-        report = pd.read_csv(OUT / "neighbor_evidence.csv")
-        assert list(report.columns) == ["row_id", "nearest_fit_index", "nearest_distance"]
-        expected = expected_neighbor_evidence(public_data, config, roles)
-        assert len(report) == len(expected)
-        assert report["row_id"].tolist() == expected["row_id"].tolist()
-        assert report["nearest_fit_index"].astype(int).tolist() == expected["nearest_fit_index"].astype(int).tolist()
-        assert (report["nearest_distance"] >= 0).all()
-        np.testing.assert_allclose(report["nearest_distance"], expected["nearest_distance"], atol=5e-6)
-
-    def test_metrics_match_validation_predictions(self, validation_predictions, metrics, config, public_data, roles):
-        """metrics.json is an honest summary of the selected fit-only validation model."""
-        if config["task_mode"] == "regression":
-            expected = expected_ridge_predictions(public_data, config, roles, "validation")
-            merged = validation_predictions.merge(expected, on="row_id", how="inner", validate="one_to_one")
-            np.testing.assert_allclose(merged["prediction"], merged["expected_prediction"], atol=1e-4)
-            rmse = np.sqrt(
-                mean_squared_error(
-                    validation_predictions["actual"],
-                    validation_predictions["prediction"],
-                )
-            )
-            mae = mean_absolute_error(
-                validation_predictions["actual"],
-                validation_predictions["prediction"],
-            )
-            assert abs(float(metrics["validation_rmse"]) - rmse) <= 1e-5
-            assert abs(float(metrics["validation_mae"]) - mae) <= 1e-5
-        else:
-            classes = config["class_order"].split("|")
-            acc = accuracy_score(
-                validation_predictions["actual"].astype(str),
-                validation_predictions["pred_label"].astype(str),
-            )
-            f1 = macro_f1(
-                validation_predictions["actual"].astype(str),
-                validation_predictions["pred_label"].astype(str),
-                classes,
-            )
-            assert abs(float(metrics["validation_accuracy"]) - acc) <= 1e-5
-            assert abs(float(metrics["validation_macro_f1"]) - f1) <= 1e-5
-
-    def test_interval_and_residual_reports_are_contentful(self, public_data, roles, validation_predictions, metrics, config):
-        """Regression interval and residual-bin reports summarize validation predictions."""
-        if config["task_mode"] != "regression":
-            return
-        expected_interval = validation_interval_report(public_data, config, roles, metrics["selected_k"])
-        interval = pd.read_csv(OUT / "interval_report.csv")
-        assert list(interval.columns) == ["split", "interval_coverage", "mean_width"]
-        assert len(interval) == 1
-        assert interval["split"].iloc[0] == "validation"
-        coverage = float(interval["interval_coverage"].iloc[0])
-        assert 0.0 <= coverage <= 1.0
-        assert abs(coverage - float(metrics["interval_coverage"])) <= 1e-5
-        assert np.isfinite(float(interval["mean_width"].iloc[0]))
-        assert float(interval["mean_width"].iloc[0]) >= 0.0
-        np.testing.assert_allclose(
-            interval[["interval_coverage", "mean_width"]].astype(float),
-            expected_interval[["interval_coverage", "mean_width"]].astype(float),
-            atol=5e-6,
+    if build.returncode != 0:
+        raise AssertionError(
+            "library probe build failed:\n"
+            f"stdout:\n{build.stdout}\nstderr:\n{build.stderr}"
         )
+    _PROBE_STATE["bin"] = probe_bin
+    return probe_bin
 
-        residual_bins = pd.read_csv(OUT / "residual_bins.csv")
-        assert list(residual_bins.columns) == ["prediction_bin", "mean_abs_error", "count"]
-        assert not residual_bins.empty
-        assert int(residual_bins["count"].sum()) == len(validation_predictions)
-        assert (residual_bins["count"] > 0).all()
-        expected_bins = expected_residual_bins(validation_predictions)
-        assert len(residual_bins) == len(expected_bins)
-        np.testing.assert_array_equal(residual_bins["count"].astype(int), expected_bins["count"].astype(int))
-        np.testing.assert_allclose(
-            residual_bins["mean_abs_error"].astype(float),
-            expected_bins["mean_abs_error"].astype(float),
-            atol=5e-6,
+
+def run_library_probe(check: str | None = None) -> str:
+    """Compile and run direct package probes under k4/graph, m2/limit, p8/g9, ld, pol."""
+    probe_bin = _ensure_probe_built()
+    env = {
+        **os.environ,
+        "PATH": "/usr/local/go/bin:" + os.environ.get("PATH", ""),
+        "GOWORK": "off",
+        "GOCACHE": "/tmp/tb-gocache",
+    }
+    if check is None:
+        proc = subprocess.run(
+            [probe_bin],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
         )
-
-    def test_feature_pair_stress_matches_reference(self, public_data, config, roles):
-        """feature_pair_stress_report.csv recomputes paired test-feature sensitivity."""
-        if config["task_mode"] != "regression":
-            return
-        report = pd.read_csv(OUT / "feature_pair_stress_report.csv")
-        expected = expected_feature_pair_stress(public_data, config, roles)
-        assert list(report.columns) == list(expected.columns)
-        assert len(report) == len(expected)
-        assert report[["rank", "feature_a", "feature_b"]].astype(str).values.tolist() == expected[
-            ["rank", "feature_a", "feature_b"]
-        ].astype(str).values.tolist()
-        for column in [
-            "baseline_mean_prediction",
-            "stressed_mean_prediction",
-            "mean_prediction_shift",
-            "mean_abs_prediction_shift",
-            "max_abs_prediction_shift",
-        ]:
-            np.testing.assert_allclose(report[column].astype(float), expected[column].astype(float), atol=5e-6)
+    else:
+        proc = subprocess.run(
+            [probe_bin, check],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+    if proc.returncode != 0:
+        raise AssertionError(
+            "library probe failed:\n"
+            f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+        )
+    return proc.stdout.strip()
 
 
-class TestHeldoutQuality:
-    def test_heldout_score_clears_threshold(self, predictions, labels, config, thresholds, public_data, roles):
-        """Held-out predictions match the selected refit model and clear quality bars."""
-        merged = predictions.merge(labels, on="row_id", how="inner", validate="one_to_one")
-        target = config["target_column"]
-        if config["task_mode"] == "regression":
-            expected = expected_ridge_predictions(public_data, config, roles, "test")
-            checked = predictions.merge(expected, on="row_id", how="inner", validate="one_to_one")
-            np.testing.assert_allclose(checked["prediction"], checked["expected_prediction"], atol=1e-4)
-            rmse = np.sqrt(mean_squared_error(merged[target], merged["prediction"]))
-            mae = mean_absolute_error(merged[target], merged["prediction"])
-            r2 = r2_score(merged[target], merged["prediction"])
-            assert rmse <= float(thresholds["max_rmse"])
-            assert mae <= float(thresholds["max_mae"])
-            assert r2 >= float(thresholds["min_r2"])
-        else:
-            classes = config["class_order"].split("|")
-            acc = accuracy_score(merged[target].astype(str), merged["pred_label"].astype(str))
-            f1 = macro_f1(
-                merged[target].astype(str),
-                merged["pred_label"].astype(str),
-                classes,
-            )
-            assert acc >= float(thresholds["min_accuracy"])
-            assert f1 >= float(thresholds["min_macro_f1"])
+def invoke_driver(*, expect_ok: bool = True) -> subprocess.CompletedProcess[str]:
+    REPORT.parent.mkdir(parents=True, exist_ok=True)
+    if REPORT.exists():
+        REPORT.unlink()
+    if AUDIT.exists():
+        AUDIT.unlink()
+    proc = subprocess.run(
+        [
+            "/app/environment/bin/wave_sched",
+            "--grid-full",
+            "--out",
+            str(REPORT),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if expect_ok and proc.returncode != 0:
+        raise AssertionError(f"driver failed:\n{proc.stderr}")
+    return proc
 
-    def test_fit_label_perturbation_changes_predictions(self, tmp_path, predictions, config):
-        """Changing fit labels changes held-out predictions in an alternate run."""
-        alt_data = tmp_path / "data"
-        shutil.copytree(DATA_DIR, alt_data)
-        frame = pd.read_csv(alt_data / "train.csv")
-        target = config["target_column"]
-        fit_mask = frame[config["split_column"]] == "fit"
-        if config["task_mode"] == "regression":
-            values = pd.to_numeric(frame.loc[fit_mask, target])
-            frame.loc[fit_mask, target] = values + values.std(ddof=0) * 0.75
-        else:
-            classes = config["class_order"].split("|")
-            mapping = {classes[i]: classes[(i + 1) % len(classes)] for i in range(len(classes))}
-            frame.loc[fit_mask, target] = frame.loc[fit_mask, target].astype(str).map(mapping)
-        frame.to_csv(alt_data / "train.csv", index=False)
-        alt_out = tmp_path / "out"
-        alt_out.mkdir()
-        run_analysis(alt_data, alt_out)
-        changed = pd.read_csv(alt_out / "predictions.csv")
-        merged = predictions.merge(changed, on="row_id", suffixes=("_orig", "_alt"))
-        if config["task_mode"] == "regression":
-            delta = np.abs(merged["prediction_orig"] - merged["prediction_alt"]).mean()
-        else:
-            classes = config["class_order"].split("|")
-            prob_cols = class_probability_columns(classes)
-            delta = 0.0
-            for col in prob_cols:
-                delta += np.abs(merged[f"{col}_orig"] - merged[f"{col}_alt"]).mean()
-        assert delta > 1e-6
 
-    def test_feature_pair_stress_honors_configured_feature_count(self, tmp_path, public_data, roles):
-        """Changing feature_pair_stress_feature_count changes the paired stress audit."""
-        alt_data = tmp_path / "data"
-        alt_config = tmp_path / "config"
-        alt_out = tmp_path / "out"
-        shutil.copytree(DATA_DIR, alt_data)
-        write_config_with_updates(CONFIG_DIR, alt_config, {"feature_pair_stress_feature_count": 3})
-        alt_out.mkdir()
-        run_analysis(alt_data, alt_out, alt_config)
+def load_report() -> dict:
+    if not REPORT.is_file():
+        raise AssertionError("graded report missing after driver run")
+    payload = json.loads(REPORT.read_text(encoding="utf-8"))
+    if payload.get("format") != "n3_v1":
+        raise AssertionError("unexpected report format tag")
+    return payload
 
-        mutated_config = read_key_values(alt_config / "model_config.csv")
-        expected = expected_feature_pair_stress(public_data, mutated_config, roles)
-        report = pd.read_csv(alt_out / "feature_pair_stress_report.csv")
-        assert len(report) == len(expected) == 3
-        assert report[["rank", "feature_a", "feature_b"]].astype(str).values.tolist() == expected[
-            ["rank", "feature_a", "feature_b"]
-        ].astype(str).values.tolist()
-        for column in [
-            "baseline_mean_prediction",
-            "stressed_mean_prediction",
-            "mean_prediction_shift",
-            "mean_abs_prediction_shift",
-            "max_abs_prediction_shift",
-        ]:
-            np.testing.assert_allclose(report[column].astype(float), expected[column].astype(float), atol=5e-6)
+
+def load_audit() -> dict:
+    if not AUDIT.is_file():
+        raise AssertionError("replay_audit missing after driver run")
+    return json.loads(AUDIT.read_text(encoding="utf-8"))
+
+
+def bundle_row(payload: dict, name: str) -> dict:
+    for entry in payload["grid"]:
+        if entry["family"] == name:
+            return entry
+    raise KeyError(name)
+
+
+def blob_fingerprint(path: Path) -> str:
+    proc = subprocess.run(
+        ["sha256sum", str(path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return proc.stdout.split()[0]
+
+
+def ledger_tip_gen() -> int:
+    """Public tip rule from policy_overlay.md / field_layout.md."""
+    tip = -1
+    for line in LEDGER.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        rec = json.loads(line)
+        if rec.get("tomb"):
+            continue
+        tip = max(tip, int(rec["gen"]))
+    return max(tip, 0)
+
+
+def load_overlay_for_tip(tip: int) -> tuple[dict, str]:
+    """Public pick rule: ov_g{N}.json for tip N."""
+    path = POLICY_DIR / f"ov_g{tip}.json"
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    rel = f"pack/policy/ov_g{tip}.json"
+    return doc, rel
+
+
+def read_anchor_bytes(policy_gen: int) -> bytes:
+    cp = ENV / "pack/checkpoints" / f"stg_g{policy_gen}.bin"
+    if cp.is_file():
+        data = cp.read_bytes()
+        if len(data) >= 8:
+            return data[:8]
+    if STAGING.is_file():
+        data = STAGING.read_bytes()
+        if len(data) >= 8:
+            return data[:8]
+    return b"N3ANCHOR"
+
+
+def parse_cell(cell: bytes, *, permute: bool, swap_masks: bool) -> list[dict]:
+    if len(cell) < 6 or cell[:4] != b"CELL":
+        raise ValueError("bad cell")
+    count = cell[5]
+    arms: list[dict] = []
+    off = 6
+    for _ in range(count):
+        arm_id = cell[off]
+        kind = cell[off + 1]
+        mask = struct.unpack_from("<H", cell, off + 2)[0]
+        shadow = cell[off + 4]
+        seq = cell[off + 5]
+        arms.append(
+            {
+                "id": arm_id,
+                "kind": kind,
+                "mask": mask,
+                "shadow": shadow,
+                "seq": seq,
+            }
+        )
+        off += 6
+    if permute and len(arms) >= 3:
+        arms[1], arms[2] = arms[2], arms[1]
+    if swap_masks and len(arms) >= 3:
+        arms[1]["mask"], arms[2]["mask"] = arms[2]["mask"], arms[1]["mask"]
+    return arms
+
+
+def parse_wave(wave: bytes) -> list[int]:
+    if len(wave) < 6 or wave[:4] != b"WAVE":
+        raise ValueError("bad wave")
+    count = struct.unpack_from("<H", wave, 4)[0]
+    return list(wave[6 : 6 + count])
+
+
+def weave_reference(arms: list[dict], radius: int) -> list[int]:
+    order = sorted(arms, key=lambda a: a["seq"])
+    suppressed: set[int] = set()
+    for arm in order:
+        if arm["kind"] != 2:
+            continue
+        if arm["shadow"] == 0:
+            continue
+        link = arm["shadow"]
+        for other in arms:
+            if other["kind"] != 1:
+                continue
+            if (other["mask"] & arm["mask"]) == 0:
+                continue
+            if abs(other["id"] - link) >= radius:
+                suppressed.add(other["id"])
+    active: list[int] = []
+    for arm in order:
+        if arm["kind"] == 1 and arm["id"] not in suppressed:
+            active.append(arm["id"])
+    return active
+
+
+def tally_reference(active: list[dict], events: list[int]) -> list[tuple[int, int]]:
+    scored: list[tuple[int, int]] = []
+    for arm in active:
+        hits = 0
+        for field in events:
+            if field & arm["mask"]:
+                hits += 1
+        scored.append((arm["id"], hits))
+    return scored
+
+
+def seek_reference(
+    scored: list[tuple[int, int]], budget: int, anchor: bytes
+) -> tuple[list[int], bytes]:
+    decorated = []
+    for arm_id, score in scored:
+        tie = anchor[arm_id % 8]
+        decorated.append((arm_id, score, tie))
+    decorated.sort(key=lambda row: (-row[1], -row[2], row[0]))
+    take = min(budget, len(decorated))
+    lane_order = [row[0] for row in decorated[:take]]
+    return lane_order, anchor[:8]
+
+
+def canonical_digest(
+    cell: bytes,
+    wave: bytes,
+    masks: dict[int, int],
+    lane_order: list[int],
+    anchor: bytes,
+) -> str:
+    hasher = hashlib.sha256()
+    hasher.update(cell)
+    hasher.update(wave)
+    for slot in lane_order:
+        mask = masks.get(slot, 0)
+        hasher.update(struct.pack("<H", mask))
+        hasher.update(struct.pack("<B", slot))
+    hasher.update(anchor[:8])
+    return hasher.hexdigest()
+
+
+def profile_doc(family: str) -> dict:
+    return json.loads(
+        (ENV / "profiles" / PROFILE_FILES[family]).read_text(encoding="utf-8")
+    )
+
+
+def reference_family_row(family: str) -> dict:
+    tip = ledger_tip_gen()
+    overlay, overlay_rel = load_overlay_for_tip(tip)
+    radius = int(overlay["shadow_radius"])
+    policy_gen = int(overlay["gen"])
+    profile = profile_doc(family)
+    cell = (ENV / "pack/w8" / f"{profile['unit_slice']}.slice").read_bytes()
+    wave = (ENV / "pack/incidents" / f"{profile['incident_wave']}.inc").read_bytes()
+    arms = parse_cell(
+        cell,
+        permute=profile.get("permute", False),
+        swap_masks=profile.get("swap_masks", False),
+    )
+    events = parse_wave(wave)
+    active_ids = weave_reference(arms, radius)
+    active_arms = [a for a in arms if a["id"] in active_ids]
+    scored = tally_reference(active_arms, events)
+    anchor = read_anchor_bytes(policy_gen)
+    lane_order, anchor_out = seek_reference(scored, profile["budget"], anchor)
+    mask_map = {a["id"]: a["mask"] for a in active_arms}
+    span_band = sum(score for _, score in scored)
+    digest = canonical_digest(cell, wave, mask_map, lane_order, anchor_out)
+    return {
+        "family": family,
+        "lane_order": lane_order,
+        "span_band": span_band,
+        "span_digest": digest,
+        "cold_digest": digest,
+        "hot_digest": digest,
+        "band_limit": profile["band_limit"],
+        "tip_gen": tip,
+        "policy_gen": policy_gen,
+        "policy_id": overlay["policy_id"],
+        "policy_path": overlay_rel,
+        "ledger_fingerprint": hashlib.sha256(LEDGER.read_bytes()).hexdigest(),
+    }
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _storm_grid_ready() -> None:
+    if not ENV.is_dir():
+        raise AssertionError("environment root missing")
+    compile_workspace()
+
+
+@pytest.fixture(scope="session")
+def _libprobe_ready() -> None:
+    _ensure_probe_built()
+
+
+def test_burst_probe_overlap_suppression(_libprobe_ready: None) -> None:
+    """Overlap suppression must drop linked include arms before lane assembly."""
+    run_library_probe("q7")
+    run_library_probe("q8")
+    run_library_probe("q9")
+    run_library_probe("q16")
+
+
+def test_burst_probe_family_hit_epochs(_libprobe_ready: None) -> None:
+    """Family burst tallies must isolate, keep hit epochs aligned, and refresh on byte changes."""
+    run_library_probe("q10")
+    run_library_probe("q12")
+    run_library_probe("q11")
+    run_library_probe("q15")
+    run_library_probe("q18")
+
+
+def test_burst_probe_staged_tie_bytes(_libprobe_ready: None) -> None:
+    """Equal scores must rank with descending staged-anchor bytes then ascending arm id."""
+    run_library_probe("q13")
+    run_library_probe("q14")
+
+
+def test_ledger_overlay_coupling_probe(_libprobe_ready: None) -> None:
+    """Ledger tip must ignore tombstones and select the matching overlay generation."""
+    run_library_probe("q17")
+
+
+def test_wave_gamma_tally_not_inherited() -> None:
+    """Held wave_gamma must not inherit hit vectors from an earlier sg bundle in the same grid run."""
+    invoke_driver()
+    live = bundle_row(load_report(), "wave_gamma")
+    ref = reference_family_row("wave_gamma")
+    _burst_require(live["span_band"] == ref["span_band"])
+    _burst_require(live["lane_order"] == ref["lane_order"])
+    _burst_require(live["span_digest"] == ref["span_digest"])
+
+
+def test_cold_hot_digest_triplet_agreement() -> None:
+    """Cold vs hot paths agree on graded digests with valid triplet alignment per bundle."""
+    invoke_driver()
+    doc = load_report()
+    for family in BUNDLES:
+        live = bundle_row(doc, family)
+        ref = reference_family_row(family)
+        _burst_require(len(live["span_digest"]) == DIGEST_HEX_LEN)
+        _burst_require(live["span_digest"] == live["cold_digest"] == live["hot_digest"])
+        _burst_require(live["span_digest"] == ref["span_digest"])
+
+
+def test_replay_audit_matches_ledger_overlay() -> None:
+    """replay_audit tip_gen and overlay fields must match public ledger and overlay rules."""
+    invoke_driver()
+    audit = load_audit()
+    ref = reference_family_row("wave_alpha")
+    _burst_require(audit["tip_gen"] == ref["tip_gen"])
+    _burst_require(audit["policy_gen"] == ref["policy_gen"])
+    _burst_require(audit["policy_id"] == ref["policy_id"])
+    _burst_require(audit["policy_path"] == ref["policy_path"])
+    _burst_require(audit["ledger_fingerprint"] == ref["ledger_fingerprint"])
+
+
+def test_preserve_anchor_replay_digest_stability() -> None:
+    """Preserve-anchor recovery followed by two grid replays must keep span_digest stable."""
+    before = {
+        family: reference_family_row(family)["span_digest"] for family in BUNDLES
+    }
+    subprocess.run(
+        ["bash", "/app/environment/phase/rld_x2.sh", "--preserve-anchor"],
+        check=True,
+    )
+    invoke_driver()
+    first = {
+        family: bundle_row(load_report(), family)["span_digest"] for family in BUNDLES
+    }
+    invoke_driver()
+    second = {
+        family: bundle_row(load_report(), family)["span_digest"] for family in BUNDLES
+    }
+    _burst_require(first == second)
+    _burst_require(first == before)
+    audit = load_audit()
+    _burst_require(audit["tip_gen"] == 0)
+    _burst_require(audit["policy_gen"] == 0)
+
+
+def test_budget_lane_order_matches_scoring_rule() -> None:
+    """lane_order must follow score, staged anchor tie-break, then ascending arm id ordering."""
+    invoke_driver()
+    doc = load_report()
+    for family in BUNDLES:
+        live = bundle_row(doc, family)
+        ref = reference_family_row(family)
+        _burst_require(live["lane_order"] == ref["lane_order"])
+
+
+def test_interim_smoke_digests_are_not_graded() -> None:
+    """Interim decoy rows alone do not satisfy terminal report grading."""
+    inter = json.loads(INTER.read_text(encoding="utf-8"))
+    invoke_driver()
+    doc = load_report()
+    for row in inter["rows"]:
+        family = row["family"]
+        live = bundle_row(doc, family)
+        _burst_require(live["span_digest"] != row["span_digest"])
+
+
+def test_storm_gen_poison_blocks_n3_emit() -> None:
+    """Bare resets poison generation ledger and block n3_v1 until preserve-anchor."""
+    storm_gen = ENV / "pack/seed/.storm_gen"
+    try:
+        invoke_driver()
+        subprocess.run(["bash", "/app/environment/phase/rld_x2.sh"], check=True)
+        gen_raw = storm_gen.read_text(encoding="utf-8").strip()
+        _burst_require(gen_raw != "0")
+        proc_mid = invoke_driver(expect_ok=False)
+        assert proc_mid.returncode != 0
+        if REPORT.exists():
+            assert json.loads(REPORT.read_text(encoding="utf-8")).get("format") != "n3_v1"
+        subprocess.run(["bash", "/app/environment/phase/rld_x2.sh"], check=True)
+        proc = invoke_driver(expect_ok=False)
+        assert proc.returncode != 0
+        if REPORT.exists():
+            assert json.loads(REPORT.read_text(encoding="utf-8")).get("format") != "n3_v1"
+        _burst_require(storm_gen.read_text(encoding="utf-8").strip() != "0")
+    finally:
+        subprocess.run(
+            ["bash", "/app/environment/phase/rld_x2.sh", "--preserve-anchor"],
+            check=True,
+        )
+        _burst_require(storm_gen.read_text(encoding="utf-8").strip() == "0")
+        _burst_require(ledger_tip_gen() == 0)
+
+
+def test_hotstg_prefix_blocks_n3_emit() -> None:
+    """Non-default .anchor_staging bytes must drive hot-path when no matching checkpoint binds tip."""
+    _burst_require(STAGING_ANCHOR_DISTINCT != b"N3ANCHOR")
+    original = STAGING.read_bytes() if os.path.isfile(str(STAGING)) else None
+    tip = ledger_tip_gen()
+    cp = ENV / "pack/checkpoints" / f"stg_g{tip}.bin"
+    cp_orig = cp.read_bytes() if cp.exists() else None
+    try:
+        if cp.exists():
+            cp.unlink()
+        STAGING.write_bytes(STAGING_ANCHOR_DISTINCT)
+        proc = invoke_driver(expect_ok=False)
+        _burst_require(proc.returncode != 0)
+        if REPORT.exists():
+            payload = json.loads(REPORT.read_text(encoding="utf-8"))
+            _burst_require(payload.get("format") != "n3_v1")
+    finally:
+        if cp_orig is not None:
+            cp.write_bytes(cp_orig)
+        if original is not None:
+            STAGING.write_bytes(original)
+        elif os.path.isfile(str(STAGING)):
+            STAGING.unlink()
+
+
+def test_preserve_keeps_pack_slice_fingerprints() -> None:
+    """Documented recovery after ops reset preserves fragment/incident slice integrity."""
+    before = {
+        "sg_unit": blob_fingerprint(UNIT_SG),
+        "sd_unit": blob_fingerprint(UNIT_SD),
+        "sg_incident": blob_fingerprint(INC_SG),
+        "sd_incident": blob_fingerprint(INC_SD),
+    }
+    subprocess.run(
+        ["bash", "/app/environment/phase/rld_x2.sh", "--preserve-anchor"],
+        check=True,
+    )
+    after = {
+        "sg_unit": blob_fingerprint(UNIT_SG),
+        "sd_unit": blob_fingerprint(UNIT_SD),
+        "sg_incident": blob_fingerprint(INC_SG),
+        "sd_incident": blob_fingerprint(INC_SD),
+    }
+    _burst_require(before == after)
+    invoke_driver(expect_ok=True)
+    live = bundle_row(load_report(), "wave_alpha")
+    ref = reference_family_row("wave_alpha")
+    _burst_require(live["span_digest"] == ref["span_digest"])
+
+
+def test_span_band_equals_active_include_hits() -> None:
+    """span_band sums every active include arm after suppression, not only lane_order members."""
+    invoke_driver()
+    doc = load_report()
+    for family in BUNDLES:
+        live = bundle_row(doc, family)
+        ref = reference_family_row(family)
+        _burst_require(live["span_band"] == ref["span_band"])
+        if family == "wave_delta":
+            _burst_require(live["span_band"] <= ref["band_limit"])
+
+
+def test_swap_masks_uses_decoded_masks_for_hits() -> None:
+    """swap_masks profiles must tally with decoded masks while digest prefixes hash raw slice bytes."""
+    invoke_driver()
+    live = bundle_row(load_report(), "wave_delta")
+    ref = reference_family_row("wave_delta")
+    tip = ledger_tip_gen()
+    overlay, _overlay_rel = load_overlay_for_tip(tip)
+    radius = int(overlay["shadow_radius"])
+    policy_gen = int(overlay["gen"])
+    profile = profile_doc("wave_delta")
+    cell = (ENV / "pack/w8" / f"{profile['unit_slice']}.slice").read_bytes()
+    wave = (ENV / "pack/incidents" / f"{profile['incident_wave']}.inc").read_bytes()
+    arms_decoded = parse_cell(cell, permute=False, swap_masks=True)
+    arms_raw = parse_cell(cell, permute=False, swap_masks=False)
+    events = parse_wave(wave)
+    active_ids = weave_reference(arms_decoded, radius)
+    active_decoded = [a for a in arms_decoded if a["id"] in active_ids]
+    active_raw = [a for a in arms_raw if a["id"] in active_ids]
+    band_decoded = sum(score for _, score in tally_reference(active_decoded, events))
+    band_raw = sum(score for _, score in tally_reference(active_raw, events))
+    _burst_require(live["span_band"] == ref["span_band"])
+    _burst_require(live["span_band"] == band_decoded)
+    if band_decoded != band_raw:
+        _burst_require(live["span_band"] != band_raw)
+    anchor = read_anchor_bytes(policy_gen)
+    lane_order, anchor_out = seek_reference(
+        tally_reference(active_decoded, events),
+        profile["budget"],
+        anchor,
+    )
+    mask_map_decoded = {a["id"]: a["mask"] for a in active_decoded}
+    mask_map_raw = {a["id"]: a["mask"] for a in active_raw}
+    digest_decoded = canonical_digest(cell, wave, mask_map_decoded, lane_order, anchor_out)
+    digest_raw_masks = canonical_digest(cell, wave, mask_map_raw, lane_order, anchor_out)
+    _burst_require(live["span_digest"] == digest_decoded)
+    if mask_map_decoded != mask_map_raw:
+        _burst_require(digest_decoded != digest_raw_masks)
+
+
+def test_one_byte_staging_flip_blocks_n3() -> None:
+    """When only one staging byte differs from token_seed and checkpoint is unbound, n3_v1 must not emit."""
+    seed_path = ENV / "pack/seed/token_seed.bin"
+    seed_bytes = seed_path.read_bytes()
+    _burst_require(len(seed_bytes) >= 8)
+    mismatched = bytearray(seed_bytes[:8])
+    mismatched[7] ^= 0x01
+    original = STAGING.read_bytes() if STAGING.exists() else None
+    tip = ledger_tip_gen()
+    cp = ENV / "pack/checkpoints" / f"stg_g{tip}.bin"
+    cp_orig = cp.read_bytes() if cp.exists() else None
+    try:
+        if cp.exists():
+            cp.unlink()
+        STAGING.write_bytes(bytes(mismatched))
+        proc = invoke_driver(expect_ok=False)
+        _burst_require(proc.returncode != 0)
+        if REPORT.exists():
+            payload = json.loads(REPORT.read_text(encoding="utf-8"))
+            _burst_require(payload.get("format") != "n3_v1")
+    finally:
+        if cp_orig is not None:
+            cp.write_bytes(cp_orig)
+        if original is not None:
+            STAGING.write_bytes(original)
+        elif STAGING.exists():
+            STAGING.unlink()
+
+
+def test_permute_digest_hashes_raw_slice_bytes() -> None:
+    """Digest prefix must hash on-disk slice and wave bytes even when permute reshapes scoring."""
+    invoke_driver()
+    live = bundle_row(load_report(), "wave_gamma")
+    ref = reference_family_row("wave_gamma")
+    _burst_require(live["span_digest"] == ref["span_digest"])
+    tip = ledger_tip_gen()
+    overlay, _overlay_rel = load_overlay_for_tip(tip)
+    radius = int(overlay["shadow_radius"])
+    policy_gen = int(overlay["gen"])
+    profile = profile_doc("wave_gamma")
+    cell = (ENV / "pack/w8" / f"{profile['unit_slice']}.slice").read_bytes()
+    wave = (ENV / "pack/incidents" / f"{profile['incident_wave']}.inc").read_bytes()
+    arms_scored = parse_cell(cell, permute=True, swap_masks=False)
+    arms_raw = parse_cell(cell, permute=False, swap_masks=False)
+    events = parse_wave(wave)
+    active_ids = weave_reference(arms_scored, radius)
+    active_arms = [a for a in arms_scored if a["id"] in active_ids]
+    scored = tally_reference(active_arms, events)
+    anchor = read_anchor_bytes(policy_gen)
+    lane_order, anchor_out = seek_reference(scored, profile["budget"], anchor)
+    mask_map_scored = {a["id"]: a["mask"] for a in active_arms}
+    mask_map_raw = {a["id"]: a["mask"] for a in arms_raw if a["id"] in active_ids}
+    digest_raw = canonical_digest(cell, wave, mask_map_raw, lane_order, anchor_out)
+    digest_scored = canonical_digest(cell, wave, mask_map_scored, lane_order, anchor_out)
+    _burst_require(live["span_digest"] == digest_raw)
+    if mask_map_raw != mask_map_scored:
+        _burst_require(digest_raw != digest_scored)
+
+
+def test_seed_matched_staging_recovers_convergence() -> None:
+    """When .anchor_staging matches the cold seed prefix under tip-coherent checkpoints, digests converge."""
+    seed_path = ENV / "pack/seed/token_seed.bin"
+    seed_prefix = seed_path.read_bytes()[:8]
+    original = STAGING.read_bytes() if STAGING.exists() else None
+    tip = ledger_tip_gen()
+    cp = ENV / "pack/checkpoints" / f"stg_g{tip}.bin"
+    cp_orig = cp.read_bytes() if cp.exists() else None
+    try:
+        STAGING.write_bytes(seed_prefix)
+        if cp.exists():
+            cp.write_bytes(seed_prefix)
+        invoke_driver(expect_ok=True)
+        doc = load_report()
+        for family in BUNDLES:
+            live = bundle_row(doc, family)
+            ref = reference_family_row(family)
+            _burst_require(live["span_digest"] == live["cold_digest"] == live["hot_digest"])
+            _burst_require(live["span_digest"] == ref["span_digest"])
+    finally:
+        if cp_orig is not None:
+            cp.write_bytes(cp_orig)
+        if original is not None:
+            STAGING.write_bytes(original)
+        elif STAGING.exists():
+            STAGING.unlink()
