@@ -1,0 +1,9 @@
+{
+    "temperature": 1.5,
+    "half_life_days": 7.0,
+    "min_predictions": 1,
+    "cutoff_date": "2024-09-01",
+    "penalty_multiplier": 3.0,
+    "score_precision": 4,
+    "normalize_range": [0.0, 1.0]
+}
