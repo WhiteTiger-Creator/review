@@ -4,29 +4,27 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "security"
-subcategories = ["tool_specific"]
+category = "system-administration"
+subcategories = ["long_context", "tool_specific", "api_integration", "db_interaction"]
 number_of_milestones = 0
 codebase_size = "small"
-languages = ["rust"]
-tags = ["webauthn", "trust-authority", "ed25519", "admission", "revocation", "replay"]
-expert_time_estimate_min = 180
+languages = ["Bash", "SQL", "Python"]
+tags = ["configuration-management", "sqlite", "change-control", "unix-sockets", "service-commissioning", "audit-publication"]
+expert_time_estimate_min = 240
 junior_time_estimate_min = 480
 
 [verifier]
-timeout_sec = 900
+timeout_sec = 600.0
 
 [agent]
-timeout_sec = 1800
-# Integer UID (not "65534"): Daytona uses `su` and only resolves numeric UIDs via getent.
-user = 65534
+timeout_sec = 1800.0
 
 [environment]
-allow_internet = false
-build_timeout_sec = 600
+build_timeout_sec = 900.0
+docker_flags = []
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
 gpus = 0
 gpu_types = []
-docker_flags = []
+allow_internet = false

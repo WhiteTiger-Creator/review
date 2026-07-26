@@ -1,5 +1,4 @@
-target/
-.git/
+.git
 .gitignore
 **/__pycache__/
 **/*.pyc
@@ -7,6 +6,12 @@ target/
 **/.mypy_cache/
 **/.ruff_cache/
 **/node_modules/
-*.swp
-*.swo
-*~
+**/target/
+**/dist/
+**/build/
+**/.venv/
+**/venv/
+.env
+*.log
+solution/
+tests/

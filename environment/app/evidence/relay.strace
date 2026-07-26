@@ -1,0 +1,11 @@
+03:41:50.010001 execve("/app/bin/harbor-relay", ["/app/bin/harbor-relay"], 0x7ffd /* 18 vars */) = 0
+03:41:51.200100 openat(AT_FDCWD, "/app/etc/harbor-relay/relay.conf", O_RDONLY|O_CLOEXEC) = 3
+03:41:51.200500 openat(AT_FDCWD, "/app/etc/harbor-relay/routes.map.old", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+03:41:53.100100 bind(3, {sa_family=AF_UNIX, sun_path="/app/run/harbor-relay/control.sock"}, 43) = -1 EADDRINUSE (Address already in use)
+03:41:54.000100 bind(3, {sa_family=AF_INET, sin_port=htons(4818), sin_addr=inet_addr("127.0.0.1")}, 16) = -1 EADDRINUSE (Address already in use)
+03:41:56.200100 connect(3, {sa_family=AF_UNIX, sun_path="/app/run/harbor-relay/data-plane.sock"}, 46) = -1 ENOENT (No such file or directory)
+03:41:57.010000 connect(3, {sa_family=AF_UNIX, sun_path="/app/run/harbor-relay/recovery.sock"}, 44) = -1 ENOENT (No such file or directory)
+03:41:58.440000 openat(AT_FDCWD, "/app/run/harbor-relay/data-plane.sock", O_RDWR|O_CLOEXEC) = -1 EACCES (Permission denied)
+03:42:01.000000 bind(3, {sa_family=AF_UNIX, sun_path="/app/run/harbor-relay/metrics.sock"}, 43) = -1 EADDRINUSE (Address already in use)
+03:42:11.900000 write(2, "harbor-relay: no usable listener\n", 33) = 33
+03:42:12.000000 exit_group(78) = ?

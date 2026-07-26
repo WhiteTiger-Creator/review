@@ -1,0 +1,12 @@
+SELECT CASE WHEN (SELECT COUNT(*) FROM deployment_run WHERE status='commissioned')=1 THEN 1 ELSE 0 END;
+SELECT CASE WHEN (SELECT COUNT(*) FROM assertion WHERE passed=1)=15 AND (SELECT COUNT(*) FROM assertion)=15 THEN 1 ELSE 0 END;
+SELECT CASE WHEN (SELECT value FROM configuration WHERE key='socket_path')='/app/run/harbor-relay/recovery.sock' THEN 1 ELSE 0 END;
+SELECT CASE WHEN (SELECT value FROM configuration WHERE key='reserved_files')='64' AND (SELECT value FROM configuration WHERE key='max_connections')='108' THEN 1 ELSE 0 END;
+SELECT CASE WHEN (SELECT value FROM configuration WHERE key='request_body_limit')='65536' THEN 1 ELSE 0 END;
+SELECT CASE WHEN (SELECT COUNT(*) FROM route)=4 AND (SELECT COUNT(*) FROM route WHERE decision_code='replaced')=1 AND (SELECT COUNT(*) FROM route WHERE decision_code='required')=1 THEN 1 ELSE 0 END;
+SELECT CASE WHEN EXISTS(SELECT 1 FROM decision WHERE domain='socket' AND outcome='rejected' AND evidence='last=EACCES') THEN 1 ELSE 0 END;
+SELECT CASE WHEN (SELECT COUNT(*) FROM decision)=20 AND (SELECT COUNT(*) FROM decision WHERE domain='change-control')=6 THEN 1 ELSE 0 END;
+SELECT CASE WHEN (SELECT COUNT(*) FROM authorization WHERE ticket_id='chg-2026-071' AND activation_id='act-071-recovery-b4' AND quorum_observed=4)=1 THEN 1 ELSE 0 END;
+SELECT CASE WHEN (SELECT COUNT(*) FROM approval)=2 AND (SELECT SUM(weight) FROM approval)=4 THEN 1 ELSE 0 END;
+SELECT CASE WHEN (SELECT COUNT(*) FROM publication_file)=6 AND (SELECT COUNT(*) FROM publication_file WHERE path LIKE '%activation-seal.json')=1 THEN 1 ELSE 0 END;
+SELECT CASE WHEN (SELECT COUNT(*) FROM input_artifact)=9 AND (SELECT COUNT(*) FROM input_artifact WHERE kind LIKE '%catalog-batch-result')=2 THEN 1 ELSE 0 END;
