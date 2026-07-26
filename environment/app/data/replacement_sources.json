@@ -1,0 +1,122 @@
+[
+  {
+    "replacement_set_id": "rs-equiv",
+    "mappings": [
+      {
+        "original_source_id": "crates-io",
+        "replacement_source_id": "vendor-mirror"
+      }
+    ],
+    "replacement_records": [
+      {
+        "replacement_source_id": "vendor-mirror",
+        "package_name": "codec",
+        "version": "1.1.0",
+        "checksum": "ab49003b8eb0035ba5d858f67e6c190a60cfbbd0f5705d217e8ba310d8e2dda4",
+        "source_reference": "sparse+file:///mirror/codec-1.1.0"
+      },
+      {
+        "replacement_source_id": "vendor-mirror",
+        "package_name": "codec",
+        "version": "1.2.0",
+        "checksum": "a4fe055e35debe4640adc7dda5af59250fbe9126e37dbe035c3cda73fb013588",
+        "source_reference": "sparse+file:///mirror/codec-1.2.0"
+      },
+      {
+        "replacement_source_id": "vendor-mirror",
+        "package_name": "helper",
+        "version": "1.0.0",
+        "checksum": "5fa0fe6b01040003e5b49816d0ae527caa9a89217cd37642a821672673371d18",
+        "source_reference": "sparse+file:///mirror/helper-1.0.0"
+      },
+      {
+        "replacement_source_id": "vendor-mirror",
+        "package_name": "helper",
+        "version": "1.1.0",
+        "checksum": "e62cf9ac75340a38504b1735ce83a626aa3b56365993144b4d9f818541e640a8",
+        "source_reference": "sparse+file:///mirror/helper-1.1.0"
+      },
+      {
+        "replacement_source_id": "vendor-mirror",
+        "package_name": "utility",
+        "version": "1.0.0",
+        "checksum": "2afe25716a471c4c3487eeb75007cb800432d029daa225ca906a22cef4fae3f8",
+        "source_reference": "sparse+file:///mirror/utility-1.0.0"
+      },
+      {
+        "replacement_source_id": "vendor-mirror",
+        "package_name": "logger",
+        "version": "1.0.0",
+        "checksum": "6b67626f4ad4b0e83b3599f0fade59b4623b89be9894ff6c5850e34c454c9583",
+        "source_reference": "sparse+file:///mirror/logger-1.0.0"
+      },
+      {
+        "replacement_source_id": "vendor-mirror",
+        "package_name": "logger",
+        "version": "1.1.0",
+        "checksum": "365d2d671e600e6e1d85b459bcac0903a8c76f6b917f29b6ac372654baa09e12",
+        "source_reference": "sparse+file:///mirror/logger-1.1.0"
+      }
+    ]
+  },
+  {
+    "replacement_set_id": "rs-mismatch",
+    "mappings": [
+      {
+        "original_source_id": "crates-io",
+        "replacement_source_id": "bad-mirror"
+      }
+    ],
+    "replacement_records": [
+      {
+        "replacement_source_id": "bad-mirror",
+        "package_name": "codec",
+        "version": "1.1.0",
+        "checksum": "354096e7075cf9cf1fe5131489d18898de6a9e05b12b7eaa47ab9ae8bf052db6",
+        "source_reference": "sparse+file:///bad/codec-1.1.0"
+      },
+      {
+        "replacement_source_id": "bad-mirror",
+        "package_name": "codec",
+        "version": "1.2.0",
+        "checksum": "a4fe055e35debe4640adc7dda5af59250fbe9126e37dbe035c3cda73fb013588",
+        "source_reference": "sparse+file:///bad/codec-1.2.0"
+      },
+      {
+        "replacement_source_id": "bad-mirror",
+        "package_name": "helper",
+        "version": "1.0.0",
+        "checksum": "5fa0fe6b01040003e5b49816d0ae527caa9a89217cd37642a821672673371d18",
+        "source_reference": "sparse+file:///bad/helper-1.0.0"
+      },
+      {
+        "replacement_source_id": "bad-mirror",
+        "package_name": "helper",
+        "version": "1.1.0",
+        "checksum": "e62cf9ac75340a38504b1735ce83a626aa3b56365993144b4d9f818541e640a8",
+        "source_reference": "sparse+file:///bad/helper-1.1.0"
+      },
+      {
+        "replacement_source_id": "bad-mirror",
+        "package_name": "utility",
+        "version": "1.0.0",
+        "checksum": "2afe25716a471c4c3487eeb75007cb800432d029daa225ca906a22cef4fae3f8",
+        "source_reference": "sparse+file:///bad/utility-1.0.0"
+      },
+      {
+        "replacement_source_id": "bad-mirror",
+        "package_name": "logger",
+        "version": "1.0.0",
+        "checksum": "6b67626f4ad4b0e83b3599f0fade59b4623b89be9894ff6c5850e34c454c9583",
+        "source_reference": "sparse+file:///bad/logger-1.0.0"
+      },
+      {
+        "replacement_source_id": "bad-mirror",
+        "package_name": "logger",
+        "version": "1.1.0",
+        "checksum": "365d2d671e600e6e1d85b459bcac0903a8c76f6b917f29b6ac372654baa09e12",
+        "source_reference": "sparse+file:///bad/logger-1.1.0"
+      }
+    ]
+  }
+]

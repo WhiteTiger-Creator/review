@@ -1,0 +1,30 @@
+[
+  {
+    "patched_package_id": "pp-codec-120",
+    "package_name": "codec",
+    "version": "1.2.0",
+    "patched_source_id": "crates-io",
+    "source_kind": "path_snapshot",
+    "source_reference": "path+file:///vendor/codec-1.2.0-patch",
+    "source_digest": "acd0fdbc139086e82210087201bc336cbcfc7e3b88afdf432a730ba05270411a",
+    "rust_version": "1.70.0",
+    "dependencies": [
+      {
+        "package_name": "helper",
+        "source_id": "crates-io",
+        "requirement": "=1.0.0"
+      }
+    ]
+  },
+  {
+    "patched_package_id": "pp-logger-110",
+    "package_name": "logger",
+    "version": "1.1.0",
+    "patched_source_id": "crates-io",
+    "source_kind": "git_snapshot",
+    "source_reference": "git+https://example.invalid/logger?rev=abc",
+    "source_digest": "0ece482d9a28ee7b7e6502ccbbe71b6755fe462abe70b88d68f361053dad1eac",
+    "rust_version": "1.50.0",
+    "dependencies": []
+  }
+]
