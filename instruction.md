@@ -1,18 +1,7 @@
-Train and evaluate an importance-weighted marked Hawkes policy model in R through
-/app/run.sh. Learn held-out event scores and marked excitation from clustered
-histories, enforce the joint branching, support, and deletion-stability
-constraints, choose the policy under the required tie order, and certify it by
-fully refitting every cluster-deletion surface.
+You are implementing Sky Kingdom Fleet Campaign, an offline deterministic turn-based campaign simulator under /app/skykingdom. Floating kingdoms contest islands with air fleets, supply lines, weather, research, and diplomacy. Win by satisfying the scenario victory condition before the turn limit. This is a terminal strategy game with published multi-document rules. It is not berth-tide composition, not creature heredity arenas, and not disaster-clearance adjudication.
 
-Read the input bundle from the first argument, defaulting to /app/data, and
-atomically replace the CSV at the second argument, defaulting to
-/app/outputs/results.csv. The complete input, validation, numerical, ordering,
-deletion-certificate, and audit-signature contract is in
-/app/docs/OUTPUT-CONTRACT.md.
+Build the Go module so go build -o /app/skykingdom/skykingdom . from /app/skykingdom produces the campaign binary. Normative rules live in /app/skykingdom/FLEET_RULES.md, /app/skykingdom/COMBAT_RULES.md, /app/skykingdom/WEATHER_SYSTEM.md, /app/skykingdom/SUPPLY_LOGISTICS.md, /app/skykingdom/TECHNOLOGY_TREE.md, /app/skykingdom/DIPLOMACY_RULES.md, /app/skykingdom/TERRITORY_CONTROL.md, /app/skykingdom/CAMPAIGN_RULES.md, /app/skykingdom/SCENARIO_SCHEMA.md, and /app/skykingdom/API_SPEC.md. Operator summary and authority ranking are in /app/docs/operator-guide.md, /app/docs/authority.md, and /app/docs/module-index.md.
 
-Derive every result from the supplied bundle. Hidden bundles vary identifiers,
-marked-event geometry, time scales, overlap, feasibility boundaries,
-influential clusters, and physical row and column order. Valid results must be
-deterministic and invariant to irrelevant representations. Malformed bundles
-must be rejected without replacing prior output. Internet access is
-unavailable; only base R is guaranteed.
+The binary must support interactive play (skykingdom play followed by a scenario JSON path) and the documented JSON eval surface (skykingdom eval). Eval must stay silent except for one JSON response object per request on stdout. There is no randomness: every mechanic is pure and deterministic. Live game collections kingdoms, islands, fleets, captains, and diplomacy must be JSON objects keyed by id as shown in /app/skykingdom/API_SPEC.md Game object shape. Packages under /app/skykingdom/decoy, /app/skykingdom/ingest, /app/skykingdom/export, /app/skykingdom/staging, and /app/skykingdom/support are non-authoritative stubs and must not replace the normative rule documents.
+
+Gameplay commands: MAP, STATUS, FLEET, ISLAND, MOVE, REFUEL, CLASH, RESEARCH, TREATY, FORTIFY, ENDTURN, REBOOT, and EXIT. Commands are case-insensitive; kingdom, fleet, island, captain, and tech IDs are case-sensitive. Successful state-changing moves append to history and return the exact success acknowledgement strings listed in /app/skykingdom/API_SPEC.md Command outputs (for example MOVE returns Moved, EXIT returns Exiting). Rejected moves begin with Rejected command: and must leave the full live campaign unchanged, including resources, readiness, ownership, research progress, diplomacy, weather index, and history. REBOOT restores a fresh campaign from the same scenario object with empty history. validateGame violation strings use the kind:id grammar in API_SPEC.md. replayRun must reproduce ordinary play. Bundled scenarios are samples only; any legal scenario-schema input must simulate correctly.
