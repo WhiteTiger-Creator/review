@@ -1,0 +1,24 @@
+# Output contract
+
+For each scenario, in the order scenarios appear on standard input, emit one
+line for every distinct module named by a `QUERY` row in that scenario. Within
+a scenario the lines are sorted in ascending lexical order by module name.
+Each line has exactly three fields separated by a vertical bar:
+
+```
+<scenario-id>|<module>|<version>
+```
+
+The `<version>` field is a version string with the leading `v` and three
+dot-separated decimal fields, copied in the exact spelling used in the input.
+If the queried module has no requirement edge reachable from the main module,
+the third field is the literal token `NONE`. If the queried module is reachable
+but over-constrained — its demand exceeds its binding ceiling, whether that
+ceiling comes from a `CAP` (including a `CAP` declared by a module that is
+itself over-constrained) or from a scar carried by an earlier conflict — the
+third field is the literal token `CONFLICT`. A module reachable only through an
+over-constrained module is itself `NONE`; a module that stays reachable by some
+other path is still judged against every ceiling on it.
+
+Nothing else is written to standard output. There is no trailing summary, no
+header, and no blank separator line between scenarios or between lines.

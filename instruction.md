@@ -1,7 +1,27 @@
-You are implementing Sky Kingdom Fleet Campaign, an offline deterministic turn-based campaign simulator under /app/skykingdom. Floating kingdoms contest islands with air fleets, supply lines, weather, research, and diplomacy. Win by satisfying the scenario victory condition before the turn limit. This is a terminal strategy game with published multi-document rules. It is not berth-tide composition, not creature heredity arenas, and not disaster-clearance adjudication.
+A build tool resolves a stream of scenarios, one version per queried module.
+`main.go` wires I/O and `make` builds `resolve` (stdin→stdout); complete
+`resolveStream` in `select.go`. `docs/` fixes the row grammar and output
+layout.
 
-Build the Go module so go build -o /app/skykingdom/skykingdom . from /app/skykingdom produces the campaign binary. Normative rules live in /app/skykingdom/FLEET_RULES.md, /app/skykingdom/COMBAT_RULES.md, /app/skykingdom/WEATHER_SYSTEM.md, /app/skykingdom/SUPPLY_LOGISTICS.md, /app/skykingdom/TECHNOLOGY_TREE.md, /app/skykingdom/DIPLOMACY_RULES.md, /app/skykingdom/TERRITORY_CONTROL.md, /app/skykingdom/CAMPAIGN_RULES.md, /app/skykingdom/SCENARIO_SCHEMA.md, and /app/skykingdom/API_SPEC.md. Operator summary and authority ranking are in /app/docs/operator-guide.md, /app/docs/authority.md, and /app/docs/module-index.md.
+A module's answer is its selected version, `NONE` if it never joins the main
+module's reachable set, or `CONFLICT` if reachable but over-constrained.
 
-The binary must support interactive play (skykingdom play followed by a scenario JSON path) and the documented JSON eval surface (skykingdom eval). Eval must stay silent except for one JSON response object per request on stdout. There is no randomness: every mechanic is pure and deterministic. Live game collections kingdoms, islands, fleets, captains, and diplomacy must be JSON objects keyed by id as shown in /app/skykingdom/API_SPEC.md Game object shape. Packages under /app/skykingdom/decoy, /app/skykingdom/ingest, /app/skykingdom/export, /app/skykingdom/staging, and /app/skykingdom/support are non-authoritative stubs and must not replace the normative rule documents.
-
-Gameplay commands: MAP, STATUS, FLEET, ISLAND, MOVE, REFUEL, CLASH, RESEARCH, TREATY, FORTIFY, ENDTURN, REBOOT, and EXIT. Commands are case-insensitive; kingdom, fleet, island, captain, and tech IDs are case-sensitive. Successful state-changing moves append to history and return the exact success acknowledgement strings listed in /app/skykingdom/API_SPEC.md Command outputs (for example MOVE returns Moved, EXIT returns Exiting). Rejected moves begin with Rejected command: and must leave the full live campaign unchanged, including resources, readiness, ownership, research progress, diplomacy, weather index, and history. REBOOT restores a fresh campaign from the same scenario object with empty history. validateGame violation strings use the kind:id grammar in API_SPEC.md. replayRun must reproduce ordinary play. Bundled scenarios are samples only; any legal scenario-schema input must simulate correctly.
+- **Floors, not pins.** A `LOCK` and any carried version are floors: they raise
+  a selection, never cap it.
+- **Session carry.** Scenarios share tables until a `RESET`. Each module's
+  selected version becomes its floor in every later scenario; a module never
+  built carries nothing.
+- **Demand first.** Compute *demand* as the least fixed point of floors and
+  requirement edges with every ceiling ignored. A requirement or ceiling
+  declared by version U of a module applies only once that module's **demand**
+  reaches U; the main module's always apply.
+- **Then retract.** Demand alone decides conflict: a module whose demand exceeds
+  its lowest in-force ceiling (a `CAP` or a scar) is over-constrained. Recompute
+  the fixed point with those modules contributing no requirement edges, so
+  modules reachable only through them are `NONE`. Ceilings are *not* re-derived
+  from that second pass — a conflicted module's own `CAP` rows keep binding, and
+  can themselves conflict a module reachable elsewhere.
+- **Conflict scars.** A conflicted module lifts no floor; its binding ceiling is
+  remembered session-wide, ratcheting only lower and re-imposed every later
+  scenario until `RESET`, even absent a `CAP`. A carried floor above a scar keeps
+  re-conflicting.

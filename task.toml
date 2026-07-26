@@ -3,25 +3,26 @@ version = "2.0"
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
+category = "build-and-dependency-management"
+subcategories = ["tool_specific"]
 difficulty = "hard"
-category = "games"
-subcategories = []
+codebase_size = "minimal"
 number_of_milestones = 0
-codebase_size = "small"
 languages = ["go"]
-tags = ["go", "golang", "sky-kingdoms", "fleet-campaign", "deterministic-sim", "terminal-game"]
-expert_time_estimate_min = 300
-junior_time_estimate_min = 900
+tags = ["minimal-version-selection", "dependency-graph", "lockfile", "module-resolution"]
+expert_time_estimate_min = 50
+junior_time_estimate_min = 160
 
-[environment]
-build_timeout_sec = 600.0
-cpus = 2
-memory_mb = 4096
-storage_mb = 10240
-allow_internet = false
+[verifier]
+timeout_sec = 1800
 
 [agent]
 timeout_sec = 1800
+user = "agent"
 
-[verifier]
-timeout_sec = 450.0
+[environment]
+build_timeout_sec = 1800
+cpus = 2
+memory_mb = 4096
+storage_mb = 4096
+allow_internet = false

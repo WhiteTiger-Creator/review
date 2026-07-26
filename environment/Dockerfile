@@ -1,21 +1,35 @@
 FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        tmux=3.3a-3 \
-        asciinema=2.2.0-1 \
-        python3=3.11.2-1+b1 \
-        python3-pip=23.0.1+dfsg-1 \
+RUN ln -sf /usr/local/go/bin/go /usr/local/bin/go && ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        tmux \
+        asciinema \
+        python3 \
+        python3-venv \
+        make \
+    && python3 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir pytest==8.3.4 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.lock /tmp/requirements.lock
-RUN python3 -m pip install --break-system-packages --no-cache-dir \
-        --require-hashes --no-deps -r /tmp/requirements.lock \
-    && rm -f /tmp/requirements.lock
-
-COPY docs /app/docs
-COPY skykingdom /app/skykingdom
-COPY requirements.txt /app/requirements.txt
-COPY requirements.lock /app/requirements.lock
+# The agent session runs as this restricted, non-root user (task.toml sets
+# [agent].user = "agent"). The image build and verifier still run as root
+# (no USER directive), so the verifier can write /logs/verifier. Pytest is
+# invoked from the root-owned venv at /opt/venv, which the agent uid cannot
+# overwrite, so neither the interpreter nor the pytest module can be shadowed.
+RUN groupadd --system agent \
+    && useradd --system --gid agent --create-home --home-dir /home/agent agent
 
 WORKDIR /app
+
+COPY main.go /app/main.go
+COPY select.go /app/select.go
+COPY go.mod /app/go.mod
+COPY docs/ /app/docs/
+COPY data/ /app/data/
+COPY Makefile /app/Makefile
+
+# /app is the agent's workspace: it edits select.go and builds ./resolve there.
+# Make it agent-owned so the non-root session can write, while /opt/venv and the
+# system interpreters stay root-owned and unmodifiable.
+RUN chown -R agent:agent /app

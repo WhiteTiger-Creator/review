@@ -1,0 +1,42 @@
+RESET
+SCENARIO pub19
+ROOT m0
+REQ m0 v1.0.0 p v5.0.0
+REQ m0 v1.0.0 c v1.0.0
+REQ p v5.0.0 c v9.0.0
+CAP m0 v1.0.0 p v3.0.0
+CAP p v5.0.0 c v2.0.0
+INDEX c v1.0.0 v2.0.0 v9.0.0 v10.0.0
+INDEX m0 v0.0.0 v1.0.0
+INDEX p v3.0.0 v5.0.0 v6.0.0
+QUERY c
+QUERY p
+ENDSCENARIO
+SCENARIO pub20
+ROOT m0
+REQ m0 v1.0.0 u v1.0.0
+REQ m0 v1.0.0 k v1.0.0
+REQ m0 v1.0.0 z v3.0.0
+REQ k v1.0.0 u v4.0.0
+REQ z v3.0.0 w v2.0.0
+CAP u v4.0.0 z v1.0.0
+INDEX k v1.0.0 v2.0.0
+INDEX m0 v0.0.0 v1.0.0
+INDEX u v1.0.0 v4.0.0 v5.0.0
+INDEX w v2.0.0 v3.0.0
+INDEX z v1.0.0 v3.0.0 v4.0.0
+QUERY u
+QUERY w
+QUERY z
+ENDSCENARIO
+SCENARIO pub21
+ROOT m0
+REQ m0 v1.0.0 uu v1.0.0
+REQ m0 v1.0.0 zz v3.0.0
+CAP uu v4.0.0 zz v1.0.0
+INDEX m0 v0.0.0 v1.0.0
+INDEX uu v1.0.0 v2.0.0
+INDEX zz v1.0.0 v3.0.0 v4.0.0
+QUERY uu
+QUERY zz
+ENDSCENARIO
