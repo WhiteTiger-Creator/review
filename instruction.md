@@ -1,7 +1,26 @@
-Learn the home-country class of held-out music artists from a heterogeneous MusicBrainz network. Artist nodes connect to community tag nodes through observed artist-tag relations, while the artist table discloses artist kind. The target classes are DE, GB, and US. Query countries are withheld. The hard part is generalizing across unseen artists while retaining rare tag evidence, avoiding dominance by the largest country class, and making prediction independent of relational row order.
+A classification tree is a model fitted from labelled examples, and this
+project reports what one learns from a training table with unrecorded
+measurements. The hard part is statistical: a gap is not noise, so an example
+missing the measurement a decision rests on still carries class information and
+must be classified, not discarded. So beside each primary split the model learns
+a ranked list of substitutes over the remaining measurements, each with an
+association saying how faithfully it stands in.
 
-The protocol at /app/docs/protocol.md is the binding relational contract. Artist identities and kinds, tag identities, artist-tag edges, training labels, and query membership are separate CSV relations under DATA_PATH, which defaults to /app/data. Valid keys and joins are required throughout the bundle. Artist-tag membership represents a bipartite graph, and only labeled artist nodes contribute fitted labels, statistics, vocabulary weights, priors, calibration choices, or model state. Every query artist receives a probability distribution. Tags absent from labeled neighborhoods remain valid query evidence and never cause an artist to disappear. Query countries never participate in fitting or model selection.
+Four things are reported. First, for every measurement, how much impurity it
+removed in its own right and how much it earned standing in for others, which
+together say how far the model leans on it. Second, for every held out example,
+the class predicted, how many training examples support it, the impurity and
+class distribution of the group it lands in, and how strong the weakest
+evidence used to place it was. Third, every split the fit makes, with the
+measurement it uses and the impurity it removes. Fourth, the ranked
+substitutes each split kept, with the association of each.
 
-Balanced accuracy and mean multiclass log loss are evaluated together. Ordinary, row-permuted, opaque-identifier, and cold-tag bundles require balanced accuracy of at least 0.58 and log loss of at most 1.40. A rotated training split requires at least 0.52 and at most 1.80. A complete artist-kind holdout requires at least 0.45 and at most 1.90.
+Every reported quantity is an exact rational in lowest terms with a positive
+denominator. A query names the training table, the held out table, and the
+limits the fit obeys; a malformed query yields a single refusal line.
 
-The submission file is /app/analysis.rs in Rust 2021 using only the standard library. Evaluation reads DATA_PATH and writes OUTPUT_PATH, defaulting to /app/data and /app/output. A valid result creates the output directory and contains predictions.csv with columns artist_id,prob_DE,prob_GB,prob_US,predicted_country. Rows sort by UTF-8 artist_id. Probabilities are finite decimals summing to one within 1e-8. predicted_country is the greatest probability with ties resolved DE, then GB, then US. Inputs remain unchanged, execution stays offline, and malformed bundles produce a nonzero exit without predictions.
+The learning contract and the grammars sit under /app/docs, with ten worked
+queries under /app/examples. Every part of the fit must be computed by the code
+you write here, never obtained from an existing learning implementation. The
+model is written under /app/src, and fitting a large table has to stay under
+1200000000 callgrind instruction reads.

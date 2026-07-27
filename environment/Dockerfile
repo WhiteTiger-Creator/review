@@ -1,11 +1,20 @@
-FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
-RUN apt-get update && apt-get install -y --no-install-recommends asciinema python3 python3-pip python3-venv tmux util-linux \
-    && ln -s /usr/local/cargo/bin/rustc /usr/local/bin/rustc \
-    && ln -s /usr/local/cargo/bin/cargo /usr/local/bin/cargo \
+FROM public.ecr.aws/docker/library/gcc:13-bookworm@sha256:930f2ebe239275fa67226654cb79273ea34eee672ae61c8a39f689c37fb7ac5c
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        valgrind \
+        python3 \
+        python3-pip \
+        tmux \
+        asciinema \
     && rm -rf /var/lib/apt/lists/*
-COPY requirements.txt /tmp/requirements.txt
-RUN python3 -m venv /opt/verifier-venv && /opt/verifier-venv/bin/pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt
+
+RUN pip3 install --no-cache-dir --break-system-packages pytest==8.3.4
+
 WORKDIR /app
-COPY analysis.rs /app/analysis.rs
+
 COPY docs /app/docs
 COPY data /app/data
+COPY examples /app/examples
+COPY src /app/src
