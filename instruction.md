@@ -1,24 +1,59 @@
-Night shift blocked a mesh config promotion because the security posture reconciler at `/app/cmd/meshgate` is not producing a compliant `/app/output/posture.json`. The reconciler replays signed unit streams from `/app/data` against the mesh policy at `/app/spec/mesh_policy.json` and must report security posture per the normative contracts in `/app/spec/mesh_stream_protocol.md` and `/app/spec/posture_schema.md`.
+# Period-Close Control Plane
 
-Bring it into compliance with the security baseline. Treat both spec files as authoritative — every behavior the verifier checks must be derivable from them without reverse-engineering hidden reference logic.
+Finance hosts materialize a fiscal-window balance snapshot through `periodctl` and a oneshot systemd unit. This image ships a broken control-plane layout and a defective `periodctl` binary. Restore both so snapshots are deterministic.
 
-## Required behaviors (summary)
+## Host layout (must be restored)
 
-**Output:** Write `/app/output/posture.json` with top-level fields `recoverable`, `gateways`, and `drift_events`. All list fields must serialize as JSON arrays (`[]`), never `null`.
+- `/app/src/periodctl` must be mode `0755` and implement the CLI below.
+- `/usr/local/sbin/periodctl` must be a symlink to `/app/src/periodctl` (replace the stub binary).
+- `/etc/period-close/window.json` must exist as a byte-identical install of `/app/data/window.json` with mode `0644`.
+- `/var/lib/period-close/` must exist as a directory with mode `0755`.
+- `/etc/systemd/system/period-close.service` must remain the oneshot unit and must be mode `0644` (not world-writable). It must launch `/usr/local/sbin/periodctl` with `--window /etc/period-close/window.json` and `--snapshot /var/lib/period-close/snapshot.tsv`.
 
-**Stream processing:** Validate records in the priority order documented in `mesh_stream_protocol.md`. Signature payloads use `gateway_id|seq|ts|unit_id|op|metric|val|offset` with four-decimal float formatting for `val` and `offset`.
+Do not modify files under `/app/data/`. Installing a copy under `/etc/period-close/` is required.
 
-**Calibration:** `adjusted_val = raw_val + active_offset`. Each applied `TUNE` **replaces** the active offset (default `0.0`); offsets do not accumulate. Staged `TUNE` ops inside batches follow batch commit ordering — see the worked examples in `mesh_stream_protocol.md`.
+## CLI
 
-**Batch transactions:** Stage `TELEMETRY` and `TUNE` while a batch is open; apply on `BATCH_COMMIT` in chronological order. Abort discards staged state.
+```text
+/app/src/periodctl \
+  --postings <directory> \
+  --accounts <tsv> \
+  --window <json> \
+  --snapshot <file>
+```
 
-**Recoverability:** Gateways with `invalid_seq`, `duplicate_seq`, or `bad_signature` are unrecoverable and omit unit output. When global `recoverable` is `false`, skip all policy evaluation.
+`--postings` is `/app/data/journals/` (CSV: `posting_date,account_id,debit_cents,credit_cents,memo`). `--accounts` is `/app/data/chart.tsv` (`account_id`, `name`, `type`, `normal_balance`). `--window` may be `/app/data/window.json` or the installed `/etc/period-close/window.json` (`period_id`, `start_date`, `end_date`). Amounts are integer cents. `normal_balance` is `debit` or `credit`. Dates use `YYYY-MM-DD`.
 
-**Policy drift:**
-- `binding_breach` — evaluated **per gateway** for each bound pair; emit one policy-wide event (`gateway_id: ""`, `seq: 0`) per violating gateway, without deduplication. See the worked example in `posture_schema.md`.
-- `site_forbidden` — active unit on a gateway outside its home-site list.
-- `sync_skew` — cross-gateway reference-average delta strictly greater than `0.05` for a sync metric present on at least two gateways.
+## Snapshot semantics
 
-**Drift events:** Use the exact `reason` labels and `detail` string formats from `posture_schema.md`, including `bad_signature`, `binding_breach`, `site_forbidden`, and `sync_skew`.
+An in-window posting to a registered account can produce a snapshot row `ACCOUNT_ID;balance_cents;SIDE`. An in-window posting to an unknown account fails the run with exit code `1` while still writing rows for valid known accounts. Duplicate chart IDs (case-insensitive) fail with exit code `1` and an empty snapshot. Missing arguments or unreadable paths yield exit code `2`.
 
-Default paths are fine; keep support for `--data-root`/`--data`, `--policy`, and `--output`.
+Process every in-window posting from all journal CSVs. Ignore blank lines in journals and the chart. Only postings whose `posting_date` falls within `start_date`-`end_date` (inclusive) count. Trim leading and trailing ASCII whitespace from `account_id`, `debit_cents`, and `credit_cents` before validation or aggregation. Resolve `account_id` case-insensitively and emit the chart's canonical account ID.
+
+Each in-window posting must use non-negative integer cents and exactly one non-zero side (debit or credit). Both-zero and both-nonzero rows are invalid: they fail the run with exit code `1`, but valid known-account rows from the same run still appear in the snapshot.
+
+Concurrent executions must not corrupt the balance snapshot. `periodctl` must coordinate through a lock file at the fixed path `/tmp/periodctl.lock`, containing the plain-text PID of the process holding it; this path and content format are part of the external interface (other tooling inspects and seeds this file) and must match exactly. Given that lock file, the required behavior is:
+
+- If the file exists and its recorded PID belongs to a still-running process, `periodctl` must exit with code `1` without touching the snapshot.
+- If the file exists but its recorded PID does not belong to a running process (a stale lock), `periodctl` must take over and proceed normally.
+- The lock file must be removed on exit under all conditions (normal completion or error termination).
+
+How liveness is checked internally (e.g. signaling the PID, reading `/proc`) is left to the implementation as long as this observable behavior holds. All CLI paths and arguments must be handled safely to support paths containing spaces. Journal CSV files must be parsed robustly, supporting fields (such as `memo`) that contain commas enclosed in double quotes.
+
+For each account with in-window activity, net debits and credits according to its `normal_balance`, emit the canonical account ID with a positive magnitude and a `DR`/`CR` side marker, and exclude zero nets. Across valid in-window postings to known accounts, total debits must equal total credits or the run fails.
+
+Write one snapshot line per account with in-window activity and a non-zero net, sorted by account ID (case-insensitive ascending).
+
+## Snapshot format
+
+```text
+ACCOUNT_ID;balance_cents;SIDE
+```
+
+`balance_cents` is a positive integer. `SIDE` is `DR` or `CR`. One line per account; no blank lines.
+
+## Exit codes
+
+- `0`: balanced window and no unknown accounts
+- `1`: unknown account, unbalanced totals, invalid rows, or duplicate chart IDs
+- `2`: missing arguments, missing paths, or unreadable inputs

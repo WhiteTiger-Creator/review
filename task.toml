@@ -1,32 +1,38 @@
-# Task configuration schema version
 version = "2.0"
 
-# Task metadata (author, difficulty, categorization)
 [metadata]
-author_name = "anonymous"
-author_email = "anonymous"
+author_name = "Bhagyawanth"
+author_email = "J26.0898.adl@airdawglabs.com"
 difficulty = "hard"
-category = "security"
-subcategories = [ ]
-number_of_milestones = 0
-codebase_size = "minimal"
-languages = [ "go", "bash", "python" ]
-tags = [ "compliance", "security-posture", "mesh-policy", "signatures", "gateway-logs", "json" ]
+category = "system-administration"
+legacy_category = "data-processing"
+subcategories = ["tool_specific"]
+languages = ["bash", "python"]
+tags = [
+  "bash",
+  "system-administration",
+  "systemd",
+  "permissions",
+  "file-operations",
+  "ops-tooling",
+]
 expert_time_estimate_min = 90
 junior_time_estimate_min = 180
+number_of_milestones = 0
+codebase_size = "minimal"
 
-# Verifier: runs the test script to check task completion
-[verifier]
-timeout_sec = 450.0
-
-# Agent: limits how long the agent can run when attempting the task
-[agent]
-timeout_sec = 900.0
-
-# Sandbox environment limits
 [environment]
-allow_internet = false
-build_timeout_sec = 600.0
-cpus = 2
-memory_mb = 4096
+build_timeout_sec = 600
+cpus = 1
+memory_mb = 2048
 storage_mb = 10240
+allow_internet = false
+
+[verifier]
+timeout_sec = 300
+
+[agent]
+timeout_sec = 1800
+
+[oracle]
+timeout_sec = 600

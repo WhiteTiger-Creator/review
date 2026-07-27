@@ -1,543 +1,466 @@
-"""Behavioral checks for the meshgate reconcile command."""
-
-from __future__ import annotations
-
-import json
-import random
+import hashlib
+import os
+import shutil
 import subprocess
 import tempfile
-import uuid
-from collections.abc import Iterable
 from pathlib import Path
 
-from mesh_reference import get_sig, reconcile_mesh
+import pytest
 
-ROOT = (
-    Path("/app")
-    if Path("/app/cmd/meshgate/main.go").exists()
-    else Path(__file__).parents[1].resolve()
-)
-MAIN = ROOT / "cmd/meshgate/main.go"
-DEFAULT_DATA = ROOT / "data"
-DEFAULT_POLICY = ROOT / "spec/mesh_policy.json"
-DEFAULT_OUT = ROOT / "output/posture.json"
+PERIODCTL = "/app/src/periodctl"
+DATA_DIR = Path("/app/data")
+JOURNALS = DATA_DIR / "journals"
+CHART = DATA_DIR / "chart.tsv"
+WINDOW = DATA_DIR / "window.json"
+ETC_WINDOW = Path("/etc/period-close/window.json")
+SBIN_LINK = Path("/usr/local/sbin/periodctl")
+SYSTEMD_UNIT = Path("/etc/systemd/system/period-close.service")
+VAR_LIB = Path("/var/lib/period-close")
+LOCKFILE = Path("/tmp/periodctl.lock")
+
+EXPECTED_LINES = [
+    "CA-1000;53000;DR",
+    "CA-2000;8000;CR",
+    "EQ-3000;15000;CR",
+    "EXP-5000;20000;DR",
+    "REV-4000;50000;CR",
+]
 
 
-def run_reconcile(data: Path, policy: Path, output: Path, use_alias: bool = False) -> subprocess.CompletedProcess:
-    """Execute meshgate against given paths."""
-    data_flag = "--data" if use_alias else "--data-root"
-    cmd = [
-        "go",
-        "run",
-        str(MAIN),
-        "reconcile",
-        data_flag,
-        str(data),
-        "--policy",
-        str(policy),
-        "--output",
-        str(output),
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8192), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def run_periodctl(
+    snapshot_path: Path,
+    postings_dir: Path = JOURNALS,
+    accounts: Path = CHART,
+    window: Path = WINDOW,
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [
+            PERIODCTL,
+            "--postings",
+            str(postings_dir),
+            "--accounts",
+            str(accounts),
+            "--window",
+            str(window),
+            "--snapshot",
+            str(snapshot_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.fixture
+def data_hashes():
+    hashes = {}
+    for path in DATA_DIR.rglob("*"):
+        if path.is_file():
+            hashes[str(path.relative_to(DATA_DIR))] = sha256_file(path)
+    return hashes
+
+
+def _mode(path: Path) -> str:
+    return oct(path.stat().st_mode & 0o777)
+
+
+def test_periodctl_binary_mode_0755():
+    """Verify /app/src/periodctl exists and has executable mode 0755."""
+    assert Path(PERIODCTL).is_file()
+    assert _mode(Path(PERIODCTL)) == "0o755"
+
+
+def test_sbin_periodctl_symlink():
+    """Verify /usr/local/sbin/periodctl is a symlink to /app/src/periodctl."""
+    assert SBIN_LINK.is_symlink()
+    assert SBIN_LINK.resolve() == Path(PERIODCTL).resolve()
+
+
+def test_etc_window_installed():
+    """Verify /etc/period-close/window.json is a byte-identical install with mode 0644."""
+    assert ETC_WINDOW.is_file()
+    assert ETC_WINDOW.read_bytes() == WINDOW.read_bytes()
+    assert _mode(ETC_WINDOW) == "0o644"
+
+
+def test_var_lib_period_close_mode_0755():
+    """Verify /var/lib/period-close exists as a directory with mode 0755."""
+    assert VAR_LIB.is_dir()
+    assert _mode(VAR_LIB) == "0o755"
+
+
+def test_systemd_unit_mode_and_targets():
+    """Verify period-close.service is mode 0644 and references correct paths."""
+    assert SYSTEMD_UNIT.is_file()
+    assert _mode(SYSTEMD_UNIT) == "0o644"
+    text = SYSTEMD_UNIT.read_text(encoding="utf-8")
+    assert "/usr/local/sbin/periodctl" in text
+    assert "/etc/period-close/window.json" in text
+    assert "/var/lib/period-close/snapshot.tsv" in text
+    assert "Type=oneshot" in text
+
+
+def test_etc_window_path_produces_same_snapshot(tmp_path):
+    """Verify snapshots match whether --window points at data or etc install."""
+    via_data = tmp_path / "from_data.txt"
+    via_etc = tmp_path / "from_etc.txt"
+    code_data = run_periodctl(via_data, window=WINDOW).returncode
+    code_etc = run_periodctl(via_etc, window=ETC_WINDOW).returncode
+    assert code_data == code_etc == 1
+    assert via_data.read_text(encoding="utf-8") == via_etc.read_text(encoding="utf-8")
+
+
+def test_exit_code_with_unknown_account(tmp_path):
+    """Verify unknown in-window accounts yield exit code 1."""
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot)
+    assert result.returncode == 1, result.stderr
+
+
+def test_snapshot_line_count(tmp_path):
+    """Verify the shipped journals produce exactly five snapshot rows."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    lines = snapshot.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 5
+
+
+def test_snapshot_exact_content(tmp_path):
+    """Verify snapshot lines match expected account balances and sides."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    lines = snapshot.read_text(encoding="utf-8").splitlines()
+    assert lines == EXPECTED_LINES
+
+
+def test_snapshot_schema(tmp_path):
+    """Verify each snapshot line has ACCOUNT_ID;positive_cents;DR|CR format."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    for line in snapshot.read_text(encoding="utf-8").splitlines():
+        account_id, balance, side = line.split(";")
+        assert account_id
+        assert balance.isdigit()
+        assert int(balance) > 0
+        assert side in {"DR", "CR"}
+
+
+def test_case_insensitive_account_resolution(tmp_path):
+    """Verify journal account IDs resolve to canonical chart IDs case-insensitively."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    text = snapshot.read_text(encoding="utf-8")
+    assert "CA-1000;53000;DR" in text
+    assert "EQ-3000;15000;CR" in text
+    assert "ca-1000" not in text
+    assert "eq-3000" not in text
+
+
+def test_out_of_window_entries_excluded(tmp_path):
+    """Verify postings outside the fiscal window do not affect balances."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    text = snapshot.read_text(encoding="utf-8")
+    cash_balance = int(
+        next(line for line in text.splitlines() if line.startswith("CA-1000;")).split(";")[1]
+    )
+    assert cash_balance == 53000
+
+
+def test_sort_order_case_insensitive(tmp_path):
+    """Verify snapshot rows are sorted by account ID case-insensitively."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    account_ids = [line.split(";")[0] for line in snapshot.read_text(encoding="utf-8").splitlines()]
+    assert account_ids == sorted(account_ids, key=str.casefold)
+
+
+def test_window_boundary_dates_inclusive(tmp_path):
+    """Verify start_date and end_date boundary postings are included in the window."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "boundary.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-01-01,CA-1000,100,0,start boundary\n"
+        "2025-01-01,REV-4000,0,100,start boundary\n"
+        "2025-03-31,CA-1000,0,200,end boundary\n"
+        "2025-03-31,EXP-5000,200,0,end boundary\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+    lines = {line.split(";")[0]: line for line in snapshot.read_text(encoding="utf-8").splitlines()}
+    assert lines["CA-1000"] == "CA-1000;100;CR"
+    assert lines["REV-4000"] == "REV-4000;100;CR"
+    assert lines["EXP-5000"] == "EXP-5000;200;DR"
+
+
+def test_deterministic_output(tmp_path):
+    """Verify repeated runs produce identical snapshots and exit codes."""
+    first = tmp_path / "first.tsv"
+    second = tmp_path / "second.tsv"
+    code_one = run_periodctl(first).returncode
+    code_two = run_periodctl(second).returncode
+    assert code_one == code_two == 1
+    assert first.read_text(encoding="utf-8") == second.read_text(encoding="utf-8")
+
+
+def test_data_files_not_modified(data_hashes):
+    """Verify periodctl does not modify files under /app/data/."""
+    snapshot = Path(tempfile.mkdtemp()) / "snapshot.tsv"
+    run_periodctl(snapshot)
+    for path in DATA_DIR.rglob("*"):
+        if path.is_file():
+            rel = str(path.relative_to(DATA_DIR))
+            assert sha256_file(path) == data_hashes[rel]
+
+
+def test_exit_code_all_clean(tmp_path):
+    """Verify a balanced window with no unknown accounts yields exit code 0."""
+    postings = tmp_path / "clean"
+    postings.mkdir()
+    shutil.copytree(JOURNALS, postings, dirs_exist_ok=True)
+    (postings / "legacy.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-03-15,EQ-3000,0,15000,Owner draw\n"
+        "2025-03-15,CA-1000,15000,0,Cash transfer for draw\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+
+
+def test_zero_balance_excluded(tmp_path):
+    """Verify accounts whose net balance is zero are omitted from the snapshot."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "zero.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-01,CA-1000,5000,0,payment\n"
+        "2025-02-01,REV-4000,0,5000,revenue\n"
+        "2025-02-15,CA-1000,0,5000,refund\n"
+        "2025-02-15,REV-4000,5000,0,rev reversal\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0
+    assert snapshot.read_text(encoding="utf-8").strip() == ""
+
+
+def test_exit_code_unbalanced_journals(tmp_path):
+    """Verify unbalanced in-window postings yield exit code 1."""
+    postings = tmp_path / "bad"
+    postings.mkdir()
+    (postings / "skew.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-10,CA-1000,5000,0,orphan debit\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 1, result.stderr
+
+
+def test_exit_code_invalid_arguments(tmp_path):
+    """Verify missing required CLI arguments yield exit code 2."""
+    snapshot = tmp_path / "snapshot.tsv"
+    result = subprocess.run(
+        [PERIODCTL, "--postings", str(JOURNALS), "--snapshot", str(snapshot)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+
+
+def test_exit_code_unreadable_accounts_path(tmp_path):
+    """Verify unreadable but existing accounts path yields exit code 2."""
+    unreadable = tmp_path / "locked.tsv"
+    unreadable.write_text("account_id\tname\ttype\tnormal_balance\n", encoding="utf-8")
+    unreadable.chmod(0o000)
+    snapshot = tmp_path / "snapshot.tsv"
+    try:
+        result = run_periodctl(snapshot, accounts=unreadable)
+        assert result.returncode == 2
+    finally:
+        unreadable.chmod(0o644)
+
+
+def test_whitespace_trimmed_and_blank_lines_ignored(tmp_path):
+    """Verify whitespace is trimmed and blank journal lines are ignored."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "messy.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "\n"
+        "2025-02-03,  ca-1000  , 700 , 0 ,cash receipt\n"
+        "2025-02-03, REV-4000 ,0, 700 , revenue booking\n"
+        "\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+    assert snapshot.read_text(encoding="utf-8").splitlines() == [
+        "CA-1000;700;DR",
+        "REV-4000;700;CR",
     ]
-    return subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, check=False)
 
 
-def load_json(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def write_gateway_segments(root: Path, gateway_id: str, segments: Iterable[Iterable[dict]]) -> None:
-    """Write one gateway's telemetry segments, filling signatures unless overridden."""
-    gw_dir = root / gateway_id
-    gw_dir.mkdir(parents=True, exist_ok=True)
-
-    for idx, records in enumerate(segments, start=1):
-        encoded = []
-        for rec in records:
-            row = dict(rec)
-            if "sig" not in row:
-                row["sig"] = get_sig(
-                    gateway_id,
-                    row["seq"],
-                    row["ts"],
-                    row["unit_id"],
-                    row["op"],
-                    row.get("metric", ""),
-                    row.get("val"),
-                    row.get("offset"),
-                )
-            encoded.append(json.dumps(row))
-
-        (gw_dir / f"seg_{idx:03d}.jsonl").write_text("\n".join(encoded) + "\n", encoding="utf-8")
-
-
-def build_seeded_matrix_fixture(root: Path, seed: int) -> tuple[Path, Path, dict]:
-    """Create a deterministic multi-gateway fixture with interacting runtime behavior."""
-    gw_root = root / "gw"
-    policy_file = root / "topo.json"
-
-    base = 18.0 + (seed * 0.37)
-    policy = {
-        "bound_nodes": [{"left": "alpha", "right": "beta"}],
-        "home_sites": {
-            "alpha": ["gw_A", "gw_B"],
-            "beta": ["gw_A"],
-            "rogue": ["gw_A"],
-        },
-        "sync_metrics": ["temp"],
-    }
-    policy_file.write_text(json.dumps(policy), encoding="utf-8")
-
-    write_gateway_segments(
-        gw_root,
-        "gw_A",
-        [
-            [
-                {"seq": 1, "ts": "2026-07-04T12:00:00Z", "unit_id": "alpha", "op": "BOOT"},
-                {"seq": 2, "ts": "2026-07-04T12:00:01Z", "unit_id": "beta", "op": "BOOT"},
-                {"seq": 3, "ts": "2026-07-04T12:00:02Z", "unit_id": "alpha", "op": "BATCH_BEGIN"},
-            ],
-            [
-                {"seq": 4, "ts": "2026-07-04T12:00:03Z", "unit_id": "alpha", "op": "TELEMETRY", "metric": "temp", "val": round(base + 0.25, 2)},
-                {"seq": 5, "ts": "2026-07-04T12:00:04Z", "unit_id": "alpha", "op": "TUNE", "offset": round(0.2 + (seed * 0.05), 2)},
-                {"seq": 6, "ts": "2026-07-04T12:00:05Z", "unit_id": "alpha", "op": "TELEMETRY", "metric": "temp", "val": round(base + 1.15, 2)},
-                {"seq": 7, "ts": "2026-07-04T12:00:06Z", "unit_id": "alpha", "op": "BATCH_COMMIT"},
-                {"seq": 8, "ts": "2026-07-04T12:00:07Z", "unit_id": "beta", "op": "PING"},
-                {"seq": 9, "ts": "2026-07-04T12:00:08Z", "unit_id": "beta", "op": "SHUTDOWN"},
-                {"seq": 10, "ts": "2026-07-04T12:00:09Z", "unit_id": "beta", "op": "PING"},
-            ],
-        ],
+def test_invalid_in_window_rows_fail_but_valid_rows_still_snapshot(tmp_path):
+    """Verify invalid rows fail the run but valid known-account rows still appear."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "mixed.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-10,CA-1000,700,0,valid debit\n"
+        "2025-02-10,REV-4000,0,700,valid credit\n"
+        "2025-02-11,CA-1000,10,10,both sides set\n"
+        "2025-02-12,EXP-5000,foo,0,non numeric debit\n"
+        "2025-02-13,CA-1000,-5,0,negative debit\n",
+        encoding="utf-8",
     )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 1, result.stderr
+    assert snapshot.read_text(encoding="utf-8").splitlines() == [
+        "CA-1000;700;DR",
+        "REV-4000;700;CR",
+    ]
 
-    write_gateway_segments(
-        gw_root,
-        "gw_B",
-        [
-            [
-                {"seq": 1, "ts": "2026-07-04T12:01:00Z", "unit_id": "alpha", "op": "BOOT"},
-                {"seq": 2, "ts": "2026-07-04T12:01:01Z", "unit_id": "alpha", "op": "TELEMETRY", "metric": "temp", "val": round(base + 1.55, 2)},
-                {"seq": 3, "ts": "2026-07-04T12:01:02Z", "unit_id": "alpha", "op": "PING"},
-            ]
-        ],
+
+def test_both_sides_zero_row_is_invalid(tmp_path):
+    """Verify rows with both debit and credit zero fail the run with exit code 1."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "zero_sides.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-10,CA-1000,700,0,valid debit\n"
+        "2025-02-10,REV-4000,0,700,valid credit\n"
+        "2025-02-11,CA-1000,0,0,both sides zero\n",
+        encoding="utf-8",
     )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 1, result.stderr
+    assert snapshot.read_text(encoding="utf-8").splitlines() == [
+        "CA-1000;700;DR",
+        "REV-4000;700;CR",
+    ]
 
-    write_gateway_segments(
-        gw_root,
-        "gw_C",
-        [
-            [
-                {"seq": 1, "ts": "2026-07-04T12:02:00Z", "unit_id": "rogue", "op": "BOOT"},
-                {"seq": 2, "ts": "2026-07-04T12:02:01Z", "unit_id": "rogue", "op": "TUNE", "offset": round(0.4 + (seed * 0.03), 2)},
-                {"seq": 3, "ts": "2026-07-04T12:02:02Z", "unit_id": "rogue", "op": "BATCH_BEGIN"},
-            ],
-            [
-                {"seq": 4, "ts": "2026-07-04T12:02:03Z", "unit_id": "rogue", "op": "TELEMETRY", "metric": "temp", "val": round(base + 4.05, 2)},
-                {"seq": 5, "ts": "2026-07-04T12:02:04Z", "unit_id": "rogue", "op": "BATCH_ABORT"},
-                {"seq": 6, "ts": "2026-07-04T12:02:05Z", "unit_id": "rogue", "op": "TELEMETRY", "metric": "temp", "val": round(base + 4.55, 2)},
-            ],
-        ],
+
+def test_duplicate_chart_ids_case_insensitive_fail_with_empty_snapshot(tmp_path):
+    """Verify case-insensitive duplicate chart IDs fail with exit 1 and empty snapshot."""
+    chart = tmp_path / "chart.tsv"
+    chart.write_text(
+        "account_id\tname\ttype\tnormal_balance\n"
+        "\n"
+        "CA-1000\tCash\tasset\tdebit\n"
+        "ca-1000\tDuplicate Cash\tasset\tdebit\n"
+        "REV-4000\tRevenue\trevenue\tcredit\n",
+        encoding="utf-8",
     )
-
-    return gw_root, policy_file, policy
-
-
-# --- Tests ---
-
-
-def test_reconcile_produces_output():
-    """meshgate reconcile must exit 0 and write posture JSON to /app/output/posture.json."""
-    if DEFAULT_OUT.exists():
-        DEFAULT_OUT.unlink()
-
-    result = run_reconcile(DEFAULT_DATA, DEFAULT_POLICY, DEFAULT_OUT)
-    assert result.returncode == 0, f"meshgate failed: {result.stderr}"
-    assert DEFAULT_OUT.is_file(), "posture.json was not created"
-
-
-def test_default_matches_reference():
-    """Default shipped site streams must produce posture JSON exactly matching the reference model."""
-    expected = reconcile_mesh(DEFAULT_DATA, load_json(DEFAULT_POLICY))
-
-    out_file = DEFAULT_OUT
-    run_reconcile(DEFAULT_DATA, DEFAULT_POLICY, out_file)
-    actual = load_json(out_file)
-
-    assert actual == expected
-
-
-def test_empty_lists_are_arrays_not_null():
-    """Empty input must serialize gateways, drift_events, units, and metrics as [] rather than null."""
-    with tempfile.TemporaryDirectory() as tmp:
-        empty_dir = Path(tmp) / "empty_data"
-        empty_dir.mkdir()
-        out_file = Path(tmp) / "out.json"
-
-        policy_file = Path(tmp) / "topo.json"
-        policy_file.write_text(json.dumps({
-            "bound_nodes": [],
-            "home_sites": {},
-            "sync_metrics": []
-        }))
-
-        res = run_reconcile(empty_dir, policy_file, out_file)
-        assert res.returncode == 0
-
-        raw = out_file.read_text(encoding="utf-8")
-        assert "null" not in raw, "Serialized JSON contains 'null' values indicating uninitialized slices"
-
-        data = json.loads(raw)
-        assert data["gateways"] == []
-        assert data["drift_events"] == []
-        assert data["recoverable"] is True
-
-
-def test_custom_output_and_root_flags():
-    """Verify --output and --data/--data-root paths are respected."""
-    with tempfile.TemporaryDirectory() as tmp:
-        out_root = Path(tmp) / "out"
-        out_root.mkdir()
-        out_file = out_root / "report.json"
-
-        res1 = run_reconcile(DEFAULT_DATA, DEFAULT_POLICY, out_file, use_alias=False)
-        assert res1.returncode == 0
-        assert out_file.is_file()
-        assert load_json(out_file) == load_json(DEFAULT_OUT)
-
-        out_file.unlink()
-
-        res2 = run_reconcile(DEFAULT_DATA, DEFAULT_POLICY, out_file, use_alias=True)
-        assert res2.returncode == 0
-        assert out_file.is_file()
-        assert load_json(out_file) == load_json(DEFAULT_OUT)
-
-
-def test_signature_mismatch_validation():
-    """Bad signature records make a gateway unrecoverable and emit bad_signature findings."""
-    with tempfile.TemporaryDirectory() as tmp:
-        gw_root = Path(tmp) / "gw"
-        dev_dir = gw_root / "gw_sig_error"
-        dev_dir.mkdir(parents=True)
-        out_file = Path(tmp) / "out.json"
-        policy_file = Path(tmp) / "topo.json"
-
-        policy_file.write_text(json.dumps({
-            "bound_nodes": [],
-            "home_sites": {},
-            "sync_metrics": []
-        }))
-
-        expected_sig = get_sig("gw_sig_error", 1, "2026-07-04T12:00:00Z", "unit-01", "BOOT")
-        line1 = json.dumps({"seq": 1, "ts": "2026-07-04T12:00:00Z", "unit_id": "unit-01", "op": "BOOT", "sig": expected_sig})
-        line2 = json.dumps({"seq": 2, "ts": "2026-07-04T12:00:05Z", "unit_id": "unit-01", "op": "TELEMETRY", "metric": "temp", "val": 22.5, "sig": "bad_sig_field_value_goes_here"})
-
-        (dev_dir / "seg_001.jsonl").write_text(f"{line1}\n{line2}\n", encoding="utf-8")
-
-        res = run_reconcile(gw_root, policy_file, out_file)
-        assert res.returncode == 0
-        data = load_json(out_file)
-
-        assert data["recoverable"] is False
-        gw_report = next(g for g in data["gateways"] if g["gateway_id"] == "gw_sig_error")
-        assert gw_report["recoverable"] is False
-        assert len(gw_report["units"]) == 0
-
-        sig_events = [v for v in data["drift_events"] if v["reason"] == "bad_signature"]
-        assert len(sig_events) == 1
-        assert sig_events[0]["seq"] == 2
-        assert sig_events[0]["detail"] == "signature hash mismatch"
-
-
-def test_transaction_staging_and_aborts():
-    """Verify that batch actions inside BEGIN...ABORT/COMMIT are staged and rolled back or applied accordingly."""
-    with tempfile.TemporaryDirectory() as tmp:
-        gw_root = Path(tmp) / "gw"
-        dev_dir = gw_root / "gw_tx"
-        dev_dir.mkdir(parents=True)
-        out_file = Path(tmp) / "out.json"
-        policy_file = Path(tmp) / "topo.json"
-
-        policy_file.write_text(json.dumps({"bound_nodes": [], "home_sites": {}, "sync_metrics": []}))
-
-        lines = [
-            {"seq": 1, "ts": "2026-07-04T12:00:00Z", "unit_id": "dev1", "op": "BOOT"},
-            {"seq": 2, "ts": "2026-07-04T12:00:01Z", "unit_id": "dev1", "op": "BATCH_BEGIN"},
-            {"seq": 3, "ts": "2026-07-04T12:00:02Z", "unit_id": "dev1", "op": "TELEMETRY", "metric": "temp", "val": 10.0},
-            {"seq": 4, "ts": "2026-07-04T12:00:03Z", "unit_id": "dev1", "op": "BATCH_ABORT"},
-            {"seq": 5, "ts": "2026-07-04T12:00:04Z", "unit_id": "dev1", "op": "BATCH_BEGIN"},
-            {"seq": 6, "ts": "2026-07-04T12:00:05Z", "unit_id": "dev1", "op": "TELEMETRY", "metric": "temp", "val": 15.0},
-            {"seq": 7, "ts": "2026-07-04T12:00:06Z", "unit_id": "dev1", "op": "TUNE", "offset": 1.0},
-            {"seq": 8, "ts": "2026-07-04T12:00:07Z", "unit_id": "dev1", "op": "TELEMETRY", "metric": "temp", "val": 17.0},
-            {"seq": 9, "ts": "2026-07-04T12:00:08Z", "unit_id": "dev1", "op": "BATCH_COMMIT"}
-        ]
-
-        json_lines = []
-        for x in lines:
-            x["sig"] = get_sig("gw_tx", x["seq"], x["ts"], x["unit_id"], x["op"], x.get("metric", ""), x.get("val"), x.get("offset"))
-            json_lines.append(json.dumps(x))
-        (dev_dir / "seg_001.jsonl").write_text("\n".join(json_lines) + "\n", encoding="utf-8")
-
-        res = run_reconcile(gw_root, policy_file, out_file)
-        assert res.returncode == 0
-        data = load_json(out_file)
-
-        assert data["recoverable"] is True
-        gw_data = data["gateways"][0]
-        dev_data = gw_data["units"][0]
-        temp_metric = dev_data["metrics"][0]
-
-        assert temp_metric["count"] == 2
-        assert temp_metric["min"] == 15.0
-        assert temp_metric["max"] == 18.0
-        assert temp_metric["average"] == 16.5
-
-
-def test_cross_segment_batch_violation_aborts_state_and_turns_late_commit_into_orphan():
-    """A batch can span files, but any in-batch violation must discard staged state immediately."""
-    with tempfile.TemporaryDirectory() as tmp:
-        gw_root = Path(tmp) / "gw"
-        out_file = Path(tmp) / "out.json"
-        policy_file = Path(tmp) / "topo.json"
-
-        policy_file.write_text(json.dumps({"bound_nodes": [], "home_sites": {}, "sync_metrics": []}), encoding="utf-8")
-
-        write_gateway_segments(
-            gw_root,
-            "gw_cross_batch",
-            [
-                [
-                    {"seq": 1, "ts": "2026-07-04T12:00:00Z", "unit_id": "dev1", "op": "BOOT"},
-                    {"seq": 2, "ts": "2026-07-04T12:00:01Z", "unit_id": "dev1", "op": "BATCH_BEGIN"},
-                    {"seq": 3, "ts": "2026-07-04T12:00:02Z", "unit_id": "dev1", "op": "TELEMETRY", "metric": "temp", "val": 40.0},
-                ],
-                [
-                    {"seq": 4, "ts": "2026-07-04T12:00:03Z", "unit_id": "dev1", "op": "NOPE"},
-                    {"seq": 5, "ts": "2026-07-04T12:00:04Z", "unit_id": "dev1", "op": "BATCH_COMMIT"},
-                    {"seq": 6, "ts": "2026-07-04T12:00:05Z", "unit_id": "dev1", "op": "TELEMETRY", "metric": "temp", "val": 50.0},
-                ],
-            ],
-        )
-
-        expected = reconcile_mesh(gw_root, json.loads(policy_file.read_text(encoding="utf-8")))
-        res = run_reconcile(gw_root, policy_file, out_file)
-        assert res.returncode == 0, f"meshgate failed: {res.stderr}"
-        actual = load_json(out_file)
-
-        assert actual == expected
-
-        reasons = [v["reason"] for v in actual["drift_events"]]
-        assert reasons == ["unknown_op_or_metric", "orphan_batch"]
-
-        temp_metric = actual["gateways"][0]["units"][0]["metrics"][0]
-        assert temp_metric["count"] == 1
-        assert temp_metric["min"] == 50.0
-        assert temp_metric["max"] == 50.0
-        assert temp_metric["average"] == 50.0
-
-
-def test_policy_bound_nodes_validation():
-    """Verify bound_nodes co-location: per gateway, if either bound unit is active, both must be active on that same gateway."""
-    with tempfile.TemporaryDirectory() as tmp:
-        gw_root = Path(tmp) / "gw"
-        dev_dir = gw_root / "gw_coloc"
-        dev_dir.mkdir(parents=True)
-        out_file = Path(tmp) / "out.json"
-        policy_file = Path(tmp) / "topo.json"
-
-        policy_file.write_text(json.dumps({
-            "bound_nodes": [{"left": "temp-1", "right": "hum-1"}],
-            "home_sites": {},
-            "sync_metrics": []
-        }))
-
-        lines = [
-            {"seq": 1, "ts": "2026-07-04T12:00:00Z", "unit_id": "temp-1", "op": "BOOT"}
-        ]
-        json_lines = []
-        for x in lines:
-            x["sig"] = get_sig("gw_coloc", x["seq"], x["ts"], x["unit_id"], x["op"])
-            json_lines.append(json.dumps(x))
-        (dev_dir / "seg_001.jsonl").write_text("\n".join(json_lines) + "\n", encoding="utf-8")
-
-        res = run_reconcile(gw_root, policy_file, out_file)
-        assert res.returncode == 0
-        data = load_json(out_file)
-
-        assert data["recoverable"] is True
-        binding_events = [v for v in data["drift_events"] if v["reason"] == "binding_breach"]
-        assert len(binding_events) == 1
-        assert binding_events[0]["seq"] == 0
-        assert binding_events[0]["detail"] == "binding broken: temp-1 and hum-1 not co-present"
-
-
-def test_policy_home_sites_validation():
-    """Verify home_sites restriction rules."""
-    with tempfile.TemporaryDirectory() as tmp:
-        gw_root = Path(tmp) / "gw"
-        dev_dir = gw_root / "gw_unauth"
-        dev_dir.mkdir(parents=True)
-        out_file = Path(tmp) / "out.json"
-        policy_file = Path(tmp) / "topo.json"
-
-        policy_file.write_text(json.dumps({
-            "bound_nodes": [],
-            "home_sites": {"unit-1": ["gw_allowed"]},
-            "sync_metrics": []
-        }))
-
-        lines = [
-            {"seq": 1, "ts": "2026-07-04T12:00:00Z", "unit_id": "unit-1", "op": "BOOT"}
-        ]
-        json_lines = []
-        for x in lines:
-            x["sig"] = get_sig("gw_unauth", x["seq"], x["ts"], x["unit_id"], x["op"])
-            json_lines.append(json.dumps(x))
-        (dev_dir / "seg_001.jsonl").write_text("\n".join(json_lines) + "\n", encoding="utf-8")
-
-        res = run_reconcile(gw_root, policy_file, out_file)
-        assert res.returncode == 0
-        data = load_json(out_file)
-
-        site_events = [v for v in data["drift_events"] if v["reason"] == "site_forbidden"]
-        assert len(site_events) == 1
-        assert site_events[0]["unit_id"] == "unit-1"
-        assert site_events[0]["detail"] == "unit unit-1 seen on foreign site gw_unauth"
-
-
-def test_policy_sync_metrics_validation():
-    """Verify sync_metrics average limits comparisons."""
-    with tempfile.TemporaryDirectory() as tmp:
-        gw_root = Path(tmp) / "gw"
-        gw1 = gw_root / "gw1"
-        gw2 = gw_root / "gw2"
-        gw1.mkdir(parents=True)
-        gw2.mkdir(parents=True)
-        out_file = Path(tmp) / "out.json"
-        policy_file = Path(tmp) / "topo.json"
-
-        policy_file.write_text(json.dumps({
-            "bound_nodes": [],
-            "home_sites": {},
-            "sync_metrics": ["temp"]
-        }))
-
-        lines1 = [
-            {"seq": 1, "ts": "2026-07-04T12:00:00Z", "unit_id": "d1", "op": "BOOT"},
-            {"seq": 2, "ts": "2026-07-04T12:00:01Z", "unit_id": "d1", "op": "TELEMETRY", "metric": "temp", "val": 20.0}
-        ]
-        lines2 = [
-            {"seq": 1, "ts": "2026-07-04T12:00:00Z", "unit_id": "d2", "op": "BOOT"},
-            {"seq": 2, "ts": "2026-07-04T12:00:01Z", "unit_id": "d2", "op": "TELEMETRY", "metric": "temp", "val": 20.10}
-        ]
-
-        json_lines1 = [json.dumps(dict(x, sig=get_sig("gw1", x["seq"], x["ts"], x["unit_id"], x["op"], x.get("metric", ""), x.get("val")))) for x in lines1]
-        json_lines2 = [json.dumps(dict(x, sig=get_sig("gw2", x["seq"], x["ts"], x["unit_id"], x["op"], x.get("metric", ""), x.get("val")))) for x in lines2]
-
-        (gw1 / "seg_001.jsonl").write_text("\n".join(json_lines1) + "\n", encoding="utf-8")
-        (gw2 / "seg_001.jsonl").write_text("\n".join(json_lines2) + "\n", encoding="utf-8")
-
-        res = run_reconcile(gw_root, policy_file, out_file)
-        assert res.returncode == 0
-        data = load_json(out_file)
-
-        sync_events = [v for v in data["drift_events"] if v["reason"] == "sync_skew"]
-        assert len(sync_events) == 1
-        assert sync_events[0]["detail"] == "sync metric skew: temp exceeds tolerance"
-
-
-def test_dynamic_random_run_matches_reference():
-    """Generate dynamic sensor data, evaluate the reference model, and verify the command matches."""
-    seed = str(uuid.uuid4())
-    random.seed(seed)
-
-    gw_names = ["gw_A", "gw_B"]
-    units = ["dev_X", "dev_Y"]
-
-    with tempfile.TemporaryDirectory() as tmp:
-        gw_root = Path(tmp) / "gw"
-        out_file = Path(tmp) / "out.json"
-        policy_file = Path(tmp) / "topo.json"
-
-        policy_dict = {
-            "bound_nodes": [{"left": "dev_X", "right": "dev_Y"}],
-            "home_sites": {"dev_X": ["gw_A", "gw_B"], "dev_Y": ["gw_A", "gw_B"]},
-            "sync_metrics": ["temp"]
-        }
-        policy_file.write_text(json.dumps(policy_dict))
-
-        for gw in gw_names:
-            gw_dir = gw_root / gw
-            gw_dir.mkdir(parents=True)
-
-            lines = []
-            lines.append({"seq": 1, "ts": "2026-07-04T12:00:00Z", "unit_id": "dev_X", "op": "BOOT"})
-            lines.append({"seq": 2, "ts": "2026-07-04T12:00:05Z", "unit_id": "dev_Y", "op": "BOOT"})
-
-            seq = 3
-            ts_offset = 10
-            for _ in range(5):
-                unit = random.choice(units)
-                op = random.choices(["TELEMETRY", "TUNE", "PING"], weights=[70, 15, 15])[0]
-
-                r = {
-                    "seq": seq,
-                    "ts": f"2026-07-04T12:00:{ts_offset:02d}Z",
-                    "unit_id": unit,
-                    "op": op
-                }
-                if op == "TELEMETRY":
-                    r["metric"] = "temp"
-                    r["val"] = round(random.uniform(15.0, 25.0), 2)
-                elif op == "TUNE":
-                    r["offset"] = round(random.uniform(-1.0, 1.0), 2)
-
-                lines.append(r)
-                seq += 1
-                ts_offset += 5
-
-            json_lines = []
-            for r in lines:
-                r["sig"] = get_sig(gw, r["seq"], r["ts"], r["unit_id"], r["op"], r.get("metric", ""), r.get("val"), r.get("offset"))
-                json_lines.append(json.dumps(r))
-
-            (gw_dir / "seg_001.jsonl").write_text("\n".join(json_lines) + "\n", encoding="utf-8")
-
-        expected = reconcile_mesh(gw_root, policy_dict)
-
-        res = run_reconcile(gw_root, policy_file, out_file)
-        assert res.returncode == 0, f"meshgate failed: {res.stderr}"
-        actual = load_json(out_file)
-
-        assert actual == expected
-
-
-def test_seeded_reference_matrix_matches_reference():
-    """Multiple deterministic fixtures should match the independent reference model exactly."""
-    for seed in range(5):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_root = Path(tmp)
-            gw_root, policy_file, policy = build_seeded_matrix_fixture(tmp_root, seed)
-            out_file = tmp_root / "out.json"
-
-            expected = reconcile_mesh(gw_root, policy)
-            res = run_reconcile(gw_root, policy_file, out_file)
-            assert res.returncode == 0, f"seed {seed} failed: {res.stderr}"
-            actual = load_json(out_file)
-
-            assert actual == expected
-
-            reasons = {v["reason"] for v in actual["drift_events"]}
-            assert "stale_unit_op" in reasons
-            assert "binding_breach" in reasons
-            assert "site_forbidden" in reasons
-            assert "sync_skew" in reasons
-
-
-def test_tool_is_rerunnable():
-    """Running tool multiple times outputs identical consistent result."""
-    with tempfile.TemporaryDirectory() as tmp:
-        out1 = Path(tmp) / "out1.json"
-        out2 = Path(tmp) / "out2.json"
-
-        run_reconcile(DEFAULT_DATA, DEFAULT_POLICY, out1)
-        run_reconcile(DEFAULT_DATA, DEFAULT_POLICY, out2)
-
-        assert load_json(out1) == load_json(out2)
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "simple.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-14,CA-1000,900,0,cash sale\n"
+        "2025-02-14,REV-4000,0,900,revenue\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings, accounts=chart)
+    assert result.returncode == 1, result.stderr
+    assert snapshot.read_text(encoding="utf-8") == ""
+
+
+def test_lockfile_concurrency_and_cleanup(tmp_path):
+    """Verify sequential runs succeed and the lockfile is cleaned up after each run."""
+    snapshot1 = tmp_path / "snapshot1.tsv"
+    res1 = run_periodctl(snapshot1)
+    assert res1.returncode == 1
+    assert not LOCKFILE.exists()
+
+    snapshot2 = tmp_path / "snapshot2.tsv"
+    res2 = run_periodctl(snapshot2)
+    assert res2.returncode == 1
+    assert not LOCKFILE.exists()
+
+    res3 = subprocess.run([PERIODCTL], capture_output=True, text=True, check=False)
+    assert res3.returncode == 2
+
+    snapshot3 = tmp_path / "snapshot3.tsv"
+    res4 = run_periodctl(snapshot3)
+    assert res4.returncode == 1
+    assert not LOCKFILE.exists()
+
+
+def test_stale_lockfile_dead_pid_takes_over(tmp_path):
+    """Verify periodctl takes over when lockfile holds a dead PID."""
+    LOCKFILE.write_text("99999999", encoding="utf-8")
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot)
+    assert result.returncode == 1
+    assert not LOCKFILE.exists()
+
+
+def test_active_lockfile_pid_blocks_run(tmp_path):
+    """Verify periodctl exits 1 when lockfile holds an active PID."""
+    LOCKFILE.write_text(str(os.getpid()), encoding="utf-8")
+    snapshot = tmp_path / "snapshot.tsv"
+    try:
+        result = run_periodctl(snapshot)
+        assert result.returncode == 1
+    finally:
+        LOCKFILE.unlink(missing_ok=True)
+
+
+def test_path_with_spaces(tmp_path):
+    """Verify CLI handles postings directories whose paths contain spaces."""
+    postings = tmp_path / "postings folder with spaces"
+    postings.mkdir()
+    (postings / "clean.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-01,CA-1000,100,0,payment\n"
+        "2025-02-01,REV-4000,0,100,revenue\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+    lines = snapshot.read_text(encoding="utf-8").splitlines()
+    assert lines == [
+        "CA-1000;100;DR",
+        "REV-4000;100;CR",
+    ]
+
+
+def test_memo_field_with_commas(tmp_path):
+    """Verify quoted memo fields containing commas are parsed correctly."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "comma_memo.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        '2025-02-01,CA-1000,150,0,"payment, partial"\n'
+        '2025-02-01,REV-4000,0,150,"revenue, deferred"\n',
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+    lines = snapshot.read_text(encoding="utf-8").splitlines()
+    assert lines == [
+        "CA-1000;150;DR",
+        "REV-4000;150;CR",
+    ]
