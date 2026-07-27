@@ -1,3 +1,0 @@
-Public notation uses file letters a through h and ranks 1 through 8. Piece kinds are lowercase k q r b n p in protocol payloads. Castling is written as the king’s two-square move. En passant captures name the pawn’s from and to squares. Promotions append q r b or n.
-
-Observation-safe notation never invents coordinates outside the visible set when describing private plans in diagnostics. Generation records normalize boards, plies, visibility, relay transitions, and terminal scores into fixed JSON shapes so repeated matches compare byte for byte. Player-facing examples show legal observation and action pairs without revealing protected answer keys.

@@ -1,5 +1,0 @@
-{
-  "boards": ["alpha", "beta"],
-  "team_model": "bughouse_linked",
-  "activation_default": ["alpha", "beta"]
-}
