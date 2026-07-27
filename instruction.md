@@ -1,31 +1,59 @@
-# Restore OIDC gateway trust after mTLS policy migration failure
+# Period-Close Control Plane
 
-An offline security migration service under `/app/environment` converts a legacy mutual-TLS service call graph, authorization YAML, and security decision corpus into an OIDC gateway policy bundle plus SQLite audit evidence. A partial cutover left trust-boundary enforcement broken: unsafe JWKS material can be accepted, semantic issuer URLs are replaced with hardcoded values, transport fixture hosts leak into policy, parallel edges collapse, dossier authority is ignored, explicit denies are bypassed, and recursive coverage checks are skipped.
+Finance hosts materialize a fiscal-window balance snapshot through `periodctl` and a oneshot systemd unit. This image ships a broken control-plane layout and a defective `periodctl` binary. Restore both so snapshots are deterministic.
 
-Recover gateway trust by repairing verifier logic under `/app/environment`. Static output writes or verifier edits are insufficient; the migrator binary must regenerate policy and audit artifacts through the normal pipeline.
+## Host layout (must be restored)
 
-After `/app/environment/bin/reset-state`, this command must exit zero from working directory `/app`:
+- `/app/src/periodctl` must be mode `0755` and implement the CLI below.
+- `/usr/local/sbin/periodctl` must be a symlink to `/app/src/periodctl` (replace the stub binary).
+- `/etc/period-close/window.json` must exist as a byte-identical install of `/app/data/window.json` with mode `0644`.
+- `/var/lib/period-close/` must exist as a directory with mode `0755`.
+- `/etc/systemd/system/period-close.service` must remain the oneshot unit and must be mode `0644` (not world-writable). It must launch `/usr/local/sbin/periodctl` with `--window /etc/period-close/window.json` and `--snapshot /var/lib/period-close/snapshot.tsv`.
 
-```bash
-/app/environment/bin/migrate-policy
+Do not modify files under `/app/data/`. Installing a copy under `/etc/period-close/` is required.
+
+## CLI
+
+```text
+/app/src/periodctl \
+  --postings <directory> \
+  --accounts <tsv> \
+  --window <json> \
+  --snapshot <file>
 ```
 
-Inputs live under `/app/environment/input` and `/app/environment/dossier`. Identity-provider metadata must be obtained through the configured offline transport. Effective policy must record semantic issuer URLs from bundled discovery documents, not loopback fixture hosts.
+`--postings` is `/app/data/journals/` (CSV: `posting_date,account_id,debit_cents,credit_cents,memo`). `--accounts` is `/app/data/chart.tsv` (`account_id`, `name`, `type`, `normal_balance`). `--window` may be `/app/data/window.json` or the installed `/etc/period-close/window.json` (`period_id`, `start_date`, `end_date`). Amounts are integer cents. `normal_balance` is `debit` or `credit`. Dates use `YYYY-MM-DD`.
 
-## Trust and security requirements
+## Snapshot semantics
 
-- Retire all mTLS-only certificate fields (`client_cert_subject`, `ca_bundle`, `serial_number`, `mtls_trust_bundle`) from emitted gateway policy.
-- JWKS ingestion must reject symmetric algorithms, `none`, encryption-only keys, and keys without verify operations.
-- Policy issuers must match bundled semantic discovery URLs; hardcoded or transport-derived issuer values are invalid.
-- Parallel graph edges with distinct environment, method, path, or authz_scope must remain distinct in policy output.
-- Dossier authority rules under `/data/dossier-authority` govern which decision statuses and scopes are authoritative.
-- Superseded and proposed dossier entries must not override accepted or amended audience decisions.
-- Explicit deny edges such as `api-gateway` to `payment-service` must remain `action: deny`.
-- Retired service `admin-api` must not appear with `action: allow`.
-- Recursive audit view `coverage_gaps` must be empty and `latest_complete_run.status` must be `COMPLETE`.
-- Re-running migration must be idempotent and produce byte-identical `/output/gateway-policy.yaml`.
-- Protected trees under `/data/canonical`, `/data/oidc-contracts`, and `/data/dossier-authority` must remain unchanged.
+An in-window posting to a registered account can produce a snapshot row `ACCOUNT_ID;balance_cents;SIDE`. An in-window posting to an unknown account fails the run with exit code `1` while still writing rows for valid known accounts. Duplicate chart IDs (case-insensitive) fail with exit code `1` and an empty snapshot. Missing arguments or unreadable paths yield exit code `2`.
 
-Write `/output/gateway-policy.yaml`, `/output/migration-summary.json`, and `/output/migration-audit.db`. The migration-contract at `/app/environment/docs/migration-contract.md` documents required `schema_version`, issuers, edges, edge `action`, `jwks_uri`, `run_id`, `edge_count`, and `status` fields.
+Process every in-window posting from all journal CSVs. Ignore blank lines in journals and the chart. Only postings whose `posting_date` falls within `start_date`-`end_date` (inclusive) count. Trim leading and trailing ASCII whitespace from `account_id`, `debit_cents`, and `credit_cents` before validation or aggregation. Resolve `account_id` case-insensitively and emit the chart's canonical account ID.
 
-Grading uses Python's `sqlite3` module against `/output/migration-audit.db` and PyYAML against `/output/gateway-policy.yaml`, running `python3 -m pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py` after reset. Do not modify `/tests`.
+Each in-window posting must use non-negative integer cents and exactly one non-zero side (debit or credit). Both-zero and both-nonzero rows are invalid: they fail the run with exit code `1`, but valid known-account rows from the same run still appear in the snapshot.
+
+Concurrent executions must not corrupt the balance snapshot. `periodctl` must coordinate through a lock file at the fixed path `/tmp/periodctl.lock`, containing the plain-text PID of the process holding it; this path and content format are part of the external interface (other tooling inspects and seeds this file) and must match exactly. Given that lock file, the required behavior is:
+
+- If the file exists and its recorded PID belongs to a still-running process, `periodctl` must exit with code `1` without touching the snapshot.
+- If the file exists but its recorded PID does not belong to a running process (a stale lock), `periodctl` must take over and proceed normally.
+- The lock file must be removed on exit under all conditions (normal completion or error termination).
+
+How liveness is checked internally (e.g. signaling the PID, reading `/proc`) is left to the implementation as long as this observable behavior holds. All CLI paths and arguments must be handled safely to support paths containing spaces. Journal CSV files must be parsed robustly, supporting fields (such as `memo`) that contain commas enclosed in double quotes.
+
+For each account with in-window activity, net debits and credits according to its `normal_balance`, emit the canonical account ID with a positive magnitude and a `DR`/`CR` side marker, and exclude zero nets. Across valid in-window postings to known accounts, total debits must equal total credits or the run fails.
+
+Write one snapshot line per account with in-window activity and a non-zero net, sorted by account ID (case-insensitive ascending).
+
+## Snapshot format
+
+```text
+ACCOUNT_ID;balance_cents;SIDE
+```
+
+`balance_cents` is a positive integer. `SIDE` is `DR` or `CR`. One line per account; no blank lines.
+
+## Exit codes
+
+- `0`: balanced window and no unknown accounts
+- `1`: unknown account, unbalanced totals, invalid rows, or duplicate chart IDs
+- `2`: missing arguments, missing paths, or unreadable inputs

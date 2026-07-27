@@ -1,11 +1,5 @@
-tests
-solution
-instruction.md
-task.toml
-output_contract.toml
 .git
 .gitignore
-.dockerignore
 **/__pycache__/
 **/*.pyc
 **/.pytest_cache/
