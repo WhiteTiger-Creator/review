@@ -1,5 +1,0 @@
-posting_date,account_id,debit_cents,credit_cents,memo
-2025-01-15,ca-1000,50000,0,Customer payment
-2025-01-15,REV-4000,0,50000,Service revenue
-2025-02-01,exp-5000,12000,0,Office supplies
-2025-02-01,CA-1000,0,12000,Petty cash reimbursement
