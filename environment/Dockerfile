@@ -1,18 +1,11 @@
-FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
-
-WORKDIR /app
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-       asciinema \
-       python3 \
-       python3-pytest \
-       tmux \
+FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
+RUN apt-get update && apt-get install -y --no-install-recommends asciinema python3 python3-pip python3-venv tmux util-linux \
+    && ln -s /usr/local/cargo/bin/rustc /usr/local/bin/rustc \
+    && ln -s /usr/local/cargo/bin/cargo /usr/local/bin/cargo \
     && rm -rf /var/lib/apt/lists/*
-
-COPY app/ /app/
-
-RUN chmod +x /app/bin/build-tidefront /app/bin/tidefront \
-    && mkdir -p /logs/agent /output
-
-CMD ["sleep", "infinity"]
+COPY requirements.txt /tmp/requirements.txt
+RUN python3 -m venv /opt/verifier-venv && /opt/verifier-venv/bin/pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt
+WORKDIR /app
+COPY analysis.rs /app/analysis.rs
+COPY docs /app/docs
+COPY data /app/data
