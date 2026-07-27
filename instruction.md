@@ -1,22 +1,17 @@
-Our wallet used to lean on a third-party SD-JWT library, and now that data minimisation is
-contractual I need `/app/broker` finished in-house. `mvn -f /app/broker/pom.xml package` has to
-produce `/app/broker/target/sd-jwt-broker.jar`, run as
+Offline ward-census occupancy nowcasting under `/app/environment` is a machine-learning evaluation task: reconstruct scoring from a frozen occupancy checkpoint over ward feature-vector embeddings, measure held-out adversarial generalization on clock-discontinuity arms, and emit occupancy-conservation digests for every held-out arm. Success is `/app/output/invariant_proof_log.json` (schema `occ-proof-v1`) whose freeze-style checkpoint inference observations match the offline ML evaluation rules below. Stay offline.
 
-```
-java -jar /app/broker/target/sd-jwt-broker.jar --config <cfg> --credentials <dir> --policy <file> --out <dir>
-```
+The model-scoring pipeline must score float64 feature packs with the frozen checkpoint at `/app/environment/weights/w_blob.bin`, pack identities with `/app/environment/data/pin_s.lock` (slice id 3), and evaluate held-out arms from `/app/environment/data/xtra_clk.toml`. Training-window occupancy estimates can look locally accurate while held-out checkpoint inference, feature-identity packing, role-gated occupancy aggregation, discontinuity rebinding of predicted counts, scored-stage tip agreement, cite-authority seals, warm inference-memo reuse, or replay-stable evaluation JSON violate the contract. Repair the model-evaluation libraries under `/app/environment` so frozen-checkpoint inference, held-out lattice aggregation, clock-discontinuity rebinding, and proof-log emission match the rules below; library and module-level behavior must be correct, not only a CLI wrapper or a static JSON write. Held-out arms hold_rot_a and hold_clk_b must appear in metrics with zero derived resource-preservation violations. Feature packs, frozen weights, and clock-arm inputs under `/app/environment/` are model and evaluation inputs.
 
-No third-party JOSE, JWT or crypto code may reach that jar or its classpath: JDK crypto and a JSON
-parser only. The stored credentials carry the MicroProfile claim contract documented under
-`/app/microprofile-jwt-auth/api`. Issuer keys are never compiled in: the config names where the
-key set lives, and every run reads it from there, whether that is a served URL or a local mirror.
+The evaluation entrypoint under `/app/environment` must accept `-root` (default `/app/environment`) and `-out` (default `/app/output/invariant_proof_log.json`). Fresh evaluation must clear warm-shadow and scored-row residue, then rewrite `/app/output/invariant_proof_log.json` through the model-scoring pipeline. Acceptance re-runs that entrypoint under pytest before checking fields. Consecutive identical evaluations must leave byte-identical artifact bytes (truncate then write). Document seed is the seed of the first held-out arm in `/app/environment/data/xtra_clk.toml` order (hold_rot_a / 4242). Each metrics row reports arm, score_tag, lat_hex, jmp_hex, a_cnt, b_cnt, z_lim, unit_key, and cite. Metrics rows are sorted by ascending arm name. Every metrics row must satisfy a_cnt + b_cnt == z_lim. Empty metrics mean pack, row, lattice, jump, cite-seal, re-dot, or scored-stage tip agreement disagreed on the active held-out arm.
 
-`/app/broker/PRESENTATION_PROFILE.md` is the profile to implement: the acceptance ladder, how
-disclosures resolve, how the smallest release satisfying the policy is picked, and the key binding
-on the way out. Match it exactly. `<dir>/report.json` is checked byte for byte and every released
-credential lands in `<dir>/presentations/<id>.sdjwt`.
+Feature pack `/app/environment/fixtures/feat_blob.bin` (little-endian): magic FEAT, then u16 row count, u16 feature count, u32 stamp, then records of u16 id, u8 role (0 write-capable, 1 observation-only), u8 pad, feature_count float64 feats, i16 a_base, i16 b_base, u16 lim. Frozen checkpoint `/app/environment/weights/w_blob.bin`: magic WB01, u16 dim, dim float64 weights, float64 bias. Pin lock `/app/environment/data/pin_s.lock`: magic PIN1, u16 slice id, u32 seed, u16 id count, then that many u16 identity ids in packing order.
 
-`/app/broker/wallet.properties`, `/app/credentials` and `/app/broker/policy.json` are what we run
-against today. A run only exits non-zero when that published key set cannot be read, and then it
-writes nothing at all.
+Produce scored inference rows in pin-lock identity order (not blob file order). For each identity, the linear predictor is w · feats + bias. Hex digests below are sha256 truncated to the stated width. Opaque score tag: first 12 hex chars of UTF-8 id=<id>|sc=<value with 6 decimal places>|seed=<arm seed>|arm=<arm index> where arm index is the 0-based index of the arm entry in `/app/environment/data/xtra_clk.toml`.
 
+Two distinct tag-order rules (do not conflate):
+1. score_tag and cite: the tag of the first write-capable identity in pin-lock packing order (insertion order along the pin list). Do not choose the lexicographically first write tag.
+2. lat_hex write-tag list: sort write-capable tags lexicographically, then hash lat|<sorted write tags joined by comma>|<a>|<b>|<lim>.
+
+Role 0 rows contribute a_base / b_base / lim to lattice occupancy counts; role 1 rows must not. unit_key is the first 16 hex chars over unit|<lat_hex>|<arm name>. Cite-authority seal for a unit is the first 16 hex chars over UTF-8 seal|<cite> and must match the pin-order cite. Lattice units must carry the active pack fingerprint alongside that pin-order cite and seal through discontinuity rebinding. Warm inference-memo reuse requires matching pack and row fingerprints with pin-order cite authority. Cross-stage tip agreement must survive durable tip-journal recovery before proof-log flush.
+
+For a held-out arm with pre-jump lattice counts (a, b, lim) and jump J: a_cnt = (a + J) % lim when lim > 0, else a; b_cnt = lim - a_cnt; z_lim = lim. jmp_hex is the first 16 hex chars over jmp|<arm>|<seed>|<a_cnt>|<b_cnt>|<z_lim>|<lat_hex>|<rotate>. Held-out arms (kind = hold) must appear in metrics; training arms may be used for diagnostics only.

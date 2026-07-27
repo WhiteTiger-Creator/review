@@ -1,27 +1,32 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PKG_DIR=/app/broker/src/main/java/com/acme/wallet/sdjwt
+export PATH="/usr/local/go/bin:/opt/verifier/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
-# Replace the stub with the JDK-only implementation: canonical JSON, base64url and digest helpers,
-# JWK handling with RFC 7638 thumbprints, SD-JWT disclosure resolution, the minimal release search
-# and the key binding JWT.
-mkdir -p "$PKG_DIR"
-rm -f "$PKG_DIR"/*.java
-cp "$SCRIPT_DIR"/src/*.java "$PKG_DIR"/
+ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-cd /app/broker
-mvn -B -q clean package
+test -f "$ROOT_DIR/reference/n7/scr_n.go"
+test -f "$ROOT_DIR/reference/p3/lat_p.go"
+test -f "$ROOT_DIR/reference/w9/jw_w.go"
+test -f "$ROOT_DIR/reference/r2/prf_h.go"
+test -f "$ROOT_DIR/reference/internal/persist.go"
+test -f "$ROOT_DIR/reference/ocneval/lane_a.go"
+test -f "$ROOT_DIR/reference/ocneval/lane_b.go"
+test -f "$ROOT_DIR/reference/ocneval/lane_c.go"
+test -f "$ROOT_DIR/reference/ocneval/boot.go"
 
-test -f /app/broker/target/sd-jwt-broker.jar
+install -m 0644 "$ROOT_DIR/reference/n7/scr_n.go" /app/environment/n7/scr_n.go
+install -m 0644 "$ROOT_DIR/reference/p3/lat_p.go" /app/environment/p3/lat_p.go
+install -m 0644 "$ROOT_DIR/reference/w9/jw_w.go" /app/environment/w9/jw_w.go
+install -m 0644 "$ROOT_DIR/reference/r2/prf_h.go" /app/environment/r2/prf_h.go
+install -m 0644 "$ROOT_DIR/reference/internal/persist.go" /app/environment/internal/persist.go
+install -m 0644 "$ROOT_DIR/reference/ocneval/lane_a.go" /app/environment/ocneval/lane_a.go
+install -m 0644 "$ROOT_DIR/reference/ocneval/lane_b.go" /app/environment/ocneval/lane_b.go
+install -m 0644 "$ROOT_DIR/reference/ocneval/lane_c.go" /app/environment/ocneval/lane_c.go
+install -m 0644 "$ROOT_DIR/reference/ocneval/boot.go" /app/environment/ocneval/boot.go
 
-# Prove the packaged broker runs against the batch shipped with the environment.
-java -jar /app/broker/target/sd-jwt-broker.jar \
-    --config /app/broker/wallet.properties \
-    --credentials /app/credentials \
-    --policy /app/broker/policy.json \
-    --out /app/out
-
-test -f /app/out/report.json
-echo "built /app/broker/target/sd-jwt-broker.jar"
+go build -C /app/environment -o /tmp/bn_run /app/environment/cmd/bn_run
+test -x /tmp/bn_run
+mkdir -p /app/output
+/tmp/bn_run -root /app/environment -out /app/output/invariant_proof_log.json
+test -f /app/output/invariant_proof_log.json
