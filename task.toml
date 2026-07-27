@@ -1,30 +1,45 @@
 version = "2.0"
 
 [metadata]
-author_name = "Anonymous"
-author_email = "anonymous@example.com"
+author_name = "anonymous"
+author_email = "anonymous"
 difficulty = "hard"
-category = "system-administration"
-subcategories = ["tool_specific"]
-codebase_size = "minimal"
-languages = ["go"]
-tags = ["linux", "nftables", "network-security"]
+category = "machine-learning"
+subcategories = [
+    "db_interaction",
+    "tool_specific",
+    "api_integration",
+]
 number_of_milestones = 0
-expert_time_estimate_min = 240.0
-junior_time_estimate_min = 720.0
+codebase_size = "small"
+languages = [
+    "lua",
+    "java",
+    "sql",
+]
+tags = [
+    "mlflow",
+    "huggingface",
+    "transformer-architecture",
+    "parameter-counting",
+    "mixture-of-experts",
+]
 
-[verifier]
-timeout_sec = 120.0
-
-[agent]
-timeout_sec = 1200.0
+expert_time_estimate_min = 150
+junior_time_estimate_min = 360
 
 [environment]
-dockerfile = "environment/Dockerfile"
-build_timeout_sec = 300.0
-cpus = 2
-memory_mb = 2048
-storage_mb = 2048
 allow_internet = false
-workdir = "/app"
-deny_paths = ["/tests", "/solution", "/logs/verifier"]
+build_timeout_sec = 1800
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240
+
+[agent]
+timeout_sec = 1800
+user = "agent"
+
+[verifier]
+timeout_sec = 1800
+environment_mode = "shared"
+user = "agent"
