@@ -1,20 +1,23 @@
-FROM public.ecr.aws/docker/library/gcc:13-bookworm@sha256:930f2ebe239275fa67226654cb79273ea34eee672ae61c8a39f689c37fb7ac5c
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
 
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        valgrind \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
         python3 \
         python3-pip \
         tmux \
         asciinema \
-    && rm -rf /var/lib/apt/lists/*
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3 /usr/bin/python
 
-RUN pip3 install --no-cache-dir --break-system-packages pytest==8.3.4
+COPY requirements.lock /tmp/requirements.lock
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+    --require-hashes --no-deps -r /tmp/requirements.lock
 
 WORKDIR /app
 
-COPY docs /app/docs
-COPY data /app/data
-COPY examples /app/examples
-COPY src /app/src
+COPY starter/go.mod /app/go.mod
+COPY spec/ /app/spec/
+COPY data/ /app/data/
+COPY starter/cmd/ /app/cmd/
+COPY starter/internal/ /app/internal/

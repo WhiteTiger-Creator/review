@@ -1,795 +1,543 @@
+"""Behavioral checks for the meshgate reconcile command."""
+
+from __future__ import annotations
+
 import json
-import os
-import re
+import random
 import subprocess
-import sys
-from fractions import Fraction
+import tempfile
+import uuid
+from collections.abc import Iterable
+from pathlib import Path
 
-import pytest
+from mesh_reference import get_sig, reconcile_mesh
 
-TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, TESTS_DIR)
-import cartref as R
-
-APP = os.environ.get("QUILL_APP", "/app")
-DATA_DIR = os.path.join(APP, "data")
-SRC_DIR = os.path.join(APP, "src")
-EX_DIR = os.path.join(APP, "examples")
-FIT_DIR = os.environ.get("QUILL_FIT", "/tmp/quill_cart_fit")
-BINARY = os.path.join(FIT_DIR, "cart")
-BATTERY = os.path.join(TESTS_DIR, "battery")
-HIDDEN = os.path.join(TESTS_DIR, "hidden")
-HIDDEN_DATA = os.path.join(HIDDEN, "data")
-
-LINE_RE = re.compile(
-    r"^\S+ (?:"
-    r"V \d+ P \d+/\d+ S \d+/\d+"
-    r"|Q \d+ C \d+ N \d+ I \d+/\d+ E \d+/\d+ D \d+/\d+(?: \d+/\d+)*"
-    r"|G \d+ R \d+ V \d+ T -?\d+ D [FV] A \d+/\d+"
-    r"|D \d+ V \d+ T -?\d+ N \d+ G \d+/\d+"
-    r"|REJECT"
-    r")$"
+ROOT = (
+    Path("/app")
+    if Path("/app/cmd/meshgate/main.go").exists()
+    else Path(__file__).parents[1].resolve()
 )
-
-FORBIDDEN = ("mlpack", "dlib", "opencv2/ml", "shark/", "xgboost", "lightgbm")
-
-
-def _read_lines(path):
-    with open(path, encoding="utf-8") as fh:
-        return [ln.rstrip("\n") for ln in fh if ln.strip() != ""]
+MAIN = ROOT / "cmd/meshgate/main.go"
+DEFAULT_DATA = ROOT / "data"
+DEFAULT_POLICY = ROOT / "spec/mesh_policy.json"
+DEFAULT_OUT = ROOT / "output/posture.json"
 
 
-def _read_json(path):
-    with open(path, encoding="utf-8") as fh:
-        return json.load(fh)
+def run_reconcile(data: Path, policy: Path, output: Path, use_alias: bool = False) -> subprocess.CompletedProcess:
+    """Execute meshgate against given paths."""
+    data_flag = "--data" if use_alias else "--data-root"
+    cmd = [
+        "go",
+        "run",
+        str(MAIN),
+        "reconcile",
+        data_flag,
+        str(data),
+        "--policy",
+        str(policy),
+        "--output",
+        str(output),
+    ]
+    return subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, check=False)
 
 
-def _group(lines):
-    groups = {}
-    for ln in lines:
-        groups.setdefault(ln.split(" ", 1)[0], []).append(ln)
-    return groups
+def load_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _compile():
-    os.makedirs(FIT_DIR, exist_ok=True)
-    return subprocess.run(
+def write_gateway_segments(root: Path, gateway_id: str, segments: Iterable[Iterable[dict]]) -> None:
+    """Write one gateway's telemetry segments, filling signatures unless overridden."""
+    gw_dir = root / gateway_id
+    gw_dir.mkdir(parents=True, exist_ok=True)
+
+    for idx, records in enumerate(segments, start=1):
+        encoded = []
+        for rec in records:
+            row = dict(rec)
+            if "sig" not in row:
+                row["sig"] = get_sig(
+                    gateway_id,
+                    row["seq"],
+                    row["ts"],
+                    row["unit_id"],
+                    row["op"],
+                    row.get("metric", ""),
+                    row.get("val"),
+                    row.get("offset"),
+                )
+            encoded.append(json.dumps(row))
+
+        (gw_dir / f"seg_{idx:03d}.jsonl").write_text("\n".join(encoded) + "\n", encoding="utf-8")
+
+
+def build_seeded_matrix_fixture(root: Path, seed: int) -> tuple[Path, Path, dict]:
+    """Create a deterministic multi-gateway fixture with interacting runtime behavior."""
+    gw_root = root / "gw"
+    policy_file = root / "topo.json"
+
+    base = 18.0 + (seed * 0.37)
+    policy = {
+        "bound_nodes": [{"left": "alpha", "right": "beta"}],
+        "home_sites": {
+            "alpha": ["gw_A", "gw_B"],
+            "beta": ["gw_A"],
+            "rogue": ["gw_A"],
+        },
+        "sync_metrics": ["temp"],
+    }
+    policy_file.write_text(json.dumps(policy), encoding="utf-8")
+
+    write_gateway_segments(
+        gw_root,
+        "gw_A",
         [
-            "g++",
-            "-std=c++17",
-            "-O2",
-            "-o",
-            BINARY,
-            os.path.join(SRC_DIR, "main.cpp"),
+            [
+                {"seq": 1, "ts": "2026-07-04T12:00:00Z", "unit_id": "alpha", "op": "BOOT"},
+                {"seq": 2, "ts": "2026-07-04T12:00:01Z", "unit_id": "beta", "op": "BOOT"},
+                {"seq": 3, "ts": "2026-07-04T12:00:02Z", "unit_id": "alpha", "op": "BATCH_BEGIN"},
+            ],
+            [
+                {"seq": 4, "ts": "2026-07-04T12:00:03Z", "unit_id": "alpha", "op": "TELEMETRY", "metric": "temp", "val": round(base + 0.25, 2)},
+                {"seq": 5, "ts": "2026-07-04T12:00:04Z", "unit_id": "alpha", "op": "TUNE", "offset": round(0.2 + (seed * 0.05), 2)},
+                {"seq": 6, "ts": "2026-07-04T12:00:05Z", "unit_id": "alpha", "op": "TELEMETRY", "metric": "temp", "val": round(base + 1.15, 2)},
+                {"seq": 7, "ts": "2026-07-04T12:00:06Z", "unit_id": "alpha", "op": "BATCH_COMMIT"},
+                {"seq": 8, "ts": "2026-07-04T12:00:07Z", "unit_id": "beta", "op": "PING"},
+                {"seq": 9, "ts": "2026-07-04T12:00:08Z", "unit_id": "beta", "op": "SHUTDOWN"},
+                {"seq": 10, "ts": "2026-07-04T12:00:09Z", "unit_id": "beta", "op": "PING"},
+            ],
         ],
-        capture_output=True,
-        text=True,
-        check=False,
     )
 
-
-def _run(data_dir, queries_path):
-    proc = subprocess.run(
-        [BINARY, data_dir, queries_path],
-        capture_output=True,
-        text=True,
-        check=False,
+    write_gateway_segments(
+        gw_root,
+        "gw_B",
+        [
+            [
+                {"seq": 1, "ts": "2026-07-04T12:01:00Z", "unit_id": "alpha", "op": "BOOT"},
+                {"seq": 2, "ts": "2026-07-04T12:01:01Z", "unit_id": "alpha", "op": "TELEMETRY", "metric": "temp", "val": round(base + 1.55, 2)},
+                {"seq": 3, "ts": "2026-07-04T12:01:02Z", "unit_id": "alpha", "op": "PING"},
+            ]
+        ],
     )
-    if proc.returncode != 0:
-        raise RuntimeError("agent run failed: " + proc.stderr[-2000:])
-    return [ln for ln in proc.stdout.split("\n") if ln.strip() != ""]
+
+    write_gateway_segments(
+        gw_root,
+        "gw_C",
+        [
+            [
+                {"seq": 1, "ts": "2026-07-04T12:02:00Z", "unit_id": "rogue", "op": "BOOT"},
+                {"seq": 2, "ts": "2026-07-04T12:02:01Z", "unit_id": "rogue", "op": "TUNE", "offset": round(0.4 + (seed * 0.03), 2)},
+                {"seq": 3, "ts": "2026-07-04T12:02:02Z", "unit_id": "rogue", "op": "BATCH_BEGIN"},
+            ],
+            [
+                {"seq": 4, "ts": "2026-07-04T12:02:03Z", "unit_id": "rogue", "op": "TELEMETRY", "metric": "temp", "val": round(base + 4.05, 2)},
+                {"seq": 5, "ts": "2026-07-04T12:02:04Z", "unit_id": "rogue", "op": "BATCH_ABORT"},
+                {"seq": 6, "ts": "2026-07-04T12:02:05Z", "unit_id": "rogue", "op": "TELEMETRY", "metric": "temp", "val": round(base + 4.55, 2)},
+            ],
+        ],
+    )
+
+    return gw_root, policy_file, policy
 
 
-def _chunks(seq, count):
-    size = max(1, (len(seq) + count - 1) // count)
-    return [seq[i : i + size] for i in range(0, len(seq), size)]
+# --- Tests ---
 
 
-COMPILE = _compile()
-FIT_OK = COMPILE.returncode == 0 and os.path.exists(BINARY)
+def test_reconcile_produces_output():
+    """meshgate reconcile must exit 0 and write posture JSON to /app/output/posture.json."""
+    if DEFAULT_OUT.exists():
+        DEFAULT_OUT.unlink()
 
-TABLES = R.read_tables(DATA_DIR)
-HTABLES = R.read_tables(HIDDEN_DATA)
-
-QUERY_LINES = _read_lines(os.path.join(BATTERY, "queries.txt"))
-GOLDEN_LINES = _read_lines(os.path.join(BATTERY, "expected.txt"))
-FAMILY = _read_json(os.path.join(BATTERY, "families.json"))
-
-HQUERY_LINES = _read_lines(os.path.join(HIDDEN, "queries.txt"))
-HGOLDEN_LINES = _read_lines(os.path.join(HIDDEN, "expected.txt"))
-HFAMILY = _read_json(os.path.join(HIDDEN, "families.json"))
-
-REF_LINES = R.process(TABLES, QUERY_LINES)
-REF_BY_QID = _group(REF_LINES)
-HREF_LINES = R.process(HTABLES, HQUERY_LINES)
-HREF_BY_QID = _group(HREF_LINES)
-
-QUERY_BY_QID = {ln.split()[0]: ln.split() for ln in QUERY_LINES}
-
-if FIT_OK:
-    AGENT_LINES = _run(DATA_DIR, os.path.join(BATTERY, "queries.txt"))
-    HAGENT_LINES = _run(HIDDEN_DATA, os.path.join(HIDDEN, "queries.txt"))
-else:
-    AGENT_LINES = []
-    HAGENT_LINES = []
-AGENT_BY_QID = _group(AGENT_LINES)
-HAGENT_BY_QID = _group(HAGENT_LINES)
+    result = run_reconcile(DEFAULT_DATA, DEFAULT_POLICY, DEFAULT_OUT)
+    assert result.returncode == 0, f"meshgate failed: {result.stderr}"
+    assert DEFAULT_OUT.is_file(), "posture.json was not created"
 
 
-def _qids(family, table):
-    return sorted(q for q, f in table.items() if f == family)
+def test_default_matches_reference():
+    """Default shipped site streams must produce posture JSON exactly matching the reference model."""
+    expected = reconcile_mesh(DEFAULT_DATA, load_json(DEFAULT_POLICY))
+
+    out_file = DEFAULT_OUT
+    run_reconcile(DEFAULT_DATA, DEFAULT_POLICY, out_file)
+    actual = load_json(out_file)
+
+    assert actual == expected
 
 
-BULK_QIDS = _qids("bulk", FAMILY)
-POOL_QIDS = _qids("nodebase", FAMILY)
-READING_QIDS = _qids("fwdonly", FAMILY)
-STRICT_QIDS = _qids("nonneg", FAMILY)
-DEFAULT_QIDS = _qids("leftfall", FAMILY)
-REJECT_QIDS = _qids("reject", FAMILY)
-HIDDEN_QIDS = sorted(HFAMILY)
+def test_empty_lists_are_arrays_not_null():
+    """Empty input must serialize gateways, drift_events, units, and metrics as [] rather than null."""
+    with tempfile.TemporaryDirectory() as tmp:
+        empty_dir = Path(tmp) / "empty_data"
+        empty_dir.mkdir()
+        out_file = Path(tmp) / "out.json"
 
-DECOY = {
-    v: _group(R.process(TABLES, QUERY_LINES, v)) for v in R.VARIANTS if v != "pinned"
-}
+        policy_file = Path(tmp) / "topo.json"
+        policy_file.write_text(json.dumps({
+            "bound_nodes": [],
+            "home_sites": {},
+            "sync_metrics": []
+        }))
 
+        res = run_reconcile(empty_dir, policy_file, out_file)
+        assert res.returncode == 0
 
-def _assert_group(qids, agent_map, ref_map):
-    for qid in qids:
-        assert agent_map.get(qid) == ref_map.get(qid), qid
+        raw = out_file.read_text(encoding="utf-8")
+        assert "null" not in raw, "Serialized JSON contains 'null' values indicating uninitialized slices"
 
-
-def test_model_sources_are_usable():
-    """The agent source compiles cleanly."""
-    assert FIT_OK, COMPILE.stderr[-2000:]
-
-
-def test_reference_matches_committed_golden():
-    """Independent rational recomputation equals the committed visible battery."""
-    assert REF_LINES == GOLDEN_LINES
+        data = json.loads(raw)
+        assert data["gateways"] == []
+        assert data["drift_events"] == []
+        assert data["recoverable"] is True
 
 
-def test_hidden_reference_matches_committed_golden():
-    """Independent rational recomputation equals the committed hidden battery."""
-    assert HREF_LINES == HGOLDEN_LINES
+def test_custom_output_and_root_flags():
+    """Verify --output and --data/--data-root paths are respected."""
+    with tempfile.TemporaryDirectory() as tmp:
+        out_root = Path(tmp) / "out"
+        out_root.mkdir()
+        out_file = out_root / "report.json"
+
+        res1 = run_reconcile(DEFAULT_DATA, DEFAULT_POLICY, out_file, use_alias=False)
+        assert res1.returncode == 0
+        assert out_file.is_file()
+        assert load_json(out_file) == load_json(DEFAULT_OUT)
+
+        out_file.unlink()
+
+        res2 = run_reconcile(DEFAULT_DATA, DEFAULT_POLICY, out_file, use_alias=True)
+        assert res2.returncode == 0
+        assert out_file.is_file()
+        assert load_json(out_file) == load_json(DEFAULT_OUT)
 
 
-def test_visible_line_count():
-    """The agent emits exactly the expected number of visible battery lines."""
-    assert len(AGENT_LINES) == len(REF_LINES)
+def test_signature_mismatch_validation():
+    """Bad signature records make a gateway unrecoverable and emit bad_signature findings."""
+    with tempfile.TemporaryDirectory() as tmp:
+        gw_root = Path(tmp) / "gw"
+        dev_dir = gw_root / "gw_sig_error"
+        dev_dir.mkdir(parents=True)
+        out_file = Path(tmp) / "out.json"
+        policy_file = Path(tmp) / "topo.json"
+
+        policy_file.write_text(json.dumps({
+            "bound_nodes": [],
+            "home_sites": {},
+            "sync_metrics": []
+        }))
+
+        expected_sig = get_sig("gw_sig_error", 1, "2026-07-04T12:00:00Z", "unit-01", "BOOT")
+        line1 = json.dumps({"seq": 1, "ts": "2026-07-04T12:00:00Z", "unit_id": "unit-01", "op": "BOOT", "sig": expected_sig})
+        line2 = json.dumps({"seq": 2, "ts": "2026-07-04T12:00:05Z", "unit_id": "unit-01", "op": "TELEMETRY", "metric": "temp", "val": 22.5, "sig": "bad_sig_field_value_goes_here"})
+
+        (dev_dir / "seg_001.jsonl").write_text(f"{line1}\n{line2}\n", encoding="utf-8")
+
+        res = run_reconcile(gw_root, policy_file, out_file)
+        assert res.returncode == 0
+        data = load_json(out_file)
+
+        assert data["recoverable"] is False
+        gw_report = next(g for g in data["gateways"] if g["gateway_id"] == "gw_sig_error")
+        assert gw_report["recoverable"] is False
+        assert len(gw_report["units"]) == 0
+
+        sig_events = [v for v in data["drift_events"] if v["reason"] == "bad_signature"]
+        assert len(sig_events) == 1
+        assert sig_events[0]["seq"] == 2
+        assert sig_events[0]["detail"] == "signature hash mismatch"
 
 
-def test_hidden_line_count():
-    """The agent emits exactly the expected number of hidden battery lines."""
-    assert len(HAGENT_LINES) == len(HREF_LINES)
+def test_transaction_staging_and_aborts():
+    """Verify that batch actions inside BEGIN...ABORT/COMMIT are staged and rolled back or applied accordingly."""
+    with tempfile.TemporaryDirectory() as tmp:
+        gw_root = Path(tmp) / "gw"
+        dev_dir = gw_root / "gw_tx"
+        dev_dir.mkdir(parents=True)
+        out_file = Path(tmp) / "out.json"
+        policy_file = Path(tmp) / "topo.json"
+
+        policy_file.write_text(json.dumps({"bound_nodes": [], "home_sites": {}, "sync_metrics": []}))
+
+        lines = [
+            {"seq": 1, "ts": "2026-07-04T12:00:00Z", "unit_id": "dev1", "op": "BOOT"},
+            {"seq": 2, "ts": "2026-07-04T12:00:01Z", "unit_id": "dev1", "op": "BATCH_BEGIN"},
+            {"seq": 3, "ts": "2026-07-04T12:00:02Z", "unit_id": "dev1", "op": "TELEMETRY", "metric": "temp", "val": 10.0},
+            {"seq": 4, "ts": "2026-07-04T12:00:03Z", "unit_id": "dev1", "op": "BATCH_ABORT"},
+            {"seq": 5, "ts": "2026-07-04T12:00:04Z", "unit_id": "dev1", "op": "BATCH_BEGIN"},
+            {"seq": 6, "ts": "2026-07-04T12:00:05Z", "unit_id": "dev1", "op": "TELEMETRY", "metric": "temp", "val": 15.0},
+            {"seq": 7, "ts": "2026-07-04T12:00:06Z", "unit_id": "dev1", "op": "TUNE", "offset": 1.0},
+            {"seq": 8, "ts": "2026-07-04T12:00:07Z", "unit_id": "dev1", "op": "TELEMETRY", "metric": "temp", "val": 17.0},
+            {"seq": 9, "ts": "2026-07-04T12:00:08Z", "unit_id": "dev1", "op": "BATCH_COMMIT"}
+        ]
+
+        json_lines = []
+        for x in lines:
+            x["sig"] = get_sig("gw_tx", x["seq"], x["ts"], x["unit_id"], x["op"], x.get("metric", ""), x.get("val"), x.get("offset"))
+            json_lines.append(json.dumps(x))
+        (dev_dir / "seg_001.jsonl").write_text("\n".join(json_lines) + "\n", encoding="utf-8")
+
+        res = run_reconcile(gw_root, policy_file, out_file)
+        assert res.returncode == 0
+        data = load_json(out_file)
+
+        assert data["recoverable"] is True
+        gw_data = data["gateways"][0]
+        dev_data = gw_data["units"][0]
+        temp_metric = dev_data["metrics"][0]
+
+        assert temp_metric["count"] == 2
+        assert temp_metric["min"] == 15.0
+        assert temp_metric["max"] == 18.0
+        assert temp_metric["average"] == 16.5
 
 
-def test_every_visible_query_present():
-    """The agent produces an output block for every visible query id."""
-    assert set(AGENT_BY_QID) == set(REF_BY_QID)
+def test_cross_segment_batch_violation_aborts_state_and_turns_late_commit_into_orphan():
+    """A batch can span files, but any in-batch violation must discard staged state immediately."""
+    with tempfile.TemporaryDirectory() as tmp:
+        gw_root = Path(tmp) / "gw"
+        out_file = Path(tmp) / "out.json"
+        policy_file = Path(tmp) / "topo.json"
 
+        policy_file.write_text(json.dumps({"bound_nodes": [], "home_sites": {}, "sync_metrics": []}), encoding="utf-8")
 
-def test_every_hidden_query_present():
-    """The agent produces an output block for every hidden query id."""
-    assert set(HAGENT_BY_QID) == set(HREF_BY_QID)
-
-
-@pytest.mark.parametrize("idx", range(20))
-def test_bulk_slice_matches(idx):
-    """The agent reproduces a slice of the ordinary bulk battery exactly."""
-    chunks = _chunks(BULK_QIDS, 20)
-    if idx >= len(chunks):
-        pytest.skip("no chunk")
-    _assert_group(chunks[idx], AGENT_BY_QID, REF_BY_QID)
-
-
-@pytest.mark.parametrize("idx", range(3))
-def test_association_pool_slice_matches(idx):
-    """The agent reproduces tables with heavy gaps in the deciding feature."""
-    chunks = _chunks(POOL_QIDS, 3)
-    if idx >= len(chunks):
-        pytest.skip("no chunk")
-    _assert_group(chunks[idx], AGENT_BY_QID, REF_BY_QID)
-
-
-@pytest.mark.parametrize("idx", range(3))
-def test_reversed_reading_slice_matches(idx):
-    """The agent reproduces tables where a reversed stand-in reading wins."""
-    chunks = _chunks(READING_QIDS, 3)
-    if idx >= len(chunks):
-        pytest.skip("no chunk")
-    _assert_group(chunks[idx], AGENT_BY_QID, REF_BY_QID)
-
-
-@pytest.mark.parametrize("idx", range(3))
-def test_zero_association_slice_matches(idx):
-    """The agent reproduces tables where a stand-in only ties the default branch."""
-    chunks = _chunks(STRICT_QIDS, 3)
-    if idx >= len(chunks):
-        pytest.skip("no chunk")
-    _assert_group(chunks[idx], AGENT_BY_QID, REF_BY_QID)
-
-
-@pytest.mark.parametrize("idx", range(3))
-def test_default_branch_slice_matches(idx):
-    """The agent reproduces tables whose rows fall through to the default branch."""
-    chunks = _chunks(DEFAULT_QIDS, 3)
-    if idx >= len(chunks):
-        pytest.skip("no chunk")
-    _assert_group(chunks[idx], AGENT_BY_QID, REF_BY_QID)
-
-
-def test_refused_queries_match():
-    """The agent refuses exactly the queries the contract refuses."""
-    _assert_group(REJECT_QIDS, AGENT_BY_QID, REF_BY_QID)
-
-
-@pytest.mark.parametrize("idx", range(8))
-def test_hidden_slice_matches(idx):
-    """The agent generalizes to a held back battery over unseen tables."""
-    chunks = _chunks(HIDDEN_QIDS, 8)
-    if idx >= len(chunks):
-        pytest.skip("no chunk")
-    _assert_group(chunks[idx], HAGENT_BY_QID, HREF_BY_QID)
-
-
-def test_line_schema_is_canonical():
-    """Every emitted line matches the canonical output grammar."""
-    bad = [ln for ln in AGENT_LINES + HAGENT_LINES if not LINE_RE.match(ln)]
-    assert bad[:5] == []
-
-
-def test_fractions_are_in_lowest_terms():
-    """Every reported quantity is a reduced fraction with a positive denominator."""
-    bad = []
-    for ln in AGENT_LINES:
-        parts = ln.split()
-        if parts[1] == "V":
-            tokens = [parts[4], parts[6]]
-        elif parts[1] == "Q":
-            tokens = [parts[8], parts[10], *parts[12:]]
-        else:
-            continue
-        for token in tokens:
-            num, den = token.split("/")
-            value = Fraction(int(num), int(den))
-            if int(den) <= 0 or f"{value.numerator}/{value.denominator}" != token:
-                bad.append(ln)
-    assert bad[:5] == []
-
-
-def test_one_summary_line_per_feature():
-    """Each query reports one feature summary per column, in increasing order."""
-    bad = []
-    for qid, lines in AGENT_BY_QID.items():
-        query = QUERY_BY_QID[qid]
-        if len(query) != 5 or query[1] not in TABLES or lines == [f"{qid} REJECT"]:
-            continue
-        seen = [int(ln.split()[2]) for ln in lines if ln.split()[1] == "V"]
-        if seen != list(range(len(TABLES[query[1]][0][0]))):
-            bad.append(qid)
-    assert bad[:5] == []
-
-
-def test_one_report_line_per_held_out_example():
-    """Each held out example gets exactly one report line, in row order."""
-    bad = []
-    for qid, lines in AGENT_BY_QID.items():
-        query = QUERY_BY_QID[qid]
-        if len(query) != 5 or query[2] not in TABLES or lines == [f"{qid} REJECT"]:
-            continue
-        seen = [int(ln.split()[2]) for ln in lines if ln.split()[1] == "Q"]
-        if seen != list(range(len(TABLES[query[2]]))):
-            bad.append(qid)
-    assert bad[:5] == []
-
-
-def test_class_distribution_sums_to_one():
-    """The reported class distribution of every terminal group sums to one."""
-    bad = []
-    for ln in AGENT_LINES:
-        parts = ln.split()
-        if parts[1] != "Q":
-            continue
-        total = sum(
-            Fraction(int(t.split("/")[0]), int(t.split("/")[1])) for t in parts[12:]
+        write_gateway_segments(
+            gw_root,
+            "gw_cross_batch",
+            [
+                [
+                    {"seq": 1, "ts": "2026-07-04T12:00:00Z", "unit_id": "dev1", "op": "BOOT"},
+                    {"seq": 2, "ts": "2026-07-04T12:00:01Z", "unit_id": "dev1", "op": "BATCH_BEGIN"},
+                    {"seq": 3, "ts": "2026-07-04T12:00:02Z", "unit_id": "dev1", "op": "TELEMETRY", "metric": "temp", "val": 40.0},
+                ],
+                [
+                    {"seq": 4, "ts": "2026-07-04T12:00:03Z", "unit_id": "dev1", "op": "NOPE"},
+                    {"seq": 5, "ts": "2026-07-04T12:00:04Z", "unit_id": "dev1", "op": "BATCH_COMMIT"},
+                    {"seq": 6, "ts": "2026-07-04T12:00:05Z", "unit_id": "dev1", "op": "TELEMETRY", "metric": "temp", "val": 50.0},
+                ],
+            ],
         )
-        if total != 1:
-            bad.append(ln)
-    assert bad[:5] == []
+
+        expected = reconcile_mesh(gw_root, json.loads(policy_file.read_text(encoding="utf-8")))
+        res = run_reconcile(gw_root, policy_file, out_file)
+        assert res.returncode == 0, f"meshgate failed: {res.stderr}"
+        actual = load_json(out_file)
+
+        assert actual == expected
+
+        reasons = [v["reason"] for v in actual["drift_events"]]
+        assert reasons == ["unknown_op_or_metric", "orphan_batch"]
+
+        temp_metric = actual["gateways"][0]["units"][0]["metrics"][0]
+        assert temp_metric["count"] == 1
+        assert temp_metric["min"] == 50.0
+        assert temp_metric["max"] == 50.0
+        assert temp_metric["average"] == 50.0
 
 
-def test_predicted_class_is_a_plurality_of_its_group():
-    """The predicted class holds the largest share of its terminal group."""
-    bad = []
-    for ln in AGENT_LINES:
-        parts = ln.split()
-        if parts[1] != "Q":
-            continue
-        shares = [
-            Fraction(int(t.split("/")[0]), int(t.split("/")[1])) for t in parts[12:]
+def test_policy_bound_nodes_validation():
+    """Verify bound_nodes co-location: per gateway, if either bound unit is active, both must be active on that same gateway."""
+    with tempfile.TemporaryDirectory() as tmp:
+        gw_root = Path(tmp) / "gw"
+        dev_dir = gw_root / "gw_coloc"
+        dev_dir.mkdir(parents=True)
+        out_file = Path(tmp) / "out.json"
+        policy_file = Path(tmp) / "topo.json"
+
+        policy_file.write_text(json.dumps({
+            "bound_nodes": [{"left": "temp-1", "right": "hum-1"}],
+            "home_sites": {},
+            "sync_metrics": []
+        }))
+
+        lines = [
+            {"seq": 1, "ts": "2026-07-04T12:00:00Z", "unit_id": "temp-1", "op": "BOOT"}
         ]
-        predicted = int(parts[4])
-        if predicted >= len(shares) or shares[predicted] != max(shares):
-            bad.append(ln)
-    assert bad[:5] == []
+        json_lines = []
+        for x in lines:
+            x["sig"] = get_sig("gw_coloc", x["seq"], x["ts"], x["unit_id"], x["op"])
+            json_lines.append(json.dumps(x))
+        (dev_dir / "seg_001.jsonl").write_text("\n".join(json_lines) + "\n", encoding="utf-8")
+
+        res = run_reconcile(gw_root, policy_file, out_file)
+        assert res.returncode == 0
+        data = load_json(out_file)
+
+        assert data["recoverable"] is True
+        binding_events = [v for v in data["drift_events"] if v["reason"] == "binding_breach"]
+        assert len(binding_events) == 1
+        assert binding_events[0]["seq"] == 0
+        assert binding_events[0]["detail"] == "binding broken: temp-1 and hum-1 not co-present"
 
 
-def test_lowest_class_wins_a_share_tie():
-    """When two classes share the largest slice the lower numbered class is predicted."""
-    bad = []
-    for ln in AGENT_LINES:
-        parts = ln.split()
-        if parts[1] != "Q":
-            continue
-        shares = [
-            Fraction(int(t.split("/")[0]), int(t.split("/")[1])) for t in parts[12:]
+def test_policy_home_sites_validation():
+    """Verify home_sites restriction rules."""
+    with tempfile.TemporaryDirectory() as tmp:
+        gw_root = Path(tmp) / "gw"
+        dev_dir = gw_root / "gw_unauth"
+        dev_dir.mkdir(parents=True)
+        out_file = Path(tmp) / "out.json"
+        policy_file = Path(tmp) / "topo.json"
+
+        policy_file.write_text(json.dumps({
+            "bound_nodes": [],
+            "home_sites": {"unit-1": ["gw_allowed"]},
+            "sync_metrics": []
+        }))
+
+        lines = [
+            {"seq": 1, "ts": "2026-07-04T12:00:00Z", "unit_id": "unit-1", "op": "BOOT"}
         ]
-        if int(parts[4]) != shares.index(max(shares)):
-            bad.append(ln)
-    assert bad[:5] == []
+        json_lines = []
+        for x in lines:
+            x["sig"] = get_sig("gw_unauth", x["seq"], x["ts"], x["unit_id"], x["op"])
+            json_lines.append(json.dumps(x))
+        (dev_dir / "seg_001.jsonl").write_text("\n".join(json_lines) + "\n", encoding="utf-8")
+
+        res = run_reconcile(gw_root, policy_file, out_file)
+        assert res.returncode == 0
+        data = load_json(out_file)
+
+        site_events = [v for v in data["drift_events"] if v["reason"] == "site_forbidden"]
+        assert len(site_events) == 1
+        assert site_events[0]["unit_id"] == "unit-1"
+        assert site_events[0]["detail"] == "unit unit-1 seen on foreign site gw_unauth"
 
 
-def test_impurity_matches_the_reported_distribution():
-    """The reported impurity equals one minus the summed squared class shares."""
-    bad = []
-    for ln in AGENT_LINES:
-        parts = ln.split()
-        if parts[1] != "Q":
-            continue
-        shares = [
-            Fraction(int(t.split("/")[0]), int(t.split("/")[1])) for t in parts[12:]
+def test_policy_sync_metrics_validation():
+    """Verify sync_metrics average limits comparisons."""
+    with tempfile.TemporaryDirectory() as tmp:
+        gw_root = Path(tmp) / "gw"
+        gw1 = gw_root / "gw1"
+        gw2 = gw_root / "gw2"
+        gw1.mkdir(parents=True)
+        gw2.mkdir(parents=True)
+        out_file = Path(tmp) / "out.json"
+        policy_file = Path(tmp) / "topo.json"
+
+        policy_file.write_text(json.dumps({
+            "bound_nodes": [],
+            "home_sites": {},
+            "sync_metrics": ["temp"]
+        }))
+
+        lines1 = [
+            {"seq": 1, "ts": "2026-07-04T12:00:00Z", "unit_id": "d1", "op": "BOOT"},
+            {"seq": 2, "ts": "2026-07-04T12:00:01Z", "unit_id": "d1", "op": "TELEMETRY", "metric": "temp", "val": 20.0}
         ]
-        want = 1 - sum(s * s for s in shares)
-        got = Fraction(int(parts[8].split("/")[0]), int(parts[8].split("/")[1]))
-        if got != want:
-            bad.append(ln)
-    assert bad[:5] == []
-
-
-def test_support_count_is_consistent_with_the_distribution():
-    """Every class share is an exact multiple of one over the reported support count."""
-    bad = []
-    for ln in AGENT_LINES:
-        parts = ln.split()
-        if parts[1] != "Q":
-            continue
-        support = int(parts[6])
-        if support < 1:
-            bad.append(ln)
-            continue
-        for token in parts[12:]:
-            share = Fraction(int(token.split("/")[0]), int(token.split("/")[1]))
-            if (share * support).denominator != 1:
-                bad.append(ln)
-    assert bad[:5] == []
-
-
-def test_evidence_stays_within_its_range():
-    """Reported evidence is never below zero nor above one."""
-    bad = []
-    for ln in AGENT_LINES:
-        parts = ln.split()
-        if parts[1] != "Q":
-            continue
-        value = Fraction(int(parts[10].split("/")[0]), int(parts[10].split("/")[1]))
-        if value < 0 or value > 1:
-            bad.append(ln)
-    assert bad[:5] == []
-
-
-def test_complete_examples_report_full_evidence():
-    """An example with every measurement recorded is placed on full evidence."""
-    bad = []
-    for qid, lines in AGENT_BY_QID.items():
-        query = QUERY_BY_QID[qid]
-        if len(query) != 5 or query[2] not in TABLES:
-            continue
-        probes = TABLES[query[2]]
-        for ln in lines:
-            parts = ln.split()
-            if parts[1] != "Q":
-                continue
-            row = probes[int(parts[2])][0]
-            if all(v != -1 for v in row) and parts[10] != "1/1":
-                bad.append(ln)
-    assert bad[:5] == []
-
-
-def test_importance_is_never_negative():
-    """No feature reports a negative contribution in either role."""
-    bad = []
-    for ln in AGENT_LINES:
-        parts = ln.split()
-        if parts[1] != "V":
-            continue
-        for token in (parts[4], parts[6]):
-            if Fraction(int(token.split("/")[0]), int(token.split("/")[1])) < 0:
-                bad.append(ln)
-    assert bad[:5] == []
-
-
-def test_some_feature_carries_primary_importance():
-    """Any query whose model splits at least once credits a primary contributor."""
-    bad = []
-    for qid, lines in AGENT_BY_QID.items():
-        summaries = [ln for ln in lines if ln.split()[1] == "V"]
-        reports = [ln for ln in lines if ln.split()[1] == "Q"]
-        if not summaries or not reports:
-            continue
-        distinct = {ln.split()[4] for ln in reports}
-        totals = [
-            Fraction(int(ln.split()[4].split("/")[0]), int(ln.split()[4].split("/")[1]))
-            for ln in summaries
+        lines2 = [
+            {"seq": 1, "ts": "2026-07-04T12:00:00Z", "unit_id": "d2", "op": "BOOT"},
+            {"seq": 2, "ts": "2026-07-04T12:00:01Z", "unit_id": "d2", "op": "TELEMETRY", "metric": "temp", "val": 20.10}
         ]
-        if len(distinct) > 1 and sum(totals) == 0:
-            bad.append(qid)
-    assert bad[:5] == []
+
+        json_lines1 = [json.dumps(dict(x, sig=get_sig("gw1", x["seq"], x["ts"], x["unit_id"], x["op"], x.get("metric", ""), x.get("val")))) for x in lines1]
+        json_lines2 = [json.dumps(dict(x, sig=get_sig("gw2", x["seq"], x["ts"], x["unit_id"], x["op"], x.get("metric", ""), x.get("val")))) for x in lines2]
+
+        (gw1 / "seg_001.jsonl").write_text("\n".join(json_lines1) + "\n", encoding="utf-8")
+        (gw2 / "seg_001.jsonl").write_text("\n".join(json_lines2) + "\n", encoding="utf-8")
+
+        res = run_reconcile(gw_root, policy_file, out_file)
+        assert res.returncode == 0
+        data = load_json(out_file)
+
+        sync_events = [v for v in data["drift_events"] if v["reason"] == "sync_skew"]
+        assert len(sync_events) == 1
+        assert sync_events[0]["detail"] == "sync metric skew: temp exceeds tolerance"
 
 
-def test_visible_run_is_deterministic():
-    """Re-running the agent on the visible battery yields identical output."""
-    assert _run(DATA_DIR, os.path.join(BATTERY, "queries.txt")) == AGENT_LINES
+def test_dynamic_random_run_matches_reference():
+    """Generate dynamic sensor data, evaluate the reference model, and verify the command matches."""
+    seed = str(uuid.uuid4())
+    random.seed(seed)
 
+    gw_names = ["gw_A", "gw_B"]
+    units = ["dev_X", "dev_Y"]
 
-def test_hidden_run_is_deterministic():
-    """Re-running the agent on the hidden battery yields identical output."""
-    assert _run(HIDDEN_DATA, os.path.join(HIDDEN, "queries.txt")) == HAGENT_LINES
+    with tempfile.TemporaryDirectory() as tmp:
+        gw_root = Path(tmp) / "gw"
+        out_file = Path(tmp) / "out.json"
+        policy_file = Path(tmp) / "topo.json"
 
+        policy_dict = {
+            "bound_nodes": [{"left": "dev_X", "right": "dev_Y"}],
+            "home_sites": {"dev_X": ["gw_A", "gw_B"], "dev_Y": ["gw_A", "gw_B"]},
+            "sync_metrics": ["temp"]
+        }
+        policy_file.write_text(json.dumps(policy_dict))
 
-def test_worked_examples_are_reproduced():
-    """The agent reproduces every shipped worked example byte for byte."""
-    bad = []
-    for name in sorted(os.listdir(EX_DIR)):
-        if not name.endswith(".in"):
-            continue
-        got = _run(DATA_DIR, os.path.join(EX_DIR, name))
-        want = _read_lines(os.path.join(EX_DIR, name[:-3] + ".out"))
-        if got != want:
-            bad.append(name)
-    assert bad == []
+        for gw in gw_names:
+            gw_dir = gw_root / gw
+            gw_dir.mkdir(parents=True)
 
-
-def test_no_forbidden_ml_dependency():
-    """The agent tree includes no bundled machine-learning library."""
-    blob = ""
-    for root, _dirs, files in os.walk(SRC_DIR):
-        for name in sorted(files):
-            with open(
-                os.path.join(root, name), encoding="utf-8", errors="ignore"
-            ) as fh:
-                blob += fh.read().lower()
-    assert [t for t in FORBIDDEN if t in blob] == []
-
-
-@pytest.mark.parametrize(
-    ("variant", "family"),
-    [
-        ("nodebase", "nodebase"),
-        ("nodebase", "nonneg"),
-        ("fwdonly", "fwdonly"),
-        ("fwdonly", "nodebase"),
-        ("nonneg", "nonneg"),
-        ("leftfall", "leftfall"),
-    ],
-)
-def test_plausible_variant_fails_its_trap_family(variant, family):
-    """A plausible alternative convention is wrong on the family that traps it."""
-    qids = _qids(family, FAMILY)
-    wrong = [q for q in qids if DECOY[variant].get(q) != REF_BY_QID.get(q)]
-    assert wrong, (variant, family)
-
-
-def _reported(block):
-    return [ln for ln in block if ln.split()[1] not in ("G", "D")]
-
-
-@pytest.mark.parametrize("variant", sorted(DECOY))
-def test_plausible_variant_is_clean_on_bulk(variant):
-    """Every alternative convention agrees on the ordinary summary and per example rows."""
-    wrong = [
-        q
-        for q in BULK_QIDS
-        if _reported(DECOY[variant].get(q, [])) != _reported(REF_BY_QID.get(q, []))
-    ]
-    assert wrong == []
-
-
-@pytest.mark.parametrize("variant", sorted(DECOY))
-def test_plausible_variant_is_caught_by_the_stand_in_report(variant):
-    """Reporting the ranked stand-ins exposes every alternative convention."""
-    wrong = [
-        q
-        for q in sorted(DECOY[variant])
-        if [ln for ln in DECOY[variant][q] if ln.split()[1] == "G"]
-        != [ln for ln in REF_BY_QID.get(q, []) if ln.split()[1] == "G"]
-    ]
-    assert wrong
-
-
-@pytest.mark.parametrize("variant", sorted(DECOY))
-def test_plausible_variant_scores_zero_overall(variant):
-    """Every plausible alternative convention fails the all-pass battery."""
-    flat = [ln for qid in sorted(DECOY[variant]) for ln in DECOY[variant][qid]]
-    assert flat != REF_LINES
-
-
-def test_refusal_token_is_the_only_output():
-    """A refused query emits its refusal token and nothing else."""
-    for qid in REJECT_QIDS:
-        assert AGENT_BY_QID.get(qid) == [f"{qid} REJECT"]
-
-
-def test_terminal_support_is_within_the_training_table():
-    """Every terminal group holds between one row and the whole training table."""
-    bad = []
-    for qid, lines in AGENT_BY_QID.items():
-        query = QUERY_BY_QID[qid]
-        if len(query) != 5 or query[1] not in TABLES:
-            continue
-        rows = len(TABLES[query[1]])
-        for ln in lines:
-            parts = ln.split()
-            if parts[1] == "Q" and not 1 <= int(parts[6]) <= rows:
-                bad.append(ln)
-    assert bad[:5] == []
-
-
-def test_battery_covers_enough_distinct_cases():
-    """The executed battery carries well over the required number of semantic cases."""
-    assert len(QUERY_LINES) + len(HQUERY_LINES) >= 60
-    assert len(set(FAMILY.values())) >= 5
-
-
-def _stand_ins(lines):
-    return [ln.split() for ln in lines if ln.split()[1] == "G"]
-
-
-def test_stand_in_ranks_start_at_one_and_are_contiguous():
-    """Each node's stand-in ranks run one, two, three with no gaps."""
-    bad = []
-    for qid, lines in AGENT_BY_QID.items():
-        per_node = {}
-        for g in _stand_ins(lines):
-            per_node.setdefault(int(g[2]), []).append(int(g[4]))
-        for node, ranks in per_node.items():
-            if ranks != list(range(1, len(ranks) + 1)):
-                bad.append((qid, node))
-    assert bad[:5] == []
-
-
-def test_stand_in_associations_are_ranked_downward():
-    """Within a node the associations never increase as the rank grows."""
-    bad = []
-    for qid, lines in AGENT_BY_QID.items():
-        per_node = {}
-        for g in _stand_ins(lines):
-            num, den = g[12].split("/")
-            per_node.setdefault(int(g[2]), []).append(Fraction(int(num), int(den)))
-        for node, scores in per_node.items():
-            if scores != sorted(scores, reverse=True):
-                bad.append((qid, node))
-    assert bad[:5] == []
-
-
-def test_stand_in_association_is_strictly_positive():
-    """A stand-in that fails to beat the default branch is never reported."""
-    bad = []
-    for g in (g for lines in AGENT_BY_QID.values() for g in _stand_ins(lines)):
-        num, den = g[12].split("/")
-        if Fraction(int(num), int(den)) <= 0:
-            bad.append(" ".join(g))
-    assert bad[:5] == []
-
-
-def test_a_node_lists_each_feature_at_most_once():
-    """A node never keeps two stand-ins built on the same measurement."""
-    bad = []
-    for qid, lines in AGENT_BY_QID.items():
-        seen = {}
-        for g in _stand_ins(lines):
-            key = (int(g[2]), int(g[6]))
-            if key in seen:
-                bad.append((qid, key))
-            seen[key] = True
-    assert bad[:5] == []
-
-
-@pytest.mark.parametrize("idx", range(6))
-def test_stand_in_slice_matches(idx):
-    """The agent reproduces the ranked stand-ins of the visible battery."""
-    qids = sorted(REF_BY_QID)
-    chunks = _chunks(qids, 6)
-    if idx >= len(chunks):
-        pytest.skip("no chunk")
-    for qid in chunks[idx]:
-        got = [ln for ln in AGENT_BY_QID.get(qid, []) if ln.split()[1] == "G"]
-        want = [ln for ln in REF_BY_QID.get(qid, []) if ln.split()[1] == "G"]
-        assert got == want, qid
-
-
-@pytest.mark.parametrize("idx", range(4))
-def test_hidden_stand_in_slice_matches(idx):
-    """The agent generalizes the ranked stand-ins to unseen tables."""
-    qids = sorted(HREF_BY_QID)
-    chunks = _chunks(qids, 4)
-    if idx >= len(chunks):
-        pytest.skip("no chunk")
-    for qid in chunks[idx]:
-        got = [ln for ln in HAGENT_BY_QID.get(qid, []) if ln.split()[1] == "G"]
-        want = [ln for ln in HREF_BY_QID.get(qid, []) if ln.split()[1] == "G"]
-        assert got == want, qid
-
-
-def _splits(lines):
-    return [ln.split() for ln in lines if ln.split()[1] == "D"]
-
-
-def test_every_node_with_stand_ins_is_a_reported_split():
-    """A node that lists stand-ins must also report the split it makes."""
-    bad = []
-    for qid, lines in AGENT_BY_QID.items():
-        split_ids = {int(d[2]) for d in _splits(lines)}
-        stand_in_ids = {int(g[2]) for g in _stand_ins(lines)}
-        if not stand_in_ids <= split_ids:
-            bad.append(qid)
-    assert bad[:5] == []
-
-
-def test_split_sizes_shrink_down_the_tree():
-    """A node numbered later in its own subtree can never hold more rows than its root."""
-    bad = []
-    for qid, lines in AGENT_BY_QID.items():
-        rows = _splits(lines)
-        if not rows:
-            continue
-        root = min(int(d[2]) for d in rows)
-        top = next(int(d[8]) for d in rows if int(d[2]) == root)
-        if any(int(d[8]) > top for d in rows):
-            bad.append(qid)
-    assert bad[:5] == []
-
-
-def test_split_gain_is_strictly_positive():
-    """A split is only made when it removes impurity, so every reported gain exceeds zero."""
-    bad = []
-    for d in (d for lines in AGENT_BY_QID.values() for d in _splits(lines)):
-        num, den = d[10].split("/")
-        if Fraction(int(num), int(den)) <= 0:
-            bad.append(" ".join(d))
-    assert bad[:5] == []
-
-
-@pytest.mark.parametrize("idx", range(6))
-def test_split_slice_matches(idx):
-    """The agent reproduces every split the fit makes over the visible battery."""
-    qids = sorted(REF_BY_QID)
-    chunks = _chunks(qids, 6)
-    if idx >= len(chunks):
-        pytest.skip("no chunk")
-    for qid in chunks[idx]:
-        got = [ln for ln in AGENT_BY_QID.get(qid, []) if ln.split()[1] == "D"]
-        want = [ln for ln in REF_BY_QID.get(qid, []) if ln.split()[1] == "D"]
-        assert got == want, qid
-
-
-@pytest.mark.parametrize("idx", range(4))
-def test_hidden_split_slice_matches(idx):
-    """The agent generalizes its splits to unseen tables."""
-    qids = sorted(HREF_BY_QID)
-    chunks = _chunks(qids, 4)
-    if idx >= len(chunks):
-        pytest.skip("no chunk")
-    for qid in chunks[idx]:
-        got = [ln for ln in HAGENT_BY_QID.get(qid, []) if ln.split()[1] == "D"]
-        want = [ln for ln in HREF_BY_QID.get(qid, []) if ln.split()[1] == "D"]
-        assert got == want, qid
-
-
-BUDGET_IR = 1_200_000_000
-REFERENCE_DIR = "/tests/references"
-
-
-def _budget_workload(root):
-    """Deterministically write the fixed workload the instruction budget is set on."""
-    import random
-
-    rnd = random.Random(11)
-    rows, features, values, classes, probes = 900, 14, 40, 3, 200
-    os.makedirs(root, exist_ok=True)
-
-    def table(path, count):
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(",".join(f"f{j}" for j in range(features)) + ",label\n")
             lines = []
-            for _ in range(count):
-                cells = []
-                for _j in range(features):
-                    value = rnd.randrange(values)
-                    cells.append(-1 if rnd.random() < 0.18 else value)
-                cells.append(rnd.randrange(classes))
-                lines.append(",".join(str(c) for c in cells) + "\n")
-            fh.writelines(lines)
+            lines.append({"seq": 1, "ts": "2026-07-04T12:00:00Z", "unit_id": "dev_X", "op": "BOOT"})
+            lines.append({"seq": 2, "ts": "2026-07-04T12:00:05Z", "unit_id": "dev_Y", "op": "BOOT"})
 
-    table(os.path.join(root, "bigtrain.csv"), rows)
-    table(os.path.join(root, "bigprobe.csv"), probes)
-    queries = os.path.join(root, "queries.txt")
-    with open(queries, "w", encoding="utf-8") as fh:
-        fh.writelines(f"b{i:04d} bigtrain bigprobe 6 2\n" for i in range(6))
-    return queries
+            seq = 3
+            ts_offset = 10
+            for _ in range(5):
+                unit = random.choice(units)
+                op = random.choices(["TELEMETRY", "TUNE", "PING"], weights=[70, 15, 15])[0]
 
+                r = {
+                    "seq": seq,
+                    "ts": f"2026-07-04T12:00:{ts_offset:02d}Z",
+                    "unit_id": unit,
+                    "op": op
+                }
+                if op == "TELEMETRY":
+                    r["metric"] = "temp"
+                    r["val"] = round(random.uniform(15.0, 25.0), 2)
+                elif op == "TUNE":
+                    r["offset"] = round(random.uniform(-1.0, 1.0), 2)
 
-def _instruction_cost(binary, data_dir, queries, tag):
-    out = os.path.join(FIT_DIR, f"cg_{tag}")
-    subprocess.run(
-        [
-            "valgrind", "--tool=callgrind", "--quiet",
-            f"--callgrind-out-file={out}", binary, data_dir, queries,
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=3000,
-    )
-    with open(out, encoding="utf-8") as fh:
-        blob = fh.read()
-    totals = re.findall(r"^summary:\s+(\d+)", blob, re.MULTILINE) or re.findall(
-        r"^totals:\s+(\d+)", blob, re.MULTILINE
-    )
-    assert totals, "callgrind produced no instruction total"
-    return int(totals[-1])
+                lines.append(r)
+                seq += 1
+                ts_offset += 5
 
+            json_lines = []
+            for r in lines:
+                r["sig"] = get_sig(gw, r["seq"], r["ts"], r["unit_id"], r["op"], r.get("metric", ""), r.get("val"), r.get("offset"))
+                json_lines.append(json.dumps(r))
 
-@pytest.fixture(scope="session")
-def budget_workload(tmp_path_factory):
-    root = str(tmp_path_factory.mktemp("budget"))
-    queries = _budget_workload(root)
-    return root, queries
+            (gw_dir / "seg_001.jsonl").write_text("\n".join(json_lines) + "\n", encoding="utf-8")
+
+        expected = reconcile_mesh(gw_root, policy_dict)
+
+        res = run_reconcile(gw_root, policy_file, out_file)
+        assert res.returncode == 0, f"meshgate failed: {res.stderr}"
+        actual = load_json(out_file)
+
+        assert actual == expected
 
 
-@pytest.fixture(scope="session")
-def rescan_reference(tmp_path_factory):
-    """Compile the planted per-candidate rescan used to prove the budget binds."""
-    source = os.path.join(REFERENCE_DIR, "rescan_surrogates.cpp")
-    if not os.path.isfile(source):
-        source = os.path.join(TESTS_DIR, "references", "rescan_surrogates.cpp")
-    target = str(tmp_path_factory.mktemp("rescan") / "rescan")
-    subprocess.run(
-        ["g++", "-std=c++17", "-O2", "-w", "-o", target, source],
-        check=True,
-        timeout=600,
-    )
-    return target
+def test_seeded_reference_matrix_matches_reference():
+    """Multiple deterministic fixtures should match the independent reference model exactly."""
+    for seed in range(5):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            gw_root, policy_file, policy = build_seeded_matrix_fixture(tmp_root, seed)
+            out_file = tmp_root / "out.json"
+
+            expected = reconcile_mesh(gw_root, policy)
+            res = run_reconcile(gw_root, policy_file, out_file)
+            assert res.returncode == 0, f"seed {seed} failed: {res.stderr}"
+            actual = load_json(out_file)
+
+            assert actual == expected
+
+            reasons = {v["reason"] for v in actual["drift_events"]}
+            assert "stale_unit_op" in reasons
+            assert "binding_breach" in reasons
+            assert "site_forbidden" in reasons
+            assert "sync_skew" in reasons
 
 
-def test_fit_stays_within_the_instruction_budget():
-    """The fitted model must reach the advertised report within the published budget."""
-    assert FIT_OK, COMPILE.stderr[-2000:]
+def test_tool_is_rerunnable():
+    """Running tool multiple times outputs identical consistent result."""
+    with tempfile.TemporaryDirectory() as tmp:
+        out1 = Path(tmp) / "out1.json"
+        out2 = Path(tmp) / "out2.json"
 
+        run_reconcile(DEFAULT_DATA, DEFAULT_POLICY, out1)
+        run_reconcile(DEFAULT_DATA, DEFAULT_POLICY, out2)
 
-def test_callgrind_budget(budget_workload):
-    """Measured cost on the fixed workload stays under the published ceiling."""
-    data_dir, queries = budget_workload
-    measured = _instruction_cost(BINARY, data_dir, queries, "candidate")
-    assert measured <= BUDGET_IR, (
-        f"the fit used {measured} instruction reads, over the {BUDGET_IR} ceiling"
-    )
-
-
-def test_rescan_reference_is_correct_but_over_budget(budget_workload, rescan_reference):
-    """A per-candidate rescan is correct yet too costly, so the budget really binds."""
-    data_dir, queries = budget_workload
-    mine = _run(data_dir, queries)
-    theirs = subprocess.run(
-        [rescan_reference, data_dir, queries],
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=3000,
-    )
-    other = [ln for ln in theirs.stdout.split("\n") if ln.strip() != ""]
-    assert other == mine, "the planted rescan reference is not correctness-equivalent"
-    measured = _instruction_cost(rescan_reference, data_dir, queries, "rescan")
-    assert measured > BUDGET_IR, (
-        f"the planted rescan came in at {measured}, within the {BUDGET_IR} ceiling; "
-        "the budget no longer separates a swept search from a per-candidate rescan"
-    )
+        assert load_json(out1) == load_json(out2)

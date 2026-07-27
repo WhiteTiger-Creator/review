@@ -1,9 +1,14 @@
 #!/bin/bash
-mkdir -p /app/src
-cp /solution/main.cpp /app/src/main.cpp || exit 1
-cd /app || exit 1
-rm -rf bin
-mkdir -p bin
-g++ -std=c++17 -O2 -Wall -o bin/cart src/main.cpp || exit 1
-test -x /app/bin/cart || exit 1
-echo oracle-build-ok
+set -euo pipefail
+
+cd /app
+mkdir -p /app/output
+
+SOL_DIR="${HARBOR_SOLUTION_DIR:-/solution}"
+
+cp "${SOL_DIR}/go.mod" /app/go.mod
+mkdir -p /app/internal/mesh /app/cmd/meshgate
+cp "${SOL_DIR}/internal/mesh/mesh.go" /app/internal/mesh/mesh.go
+cp "${SOL_DIR}/cmd/meshgate/main.go" /app/cmd/meshgate/main.go
+
+go run /app/cmd/meshgate/main.go reconcile
