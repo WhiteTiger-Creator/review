@@ -3,32 +3,34 @@ version = "2.0"
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
-category = "machine-learning"
-subcategories = []
-difficulty = "hard"
-codebase_size = "small"
+difficulty = "medium"
+category = "build-and-dependency-management"
+subcategories = ["tool_specific"]
 number_of_milestones = 0
-languages = ["cpp"]
+codebase_size = "large"
+languages = ["rust"]
 tags = [
-    "supervised-learning",
-    "classification",
-    "decision-trees",
-    "surrogate-splits",
-    "missing-values",
-    "exact-arithmetic",
+  "cargo",
+  "msrv",
+  "patch",
+  "lockfile",
+  "dependency-resolver",
 ]
-expert_time_estimate_min = 200
-junior_time_estimate_min = 520
+expert_time_estimate_min = 120
+junior_time_estimate_min = 300
 
 [verifier]
-timeout_sec = 1200
+timeout_sec = 900.0
 
 [agent]
-timeout_sec = 900
+timeout_sec = 1800.0
 
 [environment]
 allow_internet = false
-build_timeout_sec = 1200
+build_timeout_sec = 900.0
 cpus = 2
-memory_mb = 4096
-storage_mb = 8192
+memory_mb = 8192
+storage_mb = 20480
+docker_flags = []
+gpus = 0
+gpu_types = []

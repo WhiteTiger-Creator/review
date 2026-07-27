@@ -1,0 +1,94 @@
+[
+  {
+    "lock_id": "lock-yanked",
+    "workspace_digest": "e14a21b317a4635a215dbaa095e2fc9dd75cd01ac6371df16b7e9be789beb0f4",
+    "patch_set_digest": "5edae031eaa500b7435aeb9b92e75c1bf5552c883776bb6cedcbf0902dd8a140",
+    "replacement_set_digest": "cb8cfbade7def21709ca7e020c6380c1cd22bbbc36f5388e2c9f33c4c6624c38",
+    "selected_packages": [
+      {
+        "package_name": "codec",
+        "version": "1.1.0",
+        "source_kind": "replacement_registry",
+        "source_reference": "sparse+file:///mirror/codec-1.1.0",
+        "source_digest": "fb4fec516a1c31875837b92d48715e0c6eb2befb6512f8107ce66d91fb6f0bbe",
+        "checksum": "ab49003b8eb0035ba5d858f67e6c190a60cfbbd0f5705d217e8ba310d8e2dda4",
+        "dependency_names": [
+          "helper"
+        ]
+      },
+      {
+        "package_name": "helper",
+        "version": "1.0.0",
+        "source_kind": "replacement_registry",
+        "source_reference": "sparse+file:///mirror/helper-1.0.0",
+        "source_digest": "4588741bda74483dcaf37a72afd66f5530640c9f53f58f74e7bd3da429df05a8",
+        "checksum": "5fa0fe6b01040003e5b49816d0ae527caa9a89217cd37642a821672673371d18",
+        "dependency_names": []
+      },
+      {
+        "package_name": "utility",
+        "version": "1.0.0",
+        "source_kind": "replacement_registry",
+        "source_reference": "sparse+file:///mirror/utility-1.0.0",
+        "source_digest": "f22698f1989d398a07ef1412556792feaacb389984b2a5c93e305c220d3fe715",
+        "checksum": "2afe25716a471c4c3487eeb75007cb800432d029daa225ca906a22cef4fae3f8",
+        "dependency_names": []
+      },
+      {
+        "package_name": "logger",
+        "version": "1.0.0",
+        "source_kind": "replacement_registry",
+        "source_reference": "sparse+file:///mirror/logger-1.0.0",
+        "source_digest": "f9bef59b5e2e122b21637f46bc2d88d98b5df12d25234847b65251f6d1c0076f",
+        "checksum": "6b67626f4ad4b0e83b3599f0fade59b4623b89be9894ff6c5850e34c454c9583",
+        "dependency_names": []
+      }
+    ]
+  },
+  {
+    "lock_id": "lock-baseline",
+    "workspace_digest": "e14a21b317a4635a215dbaa095e2fc9dd75cd01ac6371df16b7e9be789beb0f4",
+    "patch_set_digest": "fd0d1591bd3b7acea82ff59cb656770d53e0073202943aedcb97403eb868328b",
+    "replacement_set_digest": "cb8cfbade7def21709ca7e020c6380c1cd22bbbc36f5388e2c9f33c4c6624c38",
+    "selected_packages": [
+      {
+        "package_name": "codec",
+        "version": "1.2.0",
+        "source_kind": "replacement_registry",
+        "source_reference": "sparse+file:///mirror/codec-1.2.0",
+        "source_digest": "f28a564eb71f826f61c403abe5433622c288211e0e4bb50f0a8691d90fd5685d",
+        "checksum": "a4fe055e35debe4640adc7dda5af59250fbe9126e37dbe035c3cda73fb013588",
+        "dependency_names": [
+          "helper"
+        ]
+      },
+      {
+        "package_name": "helper",
+        "version": "1.1.0",
+        "source_kind": "replacement_registry",
+        "source_reference": "sparse+file:///mirror/helper-1.1.0",
+        "source_digest": "29e287d02a1cc87af745e647e9ef7ab9be8a562b60a27e498ae07b8bec0458b7",
+        "checksum": "e62cf9ac75340a38504b1735ce83a626aa3b56365993144b4d9f818541e640a8",
+        "dependency_names": []
+      },
+      {
+        "package_name": "utility",
+        "version": "1.0.0",
+        "source_kind": "replacement_registry",
+        "source_reference": "sparse+file:///mirror/utility-1.0.0",
+        "source_digest": "f22698f1989d398a07ef1412556792feaacb389984b2a5c93e305c220d3fe715",
+        "checksum": "2afe25716a471c4c3487eeb75007cb800432d029daa225ca906a22cef4fae3f8",
+        "dependency_names": []
+      },
+      {
+        "package_name": "logger",
+        "version": "1.0.0",
+        "source_kind": "replacement_registry",
+        "source_reference": "sparse+file:///mirror/logger-1.0.0",
+        "source_digest": "f9bef59b5e2e122b21637f46bc2d88d98b5df12d25234847b65251f6d1c0076f",
+        "checksum": "6b67626f4ad4b0e83b3599f0fade59b4623b89be9894ff6c5850e34c454c9583",
+        "dependency_names": []
+      }
+    ]
+  }
+]
