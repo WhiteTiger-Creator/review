@@ -1,39 +1,18 @@
 #!/bin/bash
-set -uo pipefail
+set -euo pipefail
 
-if [ "$PWD" = "/" ]; then
-  echo "Error: No working directory set."
-  mkdir -p /logs/verifier
-  echo 0 > /logs/verifier/reward.txt
-  exit 0
-fi
+TEST_DIR="${TEST_DIR:-/tests}"
+mkdir -p /logs/verifier
+echo 0 > /logs/verifier/reward.txt
 
-mkdir -p /logs/verifier /app/output
+export PATH="/opt/verifier-venv/bin:$PATH"
 
-export PATH="/app/bin:${PATH}"
+set +e
+pytest "$TEST_DIR/test_outputs.py" -rA -p no:cacheprovider \
+    --ctrf /logs/verifier/ctrf.json
 
-cd /app
-go build -o /app/bin/yinsh-ring /app/cmd/yinsh-ring
-rc_build=$?
-if [ "$rc_build" -ne 0 ]; then
-  echo "go build failed"
-  echo 0 > /logs/verifier/reward.txt
-  exit 0
-fi
-
-/app/bin/yinsh-ring --scenarios /app/scenarios --config /app/config --out /app/output
-rc_run=$?
-if [ "$rc_run" -ne 0 ]; then
-  echo "yinsh-ring run failed"
-  echo 0 > /logs/verifier/reward.txt
-  exit 0
-fi
-
-python3 -m pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -v -rA
-rc=$?
-
-if [ "$rc" -eq 0 ]; then
-  echo 1 > /logs/verifier/reward.txt
+if [ $? -eq 0 ]; then
+    echo 1 > /logs/verifier/reward.txt
 else
-  echo 0 > /logs/verifier/reward.txt
+    echo 0 > /logs/verifier/reward.txt
 fi
