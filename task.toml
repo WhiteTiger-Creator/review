@@ -1,38 +1,41 @@
+# Task configuration schema version
 version = "2.0"
 
+# Task metadata (author, difficulty, categorization)
 [metadata]
-author_name = "Bhagyawanth"
-author_email = "J26.0898.adl@airdawglabs.com"
-difficulty = "hard"
-category = "system-administration"
-legacy_category = "data-processing"
-subcategories = ["tool_specific"]
-languages = ["bash", "python"]
-tags = [
-  "bash",
-  "system-administration",
-  "systemd",
-  "permissions",
-  "file-operations",
-  "ops-tooling",
-]
-expert_time_estimate_min = 90
-junior_time_estimate_min = 180
+author_name = "anonymous"
+author_email = "anonymous"
+difficulty = "medium"
+category = "security"
+# Options for subcategories are: "long_context", "tool_specific", "api_integration", "db_interaction", "ui_building"
+subcategories = ["api_integration", "tool_specific"]
+# The number of milestones in the task (can be zero if not a milestone task)
 number_of_milestones = 0
-codebase_size = "minimal"
+# Size of the codebase: minimal -> 0-20 files, small -> 20+ files, large -> 200+ files
+codebase_size = "small"
+# Coding languages used in the oracle solution or required by the agent
+languages = ["java", "bash"]
+# For tool_specific, api_integration, and db_interaction subcategories, please include specific tool, api framework, or database software
+tags = ["sd-jwt", "selective-disclosure", "jose", "microprofile-jwt", "java-cryptography"]
+# Estimated time to complete (minutes)
+expert_time_estimate_min = 180
+junior_time_estimate_min = 420
 
-[environment]
-build_timeout_sec = 600
-cpus = 1
-memory_mb = 2048
-storage_mb = 10240
-allow_internet = false
-
+# Verifier: runs the test script to check task completion
 [verifier]
-timeout_sec = 300
+timeout_sec = 600.0
 
+# Agent: limits how long the agent can run when attempting the task
 [agent]
-timeout_sec = 1800
+timeout_sec = 1800.0
 
-[oracle]
-timeout_sec = 600
+# Sandbox environment limits
+[environment]
+# The broker reads the issuer key set from the location its configuration names. Every key set a
+# test uses is served from the test harness on loopback or read from the copy mirrored into the
+# image, so nothing the task does reaches the network.
+allow_internet = false
+build_timeout_sec = 900.0
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240

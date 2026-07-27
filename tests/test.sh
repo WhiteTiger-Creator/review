@@ -1,15 +1,16 @@
 #!/bin/bash
+set -euo pipefail
 
-if [ "$PWD" = "/" ]; then
-    echo "Error: No working directory set." >&2
-    exit 1
-fi
-
+TEST_DIR="${TEST_DIR:-/tests}"
 mkdir -p /logs/verifier
+echo 0 > /logs/verifier/reward.txt
 
-cd /app
+export PATH="/opt/verifier-venv/bin:$PATH"
 
-pytest -rA /tests/test_outputs.py
+set +e
+pytest "$TEST_DIR/test_outputs.py" -rA -p no:cacheprovider \
+    --ctrf /logs/verifier/ctrf.json
+
 if [ $? -eq 0 ]; then
     echo 1 > /logs/verifier/reward.txt
 else

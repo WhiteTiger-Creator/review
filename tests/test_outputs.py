@@ -1,466 +1,496 @@
-import hashlib
+"""Behavioural checks for the Acme wallet presentation broker.
+
+Every credential a test uses is minted here, with fresh keys and a fresh issuer, and every expected
+report, claim path, digest and presentation is recomputed from the profile by an independent
+implementation. Nothing in this file is compared against a stored answer, so a broker that hardcodes
+outputs cannot pass.
+"""
+
+import collections
+import json
 import os
-import shutil
-import subprocess
-import tempfile
-from pathlib import Path
+import zipfile
 
 import pytest
+import sdjwt_ref as ref
 
-PERIODCTL = "/app/src/periodctl"
-DATA_DIR = Path("/app/data")
-JOURNALS = DATA_DIR / "journals"
-CHART = DATA_DIR / "chart.tsv"
-WINDOW = DATA_DIR / "window.json"
-ETC_WINDOW = Path("/etc/period-close/window.json")
-SBIN_LINK = Path("/usr/local/sbin/periodctl")
-SYSTEMD_UNIT = Path("/etc/systemd/system/period-close.service")
-VAR_LIB = Path("/var/lib/period-close")
-LOCKFILE = Path("/tmp/periodctl.lock")
+Run = collections.namedtuple("Run", "process report out expected presentations")
 
-EXPECTED_LINES = [
-    "CA-1000;53000;DR",
-    "CA-2000;8000;CR",
-    "EQ-3000;15000;CR",
-    "EXP-5000;20000;DR",
-    "REV-4000;50000;CR",
+JOSE_LIBRARY_PACKAGES = (
+    "org/jose4j/",
+    "com/nimbusds/",
+    "io/jsonwebtoken/",
+    "com/auth0/",
+    "org/bouncycastle/",
+    "com/google/crypto/",
+    "org/apache/commons/codec/",
+)
+
+SD_PATHS = [
+    "given_name",
+    "family_name",
+    "contact",
+    "contact.person",
+    "contact.person.email",
+    "contact.person.im",
+    "work",
+    "work.site",
+    "work.site.phone",
+    "work.site.desk",
+    "residence",
+    "residence.address",
+    "residence.address.country",
+    "residence.address.geo",
+    "residence.address.geo.lat",
+    "residence.address.geo.lon",
+    "nationalities[0]",
+    "nationalities[1]",
+    "nationalities[2]",
 ]
 
+POLICY = {
+    "required": ["given_name", "nationalities"],
+    "alternatives": [
+        ["contact.person.email", "residence.address.geo.lat"],
+        ["work.site.phone", "residence.address.geo.lon"],
+    ],
+}
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(8192), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+
+@pytest.fixture(scope="module")
+def keys():
+    """One issuer key of each shape plus the holder key the wallet signs with."""
+    return {
+        "ec": ref.SigningKey("issuer-ec", "EC", alg="ES256", use="sig"),
+        "rsa": ref.SigningKey("issuer-rsa", "RSA", alg="RS256", use="sig"),
+        "holder": ref.SigningKey("acme-wallet-1", "EC"),
+    }
 
 
-def run_periodctl(
-    snapshot_path: Path,
-    postings_dir: Path = JOURNALS,
-    accounts: Path = CHART,
-    window: Path = WINDOW,
-) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [
-            PERIODCTL,
-            "--postings",
-            str(postings_dir),
-            "--accounts",
-            str(accounts),
-            "--window",
-            str(window),
-            "--snapshot",
-            str(snapshot_path),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+def claims(holder, **overrides):
+    """A MicroProfile-shaped claim set for one credential holder."""
+    base = {
+        "iss": ref.DEFAULT_CONFIG["issuer"],
+        "iat": 1769000000,
+        "exp": 1780000000,
+        "jti": "urn:acme:cred:test",
+        "upn": "mira.holt@acme.example",
+        "sub": "0d1f8c4a",
+        "groups": ["staff", "engineering", "on-call"],
+        "given_name": "Mira",
+        "family_name": "Holt",
+        "contact": {"person": {"email": "mira.holt@acme.example", "im": "mira#4411"}},
+        "work": {"site": {"phone": "+31-20-555-0111", "desk": "B2-14"}},
+        "residence": {"address": {"country": "NL", "geo": {"lat": "52.3702", "lon": "4.8952"}}},
+        "nationalities": ["NL", "DE", "FR"],
+        "cnf": {"jwk": holder.jwk()},
+    }
+    base.update(overrides)
+    return {name: value for name, value in base.items() if value is not None}
+
+
+def drive(tmp_path, credentials, policy, published, holder, config=None):
+    """Run the broker over a batch served by a local issuer, next to what the profile expects."""
+    config = config or ref.DEFAULT_CONFIG
+    jwks = {"keys": published}
+    with ref.JwksServer(jwks) as server:
+        process, report, out = ref.run_broker(tmp_path, credentials, policy, server.url, holder, config)
+        expected, presentations = ref.expected_report(credentials, jwks, server.url, policy, config)
+    return Run(process, report, out, ref.canonical(expected), presentations)
+
+
+def entries(report):
+    """The credential entries of a report, keyed by identifier."""
+    return {entry["id"]: entry for entry in json.loads(report)["credentials"]}
+
+
+def test_build_produces_the_runnable_jar():
+    """The broker module packages to the executable jar the wallet ships."""
+    assert os.path.isfile(ref.JAR), "expected the packaged jar at " + ref.JAR
+
+
+def test_broker_uses_no_third_party_jose_code():
+    """No third-party JOSE, JWT or crypto library is bundled into the broker jar."""
+    with zipfile.ZipFile(ref.JAR) as archive:
+        names = archive.namelist()
+    bundled = [name for name in names if name.startswith(JOSE_LIBRARY_PACKAGES)]
+    assert bundled == [], "third-party JOSE code in the jar: " + ", ".join(sorted(bundled)[:5])
+
+
+def test_report_matches_the_profile_for_a_fresh_batch(tmp_path, keys):
+    """A mixed batch produces the canonical report the profile describes, byte for byte."""
+    holder = keys["holder"]
+    batch = {
+        "atlas": ref.issue(keys["ec"], claims(holder), SD_PATHS, decoys=2, seed=1).issuance(),
+        "bergen": ref.issue(
+            keys["rsa"],
+            claims(holder, upn=None, preferred_username="tomás.nakamura", given_name="Tomas"),
+            SD_PATHS + ["preferred_username"],
+            decoys=3,
+            seed=2,
+            spacing="compact",
+        ).issuance(),
+        "cove": ref.issue(
+            keys["ec"],
+            claims(holder, work=None, contact={"person": {"im": "rune#77"}}),
+            ["given_name", "residence", "residence.address"],
+            seed=3,
+        ).issuance(),
+        "delta": ref.issue(keys["ec"], claims(holder, exp=1700000000), SD_PATHS, seed=4).issuance(),
+    }
+    published = [keys["ec"].jwk(), keys["rsa"].jwk()]
+    run = drive(tmp_path, batch, POLICY, published, holder)
+
+    assert run.process.returncode == 0, run.process.stderr
+    assert run.report is not None, "the broker wrote no report"
+    assert run.report == run.expected, (
+        f"report differs from the profile\nexpected: {run.expected.decode('utf-8')}"
+        f"\nactual:   {run.report.decode('utf-8')}"
+    )
+    assert set(os.listdir(os.path.join(run.out, "presentations"))) == {
+        name + ".sdjwt" for name in run.presentations
+    }
+
+
+def test_acceptance_ladder_reports_the_first_failing_check(tmp_path, keys):
+    """Every rung of the ladder is reached by the credential that trips it, and no earlier one."""
+    holder = keys["holder"]
+    stranger = ref.SigningKey("retired-2024", "EC")
+    good = ref.issue(keys["ec"], claims(holder), SD_PATHS, decoys=1, seed=11)
+    head, body, signature = good.jwt.split(".")
+    tampered = ".".join([head, body, ("B" if signature[0] != "B" else "C") + signature[1:]])
+    legacy = ref.b64u(ref.canonical({"alg": "HS256", "kid": keys["ec"].kid}))
+    critical = ref.issue(keys["ec"], claims(holder), SD_PATHS, seed=12, header={"crit": ["exp"]})
+    other_alg = ref.issue(keys["ec"], claims(holder), SD_PATHS, seed=13, sd_alg="sha-512")
+
+    batch = {
+        "a-garbled": good.jwt + "~" + good.disclosures[0][:-2] + "*!~",
+        "b-unterminated": good.issuance()[:-1],
+        "c-legacy": legacy + "." + body + "." + signature + "~",
+        "d-critical": critical.issuance(),
+        "e-digest-alg": other_alg.issuance(),
+        "f-rotated": ref.issue(stranger, claims(holder), SD_PATHS, seed=14).issuance(),
+        "g-tampered": tampered + "~" + "".join(text + "~" for text in good.disclosures),
+        "h-nameless": ref.issue(
+            keys["rsa"], claims(holder, upn=None, sub=None), SD_PATHS, seed=15
+        ).issuance(),
+        "i-unbound": ref.issue(keys["ec"], claims(holder, cnf=None), SD_PATHS, seed=16).issuance(),
+        "j-imposter": ref.issue(
+            keys["ec"], claims(holder, iss="https://issuer.other.example"), SD_PATHS, seed=17
+        ).issuance(),
+        "k-lapsed": ref.issue(
+            keys["ec"], claims(holder, exp=ref.DEFAULT_CONFIG["instant"]), SD_PATHS, seed=18
+        ).issuance(),
+        "l-released": good.issuance(),
+    }
+    published = [keys["ec"].jwk(), keys["rsa"].jwk()]
+    run = drive(tmp_path, batch, POLICY, published, holder)
+
+    assert run.process.returncode == 0, run.process.stderr
+    found = {name: entry["status"] for name, entry in entries(run.report).items()}
+    assert found == {
+        "a-garbled": "malformed",
+        "b-unterminated": "malformed",
+        "c-legacy": "unsupported_algorithm",
+        "d-critical": "unsupported_algorithm",
+        "e-digest-alg": "unsupported_algorithm",
+        "f-rotated": "unknown_key",
+        "g-tampered": "bad_signature",
+        "h-nameless": "missing_claim",
+        "i-unbound": "missing_claim",
+        "j-imposter": "invalid_issuer",
+        "k-lapsed": "expired",
+        "l-released": "presented",
+    }
+
+
+def test_disclosure_digests_follow_the_text_the_issuer_wrote(tmp_path, keys):
+    """Digests are taken over the disclosure as received, whatever JSON layout the issuer used."""
+    holder = keys["holder"]
+    batch = {}
+    for name, spacing in (("spaced", "spaced"), ("compact", "compact")):
+        batch[name] = ref.issue(
+            keys["ec"],
+            claims(
+                holder,
+                upn=None,
+                preferred_username="jürgen.möller",
+                given_name="Jürgen",
+            ),
+            SD_PATHS + ["preferred_username"],
+            decoys=2,
+            seed=21,
+            spacing=spacing,
+        ).issuance()
+    run = drive(tmp_path, batch, POLICY, [keys["ec"].jwk()], holder)
+
+    assert run.process.returncode == 0, run.process.stderr
+    found = entries(run.report)
+    for name in batch:
+        assert found[name]["status"] == "presented", name + " did not resolve its disclosures"
+        assert found[name]["name"] == "jürgen.möller"
+        assert "given_name" in found[name]["disclosed"]
+
+
+def test_nested_disclosures_resolve_all_the_way_down(tmp_path, keys):
+    """A claim hidden four levels deep needs every enclosing disclosure to travel with it."""
+    holder = keys["holder"]
+    deep = claims(
+        holder,
+        residence={"address": {"country": "NL", "geo": {"lat": "52.3702", "lon": "4.8952"}}},
+    )
+    credential = ref.issue(keys["ec"], deep, SD_PATHS, decoys=2, seed=31)
+    policy = {"required": ["given_name", "residence.address.geo.lat"], "alternatives": []}
+    run = drive(
+        tmp_path, {"deep": credential.issuance()}, policy, [keys["ec"].jwk()], holder
     )
 
-
-@pytest.fixture
-def data_hashes():
-    hashes = {}
-    for path in DATA_DIR.rglob("*"):
-        if path.is_file():
-            hashes[str(path.relative_to(DATA_DIR))] = sha256_file(path)
-    return hashes
-
-
-def _mode(path: Path) -> str:
-    return oct(path.stat().st_mode & 0o777)
-
-
-def test_periodctl_binary_mode_0755():
-    """Verify /app/src/periodctl exists and has executable mode 0755."""
-    assert Path(PERIODCTL).is_file()
-    assert _mode(Path(PERIODCTL)) == "0o755"
+    assert run.process.returncode == 0, run.process.stderr
+    entry = entries(run.report)["deep"]
+    assert entry["status"] == "presented"
+    assert entry["disclosed"] == [
+        "given_name",
+        "residence",
+        "residence.address",
+        "residence.address.geo",
+        "residence.address.geo.lat",
+    ]
+    assert ref.read_presentation(run.out, "deep").count("~") == len(entry["disclosed"]) + 1
 
 
-def test_sbin_periodctl_symlink():
-    """Verify /usr/local/sbin/periodctl is a symlink to /app/src/periodctl."""
-    assert SBIN_LINK.is_symlink()
-    assert SBIN_LINK.resolve() == Path(PERIODCTL).resolve()
+def test_decoy_digests_are_ignored_while_stray_disclosures_are_not(tmp_path, keys):
+    """Unmatched digests are dropped, but an unused or repeated disclosure rejects the credential."""
+    holder = keys["holder"]
+    padded = ref.issue(keys["ec"], claims(holder), SD_PATHS, decoys=12, seed=41)
+    orphaned = ref.issue(keys["ec"], claims(holder), SD_PATHS, decoys=1, seed=42)
+    stray = ref.disclosure(["Xz9QpLm4Tt0aBcDeFgHiJw", "clearance", "amber"])
+
+    twinned = ref.issue(keys["ec"], claims(holder), SD_PATHS, decoys=1, seed=43)
+    payload = json.loads(ref.b64u_decode(twinned.jwt.split(".")[1]))
+    repeated = payload["_sd"][0]
+    payload["residence"] = {"_sd": [repeated]}
+    duplicated = ref.jws(keys["ec"], payload) + "~" + "".join(t + "~" for t in twinned.disclosures)
+
+    batch = {
+        "padded": padded.issuance(),
+        "orphaned": orphaned.issuance() + stray + "~",
+        "duplicated": duplicated,
+    }
+    run = drive(tmp_path, batch, POLICY, [keys["ec"].jwk()], holder)
+
+    assert run.process.returncode == 0, run.process.stderr
+    found = entries(run.report)
+    assert found["padded"]["status"] == "presented", "decoy digests must not reject a credential"
+    assert found["orphaned"]["status"] == "invalid_disclosure"
+    assert found["duplicated"]["status"] == "invalid_disclosure"
 
 
-def test_etc_window_installed():
-    """Verify /etc/period-close/window.json is a byte-identical install with mode 0644."""
-    assert ETC_WINDOW.is_file()
-    assert ETC_WINDOW.read_bytes() == WINDOW.read_bytes()
-    assert _mode(ETC_WINDOW) == "0o644"
-
-
-def test_var_lib_period_close_mode_0755():
-    """Verify /var/lib/period-close exists as a directory with mode 0755."""
-    assert VAR_LIB.is_dir()
-    assert _mode(VAR_LIB) == "0o755"
-
-
-def test_systemd_unit_mode_and_targets():
-    """Verify period-close.service is mode 0644 and references correct paths."""
-    assert SYSTEMD_UNIT.is_file()
-    assert _mode(SYSTEMD_UNIT) == "0o644"
-    text = SYSTEMD_UNIT.read_text(encoding="utf-8")
-    assert "/usr/local/sbin/periodctl" in text
-    assert "/etc/period-close/window.json" in text
-    assert "/var/lib/period-close/snapshot.tsv" in text
-    assert "Type=oneshot" in text
-
-
-def test_etc_window_path_produces_same_snapshot(tmp_path):
-    """Verify snapshots match whether --window points at data or etc install."""
-    via_data = tmp_path / "from_data.txt"
-    via_etc = tmp_path / "from_etc.txt"
-    code_data = run_periodctl(via_data, window=WINDOW).returncode
-    code_etc = run_periodctl(via_etc, window=ETC_WINDOW).returncode
-    assert code_data == code_etc == 1
-    assert via_data.read_text(encoding="utf-8") == via_etc.read_text(encoding="utf-8")
-
-
-def test_exit_code_with_unknown_account(tmp_path):
-    """Verify unknown in-window accounts yield exit code 1."""
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot)
-    assert result.returncode == 1, result.stderr
-
-
-def test_snapshot_line_count(tmp_path):
-    """Verify the shipped journals produce exactly five snapshot rows."""
-    snapshot = tmp_path / "snapshot.tsv"
-    run_periodctl(snapshot)
-    lines = snapshot.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 5
-
-
-def test_snapshot_exact_content(tmp_path):
-    """Verify snapshot lines match expected account balances and sides."""
-    snapshot = tmp_path / "snapshot.tsv"
-    run_periodctl(snapshot)
-    lines = snapshot.read_text(encoding="utf-8").splitlines()
-    assert lines == EXPECTED_LINES
-
-
-def test_snapshot_schema(tmp_path):
-    """Verify each snapshot line has ACCOUNT_ID;positive_cents;DR|CR format."""
-    snapshot = tmp_path / "snapshot.tsv"
-    run_periodctl(snapshot)
-    for line in snapshot.read_text(encoding="utf-8").splitlines():
-        account_id, balance, side = line.split(";")
-        assert account_id
-        assert balance.isdigit()
-        assert int(balance) > 0
-        assert side in {"DR", "CR"}
-
-
-def test_case_insensitive_account_resolution(tmp_path):
-    """Verify journal account IDs resolve to canonical chart IDs case-insensitively."""
-    snapshot = tmp_path / "snapshot.tsv"
-    run_periodctl(snapshot)
-    text = snapshot.read_text(encoding="utf-8")
-    assert "CA-1000;53000;DR" in text
-    assert "EQ-3000;15000;CR" in text
-    assert "ca-1000" not in text
-    assert "eq-3000" not in text
-
-
-def test_out_of_window_entries_excluded(tmp_path):
-    """Verify postings outside the fiscal window do not affect balances."""
-    snapshot = tmp_path / "snapshot.tsv"
-    run_periodctl(snapshot)
-    text = snapshot.read_text(encoding="utf-8")
-    cash_balance = int(
-        next(line for line in text.splitlines() if line.startswith("CA-1000;")).split(";")[1]
+def test_array_elements_are_addressed_by_their_resolved_position(tmp_path, keys):
+    """Array element paths count positions in the resolved list, not in the issued one."""
+    holder = keys["holder"]
+    paths = [path for path in SD_PATHS if not path.startswith("nationalities")]
+    paths += [f"nationalities[{index}]" for index in range(4)]
+    credential = ref.issue(
+        keys["ec"],
+        claims(holder, nationalities=["JP", "NL", "BE", "FR"]),
+        paths,
+        decoys=2,
+        seed=51,
     )
-    assert cash_balance == 53000
-
-
-def test_sort_order_case_insensitive(tmp_path):
-    """Verify snapshot rows are sorted by account ID case-insensitively."""
-    snapshot = tmp_path / "snapshot.tsv"
-    run_periodctl(snapshot)
-    account_ids = [line.split(";")[0] for line in snapshot.read_text(encoding="utf-8").splitlines()]
-    assert account_ids == sorted(account_ids, key=str.casefold)
-
-
-def test_window_boundary_dates_inclusive(tmp_path):
-    """Verify start_date and end_date boundary postings are included in the window."""
-    postings = tmp_path / "postings"
-    postings.mkdir()
-    (postings / "boundary.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "2025-01-01,CA-1000,100,0,start boundary\n"
-        "2025-01-01,REV-4000,0,100,start boundary\n"
-        "2025-03-31,CA-1000,0,200,end boundary\n"
-        "2025-03-31,EXP-5000,200,0,end boundary\n",
-        encoding="utf-8",
+    batch = {"shifted": credential.issuance(withheld={"nationalities[1]"})}
+    run = drive(
+        tmp_path, batch, POLICY, [keys["ec"].jwk()], holder
     )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 0, result.stderr
-    lines = {line.split(";")[0]: line for line in snapshot.read_text(encoding="utf-8").splitlines()}
-    assert lines["CA-1000"] == "CA-1000;100;CR"
-    assert lines["REV-4000"] == "REV-4000;100;CR"
-    assert lines["EXP-5000"] == "EXP-5000;200;DR"
 
-
-def test_deterministic_output(tmp_path):
-    """Verify repeated runs produce identical snapshots and exit codes."""
-    first = tmp_path / "first.tsv"
-    second = tmp_path / "second.tsv"
-    code_one = run_periodctl(first).returncode
-    code_two = run_periodctl(second).returncode
-    assert code_one == code_two == 1
-    assert first.read_text(encoding="utf-8") == second.read_text(encoding="utf-8")
-
-
-def test_data_files_not_modified(data_hashes):
-    """Verify periodctl does not modify files under /app/data/."""
-    snapshot = Path(tempfile.mkdtemp()) / "snapshot.tsv"
-    run_periodctl(snapshot)
-    for path in DATA_DIR.rglob("*"):
-        if path.is_file():
-            rel = str(path.relative_to(DATA_DIR))
-            assert sha256_file(path) == data_hashes[rel]
-
-
-def test_exit_code_all_clean(tmp_path):
-    """Verify a balanced window with no unknown accounts yields exit code 0."""
-    postings = tmp_path / "clean"
-    postings.mkdir()
-    shutil.copytree(JOURNALS, postings, dirs_exist_ok=True)
-    (postings / "legacy.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "2025-03-15,EQ-3000,0,15000,Owner draw\n"
-        "2025-03-15,CA-1000,15000,0,Cash transfer for draw\n",
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 0, result.stderr
-
-
-def test_zero_balance_excluded(tmp_path):
-    """Verify accounts whose net balance is zero are omitted from the snapshot."""
-    postings = tmp_path / "postings"
-    postings.mkdir()
-    (postings / "zero.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "2025-02-01,CA-1000,5000,0,payment\n"
-        "2025-02-01,REV-4000,0,5000,revenue\n"
-        "2025-02-15,CA-1000,0,5000,refund\n"
-        "2025-02-15,REV-4000,5000,0,rev reversal\n",
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 0
-    assert snapshot.read_text(encoding="utf-8").strip() == ""
-
-
-def test_exit_code_unbalanced_journals(tmp_path):
-    """Verify unbalanced in-window postings yield exit code 1."""
-    postings = tmp_path / "bad"
-    postings.mkdir()
-    (postings / "skew.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "2025-02-10,CA-1000,5000,0,orphan debit\n",
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 1, result.stderr
-
-
-def test_exit_code_invalid_arguments(tmp_path):
-    """Verify missing required CLI arguments yield exit code 2."""
-    snapshot = tmp_path / "snapshot.tsv"
-    result = subprocess.run(
-        [PERIODCTL, "--postings", str(JOURNALS), "--snapshot", str(snapshot)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 2
-
-
-def test_exit_code_unreadable_accounts_path(tmp_path):
-    """Verify unreadable but existing accounts path yields exit code 2."""
-    unreadable = tmp_path / "locked.tsv"
-    unreadable.write_text("account_id\tname\ttype\tnormal_balance\n", encoding="utf-8")
-    unreadable.chmod(0o000)
-    snapshot = tmp_path / "snapshot.tsv"
-    try:
-        result = run_periodctl(snapshot, accounts=unreadable)
-        assert result.returncode == 2
-    finally:
-        unreadable.chmod(0o644)
-
-
-def test_whitespace_trimmed_and_blank_lines_ignored(tmp_path):
-    """Verify whitespace is trimmed and blank journal lines are ignored."""
-    postings = tmp_path / "postings"
-    postings.mkdir()
-    (postings / "messy.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "\n"
-        "2025-02-03,  ca-1000  , 700 , 0 ,cash receipt\n"
-        "2025-02-03, REV-4000 ,0, 700 , revenue booking\n"
-        "\n",
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 0, result.stderr
-    assert snapshot.read_text(encoding="utf-8").splitlines() == [
-        "CA-1000;700;DR",
-        "REV-4000;700;CR",
+    assert run.process.returncode == 0, run.process.stderr
+    entry = entries(run.report)["shifted"]
+    assert entry["status"] == "presented"
+    assert [path for path in entry["disclosed"] if path.startswith("nationalities")] == [
+        "nationalities[0]",
+        "nationalities[1]",
+        "nationalities[2]",
     ]
 
 
-def test_invalid_in_window_rows_fail_but_valid_rows_still_snapshot(tmp_path):
-    """Verify invalid rows fail the run but valid known-account rows still appear."""
-    postings = tmp_path / "postings"
-    postings.mkdir()
-    (postings / "mixed.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "2025-02-10,CA-1000,700,0,valid debit\n"
-        "2025-02-10,REV-4000,0,700,valid credit\n"
-        "2025-02-11,CA-1000,10,10,both sides set\n"
-        "2025-02-12,EXP-5000,foo,0,non numeric debit\n"
-        "2025-02-13,CA-1000,-5,0,negative debit\n",
-        encoding="utf-8",
+def test_release_is_the_smallest_across_alternative_groups(tmp_path, keys):
+    """The released set is the global minimum, not each group's cheapest option on its own."""
+    holder = keys["holder"]
+    credential = ref.issue(keys["ec"], claims(holder), SD_PATHS, decoys=2, seed=61)
+    run = drive(
+        tmp_path, {"minimal": credential.issuance()}, POLICY, [keys["ec"].jwk()], holder
     )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 1, result.stderr
-    assert snapshot.read_text(encoding="utf-8").splitlines() == [
-        "CA-1000;700;DR",
-        "REV-4000;700;CR",
+
+    assert run.process.returncode == 0, run.process.stderr
+    entry = entries(run.report)["minimal"]
+    assert entry["status"] == "presented"
+    assert entry["disclosed"] == [
+        "given_name",
+        "nationalities[0]",
+        "nationalities[1]",
+        "nationalities[2]",
+        "residence",
+        "residence.address",
+        "residence.address.geo",
+        "residence.address.geo.lat",
+        "residence.address.geo.lon",
     ]
 
 
-def test_both_sides_zero_row_is_invalid(tmp_path):
-    """Verify rows with both debit and credit zero fail the run with exit code 1."""
-    postings = tmp_path / "postings"
-    postings.mkdir()
-    (postings / "zero_sides.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "2025-02-10,CA-1000,700,0,valid debit\n"
-        "2025-02-10,REV-4000,0,700,valid credit\n"
-        "2025-02-11,CA-1000,0,0,both sides zero\n",
-        encoding="utf-8",
+def test_ties_between_alternatives_follow_the_policy_order(tmp_path, keys):
+    """When two ways of satisfying the policy cost the same, the earlier listed path wins."""
+    holder = keys["holder"]
+    credential = ref.issue(keys["ec"], claims(holder), SD_PATHS, decoys=1, seed=71)
+    policy = {
+        "required": ["given_name"],
+        "alternatives": [["family_name", "contact.person.im", "work.site.desk"]],
+    }
+    run = drive(
+        tmp_path, {"tied": credential.issuance()}, policy, [keys["ec"].jwk()], holder
     )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 1, result.stderr
-    assert snapshot.read_text(encoding="utf-8").splitlines() == [
-        "CA-1000;700;DR",
-        "REV-4000;700;CR",
+
+    assert run.process.returncode == 0, run.process.stderr
+    entry = entries(run.report)["tied"]
+    assert entry["disclosed"] == ["family_name", "given_name"]
+
+
+def test_presentation_binds_the_released_disclosures_to_the_holder(tmp_path, keys):
+    """A released presentation carries exactly the released disclosures under a valid key binding."""
+    holder = keys["holder"]
+    credential = ref.issue(keys["ec"], claims(holder), SD_PATHS, decoys=2, seed=81)
+    run = drive(
+        tmp_path, {"bound": credential.issuance()}, POLICY, [keys["ec"].jwk()], holder
+    )
+
+    assert run.process.returncode == 0, run.process.stderr
+    presentation = ref.read_presentation(run.out, "bound")
+    assert presentation is not None, "no presentation was written for a released credential"
+    prefix, sd_hash, cnf = run.presentations["bound"]
+    ref.check_key_binding(presentation, prefix, cnf, ref.DEFAULT_CONFIG)
+
+    released = presentation[: presentation.rindex("~")].split("~")[1:]
+    assert released == sorted(released, key=lambda text: text.encode("utf-8"))
+    assert len(released) == len(entries(run.report)["bound"]["disclosed"])
+    assert set(released) <= set(credential.disclosures)
+    assert entries(run.report)["bound"]["sd_hash"] == sd_hash
+
+
+def test_credentials_that_cannot_satisfy_the_policy_release_nothing(tmp_path, keys):
+    """A credential short of the policy is reported insufficient with the paths it cannot cover."""
+    holder = keys["holder"]
+    thin = claims(
+        holder,
+        work=None,
+        contact={"person": {"im": "rune#77"}},
+        residence={"address": {"country": "NO"}},
+    )
+    credential = ref.issue(
+        keys["ec"],
+        thin,
+        ["given_name", "contact", "contact.person", "contact.person.im", "nationalities[0]"],
+        decoys=1,
+        seed=91,
+    )
+    run = drive(
+        tmp_path, {"thin": credential.issuance()}, POLICY, [keys["ec"].jwk()], holder
+    )
+
+    assert run.process.returncode == 0, run.process.stderr
+    entry = entries(run.report)["thin"]
+    assert entry["status"] == "insufficient"
+    assert entry["missing"] == [
+        "contact.person.email",
+        "residence.address.geo.lat",
+        "residence.address.geo.lon",
+        "work.site.phone",
     ]
+    assert "disclosed" not in entry
+    assert os.listdir(os.path.join(run.out, "presentations")) == []
 
 
-def test_duplicate_chart_ids_case_insensitive_fail_with_empty_snapshot(tmp_path):
-    """Verify case-insensitive duplicate chart IDs fail with exit 1 and empty snapshot."""
-    chart = tmp_path / "chart.tsv"
-    chart.write_text(
-        "account_id\tname\ttype\tnormal_balance\n"
-        "\n"
-        "CA-1000\tCash\tasset\tdebit\n"
-        "ca-1000\tDuplicate Cash\tasset\tdebit\n"
-        "REV-4000\tRevenue\trevenue\tcredit\n",
-        encoding="utf-8",
-    )
-    postings = tmp_path / "postings"
-    postings.mkdir()
-    (postings / "simple.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "2025-02-14,CA-1000,900,0,cash sale\n"
-        "2025-02-14,REV-4000,0,900,revenue\n",
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings, accounts=chart)
-    assert result.returncode == 1, result.stderr
-    assert snapshot.read_text(encoding="utf-8") == ""
-
-
-def test_lockfile_concurrency_and_cleanup(tmp_path):
-    """Verify sequential runs succeed and the lockfile is cleaned up after each run."""
-    snapshot1 = tmp_path / "snapshot1.tsv"
-    res1 = run_periodctl(snapshot1)
-    assert res1.returncode == 1
-    assert not LOCKFILE.exists()
-
-    snapshot2 = tmp_path / "snapshot2.tsv"
-    res2 = run_periodctl(snapshot2)
-    assert res2.returncode == 1
-    assert not LOCKFILE.exists()
-
-    res3 = subprocess.run([PERIODCTL], capture_output=True, text=True, check=False)
-    assert res3.returncode == 2
-
-    snapshot3 = tmp_path / "snapshot3.tsv"
-    res4 = run_periodctl(snapshot3)
-    assert res4.returncode == 1
-    assert not LOCKFILE.exists()
-
-
-def test_stale_lockfile_dead_pid_takes_over(tmp_path):
-    """Verify periodctl takes over when lockfile holds a dead PID."""
-    LOCKFILE.write_text("99999999", encoding="utf-8")
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot)
-    assert result.returncode == 1
-    assert not LOCKFILE.exists()
-
-
-def test_active_lockfile_pid_blocks_run(tmp_path):
-    """Verify periodctl exits 1 when lockfile holds an active PID."""
-    LOCKFILE.write_text(str(os.getpid()), encoding="utf-8")
-    snapshot = tmp_path / "snapshot.tsv"
-    try:
-        result = run_periodctl(snapshot)
-        assert result.returncode == 1
-    finally:
-        LOCKFILE.unlink(missing_ok=True)
-
-
-def test_path_with_spaces(tmp_path):
-    """Verify CLI handles postings directories whose paths contain spaces."""
-    postings = tmp_path / "postings folder with spaces"
-    postings.mkdir()
-    (postings / "clean.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "2025-02-01,CA-1000,100,0,payment\n"
-        "2025-02-01,REV-4000,0,100,revenue\n",
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 0, result.stderr
-    lines = snapshot.read_text(encoding="utf-8").splitlines()
-    assert lines == [
-        "CA-1000;100;DR",
-        "REV-4000;100;CR",
+def test_only_usable_published_keys_are_reported_and_used(tmp_path, keys):
+    """The key set is filtered to signature keys this profile can use, with RFC 7638 thumbprints."""
+    holder = keys["holder"]
+    unlabelled = ref.SigningKey("issuer-plain", "RSA", alg="RS256")
+    encryption = ref.SigningKey("issuer-enc", "RSA", alg=None, use="enc")
+    published = [
+        keys["ec"].jwk(),
+        unlabelled.jwk(include_alg=False),
+        encryption.jwk(),
+        {"kty": "EC", "crv": "P-384", "kid": "issuer-p384", "x": ref.b64u(b"x" * 48), "y": ref.b64u(b"y" * 48)},
+        {"kty": "oct", "kid": "issuer-shared", "k": ref.b64u(b"0123456789abcdef")},
+        {"kty": "EC", "crv": "P-256", "x": ref.b64u(b"x" * 32), "y": ref.b64u(b"y" * 32)},
     ]
+    batch = {
+        "labelled": ref.issue(keys["ec"], claims(holder), SD_PATHS, seed=101).issuance(),
+        "plain": ref.issue(unlabelled, claims(holder), SD_PATHS, seed=102).issuance(),
+        "anonymous": ref.issue(keys["ec"], claims(holder), SD_PATHS, seed=103, kid=False).issuance(),
+    }
+    run = drive(tmp_path, batch, POLICY, published, holder)
+
+    assert run.process.returncode == 0, run.process.stderr
+    document = json.loads(run.report)
+    assert [entry["kid"] for entry in document["keys"]] == ["issuer-ec", "issuer-plain"]
+    assert {entry["kid"]: entry["thumbprint"] for entry in document["keys"]} == {
+        "issuer-ec": keys["ec"].thumbprint(),
+        "issuer-plain": unlabelled.thumbprint(),
+    }
+    found = entries(run.report)
+    assert found["labelled"]["kid"] == "issuer-ec"
+    assert found["plain"]["status"] == "presented" and found["plain"]["alg"] == "RS256"
+    assert found["anonymous"]["status"] == "presented" and found["anonymous"]["kid"] == "issuer-ec"
 
 
-def test_memo_field_with_commas(tmp_path):
-    """Verify quoted memo fields containing commas are parsed correctly."""
-    postings = tmp_path / "postings"
-    postings.mkdir()
-    (postings / "comma_memo.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        '2025-02-01,CA-1000,150,0,"payment, partial"\n'
-        '2025-02-01,REV-4000,0,150,"revenue, deferred"\n',
-        encoding="utf-8",
+def test_broker_reads_the_issuer_key_set_it_is_pointed_at(tmp_path):
+    """The issuer key set is read from the configured location, as a served URL and as a file."""
+    issuer = ref.tck_keys()
+    holder = ref.SigningKey("acme-wallet-mp", "EC")
+    served = ref.published_key_set()
+    batch = {
+        "mp-ec": ref.issue(issuer["eckey"], claims(holder), SD_PATHS, decoys=2, seed=201).issuance(),
+        "mp-rsa": ref.issue(
+            issuer["rskey"], claims(holder, given_name="Tomas"), SD_PATHS, seed=202, spacing="compact"
+        ).issuance(),
+    }
+    published = ref.usable_keys(served)
+    expected_keys = {kid: ref.thumbprint_of(entry) for kid, entry in published.items()}
+    assert expected_keys, "the environment ships no usable issuer key"
+
+    with ref.JwksServer(served) as server:
+        process, report, out = ref.run_broker(
+            str(tmp_path / "url"), batch, POLICY, server.url, holder, ref.DEFAULT_CONFIG
+        )
+        _, presentations = ref.expected_report(
+            batch, served, server.url, POLICY, ref.DEFAULT_CONFIG
+        )
+        assert process.returncode == 0, process.stderr
+        assert server.hits >= 1, "the broker never read the location it was given"
+        document = json.loads(report)
+        assert document["jwks_uri"] == server.url
+        assert {entry["kid"]: entry["thumbprint"] for entry in document["keys"]} == expected_keys
+        found = entries(report)
+        assert found["mp-ec"]["status"] == "presented" and found["mp-ec"]["alg"] == "ES256"
+        assert found["mp-rsa"]["status"] == "presented" and found["mp-rsa"]["alg"] == "RS256"
+        for name, (prefix, _, cnf) in presentations.items():
+            ref.check_key_binding(ref.read_presentation(out, name), prefix, cnf, ref.DEFAULT_CONFIG)
+
+    mirrored = "file://" + ref.ISSUER_JWKS
+    process, report, _ = ref.run_broker(
+        str(tmp_path / "file"), batch, POLICY, mirrored, holder, ref.DEFAULT_CONFIG
     )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 0, result.stderr
-    lines = snapshot.read_text(encoding="utf-8").splitlines()
-    assert lines == [
-        "CA-1000;150;DR",
-        "REV-4000;150;CR",
-    ]
+    assert process.returncode == 0, process.stderr
+    document = json.loads(report)
+    assert document["jwks_uri"] == mirrored
+    assert {entry["kid"]: entry["thumbprint"] for entry in document["keys"]} == expected_keys
+    assert [entry["status"] for entry in document["credentials"]] == ["presented", "presented"]
+
+
+def test_unreachable_key_set_stops_the_run(tmp_path, keys):
+    """Nothing is reported when the issuer key set cannot be retrieved."""
+    holder = keys["holder"]
+    batch = {"atlas": ref.issue(keys["ec"], claims(holder), SD_PATHS, seed=301).issuance()}
+    with ref.JwksServer({"keys": [keys["ec"].jwk()]}) as server:
+        dead = server.url
+    process, report, _ = ref.run_broker(str(tmp_path), batch, POLICY, dead, holder)
+
+    assert process.returncode != 0, "a key set that cannot be read has to stop the run"
+    assert report is None, "no report may be written when the key set is unavailable"
