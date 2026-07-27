@@ -1,1 +1,0 @@
-{"schema_version":1,"global":{"datum_m":0.15,"scale":1.0},"regions":{},"stations":[{"id":"ref-15","latitude_deg":15,"longitude_deg":25,"constituents":[{"name":"MM","amplitude_m":0.44999999999999996,"phase_deg":255,"required":true}]}]}
