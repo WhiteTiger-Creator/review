@@ -1,22 +1,5 @@
-Our wallet used to lean on a third-party SD-JWT library, and now that data minimisation is
-contractual I need `/app/broker` finished in-house. `mvn -f /app/broker/pom.xml package` has to
-produce `/app/broker/target/sd-jwt-broker.jar`, run as
+Improve the Go relay bot at /app/work/relaybot for linked fog-chess matches against protected doctrines. The engine under /opt/fog-chess-relay runs two boards where captured non-king pieces enter a delayed teammate relay queue and may later be dropped, while fog limits each observation to squares seen by your own pieces plus public relay events. Communicate only over the JSON Lines protocol: read each observation, reply with one legal move, drop, request, or hold, and exit cleanly when the match ends.
 
-```
-java -jar /app/broker/target/sd-jwt-broker.jar --config <cfg> --credentials <dir> --policy <file> --out <dir>
-```
+Rules and output schemas live under /app in chess.txt, fog.txt, relay.txt, scoring.txt, protocol.txt, notation.txt, and examples.txt. Each finished generation under /app/output must include summary.json, plies.jsonl, boards.json, visibility.jsonl, relay.jsonl, terminal.json, and bot-diagnostics.json as defined in scoring.txt, including acceptance_floor, accepted, determinism, scores.team_a, protocol_ok, bot_faults, belief_faults, and bot_legal_actions. Win when protocol_ok is true, scores.team_a meets the public floor in scoring.txt, and long matches record at least one teammate request in plies.jsonl. Edit only Go sources, go.mod, and policy.json inside /app/work/relaybot. Do not inspect protected boards, opponent lines, hidden occupancy, future transfers, or expected outcomes, and do not replace the referee.
 
-No third-party JOSE, JWT or crypto code may reach that jar or its classpath: JDK crypto and a JSON
-parser only. The stored credentials carry the MicroProfile claim contract documented under
-`/app/microprofile-jwt-auth/api`. Issuer keys are never compiled in: the config names where the
-key set lives, and every run reads it from there, whether that is a served URL or a local mirror.
-
-`/app/broker/PRESENTATION_PROFILE.md` is the profile to implement: the acceptance ladder, how
-disclosures resolve, how the smallest release satisfying the policy is picked, and the key binding
-on the way out. Match it exactly. `<dir>/report.json` is checked byte for byte and every released
-credential lands in `<dir>/presentations/<id>.sdjwt`.
-
-`/app/broker/wallet.properties`, `/app/credentials` and `/app/broker/policy.json` are what we run
-against today. A run only exits non-zero when that published key set cannot be read, and then it
-writes nothing at all.
-
+Identical seeds, positions, opponents, and bots must produce byte-identical generations under /app/output. Generalize across renamed ids, color-swapped seats, board reflections, reordered observations, and compatible parameters.

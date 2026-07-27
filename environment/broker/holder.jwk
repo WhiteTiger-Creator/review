@@ -1,9 +1,0 @@
-{
-  "kty": "EC",
-  "crv": "P-256",
-  "x": "DWWuACwytK40k9_7uByd1xAfchW2z9IdUdlTczpYPrQ",
-  "y": "PGL4zBDEYAfkDU7OQAM3JYBW1iJbAl3Li9VtbSMfyQU",
-  "kid": "acme-wallet-1",
-  "alg": "ES256",
-  "d": "0zs51jsPceyUS9e-OkKsZhMu-4LTKJrswCcZZgrueKU"
-}

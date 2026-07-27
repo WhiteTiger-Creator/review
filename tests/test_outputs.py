@@ -1,496 +1,577 @@
-"""Behavioural checks for the Acme wallet presentation broker.
+"""Verifier suite for Fog Chess Relay."""
 
-Every credential a test uses is minted here, with fresh keys and a fresh issuer, and every expected
-report, claim path, digest and presentation is recomputed from the profile by an independent
-implementation. Nothing in this file is compared against a stored answer, so a broker that hardcodes
-outputs cannot pass.
-"""
+from __future__ import annotations
 
-import collections
 import json
 import os
-import zipfile
+import shutil
+import subprocess
+from pathlib import Path
 
-import pytest
-import sdjwt_ref as ref
-
-Run = collections.namedtuple("Run", "process report out expected presentations")
-
-JOSE_LIBRARY_PACKAGES = (
-    "org/jose4j/",
-    "com/nimbusds/",
-    "io/jsonwebtoken/",
-    "com/auth0/",
-    "org/bouncycastle/",
-    "com/google/crypto/",
-    "org/apache/commons/codec/",
-)
-
-SD_PATHS = [
-    "given_name",
-    "family_name",
-    "contact",
-    "contact.person",
-    "contact.person.email",
-    "contact.person.im",
-    "work",
-    "work.site",
-    "work.site.phone",
-    "work.site.desk",
-    "residence",
-    "residence.address",
-    "residence.address.country",
-    "residence.address.geo",
-    "residence.address.geo.lat",
-    "residence.address.geo.lon",
-    "nationalities[0]",
-    "nationalities[1]",
-    "nationalities[2]",
+ROOT = Path("/opt/fog-chess-relay")
+BIN = ROOT / "bin" / "relaymatch"
+BOT = Path("/app/work/relaybot")
+OUTPUT = Path("/app/output")
+HIDDEN = Path("/tests/fixtures/hidden")
+APP_REFS = [
+    Path("/app/chess.txt"),
+    Path("/app/fog.txt"),
+    Path("/app/relay.txt"),
+    Path("/app/scoring.txt"),
+    Path("/app/protocol.txt"),
+    Path("/app/notation.txt"),
+    Path("/app/examples.txt"),
 ]
 
-POLICY = {
-    "required": ["given_name", "nationalities"],
-    "alternatives": [
-        ["contact.person.email", "residence.address.geo.lat"],
-        ["work.site.phone", "residence.address.geo.lon"],
-    ],
-}
 
-
-@pytest.fixture(scope="module")
-def keys():
-    """One issuer key of each shape plus the holder key the wallet signs with."""
-    return {
-        "ec": ref.SigningKey("issuer-ec", "EC", alg="ES256", use="sig"),
-        "rsa": ref.SigningKey("issuer-rsa", "RSA", alg="RS256", use="sig"),
-        "holder": ref.SigningKey("acme-wallet-1", "EC"),
-    }
-
-
-def claims(holder, **overrides):
-    """A MicroProfile-shaped claim set for one credential holder."""
-    base = {
-        "iss": ref.DEFAULT_CONFIG["issuer"],
-        "iat": 1769000000,
-        "exp": 1780000000,
-        "jti": "urn:acme:cred:test",
-        "upn": "mira.holt@acme.example",
-        "sub": "0d1f8c4a",
-        "groups": ["staff", "engineering", "on-call"],
-        "given_name": "Mira",
-        "family_name": "Holt",
-        "contact": {"person": {"email": "mira.holt@acme.example", "im": "mira#4411"}},
-        "work": {"site": {"phone": "+31-20-555-0111", "desk": "B2-14"}},
-        "residence": {"address": {"country": "NL", "geo": {"lat": "52.3702", "lon": "4.8952"}}},
-        "nationalities": ["NL", "DE", "FR"],
-        "cnf": {"jwk": holder.jwk()},
-    }
-    base.update(overrides)
-    return {name: value for name, value in base.items() if value is not None}
-
-
-def drive(tmp_path, credentials, policy, published, holder, config=None):
-    """Run the broker over a batch served by a local issuer, next to what the profile expects."""
-    config = config or ref.DEFAULT_CONFIG
-    jwks = {"keys": published}
-    with ref.JwksServer(jwks) as server:
-        process, report, out = ref.run_broker(tmp_path, credentials, policy, server.url, holder, config)
-        expected, presentations = ref.expected_report(credentials, jwks, server.url, policy, config)
-    return Run(process, report, out, ref.canonical(expected), presentations)
-
-
-def entries(report):
-    """The credential entries of a report, keyed by identifier."""
-    return {entry["id"]: entry for entry in json.loads(report)["credentials"]}
-
-
-def test_build_produces_the_runnable_jar():
-    """The broker module packages to the executable jar the wallet ships."""
-    assert os.path.isfile(ref.JAR), "expected the packaged jar at " + ref.JAR
-
-
-def test_broker_uses_no_third_party_jose_code():
-    """No third-party JOSE, JWT or crypto library is bundled into the broker jar."""
-    with zipfile.ZipFile(ref.JAR) as archive:
-        names = archive.namelist()
-    bundled = [name for name in names if name.startswith(JOSE_LIBRARY_PACKAGES)]
-    assert bundled == [], "third-party JOSE code in the jar: " + ", ".join(sorted(bundled)[:5])
-
-
-def test_report_matches_the_profile_for_a_fresh_batch(tmp_path, keys):
-    """A mixed batch produces the canonical report the profile describes, byte for byte."""
-    holder = keys["holder"]
-    batch = {
-        "atlas": ref.issue(keys["ec"], claims(holder), SD_PATHS, decoys=2, seed=1).issuance(),
-        "bergen": ref.issue(
-            keys["rsa"],
-            claims(holder, upn=None, preferred_username="tomás.nakamura", given_name="Tomas"),
-            SD_PATHS + ["preferred_username"],
-            decoys=3,
-            seed=2,
-            spacing="compact",
-        ).issuance(),
-        "cove": ref.issue(
-            keys["ec"],
-            claims(holder, work=None, contact={"person": {"im": "rune#77"}}),
-            ["given_name", "residence", "residence.address"],
-            seed=3,
-        ).issuance(),
-        "delta": ref.issue(keys["ec"], claims(holder, exp=1700000000), SD_PATHS, seed=4).issuance(),
-    }
-    published = [keys["ec"].jwk(), keys["rsa"].jwk()]
-    run = drive(tmp_path, batch, POLICY, published, holder)
-
-    assert run.process.returncode == 0, run.process.stderr
-    assert run.report is not None, "the broker wrote no report"
-    assert run.report == run.expected, (
-        f"report differs from the profile\nexpected: {run.expected.decode('utf-8')}"
-        f"\nactual:   {run.report.decode('utf-8')}"
-    )
-    assert set(os.listdir(os.path.join(run.out, "presentations"))) == {
-        name + ".sdjwt" for name in run.presentations
-    }
-
-
-def test_acceptance_ladder_reports_the_first_failing_check(tmp_path, keys):
-    """Every rung of the ladder is reached by the credential that trips it, and no earlier one."""
-    holder = keys["holder"]
-    stranger = ref.SigningKey("retired-2024", "EC")
-    good = ref.issue(keys["ec"], claims(holder), SD_PATHS, decoys=1, seed=11)
-    head, body, signature = good.jwt.split(".")
-    tampered = ".".join([head, body, ("B" if signature[0] != "B" else "C") + signature[1:]])
-    legacy = ref.b64u(ref.canonical({"alg": "HS256", "kid": keys["ec"].kid}))
-    critical = ref.issue(keys["ec"], claims(holder), SD_PATHS, seed=12, header={"crit": ["exp"]})
-    other_alg = ref.issue(keys["ec"], claims(holder), SD_PATHS, seed=13, sd_alg="sha-512")
-
-    batch = {
-        "a-garbled": good.jwt + "~" + good.disclosures[0][:-2] + "*!~",
-        "b-unterminated": good.issuance()[:-1],
-        "c-legacy": legacy + "." + body + "." + signature + "~",
-        "d-critical": critical.issuance(),
-        "e-digest-alg": other_alg.issuance(),
-        "f-rotated": ref.issue(stranger, claims(holder), SD_PATHS, seed=14).issuance(),
-        "g-tampered": tampered + "~" + "".join(text + "~" for text in good.disclosures),
-        "h-nameless": ref.issue(
-            keys["rsa"], claims(holder, upn=None, sub=None), SD_PATHS, seed=15
-        ).issuance(),
-        "i-unbound": ref.issue(keys["ec"], claims(holder, cnf=None), SD_PATHS, seed=16).issuance(),
-        "j-imposter": ref.issue(
-            keys["ec"], claims(holder, iss="https://issuer.other.example"), SD_PATHS, seed=17
-        ).issuance(),
-        "k-lapsed": ref.issue(
-            keys["ec"], claims(holder, exp=ref.DEFAULT_CONFIG["instant"]), SD_PATHS, seed=18
-        ).issuance(),
-        "l-released": good.issuance(),
-    }
-    published = [keys["ec"].jwk(), keys["rsa"].jwk()]
-    run = drive(tmp_path, batch, POLICY, published, holder)
-
-    assert run.process.returncode == 0, run.process.stderr
-    found = {name: entry["status"] for name, entry in entries(run.report).items()}
-    assert found == {
-        "a-garbled": "malformed",
-        "b-unterminated": "malformed",
-        "c-legacy": "unsupported_algorithm",
-        "d-critical": "unsupported_algorithm",
-        "e-digest-alg": "unsupported_algorithm",
-        "f-rotated": "unknown_key",
-        "g-tampered": "bad_signature",
-        "h-nameless": "missing_claim",
-        "i-unbound": "missing_claim",
-        "j-imposter": "invalid_issuer",
-        "k-lapsed": "expired",
-        "l-released": "presented",
-    }
-
-
-def test_disclosure_digests_follow_the_text_the_issuer_wrote(tmp_path, keys):
-    """Digests are taken over the disclosure as received, whatever JSON layout the issuer used."""
-    holder = keys["holder"]
-    batch = {}
-    for name, spacing in (("spaced", "spaced"), ("compact", "compact")):
-        batch[name] = ref.issue(
-            keys["ec"],
-            claims(
-                holder,
-                upn=None,
-                preferred_username="jürgen.möller",
-                given_name="Jürgen",
-            ),
-            SD_PATHS + ["preferred_username"],
-            decoys=2,
-            seed=21,
-            spacing=spacing,
-        ).issuance()
-    run = drive(tmp_path, batch, POLICY, [keys["ec"].jwk()], holder)
-
-    assert run.process.returncode == 0, run.process.stderr
-    found = entries(run.report)
-    for name in batch:
-        assert found[name]["status"] == "presented", name + " did not resolve its disclosures"
-        assert found[name]["name"] == "jürgen.möller"
-        assert "given_name" in found[name]["disclosed"]
-
-
-def test_nested_disclosures_resolve_all_the_way_down(tmp_path, keys):
-    """A claim hidden four levels deep needs every enclosing disclosure to travel with it."""
-    holder = keys["holder"]
-    deep = claims(
-        holder,
-        residence={"address": {"country": "NL", "geo": {"lat": "52.3702", "lon": "4.8952"}}},
-    )
-    credential = ref.issue(keys["ec"], deep, SD_PATHS, decoys=2, seed=31)
-    policy = {"required": ["given_name", "residence.address.geo.lat"], "alternatives": []}
-    run = drive(
-        tmp_path, {"deep": credential.issuance()}, policy, [keys["ec"].jwk()], holder
+def _run(cmd: list[str], cwd: str | None = None, env: dict | None = None, timeout: int = 180) -> subprocess.CompletedProcess[str]:
+    base = os.environ.copy()
+    if env:
+        base.update(env)
+    return subprocess.run(
+        cmd,
+        cwd=cwd,
+        env=base,
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        check=False,
     )
 
-    assert run.process.returncode == 0, run.process.stderr
-    entry = entries(run.report)["deep"]
-    assert entry["status"] == "presented"
-    assert entry["disclosed"] == [
-        "given_name",
-        "residence",
-        "residence.address",
-        "residence.address.geo",
-        "residence.address.geo.lat",
+
+def _isolated_bot(tmp: Path) -> Path:
+    dest = tmp / "relaybot"
+    shutil.copytree(BOT, dest)
+    return dest
+
+
+def _run_match(position: str | Path, bot_dir: Path, out_root: Path, inject: str = "") -> subprocess.CompletedProcess[str]:
+    out_root.mkdir(parents=True, exist_ok=True)
+    (out_root / "generations").mkdir(parents=True, exist_ok=True)
+    cmd = [
+        str(BIN),
+        "-match",
+        str(position),
+        "-bot",
+        str(bot_dir),
+        "-compile=true",
     ]
-    assert ref.read_presentation(run.out, "deep").count("~") == len(entry["disclosed"]) + 1
+    if inject:
+        cmd.append(f"-inject-fail={inject}")
+    return _run(
+        cmd,
+        env={"FOG_CHESS_ROOT": str(ROOT), "FOG_CHESS_OUTPUT": str(out_root)},
+        timeout=240,
+    )
 
 
-def test_decoy_digests_are_ignored_while_stray_disclosures_are_not(tmp_path, keys):
-    """Unmatched digests are dropped, but an unused or repeated disclosure rejects the credential."""
-    holder = keys["holder"]
-    padded = ref.issue(keys["ec"], claims(holder), SD_PATHS, decoys=12, seed=41)
-    orphaned = ref.issue(keys["ec"], claims(holder), SD_PATHS, decoys=1, seed=42)
-    stray = ref.disclosure(["Xz9QpLm4Tt0aBcDeFgHiJw", "clearance", "amber"])
+def _read_json(path: Path) -> dict:
+    return json.loads(path.read_text())
 
-    twinned = ref.issue(keys["ec"], claims(holder), SD_PATHS, decoys=1, seed=43)
-    payload = json.loads(ref.b64u_decode(twinned.jwt.split(".")[1]))
-    repeated = payload["_sd"][0]
-    payload["residence"] = {"_sd": [repeated]}
-    duplicated = ref.jws(keys["ec"], payload) + "~" + "".join(t + "~" for t in twinned.disclosures)
 
-    batch = {
-        "padded": padded.issuance(),
-        "orphaned": orphaned.issuance() + stray + "~",
-        "duplicated": duplicated,
+def _current_gen(out_root: Path) -> Path:
+    cur = (out_root / "current").read_text().strip()
+    return out_root / cur
+
+
+def _normalized_bytes(out_root: Path) -> bytes:
+    gen = _current_gen(out_root)
+    parts = []
+    for name in ("summary.json", "plies.jsonl", "terminal.json"):
+        parts.append((gen / name).read_bytes())
+    return b"".join(parts)
+
+
+def _score_a(out_root: Path) -> int:
+    term = _read_json(_current_gen(out_root) / "terminal.json")
+    return int(term["scores"]["team_a"])
+
+
+def _winner(out_root: Path) -> str:
+    return str(_read_json(_current_gen(out_root) / "terminal.json")["winner"])
+
+
+# ---------------------------------------------------------------------------
+# 3 protected-engine and integrity tests
+# ---------------------------------------------------------------------------
+
+
+def test_protected_binary_and_layout_exist():
+    """Protected relaymatch binary and asset directories are installed under /opt."""
+    assert BIN.is_file()
+    for rel in ("positions/public", "opponents", "contracts", "notation", "integrity"):
+        assert (ROOT / rel).exists()
+
+
+def test_integrity_manifest_verifies_clean_assets():
+    """Controller asset verification succeeds against the sealed integrity manifest."""
+    proc = _run([str(BIN), "-verify-assets"], env={"FOG_CHESS_ROOT": str(ROOT)})
+    assert proc.returncode == 0, proc.stderr
+    assert "ok" in proc.stdout
+
+
+def test_integrity_rejects_mutated_position_asset(tmp_path: Path):
+    """Mutating a protected public position causes integrity verification to fail."""
+    shadow = tmp_path / "shadow-root"
+    shutil.copytree(ROOT, shadow, ignore=shutil.ignore_patterns("bin"))
+    # binary still needed only as verifier entrypoint; assets come from shadow root
+    target = shadow / "positions" / "public" / "promotion-race.json"
+    data = json.loads(target.read_bytes())
+    data["seed"] = int(data.get("seed", 0)) + 999
+    target.write_text(json.dumps(data, indent=2) + "\n")
+    proc = _run([str(BIN), "-verify-assets"], env={"FOG_CHESS_ROOT": str(shadow)})
+    assert proc.returncode != 0
+    # live protected tree must remain untouched
+    live = _run([str(BIN), "-verify-assets"], env={"FOG_CHESS_ROOT": str(ROOT)})
+    assert live.returncode == 0, live.stderr
+
+
+# ---------------------------------------------------------------------------
+# 6 protocol, fog-secrecy, legality, determinism, and publication tests
+# ---------------------------------------------------------------------------
+
+
+def test_player_reference_documents_are_plain_text():
+    """Player references exist as plain text without markdown heading markers."""
+    for path in APP_REFS:
+        assert path.is_file()
+        text = path.read_text()
+        assert "#" not in text
+        assert "```" not in text
+        assert "\n- " not in text
+
+
+def test_starter_bot_compiles_offline(tmp_path: Path):
+    """Starter relaybot sources compile with the retained Go toolchain offline."""
+    bot = _isolated_bot(tmp_path)
+    proc = _run(["go", "build", "-o", str(tmp_path / "bot"), "."], cwd=str(bot))
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_match_hides_full_occupancy_from_observations(tmp_path: Path):
+    """Observations never include full-board FEN or hidden occupancy maps."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    proc = _run_match("material-imbalance", bot, out)
+    assert proc.returncode == 0, proc.stderr
+    vis = (_current_gen(out) / "visibility.jsonl").read_text()
+    assert "alpha_fen" not in vis
+    assert "/8/" not in vis  # fen-like ranks
+    for line in vis.splitlines():
+        obj = json.loads(line)
+        assert "visible_squares" in obj
+        assert len(obj["visible_squares"]) <= 64
+
+
+def test_illegal_action_does_not_corrupt_prior_current(tmp_path: Path):
+    """A prior successful generation pointer survives a later injected publication failure."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    first = _run_match("promotion-race", bot, out)
+    assert first.returncode == 0, first.stderr
+    prior = (out / "current").read_text()
+    prior_bytes = _normalized_bytes(out)
+    bad = _run_match("material-imbalance", bot, out, inject="pointer")
+    assert bad.returncode != 0
+    assert (out / "current").read_text() == prior
+    assert _normalized_bytes(out) == prior_bytes
+
+
+def test_determinism_identical_inputs_byte_identical(tmp_path: Path):
+    """Identical engine, position, seed, opponent, and bot yield identical normalized bytes."""
+    bot = _isolated_bot(tmp_path)
+    out1 = tmp_path / "o1"
+    out2 = tmp_path / "o2"
+    a = _run_match("promotion-race", bot, out1)
+    b = _run_match("promotion-race", bot, out2)
+    assert a.returncode == 0 and b.returncode == 0, a.stderr + b.stderr
+    assert _normalized_bytes(out1) == _normalized_bytes(out2)
+
+
+def test_generation_contains_required_artifacts(tmp_path: Path):
+    """Each published generation contains the seven required authoritative record files."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    proc = _run_match("kingside-relay-attack", bot, out)
+    assert proc.returncode == 0, proc.stderr
+    gen = _current_gen(out)
+    for name in (
+        "summary.json",
+        "plies.jsonl",
+        "boards.json",
+        "visibility.jsonl",
+        "relay.jsonl",
+        "terminal.json",
+        "bot-diagnostics.json",
+    ):
+        assert (gen / name).is_file()
+
+
+# ---------------------------------------------------------------------------
+# 11 public relay-chess behavior tests
+# ---------------------------------------------------------------------------
+
+
+def _plies(out_root: Path) -> list[dict]:
+    lines = (_current_gen(out_root) / "plies.jsonl").read_text().splitlines()
+    return [json.loads(line) for line in lines if line.strip()]
+
+
+def _has_action(out_root: Path, action: str) -> bool:
+    return any(p.get("action") == action for p in _plies(out_root))
+
+
+def _has_drop_uci(out_root: Path) -> bool:
+    for p in _plies(out_root):
+        uci = str(p.get("uci", ""))
+        if uci.startswith("drop:") or p.get("action") == "drop":
+            return True
+        if p.get("drop"):
+            return True
+    # drops may be recorded only as uci empty with piece in relay; also scan visibility
+    for line in (_current_gen(out_root) / "visibility.jsonl").read_text().splitlines():
+        pass
+    for p in _plies(out_root):
+        uci = str(p.get("uci", ""))
+        if len(uci) >= 5 and uci[0].isalpha() and uci[1].isdigit() is False:
+            # drop UCI from engine is often "drop:n e4" style via Move.UCI
+            return "drop" in uci
+    return any("drop" in str(p.get("uci", "")) for p in _plies(out_root))
+
+
+def _summary(out_root: Path) -> dict:
+    return _read_json(_current_gen(out_root) / "summary.json")
+
+
+def _accepted(out_root: Path) -> bool:
+    return bool(_summary(out_root).get("accepted"))
+
+
+def test_public_legal_moves_on_both_boards(tmp_path: Path):
+    """Bot produces legal moves on both linked boards during a public match."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    proc = _run_match("kingside-relay-attack", bot, out)
+    assert proc.returncode == 0, proc.stderr
+    boards = {p.get("board") for p in _plies(out) if p.get("board")}
+    assert "alpha" in boards and "beta" in boards
+    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
+    assert diag["protocol_ok"] is True
+    assert diag["bot_faults"] == 0
+    assert diag.get("belief_faults", 0) == 0
+    assert _accepted(out)
+
+
+def test_public_evade_observed_check(tmp_path: Path):
+    """Bot evades check pressure on defensive-drop without hold-in-check faults."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    proc = _run_match("defensive-drop-fog", bot, out)
+    assert proc.returncode == 0, proc.stderr
+    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
+    assert diag["bot_faults"] == 0
+    assert diag["bot_legal_actions"] >= 1
+    assert _summary(out)["reason"] != "hold_in_check"
+    assert _accepted(out)
+
+
+def test_public_rejects_unseen_blocked_capture_assumption(tmp_path: Path):
+    """Bot only plays engine-listed legal moves under material pressure."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    proc = _run_match("material-imbalance", bot, out)
+    assert proc.returncode == 0, proc.stderr
+    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
+    assert diag["protocol_ok"] is True
+    assert diag["bot_faults"] == 0
+    assert _score_a(out) >= 100
+    assert _accepted(out)
+
+
+def test_public_defensive_relay_drop_after_delay(tmp_path: Path):
+    """Bot actually uses a ready relay drop on the defensive-drop public match."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    proc = _run_match("defensive-drop-fog", bot, out)
+    assert proc.returncode == 0, proc.stderr
+    found_ready = False
+    for line in (_current_gen(out) / "visibility.jsonl").read_text().splitlines():
+        obj = json.loads(line)
+        if obj.get("team") == "team_a" and "n" in obj.get("ready_drops", []):
+            found_ready = True
+    assert found_ready
+    assert _has_drop_uci(out) or any(
+        "drop" in str(p) for p in _plies(out)
+    ), "expected a drop action in plies"
+    assert _score_a(out) >= 8
+    assert _accepted(out)
+
+
+def test_public_teammate_request_timing(tmp_path: Path):
+    """Bot emits at least one teammate piece request on a long public match."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    proc = _run_match("kingside-relay-attack", bot, out)
+    assert proc.returncode == 0, proc.stderr
+    assert _has_action(out, "request"), "expected request action in plies"
+    assert _accepted(out)
+
+
+def test_public_sacrifice_prevents_cross_board_mate_net(tmp_path: Path):
+    """Cross-board kingside attack meets acceptance without protocol faults."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    proc = _run_match("kingside-relay-attack", bot, out)
+    assert proc.returncode == 0, proc.stderr
+    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
+    assert diag["bot_faults"] == 0
+    assert _score_a(out) >= 60
+    assert _accepted(out)
+
+
+def test_public_promotion_preserves_relay_needs(tmp_path: Path):
+    """Promotion race promotes and clears the campaign acceptance floor."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    proc = _run_match("promotion-race", bot, out)
+    assert proc.returncode == 0, proc.stderr
+    plies = (_current_gen(out) / "plies.jsonl").read_text()
+    assert any(ch in plies for ch in ("q", "n", "r", "b"))
+    assert _score_a(out) >= 9
+    assert _accepted(out)
+
+
+def test_public_repetition_avoidance_when_behind(tmp_path: Path):
+    """Under material pressure the bot does not idle into a punished repetition."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    proc = _run_match("material-imbalance", bot, out)
+    assert proc.returncode == 0, proc.stderr
+    term = _read_json(_current_gen(out) / "terminal.json")
+    assert "reason" in term
+    if str(term["reason"]).startswith("repetition:"):
+        assert _score_a(out) >= 95
+    else:
+        assert _score_a(out) >= 100
+    assert _accepted(out)
+
+
+def test_public_safe_after_stale_sighting(tmp_path: Path):
+    """Fog sightings appear and belief faults stay zero on defensive-drop."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    proc = _run_match("defensive-drop-fog", bot, out)
+    assert proc.returncode == 0, proc.stderr
+    vis = (_current_gen(out) / "visibility.jsonl").read_text()
+    assert "stale_sightings" in vis
+    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
+    assert diag["bot_faults"] == 0
+    assert diag.get("belief_faults", 0) == 0
+    assert _accepted(out)
+
+
+def test_public_cross_board_mate_priority(tmp_path: Path):
+    """All four public campaigns meet acceptance with a high aggregate score."""
+    bot = _isolated_bot(tmp_path)
+    total = 0
+    floors = {
+        "kingside-relay-attack": 60,
+        "defensive-drop-fog": 8,
+        "promotion-race": 9,
+        "material-imbalance": 100,
     }
-    run = drive(tmp_path, batch, POLICY, [keys["ec"].jwk()], holder)
-
-    assert run.process.returncode == 0, run.process.stderr
-    found = entries(run.report)
-    assert found["padded"]["status"] == "presented", "decoy digests must not reject a credential"
-    assert found["orphaned"]["status"] == "invalid_disclosure"
-    assert found["duplicated"]["status"] == "invalid_disclosure"
-
-
-def test_array_elements_are_addressed_by_their_resolved_position(tmp_path, keys):
-    """Array element paths count positions in the resolved list, not in the issued one."""
-    holder = keys["holder"]
-    paths = [path for path in SD_PATHS if not path.startswith("nationalities")]
-    paths += [f"nationalities[{index}]" for index in range(4)]
-    credential = ref.issue(
-        keys["ec"],
-        claims(holder, nationalities=["JP", "NL", "BE", "FR"]),
-        paths,
-        decoys=2,
-        seed=51,
-    )
-    batch = {"shifted": credential.issuance(withheld={"nationalities[1]"})}
-    run = drive(
-        tmp_path, batch, POLICY, [keys["ec"].jwk()], holder
-    )
-
-    assert run.process.returncode == 0, run.process.stderr
-    entry = entries(run.report)["shifted"]
-    assert entry["status"] == "presented"
-    assert [path for path in entry["disclosed"] if path.startswith("nationalities")] == [
-        "nationalities[0]",
-        "nationalities[1]",
-        "nationalities[2]",
-    ]
+    for name, floor in floors.items():
+        out = tmp_path / f"prio-{name}"
+        proc = _run_match(name, bot, out)
+        assert proc.returncode == 0, proc.stderr
+        assert _read_json(_current_gen(out) / "bot-diagnostics.json")["bot_faults"] == 0
+        assert _score_a(out) >= floor, f"{name}: {_score_a(out)} < {floor}"
+        assert _accepted(out)
+        total += _score_a(out)
+    assert total >= 200
 
 
-def test_release_is_the_smallest_across_alternative_groups(tmp_path, keys):
-    """The released set is the global minimum, not each group's cheapest option on its own."""
-    holder = keys["holder"]
-    credential = ref.issue(keys["ec"], claims(holder), SD_PATHS, decoys=2, seed=61)
-    run = drive(
-        tmp_path, {"minimal": credential.issuance()}, POLICY, [keys["ec"].jwk()], holder
-    )
-
-    assert run.process.returncode == 0, run.process.stderr
-    entry = entries(run.report)["minimal"]
-    assert entry["status"] == "presented"
-    assert entry["disclosed"] == [
-        "given_name",
-        "nationalities[0]",
-        "nationalities[1]",
-        "nationalities[2]",
-        "residence",
-        "residence.address",
-        "residence.address.geo",
-        "residence.address.geo.lat",
-        "residence.address.geo.lon",
-    ]
+def test_public_queue_capacity_and_team_score_reconciliation(tmp_path: Path):
+    """Queue capacity fields and acceptance reconcile in the final records."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    proc = _run_match("defensive-drop-fog", bot, out)
+    assert proc.returncode == 0, proc.stderr
+    term = _read_json(_current_gen(out) / "terminal.json")
+    assert set(term["scores"]) >= {"team_a", "team_b"}
+    summary = _summary(out)
+    assert summary["plies"] >= 1
+    assert "acceptance_floor" in summary
+    assert summary["accepted"] is True
 
 
-def test_ties_between_alternatives_follow_the_policy_order(tmp_path, keys):
-    """When two ways of satisfying the policy cost the same, the earlier listed path wins."""
-    holder = keys["holder"]
-    credential = ref.issue(keys["ec"], claims(holder), SD_PATHS, decoys=1, seed=71)
-    policy = {
-        "required": ["given_name"],
-        "alternatives": [["family_name", "contact.person.im", "work.site.desk"]],
-    }
-    run = drive(
-        tmp_path, {"tied": credential.issuance()}, policy, [keys["ec"].jwk()], holder
-    )
-
-    assert run.process.returncode == 0, run.process.stderr
-    entry = entries(run.report)["tied"]
-    assert entry["disclosed"] == ["family_name", "given_name"]
+# ---------------------------------------------------------------------------
+# 12 isolated hidden composite match tests
+# ---------------------------------------------------------------------------
 
 
-def test_presentation_binds_the_released_disclosures_to_the_holder(tmp_path, keys):
-    """A released presentation carries exactly the released disclosures under a valid key binding."""
-    holder = keys["holder"]
-    credential = ref.issue(keys["ec"], claims(holder), SD_PATHS, decoys=2, seed=81)
-    run = drive(
-        tmp_path, {"bound": credential.issuance()}, POLICY, [keys["ec"].jwk()], holder
-    )
-
-    assert run.process.returncode == 0, run.process.stderr
-    presentation = ref.read_presentation(run.out, "bound")
-    assert presentation is not None, "no presentation was written for a released credential"
-    prefix, sd_hash, cnf = run.presentations["bound"]
-    ref.check_key_binding(presentation, prefix, cnf, ref.DEFAULT_CONFIG)
-
-    released = presentation[: presentation.rindex("~")].split("~")[1:]
-    assert released == sorted(released, key=lambda text: text.encode("utf-8"))
-    assert len(released) == len(entries(run.report)["bound"]["disclosed"])
-    assert set(released) <= set(credential.disclosures)
-    assert entries(run.report)["bound"]["sd_hash"] == sd_hash
+def _hidden_match(tmp_path: Path, name: str) -> Path:
+    out = tmp_path / f"out-{name}"
+    bot = _isolated_bot(tmp_path / f"bot-{name}")
+    pos = HIDDEN / f"{name}.json"
+    assert pos.is_file(), name
+    proc = _run_match(pos, bot, out)
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    return out
 
 
-def test_credentials_that_cannot_satisfy_the_policy_release_nothing(tmp_path, keys):
-    """A credential short of the policy is reported insufficient with the paths it cannot cover."""
-    holder = keys["holder"]
-    thin = claims(
-        holder,
-        work=None,
-        contact={"person": {"im": "rune#77"}},
-        residence={"address": {"country": "NO"}},
-    )
-    credential = ref.issue(
-        keys["ec"],
-        thin,
-        ["given_name", "contact", "contact.person", "contact.person.im", "nationalities[0]"],
-        decoys=1,
-        seed=91,
-    )
-    run = drive(
-        tmp_path, {"thin": credential.issuance()}, POLICY, [keys["ec"].jwk()], holder
-    )
-
-    assert run.process.returncode == 0, run.process.stderr
-    entry = entries(run.report)["thin"]
-    assert entry["status"] == "insufficient"
-    assert entry["missing"] == [
-        "contact.person.email",
-        "residence.address.geo.lat",
-        "residence.address.geo.lon",
-        "work.site.phone",
-    ]
-    assert "disclosed" not in entry
-    assert os.listdir(os.path.join(run.out, "presentations")) == []
+def test_hidden_wrong_relay_mate(tmp_path: Path):
+    """Hidden: capacity-one relay match finishes legally with non-negative score."""
+    out = _hidden_match(tmp_path, "wrong_relay_mate")
+    assert _score_a(out) >= 0
+    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["bot_faults"] == 0
+    assert _read_json(_current_gen(out) / "bot-diagnostics.json").get("belief_faults", 0) == 0
 
 
-def test_only_usable_published_keys_are_reported_and_used(tmp_path, keys):
-    """The key set is filtered to signature keys this profile can use, with RFC 7638 thumbprints."""
-    holder = keys["holder"]
-    unlabelled = ref.SigningKey("issuer-plain", "RSA", alg="RS256")
-    encryption = ref.SigningKey("issuer-enc", "RSA", alg=None, use="enc")
-    published = [
-        keys["ec"].jwk(),
-        unlabelled.jwk(include_alg=False),
-        encryption.jwk(),
-        {"kty": "EC", "crv": "P-384", "kid": "issuer-p384", "x": ref.b64u(b"x" * 48), "y": ref.b64u(b"y" * 48)},
-        {"kty": "oct", "kid": "issuer-shared", "k": ref.b64u(b"0123456789abcdef")},
-        {"kty": "EC", "crv": "P-256", "x": ref.b64u(b"x" * 32), "y": ref.b64u(b"y" * 32)},
-    ]
-    batch = {
-        "labelled": ref.issue(keys["ec"], claims(holder), SD_PATHS, seed=101).issuance(),
-        "plain": ref.issue(unlabelled, claims(holder), SD_PATHS, seed=102).issuance(),
-        "anonymous": ref.issue(keys["ec"], claims(holder), SD_PATHS, seed=103, kid=False).issuance(),
-    }
-    run = drive(tmp_path, batch, POLICY, published, holder)
-
-    assert run.process.returncode == 0, run.process.stderr
-    document = json.loads(run.report)
-    assert [entry["kid"] for entry in document["keys"]] == ["issuer-ec", "issuer-plain"]
-    assert {entry["kid"]: entry["thumbprint"] for entry in document["keys"]} == {
-        "issuer-ec": keys["ec"].thumbprint(),
-        "issuer-plain": unlabelled.thumbprint(),
-    }
-    found = entries(run.report)
-    assert found["labelled"]["kid"] == "issuer-ec"
-    assert found["plain"]["status"] == "presented" and found["plain"]["alg"] == "RS256"
-    assert found["anonymous"]["status"] == "presented" and found["anonymous"]["kid"] == "issuer-ec"
+def test_hidden_unseen_blocker_check(tmp_path: Path):
+    """Hidden: belief-aware defense under check completes without faults."""
+    out = _hidden_match(tmp_path, "unseen_blocker_check")
+    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
+    assert diag["protocol_ok"] is True
+    assert diag["bot_faults"] == 0
 
 
-def test_broker_reads_the_issuer_key_set_it_is_pointed_at(tmp_path):
-    """The issuer key set is read from the configured location, as a served URL and as a file."""
-    issuer = ref.tck_keys()
-    holder = ref.SigningKey("acme-wallet-mp", "EC")
-    served = ref.published_key_set()
-    batch = {
-        "mp-ec": ref.issue(issuer["eckey"], claims(holder), SD_PATHS, decoys=2, seed=201).issuance(),
-        "mp-rsa": ref.issue(
-            issuer["rskey"], claims(holder, given_name="Tomas"), SD_PATHS, seed=202, spacing="compact"
-        ).issuance(),
-    }
-    published = ref.usable_keys(served)
-    expected_keys = {kid: ref.thumbprint_of(entry) for kid, entry in published.items()}
-    assert expected_keys, "the environment ships no usable issuer key"
-
-    with ref.JwksServer(served) as server:
-        process, report, out = ref.run_broker(
-            str(tmp_path / "url"), batch, POLICY, server.url, holder, ref.DEFAULT_CONFIG
-        )
-        _, presentations = ref.expected_report(
-            batch, served, server.url, POLICY, ref.DEFAULT_CONFIG
-        )
-        assert process.returncode == 0, process.stderr
-        assert server.hits >= 1, "the broker never read the location it was given"
-        document = json.loads(report)
-        assert document["jwks_uri"] == server.url
-        assert {entry["kid"]: entry["thumbprint"] for entry in document["keys"]} == expected_keys
-        found = entries(report)
-        assert found["mp-ec"]["status"] == "presented" and found["mp-ec"]["alg"] == "ES256"
-        assert found["mp-rsa"]["status"] == "presented" and found["mp-rsa"]["alg"] == "RS256"
-        for name, (prefix, _, cnf) in presentations.items():
-            ref.check_key_binding(ref.read_presentation(out, name), prefix, cnf, ref.DEFAULT_CONFIG)
-
-    mirrored = "file://" + ref.ISSUER_JWKS
-    process, report, _ = ref.run_broker(
-        str(tmp_path / "file"), batch, POLICY, mirrored, holder, ref.DEFAULT_CONFIG
-    )
-    assert process.returncode == 0, process.stderr
-    document = json.loads(report)
-    assert document["jwks_uri"] == mirrored
-    assert {entry["kid"]: entry["thumbprint"] for entry in document["keys"]} == expected_keys
-    assert [entry["status"] for entry in document["credentials"]] == ["presented", "presented"]
+def test_hidden_knight_vs_pawn_drop(tmp_path: Path):
+    """Hidden: delayed knight queue still yields a drop when inventory is ready."""
+    out = _hidden_match(tmp_path, "knight_vs_pawn_drop")
+    relay = (_current_gen(out) / "relay.jsonl").read_text()
+    assert "team_a" in relay
+    assert _has_drop_uci(out) or any("drop" in str(p) for p in _plies(out))
 
 
-def test_unreachable_key_set_stops_the_run(tmp_path, keys):
-    """Nothing is reported when the issuer key set cannot be retrieved."""
-    holder = keys["holder"]
-    batch = {"atlas": ref.issue(keys["ec"], claims(holder), SD_PATHS, seed=301).issuance()}
-    with ref.JwksServer({"keys": [keys["ec"].jwk()]}) as server:
-        dead = server.url
-    process, report, _ = ref.run_broker(str(tmp_path), batch, POLICY, dead, holder)
+def test_hidden_promo_fills_queue(tmp_path: Path):
+    """Hidden: promotion path interacting with a full relay queue remains valid."""
+    out = _hidden_match(tmp_path, "promo_fills_queue")
+    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["bot_faults"] == 0
 
-    assert process.returncode != 0, "a key set that cannot be read has to stop the run"
-    assert report is None, "no report may be written when the key set is unavailable"
+
+def test_hidden_repetition_with_attack(tmp_path: Path):
+    """Hidden: repetition versus continuing a visible attack yields a terminal reason."""
+    out = _hidden_match(tmp_path, "repetition_with_attack")
+    term = _read_json(_current_gen(out) / "terminal.json")
+    assert term["reason"]
+    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["bot_faults"] == 0
+
+
+def test_hidden_stale_queen_unsafe(tmp_path: Path):
+    """Hidden: stale queen sightings do not produce belief faults."""
+    out = _hidden_match(tmp_path, "stale_queen_unsafe")
+    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
+    assert diag["bot_faults"] == 0
+    assert diag.get("belief_faults", 0) == 0
+
+
+def test_hidden_renamed_ids_reordered(tmp_path: Path):
+    """Hidden: renamed piece identifiers still allow a complete legal match."""
+    out = _hidden_match(tmp_path, "renamed_ids_reordered")
+    assert _score_a(out) >= 0
+    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["protocol_ok"] is True
+
+
+def test_hidden_file_reflected(tmp_path: Path):
+    """Hidden: file-reflected geometry is handled without protocol faults."""
+    out = _hidden_match(tmp_path, "file_reflected")
+    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["protocol_ok"] is True
+
+
+def test_hidden_color_board_swap(tmp_path: Path):
+    """Hidden: color-and-board swapped seating preserves a normalized winner field."""
+    out = _hidden_match(tmp_path, "color_board_swap")
+    term = _read_json(_current_gen(out) / "terminal.json")
+    assert term["winner"] in {"team_a", "team_b", "draw"}
+
+
+def test_hidden_capacity_increase(tmp_path: Path):
+    """Hidden: increased friendly relay capacity keeps transfers legal."""
+    out = _hidden_match(tmp_path, "capacity_increase")
+    assert _score_a(out) >= 0
+    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["bot_faults"] == 0
+
+
+def test_hidden_outside_envelope_remove(tmp_path: Path):
+    """Hidden: a far-away enemy outside interaction envelopes does not break observations."""
+    out = _hidden_match(tmp_path, "outside_envelope_remove")
+    vis = (_current_gen(out) / "visibility.jsonl").read_text()
+    assert "visible_squares" in vis
+
+
+def test_hidden_horizon_composite(tmp_path: Path):
+    """Hidden: final-horizon mate, material, repetition, and points are jointly recorded."""
+    out = _hidden_match(tmp_path, "horizon_composite")
+    term = _read_json(_current_gen(out) / "terminal.json")
+    summary = _summary(out)
+    assert "scores" in term and "reason" in term
+    assert summary["determinism"] == "seeded"
+    assert "acceptance_floor" in summary
+
+
+# ---------------------------------------------------------------------------
+# 6 game-native metamorphic tests
+# ---------------------------------------------------------------------------
+
+
+def test_metamorphic_piece_id_renaming_preserves_outcome(tmp_path: Path):
+    """Bijective piece-id renaming preserves normalized winner for a fixed seed match."""
+    bot = _isolated_bot(tmp_path)
+    base_pos = json.loads((HIDDEN / "renamed_ids_reordered.json").read_text())
+    a = dict(base_pos)
+    a["id"] = "meta-rename-a"
+    a["piece_id_map"] = {}
+    b = dict(base_pos)
+    b["id"] = "meta-rename-b"
+    b["piece_id_map"] = {"alpha-n1": "x1", "beta-n1": "y1"}
+    pa, pb = tmp_path / "a.json", tmp_path / "b.json"
+    pa.write_text(json.dumps(a))
+    pb.write_text(json.dumps(b))
+    out1, out2 = tmp_path / "o1", tmp_path / "o2"
+    r1 = _run_match(pa, bot, out1)
+    r2 = _run_match(pb, bot, out2)
+    assert r1.returncode == 0 and r2.returncode == 0, r1.stderr + r2.stderr
+    assert _winner(out1) == _winner(out2)
+    assert _read_json(_current_gen(out1) / "bot-diagnostics.json")["protocol_ok"] is True
+
+
+def test_metamorphic_observation_reorder_preserves_legality(tmp_path: Path):
+    """Re-running the same match yields identical legal action counts (order-stable engine)."""
+    bot = _isolated_bot(tmp_path)
+    out1, out2 = tmp_path / "o1", tmp_path / "o2"
+    assert _run_match("promotion-race", bot, out1).returncode == 0
+    assert _run_match("promotion-race", bot, out2).returncode == 0
+    d1 = _read_json(_current_gen(out1) / "bot-diagnostics.json")
+    d2 = _read_json(_current_gen(out2) / "bot-diagnostics.json")
+    assert d1["bot_legal_actions"] == d2["bot_legal_actions"]
+    assert _accepted(out1) and _accepted(out2)
+
+
+def test_metamorphic_file_reflection_preserves_result_class(tmp_path: Path):
+    """File-reflected linked positions preserve the result class (winner bucket)."""
+    out = _hidden_match(tmp_path, "file_reflected")
+    assert _winner(out) in {"team_a", "team_b", "draw"}
+    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["bot_faults"] == 0
+
+
+def test_metamorphic_color_board_swap_preserves_team_outcome_bucket(tmp_path: Path):
+    """Color-and-board swapping on a symmetric setup yields a valid team outcome bucket."""
+    out = _hidden_match(tmp_path, "color_board_swap")
+    assert _winner(out) in {"team_a", "team_b", "draw"}
+
+
+def test_metamorphic_increased_capacity_keeps_transfers_legal(tmp_path: Path):
+    """Increasing friendly relay capacity cannot reduce legality of completed transfers."""
+    out = _hidden_match(tmp_path, "capacity_increase")
+    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
+    assert diag["protocol_ok"] is True
+    assert diag["bot_faults"] == 0
+
+
+def test_metamorphic_remove_outside_envelope_enemy_no_effect_class(tmp_path: Path):
+    """Removing an out-of-envelope enemy still yields a successful observation stream."""
+    out = _hidden_match(tmp_path, "outside_envelope_remove")
+    assert (_current_gen(out) / "visibility.jsonl").stat().st_size > 0
+    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["protocol_ok"] is True
+

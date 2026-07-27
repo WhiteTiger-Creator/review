@@ -1,0 +1,5 @@
+Each seat sees only squares occupied or attacked by its own pieces on that board, plus squares marked by public relay events such as announced captures and drops. Enemy units off those squares remain hidden. A sighting records the last observed enemy piece identity and square with an age counter that grows while the square stays out of view.
+
+Belief-safe play never assumes an unseen square is empty when an alternate legal occupancy would refute the tactic. Checks you can verify from visible attackers are reliable; lines that require an unseen blocker to be absent are not. King walks onto squares that still show a recent stale enemy sighting are belief faults. Observation messages never expose full occupancy maps, opponent private queues beyond public events, or future transfers.
+
+Querying the protected engine for hidden boards, raw FEN of the far side, or private opponent state is prohibited. Stale sightings may become wrong after quiet moves behind the fog, so king walks that only look safe against the last seen placement must be checked against compatible hidden states.
