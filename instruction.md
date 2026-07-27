@@ -1,7 +1,25 @@
-You are implementing Sky Kingdom Fleet Campaign, an offline deterministic turn-based campaign simulator under /app/skykingdom. Floating kingdoms contest islands with air fleets, supply lines, weather, research, and diplomacy. Win by satisfying the scenario victory condition before the turn limit. This is a terminal strategy game with published multi-document rules. It is not berth-tide composition, not creature heredity arenas, and not disaster-clearance adjudication.
+An indie dungeon crawl studio runs terminal playtest campaigns over procedurally generated undercroft levels. The working simulator under /app already builds deterministic maps from seeds and exposes a playfield graph for route inspection. The studio still needs a fairness playtest planner that searches candidate seeds until simultaneous reachability, pacing, treasure-balance, and threat-curve invariants hold for each campaign, then publishes durable playtest artifacts through a staging snapshot.
 
-Build the Go module so go build -o /app/skykingdom/skykingdom . from /app/skykingdom produces the campaign binary. Normative rules live in /app/skykingdom/FLEET_RULES.md, /app/skykingdom/COMBAT_RULES.md, /app/skykingdom/WEATHER_SYSTEM.md, /app/skykingdom/SUPPLY_LOGISTICS.md, /app/skykingdom/TECHNOLOGY_TREE.md, /app/skykingdom/DIPLOMACY_RULES.md, /app/skykingdom/TERRITORY_CONTROL.md, /app/skykingdom/CAMPAIGN_RULES.md, /app/skykingdom/SCENARIO_SCHEMA.md, and /app/skykingdom/API_SPEC.md. Operator summary and authority ranking are in /app/docs/operator-guide.md, /app/docs/authority.md, and /app/docs/module-index.md.
+Implement the undercroft-fairness CLI capability so operators can run a multi-campaign playtest tick that materializes:
 
-The binary must support interactive play (skykingdom play followed by a scenario JSON path) and the documented JSON eval surface (skykingdom eval). Eval must stay silent except for one JSON response object per request on stdout. There is no randomness: every mechanic is pure and deterministic. Live game collections kingdoms, islands, fleets, captains, and diplomacy must be JSON objects keyed by id as shown in /app/skykingdom/API_SPEC.md Game object shape. Packages under /app/skykingdom/decoy, /app/skykingdom/ingest, /app/skykingdom/export, /app/skykingdom/staging, and /app/skykingdom/support are non-authoritative stubs and must not replace the normative rule documents.
+- /app/state/seed-hunt-staging.json
+- /app/output/seed-ledger.json
+- /app/output/route-atlas.json
+- /app/output/fairness-seal.json
+- /app/state/playtest-journal.jsonl
 
-Gameplay commands: MAP, STATUS, FLEET, ISLAND, MOVE, REFUEL, CLASH, RESEARCH, TREATY, FORTIFY, ENDTURN, REBOOT, and EXIT. Commands are case-insensitive; kingdom, fleet, island, captain, and tech IDs are case-sensitive. Successful state-changing moves append to history and return the exact success acknowledgement strings listed in /app/skykingdom/API_SPEC.md Command outputs (for example MOVE returns Moved, EXIT returns Exiting). Rejected moves begin with Rejected command: and must leave the full live campaign unchanged, including resources, readiness, ownership, research progress, diplomacy, weather index, and history. REBOOT restores a fresh campaign from the same scenario object with empty history. validateGame violation strings use the kind:id grammar in API_SPEC.md. replayRun must reproduce ordinary play. Bundled scenarios are samples only; any legal scenario-schema input must simulate correctly.
+Invoke the planner as:
+
+/app/bin/undercroft-fairness playtest --campaigns /app/fixtures/campaigns --ledger /app/output/seed-ledger.json --atlas /app/output/route-atlas.json --seal /app/output/fairness-seal.json --journal /app/state/playtest-journal.jsonl
+
+Contracts governing map generation, win-condition style route checks, pacing gaps along the critical path, treasure density bands, threat budgets, seed search windows, staging-then-export publish rules, and seal digests live under:
+
+- /app/docs/playtest-workflow.md
+- /app/docs/cartograph-contract.md
+- /app/docs/reachability-pacing-contract.md
+- /app/docs/treasure-threat-contract.md
+- /app/docs/seed-search-contract.md
+- /app/docs/staging-export-contract.md
+- /app/docs/artifact-seal-contract.md
+
+Campaign JSON profiles under /app/fixtures/campaigns define board size, entity counts, invariant thresholds, and each campaign search_origin plus search_limit. Outputs must be deterministic for identical campaign inputs. Rebuild with /app/scripts/build.sh before grading runs.
