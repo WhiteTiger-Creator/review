@@ -4,28 +4,27 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "scientific-computing"
-tags = ["scientific-computing", "formal-reasoning", "importance-sampling", "barrier-certificate", "numerical-analysis", "java"]
-languages = ["java"]
+category = "machine-learning"
+tags = ["machine-learning", "tabular", "counterfactual", "typescript", "l0-eval"]
+languages = ["typescript"]
 codebase_size = "small"
 number_of_milestones = 0
 subcategories = ["tool_specific"]
-expert_time_estimate_min = 120
-junior_time_estimate_min = 360
+expert_time_estimate_min = 180
+junior_time_estimate_min = 480
+
+[reference_pattern]
+justification_if_none = "no promoted reference matches TypeScript tabular L0 counterfactual constrained_build with run_fit/run_cf layout+bundle artifacts"
 
 [agent]
 timeout_sec = 1800
-user = 65534
 
 [verifier]
-timeout_sec = 900
-
-[reference_pattern]
-justification_if_none = "No promoted reference in docs/reference_tasks/index.json matches Java CCS barrier witness formal_reasoning; construction is net-new under scientific-computing."
+timeout_sec = 600
 
 [environment]
 allow_internet = false
-build_timeout_sec = 600
+build_timeout_sec = 400
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240

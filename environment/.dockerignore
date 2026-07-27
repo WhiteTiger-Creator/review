@@ -9,4 +9,4 @@
 .env
 solution/
 tests/
-build/
+**/.DS_Store
