@@ -1,54 +1,31 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd /app
 
-applied=0
-if [[ -s "${ROOT_DIR}/patches/harborseal-fixes.patch" ]] && command -v patch >/dev/null 2>&1; then
-  if patch -p1 --batch --forward < "${ROOT_DIR}/patches/harborseal-fixes.patch"; then
-    applied=1
-  fi
+APP_ROOT="${APP_ROOT:-/app}"
+SRC_DIR="${APP_ROOT}/src"
+# Harbor mounts the solution at /solution (not /app/solution); resolve relative to this script.
+SOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+echo "[oracle] repairing periodctl and host control plane"
+
+# Copy corrected files to the target directory
+cp "${SOL_DIR}/periodctl" "${SRC_DIR}/periodctl"
+cp "${SOL_DIR}/reconciler.py" "${SRC_DIR}/reconciler.py"
+cp "${SOL_DIR}/ledger.py" "${SRC_DIR}/ledger.py"
+
+chmod 0755 "${SRC_DIR}/periodctl"
+chmod 0644 "${SRC_DIR}/reconciler.py"
+chmod 0644 "${SRC_DIR}/ledger.py"
+
+echo "[oracle] restoring period-close host layout"
+mkdir -p /etc/period-close /var/lib/period-close
+cp "${APP_ROOT}/data/window.json" /etc/period-close/window.json
+chmod 0644 /etc/period-close/window.json
+chmod 0755 /var/lib/period-close
+ln -sfn "${SRC_DIR}/periodctl" /usr/local/sbin/periodctl
+
+if [[ -f /etc/systemd/system/period-close.service ]]; then
+    chmod 0644 /etc/systemd/system/period-close.service
 fi
-if [[ "${applied}" -eq 0 ]]; then
-  cp -a "${ROOT_DIR}/fixed/lib/." /app/lib/
-fi
 
-bash /app/scripts/check-source-integrity.sh
-bash /app/test-visible/library_smoke.sh
-bash /app/test-visible/default_profile_smoke.sh
-bash /app/test-visible/fips_profile_smoke.sh
-bash /app/test-visible/mount_smoke.sh
-bash /app/test-visible/legacy_compat_smoke.sh
-
-run_dir=/tmp/harborseal-oracle
-rm -rf "${run_dir}" /output/*
-mkdir -p "${run_dir}" /output
-
-/app/bin/harborseal-driver \
-  --report-index /app/data/report/decision-index.json \
-  --report /app/data/report/migration-report.md \
-  --oci-root /app/data/oci \
-  --cert-root /app/data/certs \
-  --provider-root /app/data/providers \
-  --state "${run_dir}/state.json" \
-  --output /output
-
-bash /app/scripts/validate-all-profiles.sh /output/profiles
-python3 -m json.tool /output/setup-manifest.json >/dev/null
-
-sha256sum /output/profiles/*.cnf /output/setup-manifest.json > "${run_dir}/first.sha256"
-
-/app/bin/harborseal-driver \
-  --report-index /app/data/report/decision-index.json \
-  --report /app/data/report/migration-report.md \
-  --oci-root /app/data/oci \
-  --cert-root /app/data/certs \
-  --provider-root /app/data/providers \
-  --state "${run_dir}/state.json" \
-  --output /output
-
-sha256sum /output/profiles/*.cnf /output/setup-manifest.json > "${run_dir}/second.sha256"
-cmp "${run_dir}/first.sha256" "${run_dir}/second.sha256"
-
-test -s /output/setup-manifest.json
-echo "oracle solve complete"
+echo "[oracle] solution applied successfully"

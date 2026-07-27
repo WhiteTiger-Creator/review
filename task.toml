@@ -1,34 +1,38 @@
 version = "2.0"
 
 [metadata]
-author_name = "anonymous"
-author_email = "anonymous"
+author_name = "Bhagyawanth"
+author_email = "J26.0898.adl@airdawglabs.com"
 difficulty = "hard"
 category = "system-administration"
-subcategories = ["long_context", "tool_specific"]
-number_of_milestones = 0
-codebase_size = "small"
-languages = ["awk", "bash"]
+legacy_category = "data-processing"
+subcategories = ["tool_specific"]
+languages = ["bash", "python"]
 tags = [
-  "openssl",
-  "host-migration",
-  "provider-configuration",
-  "fips",
-  "mount-resolution",
-  "staging-rollout",
+  "bash",
+  "system-administration",
+  "systemd",
+  "permissions",
+  "file-operations",
+  "ops-tooling",
 ]
-expert_time_estimate_min = 345
-junior_time_estimate_min = 810
+expert_time_estimate_min = 90
+junior_time_estimate_min = 180
+number_of_milestones = 0
+codebase_size = "minimal"
+
+[environment]
+build_timeout_sec = 600
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+allow_internet = false
+
+[verifier]
+timeout_sec = 300
 
 [agent]
 timeout_sec = 1800
 
-[verifier]
-timeout_sec = 900
-
-[environment]
-build_timeout_sec = 1200
-cpus = 2
-memory_mb = 2048
-storage_mb = 6144
-allow_internet = false
+[oracle]
+timeout_sec = 600

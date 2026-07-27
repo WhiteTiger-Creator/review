@@ -1,466 +1,466 @@
-"""Behavioral verifier tests for openssl provider profile reconstruction."""
-from __future__ import annotations
-
 import hashlib
-import json
 import os
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any
 
 import pytest
 
-APP = Path("/app")
-DRIVER = APP / "bin" / "harborseal-driver"
+PERIODCTL = "/app/src/periodctl"
+DATA_DIR = Path("/app/data")
+JOURNALS = DATA_DIR / "journals"
+CHART = DATA_DIR / "chart.tsv"
+WINDOW = DATA_DIR / "window.json"
+ETC_WINDOW = Path("/etc/period-close/window.json")
+SBIN_LINK = Path("/usr/local/sbin/periodctl")
+SYSTEMD_UNIT = Path("/etc/systemd/system/period-close.service")
+VAR_LIB = Path("/var/lib/period-close")
+LOCKFILE = Path("/tmp/periodctl.lock")
+
+EXPECTED_LINES = [
+    "CA-1000;53000;DR",
+    "CA-2000;8000;CR",
+    "EQ-3000;15000;CR",
+    "EXP-5000;20000;DR",
+    "REV-4000;50000;CR",
+]
 
 
-def _load_index(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8192), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
-def _scope_matches(scope: str, service_id: str) -> bool:
-    if scope == service_id:
-        return True
-    if scope.endswith("/*"):
-        prefix = scope[:-1].rstrip("/")
-        return service_id.startswith(prefix) and (
-            len(service_id) == len(prefix) or service_id[len(prefix)] == "/"
-        )
-    return False
-
-
-def _resolve_profile(
-    events: list[dict[str, Any]],
-    service_id: str,
-    *,
-    environment: str = "staging",
-    host_class: str = "harborseal",
-    at: str = "2026-04-01T00:00:00Z",
-) -> tuple[str | None, list[str], str | None]:
-    active = {e["event_id"]: e for e in events if e.get("decision_type") == "provider_profile"}
-    for e in events:
-        for sid in e.get("supersedes", []):
-            active.pop(sid, None)
-    candidates: list[tuple[int, str, dict[str, Any]]] = []
-    for e in active.values():
-        if e.get("environment") not in (None, environment):
-            continue
-        if e.get("host_class") not in (None, host_class):
-            continue
-        if not _scope_matches(str(e.get("service_scope", "")), service_id):
-            continue
-        if str(e.get("effective_from", "")) > at:
-            continue
-        until = e.get("effective_until")
-        if until and str(until) <= at:
-            continue
-        specific = 2 if e.get("service_scope") == service_id else 1
-        candidates.append((specific, str(e.get("effective_from", "")), e))
-    if not candidates:
-        return None, [], "no_profile_decision"
-    candidates.sort(key=lambda t: (t[0], t[1]), reverse=True)
-    winner = candidates[0][2]
-    return str(winner.get("profile")), [str(winner.get("report_section", ""))], None
-
-
-def _load_bundle(config_path: Path) -> dict[str, Any]:
-    return json.loads(config_path.read_text(encoding="utf-8"))
-
-
-def _parse_env(spec: dict[str, Any]) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for entry in spec.get("process", {}).get("env", []):
-        if "=" not in entry:
-            continue
-        key, val = entry.split("=", 1)
-        out[key] = val
-    return out
-
-
-def _service_id(spec: dict[str, Any]) -> str:
-    return str(spec.get("annotations", {}).get("io.harborseal.service/id", ""))
-
-
-def _prefix_match(base: str, path: str) -> bool:
-    base_n = os.path.normpath(base).replace("\\", "/")
-    path_n = os.path.normpath(path).replace("\\", "/")
-    return path_n == base_n or path_n.startswith(base_n.rstrip("/") + "/")
-
-
-def _effective_mount(spec: dict[str, Any], destination: str) -> dict[str, Any] | None:
-    dest_n = os.path.normpath(destination).replace("\\", "/")
-    last = None
-    for mount in spec.get("mounts", []):
-        if os.path.normpath(str(mount.get("destination", ""))).replace("\\", "/") == dest_n:
-            last = mount
-    return last
-
-
-def _entry_by_service(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    return {entry["service_id"]: entry for entry in manifest.get("services", [])}
-
-
-def _map_id(value: int, mappings: list[dict[str, Any]]) -> int:
-    for m in mappings:
-        c = int(m.get("containerID", 0))
-        h = int(m.get("hostID", 0))
-        size = int(m.get("size", 0))
-        if c <= value < c + size:
-            return h + (value - c)
-    return value
-
-
-def _expected_effective_ids(spec: dict[str, Any]) -> tuple[int, int]:
-    user = spec.get("process", {}).get("user", {})
-    linux = spec.get("linux", {})
-    uid = int(user.get("uid", 0))
-    gid = int(user.get("gid", 0))
-    return (
-        _map_id(uid, linux.get("uidMappings", [])),
-        _map_id(gid, linux.get("gidMappings", [])),
-    )
-
-
-def _expected_certificate_mounts(spec: dict[str, Any]) -> list[dict[str, str]]:
-    out = []
-    by_dest = {}
-    for mount in spec.get("mounts", []):
-        dest = os.path.normpath(str(mount.get("destination", ""))).replace("\\", "/")
-        by_dest[dest] = mount
-    for dest, mount in sorted(by_dest.items()):
-        if not _prefix_match("/etc/ssl/certs", dest):
-            continue
-        if mount.get("type") != "bind":
-            continue
-        src = str(mount.get("source", ""))
-        if src:
-            out.append({"destination": dest, "source": src})
-    return out
-
-
-def _copy_permuted_bundle_root(src: Path, dst: Path) -> None:
-    entries = sorted([p for p in src.iterdir() if p.is_dir()], reverse=True)
-    for i, item in enumerate(entries):
-        shutil.copytree(item, dst / f"{i:02d}-{item.name}")
-
-
-def _published_bytes(root: Path) -> dict[str, bytes]:
-    out = {}
-    setup = root / "output" / "setup-manifest.json"
-    out["setup-manifest.json"] = setup.read_bytes()
-    for profile in sorted((root / "output" / "profiles").glob("*.cnf")):
-        out[f"profiles/{profile.name}"] = profile.read_bytes()
-    return out
-
-
-def _load_manifest(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _has_legacy_fields(entry: dict[str, Any]) -> bool:
-    legacy = entry.get("legacy") or {}
-    return bool(legacy.get("provider")) and bool(legacy.get("config_path"))
-
-
-def _profile_contains_providers(path: Path, profile: str) -> bool:
-    text = path.read_text(encoding="utf-8")
-    if profile == "fips":
-        return "hs_fips" in text and "fips=yes" in text
-    if profile in {"legacy", "legacy_verify_only"}:
-        return "hs_legacy" in text
-    return "hs_fips" not in text and "hs_default" in text
-
-
-def _run_driver(work: Path) -> subprocess.CompletedProcess[str]:
-    env = dict(os.environ)
-    env["OPENSSL_CONF"] = ""
-    env["OPENSSL_MODULES"] = "/app/data/providers/modules"
-    (work / "output" / "profiles").mkdir(parents=True, exist_ok=True)
+def run_periodctl(
+    snapshot_path: Path,
+    postings_dir: Path = JOURNALS,
+    accounts: Path = CHART,
+    window: Path = WINDOW,
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         [
-            str(DRIVER),
-            "--report-index",
-            str(work / "report" / "decision-index.json"),
-            "--report",
-            str(work / "report" / "migration-report.md"),
-            "--oci-root",
-            str(work / "oci"),
-            "--cert-root",
-            str(work / "certs"),
-            "--provider-root",
-            str(work / "providers"),
-            "--state",
-            str(work / "state.json"),
-            "--output",
-            str(work / "output"),
+            PERIODCTL,
+            "--postings",
+            str(postings_dir),
+            "--accounts",
+            str(accounts),
+            "--window",
+            str(window),
+            "--snapshot",
+            str(snapshot_path),
         ],
         capture_output=True,
         text=True,
-        env=env,
         check=False,
     )
 
 
-@pytest.fixture()
-def workdir():
-    base = Path(tempfile.mkdtemp(prefix="harborseal-"))
-    shutil.copytree(APP / "data" / "report", base / "report")
-    shutil.copytree(APP / "data" / "oci", base / "oci")
-    shutil.copytree(APP / "data" / "certs", base / "certs")
-    shutil.copytree(APP / "data" / "providers", base / "providers")
-    shutil.copy2(APP / "data" / "state" / "state.json", base / "state.json")
-    (base / "output").mkdir()
-    yield base
-    shutil.rmtree(base, ignore_errors=True)
+@pytest.fixture
+def data_hashes():
+    hashes = {}
+    for path in DATA_DIR.rglob("*"):
+        if path.is_file():
+            hashes[str(path.relative_to(DATA_DIR))] = sha256_file(path)
+    return hashes
 
 
-@pytest.fixture()
-def driven(workdir: Path):
-    proc = _run_driver(workdir)
-    assert proc.returncode == 0, proc.stderr
-    manifest = _load_manifest(workdir / "output" / "setup-manifest.json")
-    return workdir, manifest
+def _mode(path: Path) -> str:
+    return oct(path.stat().st_mode & 0o777)
 
 
-def test_library_is_sourceable_without_lifecycle_side_effects():
-    """AWK library loads without printing until invoked."""
-    proc = subprocess.run(
-        ["gawk", "-f", str(APP / "lib" / "json.awk"), "-f", str(APP / "lib" / "harborseal.awk"), "BEGIN { hs_reset() }"],
+def test_periodctl_binary_mode_0755():
+    """Verify /app/src/periodctl exists and has executable mode 0755."""
+    assert Path(PERIODCTL).is_file()
+    assert _mode(Path(PERIODCTL)) == "0o755"
+
+
+def test_sbin_periodctl_symlink():
+    """Verify /usr/local/sbin/periodctl is a symlink to /app/src/periodctl."""
+    assert SBIN_LINK.is_symlink()
+    assert SBIN_LINK.resolve() == Path(PERIODCTL).resolve()
+
+
+def test_etc_window_installed():
+    """Verify /etc/period-close/window.json is a byte-identical install with mode 0644."""
+    assert ETC_WINDOW.is_file()
+    assert ETC_WINDOW.read_bytes() == WINDOW.read_bytes()
+    assert _mode(ETC_WINDOW) == "0o644"
+
+
+def test_var_lib_period_close_mode_0755():
+    """Verify /var/lib/period-close exists as a directory with mode 0755."""
+    assert VAR_LIB.is_dir()
+    assert _mode(VAR_LIB) == "0o755"
+
+
+def test_systemd_unit_mode_and_targets():
+    """Verify period-close.service is mode 0644 and references correct paths."""
+    assert SYSTEMD_UNIT.is_file()
+    assert _mode(SYSTEMD_UNIT) == "0o644"
+    text = SYSTEMD_UNIT.read_text(encoding="utf-8")
+    assert "/usr/local/sbin/periodctl" in text
+    assert "/etc/period-close/window.json" in text
+    assert "/var/lib/period-close/snapshot.tsv" in text
+    assert "Type=oneshot" in text
+
+
+def test_etc_window_path_produces_same_snapshot(tmp_path):
+    """Verify snapshots match whether --window points at data or etc install."""
+    via_data = tmp_path / "from_data.txt"
+    via_etc = tmp_path / "from_etc.txt"
+    code_data = run_periodctl(via_data, window=WINDOW).returncode
+    code_etc = run_periodctl(via_etc, window=ETC_WINDOW).returncode
+    assert code_data == code_etc == 1
+    assert via_data.read_text(encoding="utf-8") == via_etc.read_text(encoding="utf-8")
+
+
+def test_exit_code_with_unknown_account(tmp_path):
+    """Verify unknown in-window accounts yield exit code 1."""
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot)
+    assert result.returncode == 1, result.stderr
+
+
+def test_snapshot_line_count(tmp_path):
+    """Verify the shipped journals produce exactly five snapshot rows."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    lines = snapshot.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 5
+
+
+def test_snapshot_exact_content(tmp_path):
+    """Verify snapshot lines match expected account balances and sides."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    lines = snapshot.read_text(encoding="utf-8").splitlines()
+    assert lines == EXPECTED_LINES
+
+
+def test_snapshot_schema(tmp_path):
+    """Verify each snapshot line has ACCOUNT_ID;positive_cents;DR|CR format."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    for line in snapshot.read_text(encoding="utf-8").splitlines():
+        account_id, balance, side = line.split(";")
+        assert account_id
+        assert balance.isdigit()
+        assert int(balance) > 0
+        assert side in {"DR", "CR"}
+
+
+def test_case_insensitive_account_resolution(tmp_path):
+    """Verify journal account IDs resolve to canonical chart IDs case-insensitively."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    text = snapshot.read_text(encoding="utf-8")
+    assert "CA-1000;53000;DR" in text
+    assert "EQ-3000;15000;CR" in text
+    assert "ca-1000" not in text
+    assert "eq-3000" not in text
+
+
+def test_out_of_window_entries_excluded(tmp_path):
+    """Verify postings outside the fiscal window do not affect balances."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    text = snapshot.read_text(encoding="utf-8")
+    cash_balance = int(
+        next(line for line in text.splitlines() if line.startswith("CA-1000;")).split(";")[1]
+    )
+    assert cash_balance == 53000
+
+
+def test_sort_order_case_insensitive(tmp_path):
+    """Verify snapshot rows are sorted by account ID case-insensitively."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    account_ids = [line.split(";")[0] for line in snapshot.read_text(encoding="utf-8").splitlines()]
+    assert account_ids == sorted(account_ids, key=str.casefold)
+
+
+def test_window_boundary_dates_inclusive(tmp_path):
+    """Verify start_date and end_date boundary postings are included in the window."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "boundary.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-01-01,CA-1000,100,0,start boundary\n"
+        "2025-01-01,REV-4000,0,100,start boundary\n"
+        "2025-03-31,CA-1000,0,200,end boundary\n"
+        "2025-03-31,EXP-5000,200,0,end boundary\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+    lines = {line.split(";")[0]: line for line in snapshot.read_text(encoding="utf-8").splitlines()}
+    assert lines["CA-1000"] == "CA-1000;100;CR"
+    assert lines["REV-4000"] == "REV-4000;100;CR"
+    assert lines["EXP-5000"] == "EXP-5000;200;DR"
+
+
+def test_deterministic_output(tmp_path):
+    """Verify repeated runs produce identical snapshots and exit codes."""
+    first = tmp_path / "first.tsv"
+    second = tmp_path / "second.tsv"
+    code_one = run_periodctl(first).returncode
+    code_two = run_periodctl(second).returncode
+    assert code_one == code_two == 1
+    assert first.read_text(encoding="utf-8") == second.read_text(encoding="utf-8")
+
+
+def test_data_files_not_modified(data_hashes):
+    """Verify periodctl does not modify files under /app/data/."""
+    snapshot = Path(tempfile.mkdtemp()) / "snapshot.tsv"
+    run_periodctl(snapshot)
+    for path in DATA_DIR.rglob("*"):
+        if path.is_file():
+            rel = str(path.relative_to(DATA_DIR))
+            assert sha256_file(path) == data_hashes[rel]
+
+
+def test_exit_code_all_clean(tmp_path):
+    """Verify a balanced window with no unknown accounts yields exit code 0."""
+    postings = tmp_path / "clean"
+    postings.mkdir()
+    shutil.copytree(JOURNALS, postings, dirs_exist_ok=True)
+    (postings / "legacy.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-03-15,EQ-3000,0,15000,Owner draw\n"
+        "2025-03-15,CA-1000,15000,0,Cash transfer for draw\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+
+
+def test_zero_balance_excluded(tmp_path):
+    """Verify accounts whose net balance is zero are omitted from the snapshot."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "zero.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-01,CA-1000,5000,0,payment\n"
+        "2025-02-01,REV-4000,0,5000,revenue\n"
+        "2025-02-15,CA-1000,0,5000,refund\n"
+        "2025-02-15,REV-4000,5000,0,rev reversal\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0
+    assert snapshot.read_text(encoding="utf-8").strip() == ""
+
+
+def test_exit_code_unbalanced_journals(tmp_path):
+    """Verify unbalanced in-window postings yield exit code 1."""
+    postings = tmp_path / "bad"
+    postings.mkdir()
+    (postings / "skew.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-10,CA-1000,5000,0,orphan debit\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 1, result.stderr
+
+
+def test_exit_code_invalid_arguments(tmp_path):
+    """Verify missing required CLI arguments yield exit code 2."""
+    snapshot = tmp_path / "snapshot.tsv"
+    result = subprocess.run(
+        [PERIODCTL, "--postings", str(JOURNALS), "--snapshot", str(snapshot)],
         capture_output=True,
         text=True,
         check=False,
     )
-    assert proc.returncode == 0
-    assert proc.stdout.strip() == ""
+    assert result.returncode == 2
 
 
-def test_public_driver_generates_manifest_and_profiles(driven):
-    """Driver emits setup manifest and profile snippets."""
-    workdir, manifest = driven
-    assert manifest["schema_version"] == 2
-    assert (workdir / "output" / "profiles").exists()
-    assert list((workdir / "output" / "profiles").glob("*.cnf"))
-
-
-def test_report_correction_supersedes_earlier_decision():
-    """Payments service resolves to fips after correction event."""
-    events = _load_index(APP / "data" / "report" / "decision-index.json")["events"]
-    profile, _, reason = _resolve_profile(events, "payments-api")
-    assert profile == "fips"
-    assert reason is None
-
-
-def test_service_specific_decision_outranks_family_inheritance():
-    """Direct service scope outranks inherited family decision."""
-    events = _load_index(APP / "data" / "report" / "decision-index.json")["events"]
-    profile, _, _ = _resolve_profile(events, "identity-api")
-    assert profile == "default"
-
-
-def test_process_env_last_occurrence_wins():
-    """Duplicate env keys use last documented value."""
-    spec = _load_bundle(APP / "data" / "oci" / "payments" / "config.json")
-    env = _parse_env(spec)
-    assert env.get("OPENSSL_CONF") == "/ignored.conf"
-
-
-def test_process_env_splits_at_first_equals():
-    """Environment values containing equals are preserved."""
-    spec = _load_bundle(APP / "data" / "oci" / "payments" / "config.json")
-    env = _parse_env(spec)
-    assert "PATH" in env
-
-
-def test_mount_destination_normalization_uses_path_components():
-    """Path normalization rejects sibling-prefix escapes."""
-    assert not _prefix_match("/data/certs", "/data/certs-old/file.pem")
-    assert _prefix_match("/data/certs", "/data/certs/file.pem")
-
-
-def test_duplicate_destination_uses_last_effective_mount():
-    """Last mount for a destination wins."""
-    spec = _load_bundle(APP / "data" / "oci" / "archival" / "config.json")
-    mount = _effective_mount(spec, "/etc/ssl/certs/service.pem")
-    assert mount is not None
-
-
-def test_service_identity_from_annotation():
-    """Service identity comes from public annotation."""
-    for bundle in ("payments", "identity", "legacy-proxy"):
-        spec = _load_bundle(APP / "data" / "oci" / bundle / "config.json")
-        assert _service_id(spec).endswith("-api")
-
-
-def test_fips_profile_requires_fips_properties(driven):
-    """FIPS profile snippets include fips=yes property query."""
-    workdir, _ = driven
-    prof = workdir / "output" / "profiles" / "payments-api.cnf"
-    assert prof.exists(), "payments profile missing"
-    assert _profile_contains_providers(prof, "fips")
-
-
-def test_default_profile_activates_only_required_providers(driven):
-    """Default profile does not enable fips module."""
-    workdir, _ = driven
-    prof = workdir / "output" / "profiles" / "identity-api.cnf"
-    assert prof.exists(), "identity profile missing"
-    text = prof.read_text(encoding="utf-8")
-    assert "hs_fips" not in text
-
-
-def test_legacy_verify_profile_emits_legacy_sections(driven):
-    """Legacy verification profile includes legacy provider section."""
-    workdir, _ = driven
-    prof = workdir / "output" / "profiles" / "legacy-proxy-api.cnf"
-    assert prof.exists(), "legacy profile missing"
-    assert "hs_legacy" in prof.read_text(encoding="utf-8")
-
-
-def test_invalid_services_remain_in_manifest_with_reasons(workdir: Path):
-    """Manifest includes error entries with reason codes."""
-    proc = _run_driver(workdir)
-    assert proc.returncode == 0
-    manifest = _load_manifest(workdir / "output" / "setup-manifest.json")
-    statuses = {s.get("status") for s in manifest.get("services", [])}
-    assert "ready" in statuses
-
-
-def test_manifest_preserves_legacy_fields(driven):
-    """Each ready service retains legacy compatibility fields."""
-    _, manifest = driven
-    for entry in manifest.get("services", []):
-        if entry.get("status") == "ready":
-            assert _has_legacy_fields(entry)
-
-
-def test_ready_manifest_entries_include_operational_fields(driven):
-    """Ready manifest entries include documented operational fields."""
-    _, manifest = driven
-    events = _load_index(APP / "data" / "report" / "decision-index.json")["events"]
-    by_service = _entry_by_service(manifest)
-
-    for bundle in sorted((APP / "data" / "oci").iterdir()):
-        if not bundle.is_dir():
-            continue
-        spec = _load_bundle(bundle / "config.json")
-        service_id = _service_id(spec)
-        entry = by_service[service_id]
-        if entry.get("status") != "ready":
-            continue
-
-        uid, gid = _expected_effective_ids(spec)
-        assert entry.get("effective_uid") == uid
-        assert entry.get("effective_gid") == gid
-
-        certs = entry.get("certificate_mounts")
-        assert isinstance(certs, list)
-        expected_certs = _expected_certificate_mounts(spec)
-        assert expected_certs
-        for expected in expected_certs:
-            assert expected in certs
-
-        expected_profile, expected_sections, _ = _resolve_profile(events, service_id)
-        assert expected_profile is not None
-        assert entry.get("profile") == expected_profile
-        assert entry.get("report_sections") == expected_sections
-
-        actions = entry.get("setup_actions")
-        assert isinstance(actions, list)
-        assert actions
-
-
-def test_equivalent_bundle_order_produces_identical_bytes(workdir: Path):
-    """Permuting runtime bundle processing order keeps output bytes stable."""
-    first = _run_driver(workdir)
-    assert first.returncode == 0, first.stderr
-    original = _published_bytes(workdir)
-
-    permuted = Path(tempfile.mkdtemp(prefix="hs-perm-"))
+def test_exit_code_unreadable_accounts_path(tmp_path):
+    """Verify unreadable but existing accounts path yields exit code 2."""
+    unreadable = tmp_path / "locked.tsv"
+    unreadable.write_text("account_id\tname\ttype\tnormal_balance\n", encoding="utf-8")
+    unreadable.chmod(0o000)
+    snapshot = tmp_path / "snapshot.tsv"
     try:
-        shutil.copytree(workdir / "report", permuted / "report")
-        shutil.copytree(workdir / "certs", permuted / "certs")
-        shutil.copytree(workdir / "providers", permuted / "providers")
-        shutil.copy2(workdir / "state.json", permuted / "state.json")
-        (permuted / "output").mkdir()
-        (permuted / "oci").mkdir()
-        _copy_permuted_bundle_root(workdir / "oci", permuted / "oci")
-
-        second = _run_driver(permuted)
-        assert second.returncode == 0, second.stderr
-        assert _published_bytes(permuted) == original
+        result = run_periodctl(snapshot, accounts=unreadable)
+        assert result.returncode == 2
     finally:
-        shutil.rmtree(permuted, ignore_errors=True)
+        unreadable.chmod(0o644)
 
 
-def test_source_fixtures_integrity_anchors():
-    """Trusted fixture hashes match bundled files."""
-    manifest = json.loads((APP / "docs" / "trusted-fixtures.json").read_text(encoding="utf-8"))
-    for rel, expected in manifest.get("files", {}).items():
-        digest = hashlib.sha256((APP / rel).read_bytes()).hexdigest()
-        assert digest == expected
-
-
-def test_migration_report_is_long_context():
-    """Migration report meets long-context token threshold."""
-    report = (APP / "data" / "report" / "migration-report.md").read_text(encoding="utf-8")
-    assert len(report.split()) >= 50000
-
-
-def test_manifest_lists_all_discovered_services(driven):
-    """Manifest includes an entry per OCI bundle service."""
-    _, manifest = driven
-    ids = {s["service_id"] for s in manifest.get("services", [])}
-    assert "payments-api" in ids
-    assert "identity-api" in ids
-
-
-def test_profile_paths_are_relative(driven):
-    """Manifest profile_path values are relative under output."""
-    _, manifest = driven
-    for entry in manifest.get("services", []):
-        path = entry.get("profile_path")
-        if path:
-            assert not str(path).startswith("/")
-
-
-def test_openssl_modules_env_points_at_fixture_root():
-    """Container uses local provider module directory."""
-    modules = Path("/app/data/providers/modules")
-    assert modules.is_dir()
-    assert any(modules.iterdir())
-
-
-def test_harborseal_service_user_exists():
-    """Container image defines the harborseal service account."""
-    passwd = Path("/etc/passwd").read_text(encoding="utf-8")
-    assert "harborseal" in passwd
-
-
-def test_validate_openssl_profile_tool_exists():
-    """Inspect helper validates profile syntax."""
-    proc = subprocess.run(
-        [str(APP / "bin" / "validate-openssl-profile"), "--help"],
-        capture_output=True,
-        check=False,
+def test_whitespace_trimmed_and_blank_lines_ignored(tmp_path):
+    """Verify whitespace is trimmed and blank journal lines are ignored."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "messy.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "\n"
+        "2025-02-03,  ca-1000  , 700 , 0 ,cash receipt\n"
+        "2025-02-03, REV-4000 ,0, 700 , revenue booking\n"
+        "\n",
+        encoding="utf-8",
     )
-    assert proc.returncode in (0, 2)
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+    assert snapshot.read_text(encoding="utf-8").splitlines() == [
+        "CA-1000;700;DR",
+        "REV-4000;700;CR",
+    ]
 
 
-def test_decision_index_schema_version():
-    """Decision index uses schema_version 2."""
-    data = _load_index(APP / "data" / "report" / "decision-index.json")
-    assert data["schema_version"] == 2
+def test_invalid_in_window_rows_fail_but_valid_rows_still_snapshot(tmp_path):
+    """Verify invalid rows fail the run but valid known-account rows still appear."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "mixed.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-10,CA-1000,700,0,valid debit\n"
+        "2025-02-10,REV-4000,0,700,valid credit\n"
+        "2025-02-11,CA-1000,10,10,both sides set\n"
+        "2025-02-12,EXP-5000,foo,0,non numeric debit\n"
+        "2025-02-13,CA-1000,-5,0,negative debit\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 1, result.stderr
+    assert snapshot.read_text(encoding="utf-8").splitlines() == [
+        "CA-1000;700;DR",
+        "REV-4000;700;CR",
+    ]
 
 
-def test_reference_report_matches_manifest_profiles(driven):
-    """Manifest ready profiles align with reference report resolver."""
-    _, manifest = driven
-    events = _load_index(APP / "data" / "report" / "decision-index.json")["events"]
-    for entry in manifest.get("services", []):
-        if entry.get("status") != "ready":
-            continue
-        expected, _, _ = _resolve_profile(events, entry["service_id"])
-        if expected:
-            assert entry.get("profile") == expected
+def test_both_sides_zero_row_is_invalid(tmp_path):
+    """Verify rows with both debit and credit zero fail the run with exit code 1."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "zero_sides.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-10,CA-1000,700,0,valid debit\n"
+        "2025-02-10,REV-4000,0,700,valid credit\n"
+        "2025-02-11,CA-1000,0,0,both sides zero\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 1, result.stderr
+    assert snapshot.read_text(encoding="utf-8").splitlines() == [
+        "CA-1000;700;DR",
+        "REV-4000;700;CR",
+    ]
+
+
+def test_duplicate_chart_ids_case_insensitive_fail_with_empty_snapshot(tmp_path):
+    """Verify case-insensitive duplicate chart IDs fail with exit 1 and empty snapshot."""
+    chart = tmp_path / "chart.tsv"
+    chart.write_text(
+        "account_id\tname\ttype\tnormal_balance\n"
+        "\n"
+        "CA-1000\tCash\tasset\tdebit\n"
+        "ca-1000\tDuplicate Cash\tasset\tdebit\n"
+        "REV-4000\tRevenue\trevenue\tcredit\n",
+        encoding="utf-8",
+    )
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "simple.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-14,CA-1000,900,0,cash sale\n"
+        "2025-02-14,REV-4000,0,900,revenue\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings, accounts=chart)
+    assert result.returncode == 1, result.stderr
+    assert snapshot.read_text(encoding="utf-8") == ""
+
+
+def test_lockfile_concurrency_and_cleanup(tmp_path):
+    """Verify sequential runs succeed and the lockfile is cleaned up after each run."""
+    snapshot1 = tmp_path / "snapshot1.tsv"
+    res1 = run_periodctl(snapshot1)
+    assert res1.returncode == 1
+    assert not LOCKFILE.exists()
+
+    snapshot2 = tmp_path / "snapshot2.tsv"
+    res2 = run_periodctl(snapshot2)
+    assert res2.returncode == 1
+    assert not LOCKFILE.exists()
+
+    res3 = subprocess.run([PERIODCTL], capture_output=True, text=True, check=False)
+    assert res3.returncode == 2
+
+    snapshot3 = tmp_path / "snapshot3.tsv"
+    res4 = run_periodctl(snapshot3)
+    assert res4.returncode == 1
+    assert not LOCKFILE.exists()
+
+
+def test_stale_lockfile_dead_pid_takes_over(tmp_path):
+    """Verify periodctl takes over when lockfile holds a dead PID."""
+    LOCKFILE.write_text("99999999", encoding="utf-8")
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot)
+    assert result.returncode == 1
+    assert not LOCKFILE.exists()
+
+
+def test_active_lockfile_pid_blocks_run(tmp_path):
+    """Verify periodctl exits 1 when lockfile holds an active PID."""
+    LOCKFILE.write_text(str(os.getpid()), encoding="utf-8")
+    snapshot = tmp_path / "snapshot.tsv"
+    try:
+        result = run_periodctl(snapshot)
+        assert result.returncode == 1
+    finally:
+        LOCKFILE.unlink(missing_ok=True)
+
+
+def test_path_with_spaces(tmp_path):
+    """Verify CLI handles postings directories whose paths contain spaces."""
+    postings = tmp_path / "postings folder with spaces"
+    postings.mkdir()
+    (postings / "clean.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-01,CA-1000,100,0,payment\n"
+        "2025-02-01,REV-4000,0,100,revenue\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+    lines = snapshot.read_text(encoding="utf-8").splitlines()
+    assert lines == [
+        "CA-1000;100;DR",
+        "REV-4000;100;CR",
+    ]
+
+
+def test_memo_field_with_commas(tmp_path):
+    """Verify quoted memo fields containing commas are parsed correctly."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "comma_memo.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        '2025-02-01,CA-1000,150,0,"payment, partial"\n'
+        '2025-02-01,REV-4000,0,150,"revenue, deferred"\n',
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+    lines = snapshot.read_text(encoding="utf-8").splitlines()
+    assert lines == [
+        "CA-1000;150;DR",
+        "REV-4000;150;CR",
+    ]
