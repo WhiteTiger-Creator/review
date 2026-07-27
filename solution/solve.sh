@@ -1,82 +1,31 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ORACLE_SRC="${SCRIPT_DIR}/oracle_src"
-APP_DIR="/app"
+APP_ROOT="${APP_ROOT:-/app}"
+SRC_DIR="${APP_ROOT}/src"
+# Harbor mounts the solution at /solution (not /app/solution); resolve relative to this script.
+SOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-export PATH="/usr/local/cargo/bin:/root/.cargo/bin:${PATH:-}"
+echo "[oracle] repairing periodctl and host control plane"
 
-command -v cargo >/dev/null 2>&1 || {
-  echo "error: cargo not found" >&2
-  exit 1
-}
+# Copy corrected files to the target directory
+cp "${SOL_DIR}/periodctl" "${SRC_DIR}/periodctl"
+cp "${SOL_DIR}/reconciler.py" "${SRC_DIR}/reconciler.py"
+cp "${SOL_DIR}/ledger.py" "${SRC_DIR}/ledger.py"
 
-test -d "${ORACLE_SRC}/src" || {
-  echo "error: Oracle source missing" >&2
-  exit 1
-}
+chmod 0755 "${SRC_DIR}/periodctl"
+chmod 0644 "${SRC_DIR}/reconciler.py"
+chmod 0644 "${SRC_DIR}/ledger.py"
 
-test -f "${ORACLE_SRC}/Cargo.toml" || {
-  echo "error: Oracle Cargo.toml missing" >&2
-  exit 1
-}
+echo "[oracle] restoring period-close host layout"
+mkdir -p /etc/period-close /var/lib/period-close
+cp "${APP_ROOT}/data/window.json" /etc/period-close/window.json
+chmod 0644 /etc/period-close/window.json
+chmod 0755 /var/lib/period-close
+ln -sfn "${SRC_DIR}/periodctl" /usr/local/sbin/periodctl
 
-test -f "${ORACLE_SRC}/Cargo.lock" || {
-  echo "error: Oracle Cargo.lock missing" >&2
-  exit 1
-}
+if [[ -f /etc/systemd/system/period-close.service ]]; then
+    chmod 0644 /etc/systemd/system/period-close.service
+fi
 
-rm -rf "$APP_DIR/src"
-rm -rf "$APP_DIR/target"
-
-cp -a "${ORACLE_SRC}/src" "$APP_DIR/src"
-cp "${ORACLE_SRC}/Cargo.toml" "$APP_DIR/Cargo.toml"
-cp "${ORACLE_SRC}/Cargo.lock" "$APP_DIR/Cargo.lock"
-
-test -d "$APP_DIR/vendor" || {
-  echo "error: image-provided vendor directory missing" >&2
-  exit 1
-}
-
-test -f "$APP_DIR/.cargo/config.toml" || {
-  echo "error: image-provided Cargo configuration missing" >&2
-  exit 1
-}
-
-mkdir -p /app/output
-rm -f /app/output/report.json
-rm -f /app/output/report.json.tmp
-
-cd /app
-cargo build --release --locked --offline
-
-BIN="/app/target/release/msrv-lock-recovery-planner"
-test -x "$BIN" || {
-  echo "error: Oracle binary missing: $BIN" >&2
-  exit 1
-}
-
-"$BIN" --data-dir /app/data --output /app/output/report.json
-
-python3 - <<'PY'
-import json
-from pathlib import Path
-
-path = Path("/app/output/report.json")
-assert path.is_file() and path.stat().st_size > 0
-data = json.loads(path.read_text(encoding="utf-8"))
-required = [
-    "request_rows",
-    "package_selection_rows",
-    "patch_rows",
-    "source_replacement_rows",
-    "lock_entry_rows",
-    "invalidation_rows",
-    "conflict_rows",
-    "summary",
-]
-assert list(data.keys()) == required, list(data.keys())
-assert data["summary"]["request_count"] >= 1
-print("oracle smoke ok")
-PY
+echo "[oracle] solution applied successfully"
