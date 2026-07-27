@@ -1,4 +1,0 @@
-# Vendor patch: basalt stays on the 1.x line.
-project rampart
-require gabbro ^4.2.0
-override basalt 1.9.0

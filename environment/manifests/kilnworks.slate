@@ -1,5 +1,0 @@
-# Feature flags on two direct requirements.
-project kilnworks
-require dolomite ^3.0.0
-require chert ^1.5.0 +trace
-require quartz ^2.2.0 +simd

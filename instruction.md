@@ -1,27 +1,26 @@
-/app holds slate, the read-only front end for the package registry a build team keeps offline as JSON files. It can already print a package with its releases and edges, list versions newest first, echo back a parsed project manifest, and total up the registry. Planning a build is the one thing it cannot do: nothing here walks the dependency edges and turns a manifest into a lockfile of pinned versions, so every project is assembled by hand and no artifact says what went into it.
+A classification tree is a model fitted from labelled examples, and this
+project reports what one learns from a training table with unrecorded
+measurements. The hard part is statistical: a gap is not noise, so an example
+missing the measurement a decision rests on still carries class information and
+must be classified, not discarded. So beside each primary split the model learns
+a ranked list of substitutes over the remaining measurements, each with an
+association saying how faithfully it stands in.
 
-Your job is to give slate a resolve subcommand that produces those artifacts.
+Four things are reported. First, for every measurement, how much impurity it
+removed in its own right and how much it earned standing in for others, which
+together say how far the model leans on it. Second, for every held out example,
+the class predicted, how many training examples support it, the impurity and
+class distribution of the group it lands in, and how strong the weakest
+evidence used to place it was. Third, every split the fit makes, with the
+measurement it uses and the impurity it removes. Fourth, the ranked
+substitutes each split kept, with the association of each.
 
-Running slate resolve with a project name picks one version per package for that project — honouring the ranges every selected release declares, the features the manifest switches on, the pins it forces and its policy on withdrawn releases — then publishes the lockfile /app/out/<project>.lock.json together with the search walk in /app/out/staging/<project>.trail.json. Where no assignment exists it writes /app/out/<project>.conflict.json and exits 3 instead.
+Every reported quantity is an exact rational in lowest terms with a positive
+denominator. A query names the training table, the held out table, and the
+limits the fit obeys; a malformed query yields a single refusal line.
 
-Running slate resolve --all does the same for every project in /app/manifests and finishes by writing the ladder over the whole library, /app/out/index.json.
-
-Four contracts decide what counts as correct:
-
-/app/docs/resolution-algorithm.md is the one that matters most — which package the search picks next, in which order candidates are tried, how a retreat is counted, and which artifacts each outcome leaves behind.
-
-/app/docs/constraint-grammar.md covers version ordering, the five range forms, and the rule that keeps release candidates out of sight.
-
-/app/docs/registry-format.md covers the package files and the manifest directives, and what makes either one unusable.
-
-/app/docs/digest-spec.md gives the tab-separated payload behind every fingerprint field, byte for byte.
-
-Flags, exit codes and the shape of each artifact are in /app/docs/slate-cli.md and /app/docs/lock-schema.json.
-
-Resolution has to be reproducible: the same inputs give the same bytes on every run. Two assignments can both honour every range without both being the answer, and an artifact only counts when the fingerprint it carries agrees with what that same artifact publishes.
-
-Code sits in /app/cmd and /app/internal. The module compiles with make all from /app, and packages you add under /app/internal need no Makefile edit. Leave a working /app/bin/slate behind.
-
-The browsing commands — show, versions, manifest, audit, version — must answer exactly as they answer now, the directory overrides must keep working everywhere, and nothing under /app/registry or /app/manifests may change.
-
-Nothing in this image reaches the network. Finish by running slate resolve --all, so /app/out carries a lock or a conflict for every project plus the ladder.
+The learning contract and the grammars sit under /app/docs, with ten worked
+queries under /app/examples. Every part of the fit must be computed by the code
+you write here, never obtained from an existing learning implementation. The
+model is written under /app/src, and fitting a large table has to stay under
+1200000000 callgrind instruction reads.

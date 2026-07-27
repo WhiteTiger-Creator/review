@@ -1,886 +1,795 @@
-"""Acceptance tests for the `slate resolve` planner.
-
-Grading stands on four legs: expected selections for the shipped project
-library, invariants each artifact must satisfy on its own (every digest is
-recomputed from the payload the planner published, and cross-checked against the
-row the ladder carries), a holdout registry that never ships in the agent image,
-and edits to the inputs that must move the answer. A planner that recites the
-shipped projects, or that hashes the serialised artifact instead of the payload,
-fails at least one leg.
-"""
-
-import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
-from pathlib import Path
+import sys
+from fractions import Fraction
 
 import pytest
 
-BIN = "/app/bin/slate"
-APP_OUT = Path("/app/out")
-REGISTRY = Path("/app/registry")
-MANIFESTS = Path("/app/manifests")
+TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, TESTS_DIR)
+import cartref as R
 
-HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
-PROTOCOL = "slate/1"
+APP = os.environ.get("QUILL_APP", "/app")
+DATA_DIR = os.path.join(APP, "data")
+SRC_DIR = os.path.join(APP, "src")
+EX_DIR = os.path.join(APP, "examples")
+FIT_DIR = os.environ.get("QUILL_FIT", "/tmp/quill_cart_fit")
+BINARY = os.path.join(FIT_DIR, "cart")
+BATTERY = os.path.join(TESTS_DIR, "battery")
+HIDDEN = os.path.join(TESTS_DIR, "hidden")
+HIDDEN_DATA = os.path.join(HIDDEN, "data")
 
-# Expected resolutions for the shipped projects, worked out from the contracts
-# under /app/docs. Keys are the lock keys the schema names.
-EXPECTED = {
-    "brackenfield": {
-        "packages": {
-            "basalt": "2.2.4",
-            "chert": "1.3.0",
-            "dolomite": "2.8.0",
-            "gabbro": "4.1.1",
-            "marl": "2.1.0",
-            "quartz": "2.2.0",
-            "schist": "5.0.1",
-        },
-        "waived": ["schist@5.0.1 requires dolomite ^3.0.0"],
-        "stats": {"assignments": 7, "backtracks": 1},
-        "allow_yanked": False,
-    },
-    "crucible": {
-        "packages": {"flint": "1.0.0-rc.2", "gneiss": "1.1.0"},
-        "waived": [],
-        "stats": {"assignments": 2, "backtracks": 0},
-        "allow_yanked": False,
-    },
-    "driftworks": {
-        "packages": {"gneiss": "1.2.0"},
-        "waived": [],
-        "stats": {"assignments": 1, "backtracks": 0},
-        "allow_yanked": True,
-    },
-    "foundry": {
-        "packages": {
-            "basalt": "2.3.0",
-            "chert": "1.5.0",
-            "dolomite": "3.1.0",
-            "flint": "0.9.3",
-            "gabbro": "4.2.0",
-            "gneiss": "1.1.0",
-            "marl": "2.1.0",
-            "quartz": "2.2.0",
-            "schist": "5.0.1",
-        },
-        "waived": [],
-        "stats": {"assignments": 9, "backtracks": 0},
-        "allow_yanked": False,
-    },
-    "kilnworks": {
-        "packages": {
-            "basalt": "2.3.0",
-            "chert": "1.5.0",
-            "dolomite": "3.1.0",
-            "quartz": "2.2.0",
-            "tuff": "0.4.3",
-        },
-        "waived": [],
-        "stats": {"assignments": 5, "backtracks": 0},
-        "allow_yanked": False,
-    },
-    "rampart": {
-        "packages": {
-            "basalt": "1.9.0",
-            "gabbro": "4.2.0",
-            "marl": "2.1.0",
-            "quartz": "2.2.0",
-        },
-        "waived": ["gabbro@4.2.0 requires basalt ^2.3.0"],
-        "stats": {"assignments": 4, "backtracks": 0},
-        "allow_yanked": False,
-    },
-    "slagworks": {
-        "packages": {"gabbro": "4.0.0", "marl": "1.8.2", "quartz": "1.9.4"},
-        "waived": [],
-        "stats": {"assignments": 3, "backtracks": 2},
-        "allow_yanked": False,
-    },
-}
+LINE_RE = re.compile(
+    r"^\S+ (?:"
+    r"V \d+ P \d+/\d+ S \d+/\d+"
+    r"|Q \d+ C \d+ N \d+ I \d+/\d+ E \d+/\d+ D \d+/\d+(?: \d+/\d+)*"
+    r"|G \d+ R \d+ V \d+ T -?\d+ D [FV] A \d+/\d+"
+    r"|D \d+ V \d+ T -?\d+ N \d+ G \d+/\d+"
+    r"|REJECT"
+    r")$"
+)
 
-# Package, chosen version, and the candidate list the picker was iterating.
-WALKS = {
-    "brackenfield": [
-        ("schist", "5.0.1", ["5.0.1"]),
-        ("dolomite", "2.8.0", ["2.8.0"]),
-        ("chert", "1.3.0", ["1.3.0"]),
-        ("basalt", "2.2.4", ["2.2.4"]),
-        ("gabbro", "4.1.1", ["4.2.0", "4.1.1"]),
-        ("marl", "2.1.0", ["2.1.0", "2.0.3"]),
-        ("quartz", "2.2.0", ["2.2.0", "2.1.3"]),
-    ],
-    "crucible": [
-        ("flint", "1.0.0-rc.2", ["1.0.0-rc.2", "1.0.0-rc.1"]),
-        ("gneiss", "1.1.0", ["1.1.0"]),
-    ],
-    "foundry": [
-        ("schist", "5.0.1", ["5.0.1"]),
-        ("dolomite", "3.1.0", ["3.1.0", "3.0.2"]),
-        ("chert", "1.5.0", ["1.5.0"]),
-        ("basalt", "2.3.0", ["2.3.0", "2.2.4"]),
-        ("flint", "0.9.3", ["0.9.3", "0.9.2"]),
-        ("gabbro", "4.2.0", ["4.2.0", "4.1.1"]),
-        ("gneiss", "1.1.0", ["1.1.0", "1.0.4"]),
-        ("marl", "2.1.0", ["2.1.0", "2.0.3"]),
-        ("quartz", "2.2.0", ["2.2.0", "2.1.3"]),
-    ],
-    "kilnworks": [
-        ("chert", "1.5.0", ["1.5.0"]),
-        ("quartz", "2.2.0", ["2.2.0"]),
-        ("basalt", "2.3.0", ["2.3.0", "2.2.4"]),
-        ("dolomite", "3.1.0", ["3.1.0", "3.0.2"]),
-        ("tuff", "0.4.3", ["0.4.3", "0.4.1"]),
-    ],
-    "rampart": [
-        ("gabbro", "4.2.0", ["4.2.0"]),
-        ("basalt", "1.9.0", ["1.9.0"]),
-        ("marl", "2.1.0", ["2.1.0", "2.0.3"]),
-        ("quartz", "2.2.0", ["2.2.0", "2.1.3"]),
-    ],
-    "slagworks": [
-        ("marl", "1.8.2", ["1.8.2"]),
-        ("quartz", "1.9.4", ["1.9.4"]),
-        ("gabbro", "4.0.0", ["4.2.0", "4.1.1", "4.0.0"]),
-    ],
-}
+FORBIDDEN = ("mlpack", "dlib", "opencv2/ml", "shark/", "xgboost", "lightgbm")
 
-DEAD_END = "emberyard"
-EMBERYARD_DEADLOCK = {
-    "package": "quartz",
-    "constraints": [
-        {"requirer": "marl@1.8.2", "range": "~1.9.0"},
-        {"requirer": "root", "range": "^2.2.0"},
-    ],
-    "backtracks": 7,
-}
 
-# Holdout library: these packages and projects are not in the agent image.
-HOLDOUT = {
-    "dunemoor": {
-        "packages": {"dunite": "0.4.9"},
-        "stats": {"assignments": 1, "backtracks": 0},
-    },
-    "harborline": {
-        "packages": {
-            "amberite": "3.0.0",
-            "birchwood": "1.1.0",
-            "cobalt": "1.3.0",
-            "dunite": "0.5.4",
-        },
-        "stats": {"assignments": 4, "backtracks": 0},
-    },
-    "quarryhead": {
-        "packages": {"cobalt": "1.3.0", "elmstone": "2.0.0-rc.3"},
-        "stats": {"assignments": 2, "backtracks": 0},
-    },
-    "saltmarsh": {
-        "packages": {"amberite": "2.4.1", "birchwood": "1.0.2", "cobalt": "1.1.4"},
-        "stats": {"assignments": 3, "backtracks": 2},
-        "steps": [
-            ("birchwood", "1.0.2", ["1.1.0", "1.0.2"]),
-            ("amberite", "2.4.1", ["2.4.1"]),
-            ("cobalt", "1.1.4", ["1.1.4", "1.1.0"]),
+def _read_lines(path):
+    with open(path, encoding="utf-8") as fh:
+        return [ln.rstrip("\n") for ln in fh if ln.strip() != ""]
+
+
+def _read_json(path):
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _group(lines):
+    groups = {}
+    for ln in lines:
+        groups.setdefault(ln.split(" ", 1)[0], []).append(ln)
+    return groups
+
+
+def _compile():
+    os.makedirs(FIT_DIR, exist_ok=True)
+    return subprocess.run(
+        [
+            "g++",
+            "-std=c++17",
+            "-O2",
+            "-o",
+            BINARY,
+            os.path.join(SRC_DIR, "main.cpp"),
         ],
-    },
-    "tidefall": {
-        "packages": {"amberite": "3.0.0", "birchwood": "1.1.0", "cobalt": "1.1.0"},
-        "stats": {"assignments": 3, "backtracks": 0},
-        "waived": ["amberite@3.0.0 requires cobalt ^1.2.0"],
-    },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _run(data_dir, queries_path):
+    proc = subprocess.run(
+        [BINARY, data_dir, queries_path],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError("agent run failed: " + proc.stderr[-2000:])
+    return [ln for ln in proc.stdout.split("\n") if ln.strip() != ""]
+
+
+def _chunks(seq, count):
+    size = max(1, (len(seq) + count - 1) // count)
+    return [seq[i : i + size] for i in range(0, len(seq), size)]
+
+
+COMPILE = _compile()
+FIT_OK = COMPILE.returncode == 0 and os.path.exists(BINARY)
+
+TABLES = R.read_tables(DATA_DIR)
+HTABLES = R.read_tables(HIDDEN_DATA)
+
+QUERY_LINES = _read_lines(os.path.join(BATTERY, "queries.txt"))
+GOLDEN_LINES = _read_lines(os.path.join(BATTERY, "expected.txt"))
+FAMILY = _read_json(os.path.join(BATTERY, "families.json"))
+
+HQUERY_LINES = _read_lines(os.path.join(HIDDEN, "queries.txt"))
+HGOLDEN_LINES = _read_lines(os.path.join(HIDDEN, "expected.txt"))
+HFAMILY = _read_json(os.path.join(HIDDEN, "families.json"))
+
+REF_LINES = R.process(TABLES, QUERY_LINES)
+REF_BY_QID = _group(REF_LINES)
+HREF_LINES = R.process(HTABLES, HQUERY_LINES)
+HREF_BY_QID = _group(HREF_LINES)
+
+QUERY_BY_QID = {ln.split()[0]: ln.split() for ln in QUERY_LINES}
+
+if FIT_OK:
+    AGENT_LINES = _run(DATA_DIR, os.path.join(BATTERY, "queries.txt"))
+    HAGENT_LINES = _run(HIDDEN_DATA, os.path.join(HIDDEN, "queries.txt"))
+else:
+    AGENT_LINES = []
+    HAGENT_LINES = []
+AGENT_BY_QID = _group(AGENT_LINES)
+HAGENT_BY_QID = _group(HAGENT_LINES)
+
+
+def _qids(family, table):
+    return sorted(q for q, f in table.items() if f == family)
+
+
+BULK_QIDS = _qids("bulk", FAMILY)
+POOL_QIDS = _qids("nodebase", FAMILY)
+READING_QIDS = _qids("fwdonly", FAMILY)
+STRICT_QIDS = _qids("nonneg", FAMILY)
+DEFAULT_QIDS = _qids("leftfall", FAMILY)
+REJECT_QIDS = _qids("reject", FAMILY)
+HIDDEN_QIDS = sorted(HFAMILY)
+
+DECOY = {
+    v: _group(R.process(TABLES, QUERY_LINES, v)) for v in R.VARIANTS if v != "pinned"
 }
 
-HOLDOUT_DEADLOCK = {
-    "project": "northreach",
-    "package": "cobalt",
-    "constraints": [
-        {"requirer": "elmstone@1.6.0", "range": "~1.1.0"},
-        {"requirer": "root", "range": "^1.3.0"},
+
+def _assert_group(qids, agent_map, ref_map):
+    for qid in qids:
+        assert agent_map.get(qid) == ref_map.get(qid), qid
+
+
+def test_model_sources_are_usable():
+    """The agent source compiles cleanly."""
+    assert FIT_OK, COMPILE.stderr[-2000:]
+
+
+def test_reference_matches_committed_golden():
+    """Independent rational recomputation equals the committed visible battery."""
+    assert REF_LINES == GOLDEN_LINES
+
+
+def test_hidden_reference_matches_committed_golden():
+    """Independent rational recomputation equals the committed hidden battery."""
+    assert HREF_LINES == HGOLDEN_LINES
+
+
+def test_visible_line_count():
+    """The agent emits exactly the expected number of visible battery lines."""
+    assert len(AGENT_LINES) == len(REF_LINES)
+
+
+def test_hidden_line_count():
+    """The agent emits exactly the expected number of hidden battery lines."""
+    assert len(HAGENT_LINES) == len(HREF_LINES)
+
+
+def test_every_visible_query_present():
+    """The agent produces an output block for every visible query id."""
+    assert set(AGENT_BY_QID) == set(REF_BY_QID)
+
+
+def test_every_hidden_query_present():
+    """The agent produces an output block for every hidden query id."""
+    assert set(HAGENT_BY_QID) == set(HREF_BY_QID)
+
+
+@pytest.mark.parametrize("idx", range(20))
+def test_bulk_slice_matches(idx):
+    """The agent reproduces a slice of the ordinary bulk battery exactly."""
+    chunks = _chunks(BULK_QIDS, 20)
+    if idx >= len(chunks):
+        pytest.skip("no chunk")
+    _assert_group(chunks[idx], AGENT_BY_QID, REF_BY_QID)
+
+
+@pytest.mark.parametrize("idx", range(3))
+def test_association_pool_slice_matches(idx):
+    """The agent reproduces tables with heavy gaps in the deciding feature."""
+    chunks = _chunks(POOL_QIDS, 3)
+    if idx >= len(chunks):
+        pytest.skip("no chunk")
+    _assert_group(chunks[idx], AGENT_BY_QID, REF_BY_QID)
+
+
+@pytest.mark.parametrize("idx", range(3))
+def test_reversed_reading_slice_matches(idx):
+    """The agent reproduces tables where a reversed stand-in reading wins."""
+    chunks = _chunks(READING_QIDS, 3)
+    if idx >= len(chunks):
+        pytest.skip("no chunk")
+    _assert_group(chunks[idx], AGENT_BY_QID, REF_BY_QID)
+
+
+@pytest.mark.parametrize("idx", range(3))
+def test_zero_association_slice_matches(idx):
+    """The agent reproduces tables where a stand-in only ties the default branch."""
+    chunks = _chunks(STRICT_QIDS, 3)
+    if idx >= len(chunks):
+        pytest.skip("no chunk")
+    _assert_group(chunks[idx], AGENT_BY_QID, REF_BY_QID)
+
+
+@pytest.mark.parametrize("idx", range(3))
+def test_default_branch_slice_matches(idx):
+    """The agent reproduces tables whose rows fall through to the default branch."""
+    chunks = _chunks(DEFAULT_QIDS, 3)
+    if idx >= len(chunks):
+        pytest.skip("no chunk")
+    _assert_group(chunks[idx], AGENT_BY_QID, REF_BY_QID)
+
+
+def test_refused_queries_match():
+    """The agent refuses exactly the queries the contract refuses."""
+    _assert_group(REJECT_QIDS, AGENT_BY_QID, REF_BY_QID)
+
+
+@pytest.mark.parametrize("idx", range(8))
+def test_hidden_slice_matches(idx):
+    """The agent generalizes to a held back battery over unseen tables."""
+    chunks = _chunks(HIDDEN_QIDS, 8)
+    if idx >= len(chunks):
+        pytest.skip("no chunk")
+    _assert_group(chunks[idx], HAGENT_BY_QID, HREF_BY_QID)
+
+
+def test_line_schema_is_canonical():
+    """Every emitted line matches the canonical output grammar."""
+    bad = [ln for ln in AGENT_LINES + HAGENT_LINES if not LINE_RE.match(ln)]
+    assert bad[:5] == []
+
+
+def test_fractions_are_in_lowest_terms():
+    """Every reported quantity is a reduced fraction with a positive denominator."""
+    bad = []
+    for ln in AGENT_LINES:
+        parts = ln.split()
+        if parts[1] == "V":
+            tokens = [parts[4], parts[6]]
+        elif parts[1] == "Q":
+            tokens = [parts[8], parts[10], *parts[12:]]
+        else:
+            continue
+        for token in tokens:
+            num, den = token.split("/")
+            value = Fraction(int(num), int(den))
+            if int(den) <= 0 or f"{value.numerator}/{value.denominator}" != token:
+                bad.append(ln)
+    assert bad[:5] == []
+
+
+def test_one_summary_line_per_feature():
+    """Each query reports one feature summary per column, in increasing order."""
+    bad = []
+    for qid, lines in AGENT_BY_QID.items():
+        query = QUERY_BY_QID[qid]
+        if len(query) != 5 or query[1] not in TABLES or lines == [f"{qid} REJECT"]:
+            continue
+        seen = [int(ln.split()[2]) for ln in lines if ln.split()[1] == "V"]
+        if seen != list(range(len(TABLES[query[1]][0][0]))):
+            bad.append(qid)
+    assert bad[:5] == []
+
+
+def test_one_report_line_per_held_out_example():
+    """Each held out example gets exactly one report line, in row order."""
+    bad = []
+    for qid, lines in AGENT_BY_QID.items():
+        query = QUERY_BY_QID[qid]
+        if len(query) != 5 or query[2] not in TABLES or lines == [f"{qid} REJECT"]:
+            continue
+        seen = [int(ln.split()[2]) for ln in lines if ln.split()[1] == "Q"]
+        if seen != list(range(len(TABLES[query[2]]))):
+            bad.append(qid)
+    assert bad[:5] == []
+
+
+def test_class_distribution_sums_to_one():
+    """The reported class distribution of every terminal group sums to one."""
+    bad = []
+    for ln in AGENT_LINES:
+        parts = ln.split()
+        if parts[1] != "Q":
+            continue
+        total = sum(
+            Fraction(int(t.split("/")[0]), int(t.split("/")[1])) for t in parts[12:]
+        )
+        if total != 1:
+            bad.append(ln)
+    assert bad[:5] == []
+
+
+def test_predicted_class_is_a_plurality_of_its_group():
+    """The predicted class holds the largest share of its terminal group."""
+    bad = []
+    for ln in AGENT_LINES:
+        parts = ln.split()
+        if parts[1] != "Q":
+            continue
+        shares = [
+            Fraction(int(t.split("/")[0]), int(t.split("/")[1])) for t in parts[12:]
+        ]
+        predicted = int(parts[4])
+        if predicted >= len(shares) or shares[predicted] != max(shares):
+            bad.append(ln)
+    assert bad[:5] == []
+
+
+def test_lowest_class_wins_a_share_tie():
+    """When two classes share the largest slice the lower numbered class is predicted."""
+    bad = []
+    for ln in AGENT_LINES:
+        parts = ln.split()
+        if parts[1] != "Q":
+            continue
+        shares = [
+            Fraction(int(t.split("/")[0]), int(t.split("/")[1])) for t in parts[12:]
+        ]
+        if int(parts[4]) != shares.index(max(shares)):
+            bad.append(ln)
+    assert bad[:5] == []
+
+
+def test_impurity_matches_the_reported_distribution():
+    """The reported impurity equals one minus the summed squared class shares."""
+    bad = []
+    for ln in AGENT_LINES:
+        parts = ln.split()
+        if parts[1] != "Q":
+            continue
+        shares = [
+            Fraction(int(t.split("/")[0]), int(t.split("/")[1])) for t in parts[12:]
+        ]
+        want = 1 - sum(s * s for s in shares)
+        got = Fraction(int(parts[8].split("/")[0]), int(parts[8].split("/")[1]))
+        if got != want:
+            bad.append(ln)
+    assert bad[:5] == []
+
+
+def test_support_count_is_consistent_with_the_distribution():
+    """Every class share is an exact multiple of one over the reported support count."""
+    bad = []
+    for ln in AGENT_LINES:
+        parts = ln.split()
+        if parts[1] != "Q":
+            continue
+        support = int(parts[6])
+        if support < 1:
+            bad.append(ln)
+            continue
+        for token in parts[12:]:
+            share = Fraction(int(token.split("/")[0]), int(token.split("/")[1]))
+            if (share * support).denominator != 1:
+                bad.append(ln)
+    assert bad[:5] == []
+
+
+def test_evidence_stays_within_its_range():
+    """Reported evidence is never below zero nor above one."""
+    bad = []
+    for ln in AGENT_LINES:
+        parts = ln.split()
+        if parts[1] != "Q":
+            continue
+        value = Fraction(int(parts[10].split("/")[0]), int(parts[10].split("/")[1]))
+        if value < 0 or value > 1:
+            bad.append(ln)
+    assert bad[:5] == []
+
+
+def test_complete_examples_report_full_evidence():
+    """An example with every measurement recorded is placed on full evidence."""
+    bad = []
+    for qid, lines in AGENT_BY_QID.items():
+        query = QUERY_BY_QID[qid]
+        if len(query) != 5 or query[2] not in TABLES:
+            continue
+        probes = TABLES[query[2]]
+        for ln in lines:
+            parts = ln.split()
+            if parts[1] != "Q":
+                continue
+            row = probes[int(parts[2])][0]
+            if all(v != -1 for v in row) and parts[10] != "1/1":
+                bad.append(ln)
+    assert bad[:5] == []
+
+
+def test_importance_is_never_negative():
+    """No feature reports a negative contribution in either role."""
+    bad = []
+    for ln in AGENT_LINES:
+        parts = ln.split()
+        if parts[1] != "V":
+            continue
+        for token in (parts[4], parts[6]):
+            if Fraction(int(token.split("/")[0]), int(token.split("/")[1])) < 0:
+                bad.append(ln)
+    assert bad[:5] == []
+
+
+def test_some_feature_carries_primary_importance():
+    """Any query whose model splits at least once credits a primary contributor."""
+    bad = []
+    for qid, lines in AGENT_BY_QID.items():
+        summaries = [ln for ln in lines if ln.split()[1] == "V"]
+        reports = [ln for ln in lines if ln.split()[1] == "Q"]
+        if not summaries or not reports:
+            continue
+        distinct = {ln.split()[4] for ln in reports}
+        totals = [
+            Fraction(int(ln.split()[4].split("/")[0]), int(ln.split()[4].split("/")[1]))
+            for ln in summaries
+        ]
+        if len(distinct) > 1 and sum(totals) == 0:
+            bad.append(qid)
+    assert bad[:5] == []
+
+
+def test_visible_run_is_deterministic():
+    """Re-running the agent on the visible battery yields identical output."""
+    assert _run(DATA_DIR, os.path.join(BATTERY, "queries.txt")) == AGENT_LINES
+
+
+def test_hidden_run_is_deterministic():
+    """Re-running the agent on the hidden battery yields identical output."""
+    assert _run(HIDDEN_DATA, os.path.join(HIDDEN, "queries.txt")) == HAGENT_LINES
+
+
+def test_worked_examples_are_reproduced():
+    """The agent reproduces every shipped worked example byte for byte."""
+    bad = []
+    for name in sorted(os.listdir(EX_DIR)):
+        if not name.endswith(".in"):
+            continue
+        got = _run(DATA_DIR, os.path.join(EX_DIR, name))
+        want = _read_lines(os.path.join(EX_DIR, name[:-3] + ".out"))
+        if got != want:
+            bad.append(name)
+    assert bad == []
+
+
+def test_no_forbidden_ml_dependency():
+    """The agent tree includes no bundled machine-learning library."""
+    blob = ""
+    for root, _dirs, files in os.walk(SRC_DIR):
+        for name in sorted(files):
+            with open(
+                os.path.join(root, name), encoding="utf-8", errors="ignore"
+            ) as fh:
+                blob += fh.read().lower()
+    assert [t for t in FORBIDDEN if t in blob] == []
+
+
+@pytest.mark.parametrize(
+    ("variant", "family"),
+    [
+        ("nodebase", "nodebase"),
+        ("nodebase", "nonneg"),
+        ("fwdonly", "fwdonly"),
+        ("fwdonly", "nodebase"),
+        ("nonneg", "nonneg"),
+        ("leftfall", "leftfall"),
     ],
-    "backtracks": 2,
-}
+)
+def test_plausible_variant_fails_its_trap_family(variant, family):
+    """A plausible alternative convention is wrong on the family that traps it."""
+    qids = _qids(family, FAMILY)
+    wrong = [q for q in qids if DECOY[variant].get(q) != REF_BY_QID.get(q)]
+    assert wrong, (variant, family)
 
 
-# --- helpers -----------------------------------------------------------------
+def _reported(block):
+    return [ln for ln in block if ln.split()[1] not in ("G", "D")]
 
 
-def run_slate(*args):
-    return subprocess.run([BIN, *args], capture_output=True, text=True)
-
-
-def resolve_batch(out_dir, registry=None, manifests=None):
-    args = ["resolve", "--all", "--out", str(out_dir)]
-    if registry is not None:
-        args += ["--registry", str(registry)]
-    if manifests is not None:
-        args += ["--manifests", str(manifests)]
-    proc = run_slate(*args)
-    assert proc.returncode == 0, f"resolve --all failed: {proc.stderr.strip()}"
-    return proc
-
-
-def lock_at(out_dir, project):
-    return out_dir / (project + ".lock.json")
-
-
-def walk_at(out_dir, project):
-    return out_dir / "staging" / (project + ".trail.json")
-
-
-def deadlock_at(out_dir, project):
-    return out_dir / (project + ".conflict.json")
-
-
-def ladder_at(out_dir):
-    return out_dir / "index.json"
-
-
-def load(path):
-    assert path.is_file(), f"missing artifact {path}"
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def reference_fingerprint(payload_lines):
-    """sha256 over a payload, as /app/docs/digest-spec.md defines it."""
-    if not payload_lines:
-        return hashlib.sha256(b"").hexdigest()
-    payload = ("\n".join(payload_lines) + "\n").encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
-def reference_lock_payload(doc):
-    lines = [
-        "protocol\t" + PROTOCOL,
-        "project\t" + doc["project"],
-        "allow-yanked\t" + ("true" if doc["allow_yanked"] else "false"),
+@pytest.mark.parametrize("variant", sorted(DECOY))
+def test_plausible_variant_is_clean_on_bulk(variant):
+    """Every alternative convention agrees on the ordinary summary and per example rows."""
+    wrong = [
+        q
+        for q in BULK_QIDS
+        if _reported(DECOY[variant].get(q, [])) != _reported(REF_BY_QID.get(q, []))
     ]
-    for entry in doc["packages"]:
-        lines.append(
-            "pkg\t%s\t%s\t%s\t%s"
-            % (
-                entry["name"],
-                entry["version"],
-                "true" if entry["yanked"] else "false",
-                ",".join(entry["features"]),
-            )
-        )
-    for waiver in doc["waived"]:
-        lines.append("waive\t" + waiver)
-    return lines
+    assert wrong == []
 
 
-def reference_walk_payload(doc):
-    lines = ["protocol\t" + PROTOCOL, "trail\t" + doc["project"]]
-    for entry in doc["steps"]:
-        lines.append(
-            "step\t%d\t%s\t%s\t%s"
-            % (
-                entry["step"],
-                entry["package"],
-                entry["version"],
-                ",".join(entry["candidates"]),
-            )
-        )
-    return lines
-
-
-def reference_deadlock_payload(doc):
-    lines = [
-        "protocol\t" + PROTOCOL,
-        "conflict\t%s\t%s" % (doc["project"], doc["package"]),
+@pytest.mark.parametrize("variant", sorted(DECOY))
+def test_plausible_variant_is_caught_by_the_stand_in_report(variant):
+    """Reporting the ranked stand-ins exposes every alternative convention."""
+    wrong = [
+        q
+        for q in sorted(DECOY[variant])
+        if [ln for ln in DECOY[variant][q] if ln.split()[1] == "G"]
+        != [ln for ln in REF_BY_QID.get(q, []) if ln.split()[1] == "G"]
     ]
-    for item in doc["constraints"]:
-        lines.append("constraint\t%s\t%s" % (item["requirer"], item["range"]))
-    return lines
+    assert wrong
 
 
-def reference_ladder_payload(doc):
-    lines = ["protocol\t" + PROTOCOL, "index\t%d" % len(doc["projects"])]
-    for entry in doc["projects"]:
-        lines.append(
-            "project\t%s\t%s\t%d\t%d\t%s"
-            % (
-                entry["project"],
-                entry["status"],
-                entry["packages"],
-                entry["backtracks"],
-                entry["digest"],
-            )
-        )
-    return lines
+@pytest.mark.parametrize("variant", sorted(DECOY))
+def test_plausible_variant_scores_zero_overall(variant):
+    """Every plausible alternative convention fails the all-pass battery."""
+    flat = [ln for qid in sorted(DECOY[variant]) for ln in DECOY[variant][qid]]
+    assert flat != REF_LINES
 
 
-def selection_of(doc):
-    return {entry["name"]: entry["version"] for entry in doc["packages"]}
+def test_refusal_token_is_the_only_output():
+    """A refused query emits its refusal token and nothing else."""
+    for qid in REJECT_QIDS:
+        assert AGENT_BY_QID.get(qid) == [f"{qid} REJECT"]
 
 
-def walk_of(doc):
-    return [(s["package"], s["version"], s["candidates"]) for s in doc["steps"]]
+def test_terminal_support_is_within_the_training_table():
+    """Every terminal group holds between one row and the whole training table."""
+    bad = []
+    for qid, lines in AGENT_BY_QID.items():
+        query = QUERY_BY_QID[qid]
+        if len(query) != 5 or query[1] not in TABLES:
+            continue
+        rows = len(TABLES[query[1]])
+        for ln in lines:
+            parts = ln.split()
+            if parts[1] == "Q" and not 1 <= int(parts[6]) <= rows:
+                bad.append(ln)
+    assert bad[:5] == []
 
 
-def copy_inputs(tmp_path):
-    registry = tmp_path / "registry"
-    manifests = tmp_path / "manifests"
-    shutil.copytree(REGISTRY, registry)
-    shutil.copytree(MANIFESTS, manifests)
-    return registry, manifests
+def test_battery_covers_enough_distinct_cases():
+    """The executed battery carries well over the required number of semantic cases."""
+    assert len(QUERY_LINES) + len(HQUERY_LINES) >= 60
+    assert len(set(FAMILY.values())) >= 5
 
 
-@pytest.fixture(scope="module")
-def published(tmp_path_factory):
-    """One batch run over the shipped projects, into a scratch directory."""
-    out = tmp_path_factory.mktemp("published")
-    resolve_batch(out)
-    return out
+def _stand_ins(lines):
+    return [ln.split() for ln in lines if ln.split()[1] == "G"]
 
 
-@pytest.fixture(scope="module")
-def holdout(tmp_path_factory):
-    """One batch run over the holdout library the agent image never carries."""
-    fixtures = Path(os.environ["TB3_SLATE_FIXTURES"])
-    out = tmp_path_factory.mktemp("holdout")
-    resolve_batch(out, registry=fixtures / "registry", manifests=fixtures / "manifests")
-    return out
+def test_stand_in_ranks_start_at_one_and_are_contiguous():
+    """Each node's stand-in ranks run one, two, three with no gaps."""
+    bad = []
+    for qid, lines in AGENT_BY_QID.items():
+        per_node = {}
+        for g in _stand_ins(lines):
+            per_node.setdefault(int(g[2]), []).append(int(g[4]))
+        for node, ranks in per_node.items():
+            if ranks != list(range(1, len(ranks) + 1)):
+                bad.append((qid, node))
+    assert bad[:5] == []
 
 
-# --- the tool that shipped still behaves ------------------------------------
+def test_stand_in_associations_are_ranked_downward():
+    """Within a node the associations never increase as the rank grows."""
+    bad = []
+    for qid, lines in AGENT_BY_QID.items():
+        per_node = {}
+        for g in _stand_ins(lines):
+            num, den = g[12].split("/")
+            per_node.setdefault(int(g[2]), []).append(Fraction(int(num), int(den)))
+        for node, scores in per_node.items():
+            if scores != sorted(scores, reverse=True):
+                bad.append((qid, node))
+    assert bad[:5] == []
 
 
-def test_cli_announces_the_resolver_protocol():
-    """The instruction keeps slate version and its four constant lines."""
-    proc = run_slate("version")
-    assert proc.returncode == 0, proc.stderr
-    lines = proc.stdout.strip().splitlines()
-    assert lines[0].startswith("slate ")
-    assert lines[1] == "resolver-protocol " + PROTOCOL
-    assert lines[2] == "digest sha256"
-    assert lines[3] == "lock-schema 1"
+def test_stand_in_association_is_strictly_positive():
+    """A stand-in that fails to beat the default branch is never reported."""
+    bad = []
+    for g in (g for lines in AGENT_BY_QID.values() for g in _stand_ins(lines)):
+        num, den = g[12].split("/")
+        if Fraction(int(num), int(den)) <= 0:
+            bad.append(" ".join(g))
+    assert bad[:5] == []
 
 
-def test_browsing_commands_answer_exactly_as_before():
-    """The instruction forbids disturbing show, versions and audit."""
-    listing = run_slate("versions", "basalt")
-    assert listing.returncode == 0, listing.stderr
-    assert listing.stdout == "2.3.1 yanked\n2.3.0\n2.2.4\n1.9.0\n"
-    detail = run_slate("show", "chert")
-    assert "  feature trace requires tuff ^0.4.0" in detail.stdout.splitlines()
+def test_a_node_lists_each_feature_at_most_once():
+    """A node never keeps two stand-ins built on the same measurement."""
+    bad = []
+    for qid, lines in AGENT_BY_QID.items():
+        seen = {}
+        for g in _stand_ins(lines):
+            key = (int(g[2]), int(g[6]))
+            if key in seen:
+                bad.append((qid, key))
+            seen[key] = True
+    assert bad[:5] == []
 
 
-def test_package_files_and_manifests_were_not_edited():
-    """The instruction pins the registry and manifest directories as shipped."""
-    totals = run_slate("audit")
-    assert totals.returncode == 0, totals.stderr
-    assert totals.stdout.strip() == "audit packages=10 releases=32 yanked=2"
-    assert sorted(p.stem for p in MANIFESTS.iterdir()) == sorted(
-        list(EXPECTED) + [DEAD_END]
+@pytest.mark.parametrize("idx", range(6))
+def test_stand_in_slice_matches(idx):
+    """The agent reproduces the ranked stand-ins of the visible battery."""
+    qids = sorted(REF_BY_QID)
+    chunks = _chunks(qids, 6)
+    if idx >= len(chunks):
+        pytest.skip("no chunk")
+    for qid in chunks[idx]:
+        got = [ln for ln in AGENT_BY_QID.get(qid, []) if ln.split()[1] == "G"]
+        want = [ln for ln in REF_BY_QID.get(qid, []) if ln.split()[1] == "G"]
+        assert got == want, qid
+
+
+@pytest.mark.parametrize("idx", range(4))
+def test_hidden_stand_in_slice_matches(idx):
+    """The agent generalizes the ranked stand-ins to unseen tables."""
+    qids = sorted(HREF_BY_QID)
+    chunks = _chunks(qids, 4)
+    if idx >= len(chunks):
+        pytest.skip("no chunk")
+    for qid in chunks[idx]:
+        got = [ln for ln in HAGENT_BY_QID.get(qid, []) if ln.split()[1] == "G"]
+        want = [ln for ln in HREF_BY_QID.get(qid, []) if ln.split()[1] == "G"]
+        assert got == want, qid
+
+
+def _splits(lines):
+    return [ln.split() for ln in lines if ln.split()[1] == "D"]
+
+
+def test_every_node_with_stand_ins_is_a_reported_split():
+    """A node that lists stand-ins must also report the split it makes."""
+    bad = []
+    for qid, lines in AGENT_BY_QID.items():
+        split_ids = {int(d[2]) for d in _splits(lines)}
+        stand_in_ids = {int(g[2]) for g in _stand_ins(lines)}
+        if not stand_in_ids <= split_ids:
+            bad.append(qid)
+    assert bad[:5] == []
+
+
+def test_split_sizes_shrink_down_the_tree():
+    """A node numbered later in its own subtree can never hold more rows than its root."""
+    bad = []
+    for qid, lines in AGENT_BY_QID.items():
+        rows = _splits(lines)
+        if not rows:
+            continue
+        root = min(int(d[2]) for d in rows)
+        top = next(int(d[8]) for d in rows if int(d[2]) == root)
+        if any(int(d[8]) > top for d in rows):
+            bad.append(qid)
+    assert bad[:5] == []
+
+
+def test_split_gain_is_strictly_positive():
+    """A split is only made when it removes impurity, so every reported gain exceeds zero."""
+    bad = []
+    for d in (d for lines in AGENT_BY_QID.values() for d in _splits(lines)):
+        num, den = d[10].split("/")
+        if Fraction(int(num), int(den)) <= 0:
+            bad.append(" ".join(d))
+    assert bad[:5] == []
+
+
+@pytest.mark.parametrize("idx", range(6))
+def test_split_slice_matches(idx):
+    """The agent reproduces every split the fit makes over the visible battery."""
+    qids = sorted(REF_BY_QID)
+    chunks = _chunks(qids, 6)
+    if idx >= len(chunks):
+        pytest.skip("no chunk")
+    for qid in chunks[idx]:
+        got = [ln for ln in AGENT_BY_QID.get(qid, []) if ln.split()[1] == "D"]
+        want = [ln for ln in REF_BY_QID.get(qid, []) if ln.split()[1] == "D"]
+        assert got == want, qid
+
+
+@pytest.mark.parametrize("idx", range(4))
+def test_hidden_split_slice_matches(idx):
+    """The agent generalizes its splits to unseen tables."""
+    qids = sorted(HREF_BY_QID)
+    chunks = _chunks(qids, 4)
+    if idx >= len(chunks):
+        pytest.skip("no chunk")
+    for qid in chunks[idx]:
+        got = [ln for ln in HAGENT_BY_QID.get(qid, []) if ln.split()[1] == "D"]
+        want = [ln for ln in HREF_BY_QID.get(qid, []) if ln.split()[1] == "D"]
+        assert got == want, qid
+
+
+BUDGET_IR = 1_200_000_000
+REFERENCE_DIR = "/tests/references"
+
+
+def _budget_workload(root):
+    """Deterministically write the fixed workload the instruction budget is set on."""
+    import random
+
+    rnd = random.Random(11)
+    rows, features, values, classes, probes = 900, 14, 40, 3, 200
+    os.makedirs(root, exist_ok=True)
+
+    def table(path, count):
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(",".join(f"f{j}" for j in range(features)) + ",label\n")
+            lines = []
+            for _ in range(count):
+                cells = []
+                for _j in range(features):
+                    value = rnd.randrange(values)
+                    cells.append(-1 if rnd.random() < 0.18 else value)
+                cells.append(rnd.randrange(classes))
+                lines.append(",".join(str(c) for c in cells) + "\n")
+            fh.writelines(lines)
+
+    table(os.path.join(root, "bigtrain.csv"), rows)
+    table(os.path.join(root, "bigprobe.csv"), probes)
+    queries = os.path.join(root, "queries.txt")
+    with open(queries, "w", encoding="utf-8") as fh:
+        fh.writelines(f"b{i:04d} bigtrain bigprobe 6 2\n" for i in range(6))
+    return queries
+
+
+def _instruction_cost(binary, data_dir, queries, tag):
+    out = os.path.join(FIT_DIR, f"cg_{tag}")
+    subprocess.run(
+        [
+            "valgrind", "--tool=callgrind", "--quiet",
+            f"--callgrind-out-file={out}", binary, data_dir, queries,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=3000,
     )
-    chert = json.loads((REGISTRY / "chert.json").read_text(encoding="utf-8"))
-    assert [rel["version"] for rel in chert["releases"]] == ["1.5.0", "1.4.2", "1.3.0"]
-
-
-def test_argument_mistakes_are_told_apart_from_bad_input():
-    """slate-cli.md separates exit 2 (command line) from exit 4 (inputs), and
-    every exit-2 error prints the slate: line and then the usage block."""
-    usage_cases = [
-        ("resolve",),
-        ("resolve", "foundry", "--all"),
-        ("nosuchcommand",),
-        ("resolve", "--nosuchflag"),
-    ]
-    for argv in usage_cases:
-        proc = run_slate(*argv)
-        assert proc.returncode == 2, argv
-        assert proc.stdout == "", (argv, proc.stdout)
-        lines = proc.stderr.splitlines()
-        assert lines, argv
-        assert lines[0].startswith("slate: "), (argv, proc.stderr)
-        usage = [ln for ln in lines[1:] if ln.startswith("usage: slate")]
-        assert usage, ("usage block missing", argv, proc.stderr)
-        # the usage block lists the subcommands, resolve among them
-        assert any(re.match(r"\s+resolve\b", ln) for ln in lines), (argv, proc.stderr)
-
-    # exit 4 is an input error, not a command-line mistake
-    assert run_slate("resolve", "nosuchproject").returncode == 4
-
-
-def test_manifest_command_prints_and_exports_unchanged(tmp_path):
-    """The manifest subcommand keeps printing canonical JSON and exporting it."""
-    printed = run_slate("manifest", "kilnworks")
-    assert printed.returncode == 0, printed.stderr
-    doc = json.loads(printed.stdout)
-    assert doc["protocol"] == PROTOCOL
-    assert doc["project"] == "kilnworks"
-    assert doc["allow_yanked"] is False
-    assert [req["name"] for req in doc["requires"]] == ["dolomite", "chert", "quartz"]
-    assert [req["features"] for req in doc["requires"]] == [[], ["trace"], ["simd"]]
-    assert printed.stdout.endswith("}\n")
-    exported = run_slate("manifest", "kilnworks", "--export", "--out", str(tmp_path))
-    assert exported.returncode == 0, exported.stderr
-    staged = tmp_path / "staging" / "kilnworks.manifest.json"
-    assert staged.is_file()
-    assert exported.stdout.strip().endswith(str(staged))
-    assert json.loads(staged.read_text(encoding="utf-8")) == doc
-
-
-def test_directory_overrides_accept_both_spellings_anywhere(tmp_path):
-    """slate-cli.md promises --flag VALUE and --flag=VALUE, in any position."""
-    registry, manifests = copy_inputs(tmp_path)
-    expected = run_slate("resolve", "crucible", "--out", str(tmp_path / "baseline"))
-    assert expected.returncode == 0, expected.stderr
-    baseline = load(lock_at(tmp_path / "baseline", "crucible"))
-    spellings = [
-        ["--registry", str(registry), "--manifests", str(manifests), "resolve", "crucible"],
-        ["resolve", "--registry=" + str(registry), "crucible", "--manifests=" + str(manifests)],
-        ["resolve", "crucible", "--manifests", str(manifests), "--registry=" + str(registry)],
-    ]
-    for n, argv in enumerate(spellings):
-        out = tmp_path / ("form%d" % n)
-        proc = run_slate(*argv, "--out", str(out))
-        assert proc.returncode == 0, " ".join(argv) + "\n" + proc.stderr
-        assert load(lock_at(out, "crucible"))["digest"] == baseline["digest"], argv
-    listing = run_slate("versions", "basalt", "--registry=" + str(registry))
-    assert listing.returncode == 0, listing.stderr
-    assert listing.stdout == run_slate("versions", "basalt").stdout
-
-
-def test_input_errors_are_one_line_on_stderr(tmp_path):
-    """Every error is a single stderr line prefixed slate:, with a silent stdout."""
-    registry, manifests = copy_inputs(tmp_path)
-    (registry / "tuff.json").unlink()
-    (manifests / "brokenyard.slate").write_text(
-        "project brokenyard\nrequire chert ^1.5.0\nprefer chert 1.4.2\n", encoding="utf-8"
+    with open(out, encoding="utf-8") as fh:
+        blob = fh.read()
+    totals = re.findall(r"^summary:\s+(\d+)", blob, re.MULTILINE) or re.findall(
+        r"^totals:\s+(\d+)", blob, re.MULTILINE
     )
-    cases = [
-        ("resolve", "nosuchproject"),
-        ("resolve", "kilnworks", "--registry", str(registry)),
-        ("resolve", "brokenyard", "--manifests", str(manifests)),
-        ("show", "nosuchpackage"),
-    ]
-    for argv in cases:
-        proc = run_slate(*argv, "--out", str(tmp_path / "out"))
-        assert proc.returncode == 4, argv
-        lines = proc.stderr.strip().splitlines()
-        assert len(lines) == 1, (argv, proc.stderr)
-        assert lines[0].startswith("slate: "), (argv, proc.stderr)
-        assert proc.stdout == "", (argv, proc.stdout)
+    assert totals, "callgrind produced no instruction total"
+    return int(totals[-1])
 
 
-def test_a_refused_batch_leaves_the_output_directory_alone(tmp_path):
-    """A batch that cannot read an input publishes nothing, not half a library."""
-    registry, manifests = copy_inputs(tmp_path)
-    # Sorts after every shipped project, so a resolver that publishes as it goes
-    # has already written most of the library by the time it reads this one.
-    project = "wrongyard"
-    (manifests / (project + ".slate")).write_text(
-        "project wrongyard\nrequire chert ^1.5.0\nprefer chert 1.4.2\n", encoding="utf-8"
+@pytest.fixture(scope="session")
+def budget_workload(tmp_path_factory):
+    root = str(tmp_path_factory.mktemp("budget"))
+    queries = _budget_workload(root)
+    return root, queries
+
+
+@pytest.fixture(scope="session")
+def rescan_reference(tmp_path_factory):
+    """Compile the planted per-candidate rescan used to prove the budget binds."""
+    source = os.path.join(REFERENCE_DIR, "rescan_surrogates.cpp")
+    if not os.path.isfile(source):
+        source = os.path.join(TESTS_DIR, "references", "rescan_surrogates.cpp")
+    target = str(tmp_path_factory.mktemp("rescan") / "rescan")
+    subprocess.run(
+        ["g++", "-std=c++17", "-O2", "-w", "-o", target, source],
+        check=True,
+        timeout=600,
     )
-    out = tmp_path / "out"
-    out.mkdir()
-    proc = run_slate(
-        "resolve", "--all", "--registry", str(registry),
-        "--manifests", str(manifests), "--out", str(out),
+    return target
+
+
+def test_fit_stays_within_the_instruction_budget():
+    """The fitted model must reach the advertised report within the published budget."""
+    assert FIT_OK, COMPILE.stderr[-2000:]
+
+
+def test_callgrind_budget(budget_workload):
+    """Measured cost on the fixed workload stays under the published ceiling."""
+    data_dir, queries = budget_workload
+    measured = _instruction_cost(BINARY, data_dir, queries, "candidate")
+    assert measured <= BUDGET_IR, (
+        f"the fit used {measured} instruction reads, over the {BUDGET_IR} ceiling"
     )
-    assert proc.returncode == 4, proc.stdout + proc.stderr
-    assert list(out.iterdir()) == [], sorted(p.name for p in out.iterdir())
-    single = run_slate(
-        "resolve", project, "--registry", str(registry),
-        "--manifests", str(manifests), "--out", str(out),
+
+
+def test_rescan_reference_is_correct_but_over_budget(budget_workload, rescan_reference):
+    """A per-candidate rescan is correct yet too costly, so the budget really binds."""
+    data_dir, queries = budget_workload
+    mine = _run(data_dir, queries)
+    theirs = subprocess.run(
+        [rescan_reference, data_dir, queries],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=3000,
     )
-    assert single.returncode == 4
-    assert list(out.iterdir()) == []
-
-
-# --- lockfiles ---------------------------------------------------------------
-
-
-def test_each_manifest_yields_a_lockfile(published):
-    """Every satisfiable project in the manifest directory gets its lock."""
-    for project in EXPECTED:
-        assert lock_at(published, project).is_file(), project
-    assert not lock_at(published, DEAD_END).exists()
-
-
-def test_selected_versions_are_the_expected_ones(published):
-    """resolution-algorithm.md fixes one version per package per project."""
-    for project, want in EXPECTED.items():
-        doc = load(lock_at(published, project))
-        assert selection_of(doc) == want["packages"], project
-
-
-def test_counters_show_assignments_and_retreats(published):
-    """The stats block has to reflect the search that actually ran."""
-    for project, want in EXPECTED.items():
-        doc = load(lock_at(published, project))
-        assert doc["stats"] == want["stats"], project
-        assert doc["allow_yanked"] == want["allow_yanked"], project
-
-
-def test_waivers_are_the_expected_ones(published):
-    """Only a pin produces a waiver, and it names the range it rode over."""
-    for project, want in EXPECTED.items():
-        doc = load(lock_at(published, project))
-        assert doc["waived"] == want["waived"], project
-
-
-def test_fingerprint_covers_the_payload_not_the_artifact(published):
-    """digest-spec.md hashes tab-separated payload lines, never the JSON."""
-    for project in EXPECTED:
-        doc = load(lock_at(published, project))
-        assert doc["digest"] == reference_fingerprint(reference_lock_payload(doc)), project
-        assert HEX64_RE.match(doc["digest"])
-        assert doc["digest"] not in doc["project"]
-
-
-def test_lockfile_bytes_follow_the_house_style(published):
-    """Two-space indent, key order from lock-schema.json, no escaped angles."""
-    raw = lock_at(published, "foundry").read_text(encoding="utf-8")
-    assert raw.endswith("}\n") and not raw.endswith("}\n\n")
-    assert '\n  "project": "foundry",' in raw
-    assert "\\u003c" not in raw and "\\u003e" not in raw
-    assert '">=2.0.0 <3.0.0"' in raw
-    keys = [m.group(1) for m in re.finditer(r'^  "([a-z_]+)"', raw, re.M)]
-    assert keys == ["protocol", "project", "allow_yanked", "packages", "waived", "stats", "digest"]
-
-
-def test_foundry_attributes_every_requirer(published):
-    """required_by carries the labels of the constraints that pulled a package."""
-    doc = load(lock_at(published, "foundry"))
-    by_name = {entry["name"]: entry for entry in doc["packages"]}
-    assert by_name["basalt"]["required_by"] == ["chert@1.5.0", "gabbro@4.2.0"]
-    assert by_name["schist"]["required_by"] == ["root"]
-    assert by_name["quartz"]["required_by"] == ["dolomite@3.1.0", "marl@2.1.0"]
-    assert [entry["name"] for entry in doc["packages"]] == sorted(by_name)
-
-
-def test_kilnworks_turns_on_the_feature_edges(published):
-    """A +feature group adds the edges that feature declares, and only those."""
-    doc = load(lock_at(published, "kilnworks"))
-    by_name = {entry["name"]: entry for entry in doc["packages"]}
-    assert by_name["chert"]["features"] == ["trace"]
-    assert by_name["quartz"]["features"] == ["simd"]
-    assert by_name["dolomite"]["features"] == []
-    assert {"name": "tuff", "range": "^0.4.0"} in by_name["chert"]["requires"]
-    assert by_name["tuff"]["required_by"] == ["chert@1.5.0", "quartz@2.2.0"]
-
-
-def test_brackenfield_resolves_the_edges_of_a_pinned_release(published):
-    """A pin does not exempt its own release from contributing edges: dolomite
-    is overridden to 2.8.0, but 2.8.0's own requirement on chert still has to be
-    resolved, and that requirement's own basalt constraint still has to coexist
-    with gabbro's — which is exactly what forces the one recorded retreat."""
-    doc = load(lock_at(published, "brackenfield"))
-    by_name = {entry["name"]: entry for entry in doc["packages"]}
-    assert by_name["dolomite"]["required_by"] == ["schist@5.0.1"]
-    assert {"name": "chert", "range": "~1.3.0"} in by_name["dolomite"]["requires"]
-    assert by_name["chert"]["required_by"] == ["dolomite@2.8.0"]
-    assert by_name["basalt"]["required_by"] == ["chert@1.3.0", "gabbro@4.1.1"]
-    assert doc["waived"] == ["schist@5.0.1 requires dolomite ^3.0.0"]
-    assert doc["stats"]["backtracks"] == 1
-    walk = load(walk_at(published, "brackenfield"))
-    gabbro_step = next(s for s in walk["steps"] if s["package"] == "gabbro")
-    assert gabbro_step["candidates"] == ["4.2.0", "4.1.1"]
-    assert gabbro_step["version"] == "4.1.1"
-
-
-def test_driftworks_accepts_the_withdrawn_release(published):
-    """allow-yanked true lets a withdrawn release stand when nothing else fits."""
-    doc = load(lock_at(published, "driftworks"))
-    entry = doc["packages"][0]
-    assert (entry["name"], entry["version"]) == ("gneiss", "1.2.0")
-    assert entry["yanked"] is True
-    assert doc["allow_yanked"] is True
-
-
-def test_crucible_picks_a_release_candidate_only_where_asked(published):
-    """constraint-grammar.md hides prereleases from ranges that do not name one."""
-    crucible = selection_of(load(lock_at(published, "crucible")))
-    foundry = selection_of(load(lock_at(published, "foundry")))
-    assert (crucible["flint"], crucible["gneiss"]) == ("1.0.0-rc.2", "1.1.0")
-    assert (foundry["flint"], foundry["gneiss"]) == ("0.9.3", "1.1.0")
-
-
-def test_slagworks_retreats_onto_the_older_gabbro(published):
-    """The newest gabbro cannot stand next to the pinned marl line."""
-    doc = load(lock_at(published, "slagworks"))
-    assert doc["stats"]["backtracks"] == 2
-    assert selection_of(doc) == EXPECTED["slagworks"]["packages"]
-
-
-# --- the staging walk --------------------------------------------------------
-
-
-def test_search_walk_lands_in_the_staging_snapshot(published):
-    """The trail belongs under the staging directory, one file per project."""
-    for project in WALKS:
-        assert walk_at(published, project).is_file(), project
-
-
-def test_walk_preserves_the_pick_order_and_candidates(published):
-    """Steps are numbered in pick order and quote the list being iterated."""
-    for project, want in WALKS.items():
-        doc = load(walk_at(published, project))
-        assert walk_of(doc) == want, project
-        assert [s["step"] for s in doc["steps"]] == list(range(1, len(want) + 1))
-
-
-def test_walk_fingerprint_covers_its_own_steps(published):
-    """Recomputing the trail payload has to reproduce the published value."""
-    for project in WALKS:
-        doc = load(walk_at(published, project))
-        assert doc["digest"] == reference_fingerprint(reference_walk_payload(doc)), project
-        assert HEX64_RE.match(doc["digest"])
-
-
-def test_walk_and_lockfile_tell_the_same_story(published):
-    """Trail assignments and lock entries cannot disagree."""
-    for project in WALKS:
-        lock = load(lock_at(published, project))
-        walk = load(walk_at(published, project))
-        assert {s["package"]: s["version"] for s in walk["steps"]} == selection_of(lock)
-        assert len(walk["steps"]) == lock["stats"]["assignments"]
-
-
-# --- the project with no solution -------------------------------------------
-
-
-def test_emberyard_names_the_package_it_deadlocked_on(published):
-    """An exhausted search publishes the newest conflict it recorded."""
-    doc = load(deadlock_at(published, DEAD_END))
-    assert doc["package"] == EMBERYARD_DEADLOCK["package"]
-    assert doc["constraints"] == EMBERYARD_DEADLOCK["constraints"]
-    assert doc["backtracks"] == EMBERYARD_DEADLOCK["backtracks"]
-    assert doc["digest"] == reference_fingerprint(reference_deadlock_payload(doc))
-
-
-def test_emberyard_clears_the_artifacts_it_must_not_leave(published):
-    """A project without a solution keeps no lock and no trail."""
-    assert not lock_at(published, DEAD_END).exists()
-    assert not walk_at(published, DEAD_END).exists()
-
-
-def test_one_project_run_signals_a_dead_end(tmp_path):
-    """A named project exits 3 when nothing satisfies it, 0 when something does."""
-    fine = run_slate("resolve", "foundry", "--out", str(tmp_path))
-    assert fine.returncode == 0, fine.stderr
-    stuck = run_slate("resolve", DEAD_END, "--out", str(tmp_path))
-    assert stuck.returncode == 3, stuck.stdout + stuck.stderr
-    assert deadlock_at(tmp_path, DEAD_END).is_file()
-
-
-# --- the ladder --------------------------------------------------------------
-
-
-def test_ladder_covers_the_whole_manifest_directory(published):
-    """The index rows every project with its status, satisfiable or not."""
-    doc = load(ladder_at(published))
-    assert [e["project"] for e in doc["projects"]] == sorted(list(EXPECTED) + [DEAD_END])
-    by_project = {e["project"]: e for e in doc["projects"]}
-    assert by_project[DEAD_END]["status"] == "unsatisfiable"
-    assert by_project[DEAD_END]["packages"] == 0
-    assert by_project["foundry"]["status"] == "locked"
-    assert by_project["foundry"]["packages"] == 9
-    for project, want in EXPECTED.items():
-        assert by_project[project]["backtracks"] == want["stats"]["backtracks"], project
-
-
-def test_ladder_echoes_each_project_fingerprint(published):
-    """Every row carries that project's own digest, and the ladder its own."""
-    doc = load(ladder_at(published))
-    by_project = {e["project"]: e for e in doc["projects"]}
-    for project in EXPECTED:
-        assert by_project[project]["digest"] == load(lock_at(published, project))["digest"], project
-    assert by_project[DEAD_END]["digest"] == load(deadlock_at(published, DEAD_END))["digest"]
-    assert doc["digest"] == reference_fingerprint(reference_ladder_payload(doc))
-
-
-def test_batch_run_returns_zero_even_with_a_dead_end(tmp_path):
-    """A batch run reports per project in the ladder rather than failing."""
-    proc = run_slate("resolve", "--all", "--out", str(tmp_path))
-    assert proc.returncode == 0, proc.stderr
-    assert ladder_at(tmp_path).is_file()
-
-
-# --- repeatability -----------------------------------------------------------
-
-
-def test_a_second_pass_reproduces_the_first(tmp_path):
-    """Two runs over unchanged inputs have to persist identical bytes."""
-    first = tmp_path / "first"
-    second = tmp_path / "second"
-    resolve_batch(first)
-    resolve_batch(second)
-    for path in sorted(first.rglob("*.json")):
-        twin = second / path.relative_to(first)
-        assert twin.read_bytes() == path.read_bytes(), path.name
-
-
-def test_default_output_directory_was_left_populated(published):
-    """The instruction ends with a batch run into the default output directory."""
-    for project in EXPECTED:
-        assert load(lock_at(APP_OUT, project))["digest"] == load(lock_at(published, project))["digest"]
-    assert load(ladder_at(APP_OUT))["digest"] == load(ladder_at(published))["digest"]
-    assert load(deadlock_at(APP_OUT, DEAD_END))["digest"] == load(deadlock_at(published, DEAD_END))["digest"]
-
-
-# --- the holdout library -----------------------------------------------------
-
-
-def test_holdout_projects_resolve_as_predicted(holdout):
-    """Packages the image never carried must resolve from the contracts alone."""
-    fixtures = Path(os.environ["TB3_SLATE_FIXTURES"])
-    assert (fixtures / "registry").is_dir()
-    for project, want in HOLDOUT.items():
-        doc = load(lock_at(holdout, project))
-        assert selection_of(doc) == want["packages"], project
-        assert doc["stats"] == want["stats"], project
-
-
-def test_holdout_falls_back_to_the_older_line(holdout):
-    """The newest candidate forces a dependency the root range refuses."""
-    fixtures = Path(os.environ["TB3_SLATE_FIXTURES"])
-    assert (fixtures / "manifests").is_dir()
-    retreats = {name: want for name, want in HOLDOUT.items() if "steps" in want}
-    assert retreats, "no holdout project exercises a retreat"
-    for project, want in retreats.items():
-        walk = load(walk_at(holdout, project))
-        assert walk_of(walk) == want["steps"], project
-        assert load(lock_at(holdout, project))["stats"]["backtracks"] == 2
-
-
-def test_holdout_pin_waives_its_range(holdout):
-    """An override in a project nobody has seen still records its waiver."""
-    fixtures = Path(os.environ["TB3_SLATE_FIXTURES"])
-    assert (fixtures / "manifests").is_dir()
-    pinned = {name: want for name, want in HOLDOUT.items() if "waived" in want}
-    assert pinned, "no holdout project exercises a pin"
-    for project, want in pinned.items():
-        doc = load(lock_at(holdout, project))
-        assert doc["waived"] == want["waived"], project
-        assert selection_of(doc) == want["packages"], project
-    for project, want in HOLDOUT.items():
-        if "waived" not in want:
-            assert load(lock_at(holdout, project))["waived"] == [], project
-
-
-def test_holdout_dead_end_has_no_solution(holdout):
-    """Two lines that cannot meet produce a conflict artifact, not a lock."""
-    fixtures = Path(os.environ["TB3_SLATE_FIXTURES"])
-    assert (fixtures / "manifests").is_dir()
-    stuck = HOLDOUT_DEADLOCK["project"]
-    doc = load(deadlock_at(holdout, stuck))
-    assert doc["package"] == HOLDOUT_DEADLOCK["package"]
-    assert doc["constraints"] == HOLDOUT_DEADLOCK["constraints"]
-    assert doc["backtracks"] == HOLDOUT_DEADLOCK["backtracks"]
-    assert doc["digest"] == reference_fingerprint(reference_deadlock_payload(doc))
-    assert not lock_at(holdout, stuck).exists()
-
-
-def test_holdout_ladder_covers_the_unseen_projects(holdout):
-    """The ladder over unseen projects carries each row's own digest."""
-    fixtures = Path(os.environ["TB3_SLATE_FIXTURES"])
-    assert (fixtures / "registry").is_dir()
-    doc = load(ladder_at(holdout))
-    assert [e["project"] for e in doc["projects"]] == sorted(
-        list(HOLDOUT) + [HOLDOUT_DEADLOCK["project"]]
+    other = [ln for ln in theirs.stdout.split("\n") if ln.strip() != ""]
+    assert other == mine, "the planted rescan reference is not correctness-equivalent"
+    measured = _instruction_cost(rescan_reference, data_dir, queries, "rescan")
+    assert measured > BUDGET_IR, (
+        f"the planted rescan came in at {measured}, within the {BUDGET_IR} ceiling; "
+        "the budget no longer separates a swept search from a per-candidate rescan"
     )
-    by_project = {e["project"]: e for e in doc["projects"]}
-    for project in HOLDOUT:
-        assert by_project[project]["digest"] == load(lock_at(holdout, project))["digest"], project
-    assert doc["digest"] == reference_fingerprint(reference_ladder_payload(doc))
-
-
-def test_holdout_artifacts_agree_among_themselves(holdout):
-    """Lock and trail of an unseen project have to describe one search."""
-    fixtures = Path(os.environ["TB3_SLATE_FIXTURES"])
-    assert (fixtures / "registry").is_dir()
-    for project in HOLDOUT:
-        lock = load(lock_at(holdout, project))
-        walk = load(walk_at(holdout, project))
-        assert lock["digest"] == reference_fingerprint(reference_lock_payload(lock)), project
-        assert walk["digest"] == reference_fingerprint(reference_walk_payload(walk)), project
-        assert {s["package"]: s["version"] for s in walk["steps"]} == selection_of(lock), project
-
-
-# --- edited inputs -----------------------------------------------------------
-
-
-def test_withdrawing_basalt_reshapes_the_closure(tmp_path):
-    """Marking 2.3.0 yanked forces an older gabbro and one retreat."""
-    registry, manifests = copy_inputs(tmp_path)
-    basalt = registry / "basalt.json"
-    doc = json.loads(basalt.read_text(encoding="utf-8"))
-    for release in doc["releases"]:
-        if release["version"] == "2.3.0":
-            release["yanked"] = True
-    basalt.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
-    out = tmp_path / "out"
-    proc = run_slate(
-        "resolve", "foundry", "--registry", str(registry),
-        "--manifests", str(manifests), "--out", str(out),
-    )
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    lock = load(lock_at(out, "foundry"))
-    got = selection_of(lock)
-    assert (got["basalt"], got["gabbro"]) == ("2.2.4", "4.1.1")
-    assert lock["stats"]["backtracks"] == 1
-
-
-def test_an_absent_package_file_is_bad_input(tmp_path):
-    """A constraint naming an unpublished package exits 4."""
-    registry, manifests = copy_inputs(tmp_path)
-    (registry / "tuff.json").unlink()
-    proc = run_slate(
-        "resolve", "kilnworks", "--registry", str(registry),
-        "--manifests", str(manifests), "--out", str(tmp_path / "out"),
-    )
-    assert proc.returncode == 4, proc.stdout + proc.stderr
-
-
-def test_a_stray_manifest_directive_is_bad_input(tmp_path):
-    """registry-format.md allows four directives and nothing else."""
-    registry, manifests = copy_inputs(tmp_path)
-    project = "brokenyard"
-    (manifests / (project + ".slate")).write_text(
-        "project brokenyard\nrequire chert ^1.5.0\nprefer chert 1.4.2\n", encoding="utf-8"
-    )
-    proc = run_slate(
-        "resolve", project, "--registry", str(registry),
-        "--manifests", str(manifests), "--out", str(tmp_path / "out"),
-    )
-    assert proc.returncode == 4, proc.stdout + proc.stderr
-
-
-def test_a_pin_on_an_unpublished_version_is_bad_input(tmp_path):
-    """An override has to name a version the registry actually publishes."""
-    registry, manifests = copy_inputs(tmp_path)
-    project = "ghostyard"
-    (manifests / (project + ".slate")).write_text(
-        "project ghostyard\nrequire gabbro ^4.2.0\noverride basalt 9.9.9\n", encoding="utf-8"
-    )
-    proc = run_slate(
-        "resolve", project, "--registry", str(registry),
-        "--manifests", str(manifests), "--out", str(tmp_path / "out"),
-    )
-    assert proc.returncode == 4, proc.stdout + proc.stderr
-
-
-def test_widening_the_marl_range_changes_the_selection(tmp_path):
-    """Relaxing the root range lets the newest gabbro stand with no retreat."""
-    registry, manifests = copy_inputs(tmp_path)
-    (manifests / ("slagworks" + ".slate")).write_text(
-        "project slagworks\nrequire gabbro ^4.0.0\nrequire marl ^2.0.0\n", encoding="utf-8"
-    )
-    out = tmp_path / "out"
-    proc = run_slate(
-        "resolve", "slagworks", "--registry", str(registry),
-        "--manifests", str(manifests), "--out", str(out),
-    )
-    assert proc.returncode == 0, proc.stderr
-    lock = load(lock_at(out, "slagworks"))
-    widened = selection_of(lock)
-    assert (widened["gabbro"], widened["marl"]) == ("4.2.0", "2.1.0")
-    assert lock["stats"]["backtracks"] == 0
