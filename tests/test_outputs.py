@@ -1,466 +1,282 @@
-import hashlib
+"""Verifier for the calibrated purchase-intent task.
+
+Grades the agent's held-out probabilities against a reference model refit on the
+active data file, globally and within each engagement band (low ProductRelated
+<= 7, med 8..20, high >= 21), on discrimination (ROC-AUC, PR-AUC), Brier score,
+and calibration-in-the-large (per band and overall). Held-out labels live in
+/tests/labels.csv, never in the agent-visible data.
+"""
+
+import json
 import os
-import shutil
-import subprocess
-import tempfile
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
+from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
 
-PERIODCTL = "/app/src/periodctl"
-DATA_DIR = Path("/app/data")
-JOURNALS = DATA_DIR / "journals"
-CHART = DATA_DIR / "chart.tsv"
-WINDOW = DATA_DIR / "window.json"
-ETC_WINDOW = Path("/etc/period-close/window.json")
-SBIN_LINK = Path("/usr/local/sbin/periodctl")
-SYSTEMD_UNIT = Path("/etc/systemd/system/period-close.service")
-VAR_LIB = Path("/var/lib/period-close")
-LOCKFILE = Path("/tmp/periodctl.lock")
+OUT = Path(os.environ.get("AGENT_OUTPUT_DIR", "/app/environment/outputs"))
+DATA = Path(os.environ.get("RAW_DATA_DIR", "/app/environment/data"))
+LABELS = Path(os.environ.get("LABELS_PATH", "/tests/labels.csv"))
+SRC = Path(os.environ.get("AGENT_SOURCE", "/app/environment/analysis.R"))
 
-EXPECTED_LINES = [
-    "CA-1000;53000;DR",
-    "CA-2000;8000;CR",
-    "EQ-3000;15000;CR",
-    "EXP-5000;20000;DR",
-    "REV-4000;50000;CR",
+DATAFILE = "online_shoppers.csv"
+NUMS = [
+    "Administrative",
+    "Administrative_Duration",
+    "Informational",
+    "Informational_Duration",
+    "ProductRelated",
+    "ProductRelated_Duration",
+    "BounceRates",
+    "ExitRates",
+    "PageValues",
+    "SpecialDay",
 ]
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(8192), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def run_periodctl(
-    snapshot_path: Path,
-    postings_dir: Path = JOURNALS,
-    accounts: Path = CHART,
-    window: Path = WINDOW,
-) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [
-            PERIODCTL,
-            "--postings",
-            str(postings_dir),
-            "--accounts",
-            str(accounts),
-            "--window",
-            str(window),
-            "--snapshot",
-            str(snapshot_path),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-
-@pytest.fixture
-def data_hashes():
-    hashes = {}
-    for path in DATA_DIR.rglob("*"):
-        if path.is_file():
-            hashes[str(path.relative_to(DATA_DIR))] = sha256_file(path)
-    return hashes
-
-
-def _mode(path: Path) -> str:
-    return oct(path.stat().st_mode & 0o777)
-
-
-def test_periodctl_binary_mode_0755():
-    """Verify /app/src/periodctl exists and has executable mode 0755."""
-    assert Path(PERIODCTL).is_file()
-    assert _mode(Path(PERIODCTL)) == "0o755"
-
-
-def test_sbin_periodctl_symlink():
-    """Verify /usr/local/sbin/periodctl is a symlink to /app/src/periodctl."""
-    assert SBIN_LINK.is_symlink()
-    assert SBIN_LINK.resolve() == Path(PERIODCTL).resolve()
-
-
-def test_etc_window_installed():
-    """Verify /etc/period-close/window.json is a byte-identical install with mode 0644."""
-    assert ETC_WINDOW.is_file()
-    assert ETC_WINDOW.read_bytes() == WINDOW.read_bytes()
-    assert _mode(ETC_WINDOW) == "0o644"
-
-
-def test_var_lib_period_close_mode_0755():
-    """Verify /var/lib/period-close exists as a directory with mode 0755."""
-    assert VAR_LIB.is_dir()
-    assert _mode(VAR_LIB) == "0o755"
-
-
-def test_systemd_unit_mode_and_targets():
-    """Verify period-close.service is mode 0644 and references correct paths."""
-    assert SYSTEMD_UNIT.is_file()
-    assert _mode(SYSTEMD_UNIT) == "0o644"
-    text = SYSTEMD_UNIT.read_text(encoding="utf-8")
-    assert "/usr/local/sbin/periodctl" in text
-    assert "/etc/period-close/window.json" in text
-    assert "/var/lib/period-close/snapshot.tsv" in text
-    assert "Type=oneshot" in text
-
-
-def test_etc_window_path_produces_same_snapshot(tmp_path):
-    """Verify snapshots match whether --window points at data or etc install."""
-    via_data = tmp_path / "from_data.txt"
-    via_etc = tmp_path / "from_etc.txt"
-    code_data = run_periodctl(via_data, window=WINDOW).returncode
-    code_etc = run_periodctl(via_etc, window=ETC_WINDOW).returncode
-    assert code_data == code_etc == 1
-    assert via_data.read_text(encoding="utf-8") == via_etc.read_text(encoding="utf-8")
-
-
-def test_exit_code_with_unknown_account(tmp_path):
-    """Verify unknown in-window accounts yield exit code 1."""
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot)
-    assert result.returncode == 1, result.stderr
-
-
-def test_snapshot_line_count(tmp_path):
-    """Verify the shipped journals produce exactly five snapshot rows."""
-    snapshot = tmp_path / "snapshot.tsv"
-    run_periodctl(snapshot)
-    lines = snapshot.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 5
-
-
-def test_snapshot_exact_content(tmp_path):
-    """Verify snapshot lines match expected account balances and sides."""
-    snapshot = tmp_path / "snapshot.tsv"
-    run_periodctl(snapshot)
-    lines = snapshot.read_text(encoding="utf-8").splitlines()
-    assert lines == EXPECTED_LINES
-
-
-def test_snapshot_schema(tmp_path):
-    """Verify each snapshot line has ACCOUNT_ID;positive_cents;DR|CR format."""
-    snapshot = tmp_path / "snapshot.tsv"
-    run_periodctl(snapshot)
-    for line in snapshot.read_text(encoding="utf-8").splitlines():
-        account_id, balance, side = line.split(";")
-        assert account_id
-        assert balance.isdigit()
-        assert int(balance) > 0
-        assert side in {"DR", "CR"}
-
-
-def test_case_insensitive_account_resolution(tmp_path):
-    """Verify journal account IDs resolve to canonical chart IDs case-insensitively."""
-    snapshot = tmp_path / "snapshot.tsv"
-    run_periodctl(snapshot)
-    text = snapshot.read_text(encoding="utf-8")
-    assert "CA-1000;53000;DR" in text
-    assert "EQ-3000;15000;CR" in text
-    assert "ca-1000" not in text
-    assert "eq-3000" not in text
-
-
-def test_out_of_window_entries_excluded(tmp_path):
-    """Verify postings outside the fiscal window do not affect balances."""
-    snapshot = tmp_path / "snapshot.tsv"
-    run_periodctl(snapshot)
-    text = snapshot.read_text(encoding="utf-8")
-    cash_balance = int(
-        next(line for line in text.splitlines() if line.startswith("CA-1000;")).split(";")[1]
-    )
-    assert cash_balance == 53000
-
-
-def test_sort_order_case_insensitive(tmp_path):
-    """Verify snapshot rows are sorted by account ID case-insensitively."""
-    snapshot = tmp_path / "snapshot.tsv"
-    run_periodctl(snapshot)
-    account_ids = [line.split(";")[0] for line in snapshot.read_text(encoding="utf-8").splitlines()]
-    assert account_ids == sorted(account_ids, key=str.casefold)
-
-
-def test_window_boundary_dates_inclusive(tmp_path):
-    """Verify start_date and end_date boundary postings are included in the window."""
-    postings = tmp_path / "postings"
-    postings.mkdir()
-    (postings / "boundary.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "2025-01-01,CA-1000,100,0,start boundary\n"
-        "2025-01-01,REV-4000,0,100,start boundary\n"
-        "2025-03-31,CA-1000,0,200,end boundary\n"
-        "2025-03-31,EXP-5000,200,0,end boundary\n",
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 0, result.stderr
-    lines = {line.split(";")[0]: line for line in snapshot.read_text(encoding="utf-8").splitlines()}
-    assert lines["CA-1000"] == "CA-1000;100;CR"
-    assert lines["REV-4000"] == "REV-4000;100;CR"
-    assert lines["EXP-5000"] == "EXP-5000;200;DR"
-
-
-def test_deterministic_output(tmp_path):
-    """Verify repeated runs produce identical snapshots and exit codes."""
-    first = tmp_path / "first.tsv"
-    second = tmp_path / "second.tsv"
-    code_one = run_periodctl(first).returncode
-    code_two = run_periodctl(second).returncode
-    assert code_one == code_two == 1
-    assert first.read_text(encoding="utf-8") == second.read_text(encoding="utf-8")
-
-
-def test_data_files_not_modified(data_hashes):
-    """Verify periodctl does not modify files under /app/data/."""
-    snapshot = Path(tempfile.mkdtemp()) / "snapshot.tsv"
-    run_periodctl(snapshot)
-    for path in DATA_DIR.rglob("*"):
-        if path.is_file():
-            rel = str(path.relative_to(DATA_DIR))
-            assert sha256_file(path) == data_hashes[rel]
-
-
-def test_exit_code_all_clean(tmp_path):
-    """Verify a balanced window with no unknown accounts yields exit code 0."""
-    postings = tmp_path / "clean"
-    postings.mkdir()
-    shutil.copytree(JOURNALS, postings, dirs_exist_ok=True)
-    (postings / "legacy.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "2025-03-15,EQ-3000,0,15000,Owner draw\n"
-        "2025-03-15,CA-1000,15000,0,Cash transfer for draw\n",
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 0, result.stderr
-
-
-def test_zero_balance_excluded(tmp_path):
-    """Verify accounts whose net balance is zero are omitted from the snapshot."""
-    postings = tmp_path / "postings"
-    postings.mkdir()
-    (postings / "zero.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "2025-02-01,CA-1000,5000,0,payment\n"
-        "2025-02-01,REV-4000,0,5000,revenue\n"
-        "2025-02-15,CA-1000,0,5000,refund\n"
-        "2025-02-15,REV-4000,5000,0,rev reversal\n",
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 0
-    assert snapshot.read_text(encoding="utf-8").strip() == ""
-
-
-def test_exit_code_unbalanced_journals(tmp_path):
-    """Verify unbalanced in-window postings yield exit code 1."""
-    postings = tmp_path / "bad"
-    postings.mkdir()
-    (postings / "skew.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "2025-02-10,CA-1000,5000,0,orphan debit\n",
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 1, result.stderr
-
-
-def test_exit_code_invalid_arguments(tmp_path):
-    """Verify missing required CLI arguments yield exit code 2."""
-    snapshot = tmp_path / "snapshot.tsv"
-    result = subprocess.run(
-        [PERIODCTL, "--postings", str(JOURNALS), "--snapshot", str(snapshot)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 2
-
-
-def test_exit_code_unreadable_accounts_path(tmp_path):
-    """Verify unreadable but existing accounts path yields exit code 2."""
-    unreadable = tmp_path / "locked.tsv"
-    unreadable.write_text("account_id\tname\ttype\tnormal_balance\n", encoding="utf-8")
-    unreadable.chmod(0o000)
-    snapshot = tmp_path / "snapshot.tsv"
-    try:
-        result = run_periodctl(snapshot, accounts=unreadable)
-        assert result.returncode == 2
-    finally:
-        unreadable.chmod(0o644)
-
-
-def test_whitespace_trimmed_and_blank_lines_ignored(tmp_path):
-    """Verify whitespace is trimmed and blank journal lines are ignored."""
-    postings = tmp_path / "postings"
-    postings.mkdir()
-    (postings / "messy.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "\n"
-        "2025-02-03,  ca-1000  , 700 , 0 ,cash receipt\n"
-        "2025-02-03, REV-4000 ,0, 700 , revenue booking\n"
-        "\n",
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 0, result.stderr
-    assert snapshot.read_text(encoding="utf-8").splitlines() == [
-        "CA-1000;700;DR",
-        "REV-4000;700;CR",
-    ]
-
-
-def test_invalid_in_window_rows_fail_but_valid_rows_still_snapshot(tmp_path):
-    """Verify invalid rows fail the run but valid known-account rows still appear."""
-    postings = tmp_path / "postings"
-    postings.mkdir()
-    (postings / "mixed.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "2025-02-10,CA-1000,700,0,valid debit\n"
-        "2025-02-10,REV-4000,0,700,valid credit\n"
-        "2025-02-11,CA-1000,10,10,both sides set\n"
-        "2025-02-12,EXP-5000,foo,0,non numeric debit\n"
-        "2025-02-13,CA-1000,-5,0,negative debit\n",
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 1, result.stderr
-    assert snapshot.read_text(encoding="utf-8").splitlines() == [
-        "CA-1000;700;DR",
-        "REV-4000;700;CR",
-    ]
-
-
-def test_both_sides_zero_row_is_invalid(tmp_path):
-    """Verify rows with both debit and credit zero fail the run with exit code 1."""
-    postings = tmp_path / "postings"
-    postings.mkdir()
-    (postings / "zero_sides.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "2025-02-10,CA-1000,700,0,valid debit\n"
-        "2025-02-10,REV-4000,0,700,valid credit\n"
-        "2025-02-11,CA-1000,0,0,both sides zero\n",
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 1, result.stderr
-    assert snapshot.read_text(encoding="utf-8").splitlines() == [
-        "CA-1000;700;DR",
-        "REV-4000;700;CR",
-    ]
-
-
-def test_duplicate_chart_ids_case_insensitive_fail_with_empty_snapshot(tmp_path):
-    """Verify case-insensitive duplicate chart IDs fail with exit 1 and empty snapshot."""
-    chart = tmp_path / "chart.tsv"
-    chart.write_text(
-        "account_id\tname\ttype\tnormal_balance\n"
-        "\n"
-        "CA-1000\tCash\tasset\tdebit\n"
-        "ca-1000\tDuplicate Cash\tasset\tdebit\n"
-        "REV-4000\tRevenue\trevenue\tcredit\n",
-        encoding="utf-8",
-    )
-    postings = tmp_path / "postings"
-    postings.mkdir()
-    (postings / "simple.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "2025-02-14,CA-1000,900,0,cash sale\n"
-        "2025-02-14,REV-4000,0,900,revenue\n",
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings, accounts=chart)
-    assert result.returncode == 1, result.stderr
-    assert snapshot.read_text(encoding="utf-8") == ""
-
-
-def test_lockfile_concurrency_and_cleanup(tmp_path):
-    """Verify sequential runs succeed and the lockfile is cleaned up after each run."""
-    snapshot1 = tmp_path / "snapshot1.tsv"
-    res1 = run_periodctl(snapshot1)
-    assert res1.returncode == 1
-    assert not LOCKFILE.exists()
-
-    snapshot2 = tmp_path / "snapshot2.tsv"
-    res2 = run_periodctl(snapshot2)
-    assert res2.returncode == 1
-    assert not LOCKFILE.exists()
-
-    res3 = subprocess.run([PERIODCTL], capture_output=True, text=True, check=False)
-    assert res3.returncode == 2
-
-    snapshot3 = tmp_path / "snapshot3.tsv"
-    res4 = run_periodctl(snapshot3)
-    assert res4.returncode == 1
-    assert not LOCKFILE.exists()
-
-
-def test_stale_lockfile_dead_pid_takes_over(tmp_path):
-    """Verify periodctl takes over when lockfile holds a dead PID."""
-    LOCKFILE.write_text("99999999", encoding="utf-8")
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot)
-    assert result.returncode == 1
-    assert not LOCKFILE.exists()
-
-
-def test_active_lockfile_pid_blocks_run(tmp_path):
-    """Verify periodctl exits 1 when lockfile holds an active PID."""
-    LOCKFILE.write_text(str(os.getpid()), encoding="utf-8")
-    snapshot = tmp_path / "snapshot.tsv"
-    try:
-        result = run_periodctl(snapshot)
-        assert result.returncode == 1
-    finally:
-        LOCKFILE.unlink(missing_ok=True)
-
-
-def test_path_with_spaces(tmp_path):
-    """Verify CLI handles postings directories whose paths contain spaces."""
-    postings = tmp_path / "postings folder with spaces"
-    postings.mkdir()
-    (postings / "clean.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "2025-02-01,CA-1000,100,0,payment\n"
-        "2025-02-01,REV-4000,0,100,revenue\n",
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 0, result.stderr
-    lines = snapshot.read_text(encoding="utf-8").splitlines()
-    assert lines == [
-        "CA-1000;100;DR",
-        "REV-4000;100;CR",
-    ]
-
-
-def test_memo_field_with_commas(tmp_path):
-    """Verify quoted memo fields containing commas are parsed correctly."""
-    postings = tmp_path / "postings"
-    postings.mkdir()
-    (postings / "comma_memo.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        '2025-02-01,CA-1000,150,0,"payment, partial"\n'
-        '2025-02-01,REV-4000,0,150,"revenue, deferred"\n',
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 0, result.stderr
-    lines = snapshot.read_text(encoding="utf-8").splitlines()
-    assert lines == [
-        "CA-1000;150;DR",
-        "REV-4000;150;CR",
-    ]
+CATS = [
+    "OperatingSystems",
+    "Browser",
+    "Region",
+    "TrafficType",
+    "VisitorType",
+    "Weekend",
+]
+BAND_NAMES = ["low", "med", "high"]
+# Global discrimination bar. The reference is a gradient-boosted model; a plain
+# base-R glm tops out ~0.02 ROC-AUC below it, so this tolerance requires the agent
+# to match the boosted reference's ranking (a from-scratch boosted/ensemble model
+# in base R), not just fit a logistic regression.
+AUC_TOL = 0.015
+PR_TOL = 0.060
+BRIER_MULT = 1.00
+BAND_AUC_TOL = 0.060
+# Band calibration-in-the-large tolerance. The only labeled window on the target
+# regime is the 600-row pilot; a band there holds ~130-320 labeled rows, so the
+# band purchase rate carries roughly 0.03-0.04 of sampling noise as an estimate of
+# the held-out band rate, and the deterministically subsampled variant widens that
+# gap to ~0.07 in the med band. The tolerance must clear that irreducible
+# proxy-vs-held-out gap so a sound shift-adapted fit passes on every variant, while
+# staying well under the >=0.10 low/high-band miss that a mis-adapted fit incurs.
+CAL_TOL = 0.09
+# Overall (global) calibration-in-the-large tolerance: the mean prediction over
+# all unscored rows must track the overall held-out purchase rate. Looser than a
+# single band because it aggregates the whole test set.
+GLOBAL_CAL_TOL = 0.04
+
+
+def _bands(pr):
+    p = np.asarray(pr, dtype=float)
+    return np.where(p >= 21, "high", np.where(p >= 8, "med", "low"))
+
+
+@pytest.fixture(scope="module")
+def labels():
+    d = pd.read_csv(LABELS)
+    return dict(zip(d["row_id"].astype(int), d["target"].astype(int), strict=False))
+
+
+@pytest.fixture(scope="module")
+def preds():
+    return pd.read_csv(OUT / "predictions.csv")
+
+
+@pytest.fixture(scope="module")
+def metrics():
+    return json.loads((OUT / "metrics.json").read_text())
+
+
+@pytest.fixture(scope="module")
+def oracle(labels):
+    df = pd.read_csv(DATA / DATAFILE)
+    assert "row_id" in df.columns, "row_id column missing from data file"
+    lab = df["target"].notna()
+    train = df.loc[lab].reset_index(drop=True)
+    test = df.loc[~lab].reset_index(drop=True)
+    ytr = train["target"].astype(int).to_numpy()
+    y_true = np.array([labels[int(r)] for r in test["row_id"]])
+    cols = [(c, False) for c in NUMS] + [(c, True) for c in CATS]
+    Xtr = np.empty((len(train), len(cols)))
+    Xte = np.empty((len(test), len(cols)))
+    mask = []
+    for j, (c, is_cat) in enumerate(cols):
+        if is_cat:
+            levels = sorted(df[c].astype(str).unique())
+            m = {v: i for i, v in enumerate(levels)}
+            Xtr[:, j] = train[c].astype(str).map(m).to_numpy()
+            Xte[:, j] = test[c].astype(str).map(m).to_numpy()
+        else:
+            Xtr[:, j] = train[c].astype(float).to_numpy()
+            Xte[:, j] = test[c].astype(float).to_numpy()
+        mask.append(is_cat)
+    fm = HistGradientBoostingClassifier(
+        random_state=42,
+        max_iter=300,
+        learning_rate=0.08,
+        categorical_features=mask,
+    ).fit(Xtr, ytr)
+    pte = fm.predict_proba(Xte)[:, 1]
+    band = _bands(test["ProductRelated"])
+    per_band = {}
+    for g in BAND_NAMES:
+        m = band == g
+        per_band[g] = {
+            "auc": roc_auc_score(y_true[m], pte[m]),
+            "brier": brier_score_loss(y_true[m], pte[m]),
+            "base_rate": float(y_true[m].mean()),
+            "n": int(m.sum()),
+        }
+    n_pilot = int((train["domain"].astype(str) == "target").sum())
+    return {
+        "n_train": int(lab.sum()),
+        "n_pilot": n_pilot,
+        "n_test": int((~lab).sum()),
+        "test_ids": {int(r) for r in test["row_id"]},
+        "auc": roc_auc_score(y_true, pte),
+        "ap": average_precision_score(y_true, pte),
+        "brier": brier_score_loss(y_true, pte),
+        "per_band": per_band,
+        "bands": dict(zip(test["row_id"].astype(int), band, strict=False)),
+    }
+
+
+@pytest.fixture(scope="module")
+def merged(preds, labels, oracle):
+    m = preds.copy()
+    m["row_id"] = m["row_id"].astype(int)
+    m["target"] = m["row_id"].map(labels)
+    m["band"] = m["row_id"].map(oracle["bands"])
+    return m.dropna(subset=["target"])
+
+
+class TestArtifacts:
+    def test_predictions_exist(self):
+        assert (OUT / "predictions.csv").is_file()
+
+    def test_metrics_schema(self, metrics):
+        expected = {
+            "n_train",
+            "n_pilot",
+            "n_test",
+            "n_test_low",
+            "n_test_med",
+            "n_test_high",
+            "n_bands",
+        }
+        assert set(metrics) == expected
+        for k, v in metrics.items():
+            assert isinstance(v, str), f"metrics value {k} must be a quoted string"
+
+    def test_n_bands(self, metrics):
+        assert int(metrics["n_bands"]) == len(BAND_NAMES)
+
+
+class TestCoverage:
+    def test_covers_every_test_row(self, preds, oracle):
+        got = set(preds["row_id"].astype(int))
+        assert got == oracle["test_ids"], (
+            "predictions must cover exactly the unscored rows"
+        )
+
+    def test_schema_sorted_unique(self, preds):
+        assert list(preds.columns) == ["row_id", "pred_proba"], (
+            "predictions.csv must have exactly the columns row_id,pred_proba "
+            "(no extra or renamed columns)"
+        )
+        ids = preds["row_id"].astype(int).tolist()
+        assert ids == sorted(ids), "predictions not sorted by row_id"
+        assert len(ids) == len(set(ids)), "duplicate row_id"
+
+    def test_proba_in_unit_interval(self, preds):
+        p = preds["pred_proba"].to_numpy(dtype=float)
+        assert np.isfinite(p).all() and (p >= 0).all() and (p <= 1).all()
+
+    def test_n_train_reported(self, metrics, oracle):
+        assert int(metrics["n_train"]) == oracle["n_train"]
+
+    def test_n_pilot_reported(self, metrics, oracle):
+        assert int(metrics["n_pilot"]) == oracle["n_pilot"]
+
+    def test_n_test_reported(self, metrics, oracle):
+        assert int(metrics["n_test"]) == oracle["n_test"]
+
+    def test_band_counts_reported(self, metrics, oracle):
+        for key, band in [
+            ("n_test_low", "low"),
+            ("n_test_med", "med"),
+            ("n_test_high", "high"),
+        ]:
+            assert int(metrics[key]) == oracle["per_band"][band]["n"], (
+                f"{key} does not match the unscored count in the {band} band"
+            )
+
+    def test_band_counts_sum_to_n_test(self, metrics):
+        parts = (
+            int(metrics["n_test_low"])
+            + int(metrics["n_test_med"])
+            + int(metrics["n_test_high"])
+        )
+        assert parts == int(metrics["n_test"]), (
+            "per-band unscored counts do not sum to n_test"
+        )
+
+
+class TestGlobalDiscrimination:
+    def test_auc_near_reference(self, merged, oracle):
+        auc = roc_auc_score(
+            merged["target"].to_numpy(int), merged["pred_proba"].to_numpy(float)
+        )
+        assert auc >= oracle["auc"] - AUC_TOL, (
+            f"held-out AUC {auc:.4f} below reference {oracle['auc']:.4f} - {AUC_TOL}"
+        )
+
+    def test_pr_auc_near_reference(self, merged, oracle):
+        ap = average_precision_score(
+            merged["target"].to_numpy(int), merged["pred_proba"].to_numpy(float)
+        )
+        assert ap >= oracle["ap"] - PR_TOL, (
+            f"held-out PR-AUC {ap:.4f} below reference {oracle['ap']:.4f} - {PR_TOL}"
+        )
+
+    def test_brier_not_worse_than_reference(self, merged, oracle):
+        brier = brier_score_loss(
+            merged["target"].to_numpy(int), merged["pred_proba"].to_numpy(float)
+        )
+        assert brier <= oracle["brier"] * BRIER_MULT, (
+            f"held-out Brier {brier:.5f} worse than reference {oracle['brier']:.5f}"
+        )
+
+    def test_global_calibration_in_the_large(self, merged):
+        gap = abs(float(merged["pred_proba"].mean()) - float(merged["target"].mean()))
+        assert gap <= GLOBAL_CAL_TOL, (
+            f"overall mean prediction is {gap:.4f} away from the overall held-out "
+            "purchase rate; predictions are not globally calibrated to the target "
+            "regime"
+        )
+
+
+class TestBandCalibration:
+    @pytest.mark.parametrize("band", BAND_NAMES)
+    def test_band_auc_floor(self, merged, oracle, band):
+        group = merged[merged["band"] == band]
+        ref = oracle["per_band"][band]
+        auc = roc_auc_score(
+            group["target"].to_numpy(int), group["pred_proba"].to_numpy(float)
+        )
+        assert auc >= ref["auc"] - BAND_AUC_TOL, (
+            f"{band}-band AUC {auc:.4f} below reference "
+            f"{ref['auc']:.4f} - {BAND_AUC_TOL}; the ranking does not hold up "
+            "within this engagement band"
+        )
+
+    @pytest.mark.parametrize("band", BAND_NAMES)
+    def test_band_calibration_in_the_large(self, merged, oracle, band):
+        group = merged[merged["band"] == band]
+        ref = oracle["per_band"][band]
+        gap = abs(float(group["pred_proba"].mean()) - ref["base_rate"])
+        assert gap <= CAL_TOL, (
+            f"{band}-band mean prediction is {gap:.4f} away from the band "
+            f"held-out purchase rate {ref['base_rate']:.4f}; probabilities are "
+            "not calibrated to the peak-season regime within this band"
+        )

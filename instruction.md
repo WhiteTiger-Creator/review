@@ -1,59 +1,31 @@
-# Period-Close Control Plane
+Calibrated purchase-probability estimation under a seasonal distribution shift
 
-Finance hosts materialize a fiscal-window balance snapshot through `periodctl` and a oneshot systemd unit. This image ships a broken control-plane layout and a defective `periodctl` binary. Restore both so snapshots are deterministic.
+This is a supervised machine-learning task: train a probabilistic classifier on
+labeled browsing sessions and use it to predict calibrated purchase probabilities
+for unlabeled sessions that come from a different, shifted distribution. It is a
+domain-adaptation and probability-calibration problem, not a lookup or aggregation.
 
-## Host layout (must be restored)
+The labeled training sessions (the off-season "source" regime) and the sessions
+you must score (the peak-season "target" regime) come from different
+distributions; purchase behaviour differs between the regimes. Every source
+session is labeled. In the target regime only a small labeled pilot is provided;
+the remaining target sessions have a blank outcome and are the ones you must
+score.
 
-- `/app/src/periodctl` must be mode `0755` and implement the CLI below.
-- `/usr/local/sbin/periodctl` must be a symlink to `/app/src/periodctl` (replace the stub binary).
-- `/etc/period-close/window.json` must exist as a byte-identical install of `/app/data/window.json` with mode `0644`.
-- `/var/lib/period-close/` must exist as a directory with mode `0755`.
-- `/etc/systemd/system/period-close.service` must remain the oneshot unit and must be mode `0644` (not world-writable). It must launch `/usr/local/sbin/periodctl` with `--window /etc/period-close/window.json` and `--snapshot /var/lib/period-close/snapshot.tsv`.
+The dataset at /app/environment/data/online_shoppers.csv holds 12330 e-commerce
+sessions: a stable row_id, ten numeric engagement features, six categorical
+context features, a domain indicator, and a binary purchase outcome. The data
+directory's notes and summaries document the columns and the split; derive any
+distributional quantities you need from the data itself.
 
-Do not modify files under `/app/data/`. Installing a copy under `/etc/period-close/` is required.
+Your predictions are graded on both discrimination and calibration, within
+engagement bands and overall, against withheld outcomes and a reference model
+refit on the active data. The verifier re-fits and re-scores on several
+deterministically perturbed resamples of the data, so every reported quantity
+must be derived from the data you read, never hardcoded.
 
-## CLI
-
-```text
-/app/src/periodctl \
-  --postings <directory> \
-  --accounts <tsv> \
-  --window <json> \
-  --snapshot <file>
-```
-
-`--postings` is `/app/data/journals/` (CSV: `posting_date,account_id,debit_cents,credit_cents,memo`). `--accounts` is `/app/data/chart.tsv` (`account_id`, `name`, `type`, `normal_balance`). `--window` may be `/app/data/window.json` or the installed `/etc/period-close/window.json` (`period_id`, `start_date`, `end_date`). Amounts are integer cents. `normal_balance` is `debit` or `credit`. Dates use `YYYY-MM-DD`.
-
-## Snapshot semantics
-
-An in-window posting to a registered account can produce a snapshot row `ACCOUNT_ID;balance_cents;SIDE`. An in-window posting to an unknown account fails the run with exit code `1` while still writing rows for valid known accounts. Duplicate chart IDs (case-insensitive) fail with exit code `1` and an empty snapshot. Missing arguments or unreadable paths yield exit code `2`.
-
-Process every in-window posting from all journal CSVs. Ignore blank lines in journals and the chart. Only postings whose `posting_date` falls within `start_date`-`end_date` (inclusive) count. Trim leading and trailing ASCII whitespace from `account_id`, `debit_cents`, and `credit_cents` before validation or aggregation. Resolve `account_id` case-insensitively and emit the chart's canonical account ID.
-
-Each in-window posting must use non-negative integer cents and exactly one non-zero side (debit or credit). Both-zero and both-nonzero rows are invalid: they fail the run with exit code `1`, but valid known-account rows from the same run still appear in the snapshot.
-
-Concurrent executions must not corrupt the balance snapshot. `periodctl` must coordinate through a lock file at the fixed path `/tmp/periodctl.lock`, containing the plain-text PID of the process holding it; this path and content format are part of the external interface (other tooling inspects and seeds this file) and must match exactly. Given that lock file, the required behavior is:
-
-- If the file exists and its recorded PID belongs to a still-running process, `periodctl` must exit with code `1` without touching the snapshot.
-- If the file exists but its recorded PID does not belong to a running process (a stale lock), `periodctl` must take over and proceed normally.
-- The lock file must be removed on exit under all conditions (normal completion or error termination).
-
-How liveness is checked internally (e.g. signaling the PID, reading `/proc`) is left to the implementation as long as this observable behavior holds. All CLI paths and arguments must be handled safely to support paths containing spaces. Journal CSV files must be parsed robustly, supporting fields (such as `memo`) that contain commas enclosed in double quotes.
-
-For each account with in-window activity, net debits and credits according to its `normal_balance`, emit the canonical account ID with a positive magnitude and a `DR`/`CR` side marker, and exclude zero nets. Across valid in-window postings to known accounts, total debits must equal total credits or the run fails.
-
-Write one snapshot line per account with in-window activity and a non-zero net, sorted by account ID (case-insensitive ascending).
-
-## Snapshot format
-
-```text
-ACCOUNT_ID;balance_cents;SIDE
-```
-
-`balance_cents` is a positive integer. `SIDE` is `DR` or `CR`. One line per account; no blank lines.
-
-## Exit codes
-
-- `0`: balanced window and no unknown accounts
-- `1`: unknown account, unbalanced totals, invalid rows, or duplicate chart IDs
-- `2`: missing arguments, missing paths, or unreadable inputs
+A starting template is provided at /app/environment/analysis_template.R. Write
+your solution as /app/environment/analysis.R -- train your model and report the
+per-session probabilities and the summary statistics exactly as specified in
+/app/environment/contracts/output_contract.md. The verifier runs Rscript
+/app/environment/analysis.R.
