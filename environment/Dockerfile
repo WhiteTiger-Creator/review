@@ -1,35 +1,28 @@
-# Canonical-base exception: no approved digest-pinned R base is available.
-# This task uses the canonical Python verifier base because pytest/CTRF runs the
-# verifier, and installs R for the agent's required analysis entrypoint.
-# Proposed canonical addition: add a digest-pinned R-plus-Python image.
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
+# Build stage: compile the audited decoder into a stripped binary. Its source is
+# used only here and never enters the final image, so the audited decoder is
+# staged as a black box the agent must characterize by probing, not by reading.
+FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36 AS build
+WORKDIR /build
+COPY audited/decoder.rs /build/decoder.rs
+RUN rustc -O -C strip=symbols /build/decoder.rs -o /build/decoder
 
-ENV LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8 \
-    DEBIAN_FRONTEND=noninteractive
+FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
 
-RUN apt-get -o Acquire::Retries=5 update && \
-    apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-    tmux asciinema \
-    r-base-core \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        tmux \
+        asciinema \
+        python3 \
+        python3-pip && \
+    rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt /tmp/requirements.txt
-# The verifier's Python venv (numpy/pandas/scikit-learn) is for grading only. This
-# is an R modeling task, so the candidate must not be able to shell out to it.
-# Lock it to root: the root verifier still runs pytest from it, but the unprivileged
-# candidate user cannot traverse into it.
-RUN python3 -m venv /opt/test-venv && \
-    /opt/test-venv/bin/pip install --no-cache-dir --require-hashes --only-binary=:all: \
-        -r /tmp/requirements.txt && \
-    chmod 700 /opt/test-venv
+RUN pip3 install --no-cache-dir --break-system-packages pytest==8.3.3 pytest-json-ctrf==0.3.5
 
 WORKDIR /app
 
-COPY data/ /app/environment/data/
-COPY contracts/ /app/environment/contracts/
-# Starting template only. The agent writes its solution to
-# /app/environment/analysis.R (which the verifier runs); no file named
-# analysis.R is shipped in the environment, so it never overlaps solution/.
-COPY analysis_template.R /app/environment/analysis_template.R
+# Immutable evidence: the audited decoder as a runnable black-box binary only.
+COPY --from=build /build/decoder /app/environment/evidence/decoder
+RUN chmod +x /app/environment/evidence/decoder
+
+COPY docs/ /app/environment/docs/
+COPY analysis/ /app/environment/analysis/
