@@ -1,0 +1,33 @@
+{
+  "name": "quartz",
+  "releases": [
+    {
+      "version": "2.2.0",
+      "yanked": false,
+      "requires": [],
+      "features": {
+        "simd": [
+          {
+            "name": "tuff",
+            "range": "^0.4.0"
+          }
+        ]
+      }
+    },
+    {
+      "version": "2.1.3",
+      "yanked": false,
+      "requires": []
+    },
+    {
+      "version": "2.0.5",
+      "yanked": false,
+      "requires": []
+    },
+    {
+      "version": "1.9.4",
+      "yanked": false,
+      "requires": []
+    }
+  ]
+}

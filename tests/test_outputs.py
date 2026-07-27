@@ -1,1027 +1,886 @@
-# (no-op touch to force a fresh build/deploy, ruling out a stale cache)
-"""Verifier for the Hugging Face architecture backfill task.
+"""Acceptance tests for the `slate resolve` planner.
 
-Grading has three layers, and only the first needs any notion of a correct answer:
-
-1. **Digest.** The SHA-256 of the regenerated canonical export must equal the digest
-   recorded at image-build time by a reference implementation that is not present in the
-   shipped image. It is kept in the root-owned sealed directory rather than in the project
-   tree, so the account doing the work cannot rewrite the value it is checked against.
-
-2. **Perturbation battery.** The bulk of the grading. The verifier mutates one field of one
-   checkpoint config, re-runs the harness, and asserts how the export *responds*: which
-   values track the change, which are provably unaffected, and which rows must not move at
-   all. These assertions need no answer key -- they check the causal structure of the
-   computation, which is exactly the thing a hardcoded or half-derived implementation
-   cannot fake. An implementation that memorized the corpus fails here even though it
-   passes layer 1 on the unperturbed run.
-
-3. **Structural invariants.** Scope, lineage, dedup, idempotency, and the sandbox rules.
-
-Deliberately absent: any reference normalizer, expected field values, or per-model
-architecture data. Nothing in this file tells a reader what a correct row contains.
+Grading stands on four legs: expected selections for the shipped project
+library, invariants each artifact must satisfy on its own (every digest is
+recomputed from the payload the planner published, and cross-checked against the
+row the ladder carries), a holdout registry that never ships in the agent image,
+and edits to the inputs that must move the answer. A planner that recites the
+shipped projects, or that hashes the serialised artifact instead of the payload,
+fails at least one leg.
 """
-
-from __future__ import annotations
 
 import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
-import urllib.error
-import urllib.parse
-import urllib.request
 from pathlib import Path
 
 import pytest
 
+BIN = "/app/bin/slate"
+APP_OUT = Path("/app/out")
+REGISTRY = Path("/app/registry")
+MANIFESTS = Path("/app/manifests")
 
-def _discover_harness_dir() -> Path:
-    """Locate the harness root: /app if it has pom.xml, else the nearest ancestor of
-    the current directory that does."""
-    candidate = Path("/app")
-    if (candidate / "pom.xml").is_file():
-        return candidate
-    cursor = Path.cwd().resolve()
-    while cursor != cursor.parent:
-        if (cursor / "pom.xml").is_file():
-            return cursor
-        cursor = cursor.parent
-    return Path("/app")
+HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+PROTOCOL = "slate/1"
+
+# Expected resolutions for the shipped projects, worked out from the contracts
+# under /app/docs. Keys are the lock keys the schema names.
+EXPECTED = {
+    "brackenfield": {
+        "packages": {
+            "basalt": "2.2.4",
+            "chert": "1.3.0",
+            "dolomite": "2.8.0",
+            "gabbro": "4.1.1",
+            "marl": "2.1.0",
+            "quartz": "2.2.0",
+            "schist": "5.0.1",
+        },
+        "waived": ["schist@5.0.1 requires dolomite ^3.0.0"],
+        "stats": {"assignments": 7, "backtracks": 1},
+        "allow_yanked": False,
+    },
+    "crucible": {
+        "packages": {"flint": "1.0.0-rc.2", "gneiss": "1.1.0"},
+        "waived": [],
+        "stats": {"assignments": 2, "backtracks": 0},
+        "allow_yanked": False,
+    },
+    "driftworks": {
+        "packages": {"gneiss": "1.2.0"},
+        "waived": [],
+        "stats": {"assignments": 1, "backtracks": 0},
+        "allow_yanked": True,
+    },
+    "foundry": {
+        "packages": {
+            "basalt": "2.3.0",
+            "chert": "1.5.0",
+            "dolomite": "3.1.0",
+            "flint": "0.9.3",
+            "gabbro": "4.2.0",
+            "gneiss": "1.1.0",
+            "marl": "2.1.0",
+            "quartz": "2.2.0",
+            "schist": "5.0.1",
+        },
+        "waived": [],
+        "stats": {"assignments": 9, "backtracks": 0},
+        "allow_yanked": False,
+    },
+    "kilnworks": {
+        "packages": {
+            "basalt": "2.3.0",
+            "chert": "1.5.0",
+            "dolomite": "3.1.0",
+            "quartz": "2.2.0",
+            "tuff": "0.4.3",
+        },
+        "waived": [],
+        "stats": {"assignments": 5, "backtracks": 0},
+        "allow_yanked": False,
+    },
+    "rampart": {
+        "packages": {
+            "basalt": "1.9.0",
+            "gabbro": "4.2.0",
+            "marl": "2.1.0",
+            "quartz": "2.2.0",
+        },
+        "waived": ["gabbro@4.2.0 requires basalt ^2.3.0"],
+        "stats": {"assignments": 4, "backtracks": 0},
+        "allow_yanked": False,
+    },
+    "slagworks": {
+        "packages": {"gabbro": "4.0.0", "marl": "1.8.2", "quartz": "1.9.4"},
+        "waived": [],
+        "stats": {"assignments": 3, "backtracks": 2},
+        "allow_yanked": False,
+    },
+}
+
+# Package, chosen version, and the candidate list the picker was iterating.
+WALKS = {
+    "brackenfield": [
+        ("schist", "5.0.1", ["5.0.1"]),
+        ("dolomite", "2.8.0", ["2.8.0"]),
+        ("chert", "1.3.0", ["1.3.0"]),
+        ("basalt", "2.2.4", ["2.2.4"]),
+        ("gabbro", "4.1.1", ["4.2.0", "4.1.1"]),
+        ("marl", "2.1.0", ["2.1.0", "2.0.3"]),
+        ("quartz", "2.2.0", ["2.2.0", "2.1.3"]),
+    ],
+    "crucible": [
+        ("flint", "1.0.0-rc.2", ["1.0.0-rc.2", "1.0.0-rc.1"]),
+        ("gneiss", "1.1.0", ["1.1.0"]),
+    ],
+    "foundry": [
+        ("schist", "5.0.1", ["5.0.1"]),
+        ("dolomite", "3.1.0", ["3.1.0", "3.0.2"]),
+        ("chert", "1.5.0", ["1.5.0"]),
+        ("basalt", "2.3.0", ["2.3.0", "2.2.4"]),
+        ("flint", "0.9.3", ["0.9.3", "0.9.2"]),
+        ("gabbro", "4.2.0", ["4.2.0", "4.1.1"]),
+        ("gneiss", "1.1.0", ["1.1.0", "1.0.4"]),
+        ("marl", "2.1.0", ["2.1.0", "2.0.3"]),
+        ("quartz", "2.2.0", ["2.2.0", "2.1.3"]),
+    ],
+    "kilnworks": [
+        ("chert", "1.5.0", ["1.5.0"]),
+        ("quartz", "2.2.0", ["2.2.0"]),
+        ("basalt", "2.3.0", ["2.3.0", "2.2.4"]),
+        ("dolomite", "3.1.0", ["3.1.0", "3.0.2"]),
+        ("tuff", "0.4.3", ["0.4.3", "0.4.1"]),
+    ],
+    "rampart": [
+        ("gabbro", "4.2.0", ["4.2.0"]),
+        ("basalt", "1.9.0", ["1.9.0"]),
+        ("marl", "2.1.0", ["2.1.0", "2.0.3"]),
+        ("quartz", "2.2.0", ["2.2.0", "2.1.3"]),
+    ],
+    "slagworks": [
+        ("marl", "1.8.2", ["1.8.2"]),
+        ("quartz", "1.9.4", ["1.9.4"]),
+        ("gabbro", "4.0.0", ["4.2.0", "4.1.1", "4.0.0"]),
+    ],
+}
+
+DEAD_END = "emberyard"
+EMBERYARD_DEADLOCK = {
+    "package": "quartz",
+    "constraints": [
+        {"requirer": "marl@1.8.2", "range": "~1.9.0"},
+        {"requirer": "root", "range": "^2.2.0"},
+    ],
+    "backtracks": 7,
+}
+
+# Holdout library: these packages and projects are not in the agent image.
+HOLDOUT = {
+    "dunemoor": {
+        "packages": {"dunite": "0.4.9"},
+        "stats": {"assignments": 1, "backtracks": 0},
+    },
+    "harborline": {
+        "packages": {
+            "amberite": "3.0.0",
+            "birchwood": "1.1.0",
+            "cobalt": "1.3.0",
+            "dunite": "0.5.4",
+        },
+        "stats": {"assignments": 4, "backtracks": 0},
+    },
+    "quarryhead": {
+        "packages": {"cobalt": "1.3.0", "elmstone": "2.0.0-rc.3"},
+        "stats": {"assignments": 2, "backtracks": 0},
+    },
+    "saltmarsh": {
+        "packages": {"amberite": "2.4.1", "birchwood": "1.0.2", "cobalt": "1.1.4"},
+        "stats": {"assignments": 3, "backtracks": 2},
+        "steps": [
+            ("birchwood", "1.0.2", ["1.1.0", "1.0.2"]),
+            ("amberite", "2.4.1", ["2.4.1"]),
+            ("cobalt", "1.1.4", ["1.1.4", "1.1.0"]),
+        ],
+    },
+    "tidefall": {
+        "packages": {"amberite": "3.0.0", "birchwood": "1.1.0", "cobalt": "1.1.0"},
+        "stats": {"assignments": 3, "backtracks": 0},
+        "waived": ["amberite@3.0.0 requires cobalt ^1.2.0"],
+    },
+}
+
+HOLDOUT_DEADLOCK = {
+    "project": "northreach",
+    "package": "cobalt",
+    "constraints": [
+        {"requirer": "elmstone@1.6.0", "range": "~1.1.0"},
+        {"requirer": "root", "range": "^1.3.0"},
+    ],
+    "backtracks": 2,
+}
 
 
-HARNESS_DIR = _discover_harness_dir()
-POM = HARNESS_DIR / "pom.xml"
-EXPORT_PATH = HARNESS_DIR / "target" / "registry_export.jsonl"
-# The expected digest lives in the root-owned sealed directory, not in the project tree.
-# The agent owns /app and could otherwise replace the file the grader compares against
-# (owning the parent directory defeats a read-only file just as well as owning the file).
-EXPECTED_DIGEST_PATH = Path("/opt/_sealed/registry_export.sha256")
-V003_PATH = HARNESS_DIR / "migrations" / "V003_backfill_hf_model_metadata.lua"
-
-SERVICE = "http://127.0.0.1:8743"
-
-_HEX64 = re.compile(r"\b([0-9a-fA-F]{64})\b")
-_SEED_VERSION_ROW = re.compile(
-    r"\('([^']+)',\s*(\d+),\s*'([^']+)',\s*(NULL|\d+),\s*'([^']*)',\s*(NULL|'[0-9a-f]+')\)"
-)
-_SEED_MODEL_ROW = re.compile(r"\('([^']+)',\s*(\d+),\s*'((?:[^']|'')*)',\s*'([^']+)'\)")
-
-_MVN_PACKAGE = ["mvn", "-B", "-o", "-q", "-f", str(POM), "package", "-Dmaven.test.skip=true"]
-_MVN_TEST = ["mvn", "-B", "-o", "-q", "-f", str(POM), "test"]
+# --- helpers -----------------------------------------------------------------
 
 
-# --------------------------------------------------------------------------------------
-# Sealed service plumbing
-# --------------------------------------------------------------------------------------
-
-def _service_get(path: str) -> str:
-    """GET `path` from the sealed service and return the response body."""
-    with urllib.request.urlopen(SERVICE + path, timeout=20) as response:
-        return response.read().decode("utf-8")
+def run_slate(*args):
+    return subprocess.run([BIN, *args], capture_output=True, text=True)
 
 
-def _perturb(repo: str, field: str, value) -> None:
-    """Override one config field for one repo on the next fetch. value=None deletes it."""
-    query = {"repo": repo, "field": field}
-    if value is not None:
-        query["value"] = json.dumps(value)
-    _service_get("/control/perturb?" + urllib.parse.urlencode(query))
+def resolve_batch(out_dir, registry=None, manifests=None):
+    args = ["resolve", "--all", "--out", str(out_dir)]
+    if registry is not None:
+        args += ["--registry", str(registry)]
+    if manifests is not None:
+        args += ["--manifests", str(manifests)]
+    proc = run_slate(*args)
+    assert proc.returncode == 0, f"resolve --all failed: {proc.stderr.strip()}"
+    return proc
 
 
-def _clear_perturbations() -> None:
-    """Clear any active perturbation on the sealed service."""
-    _service_get("/control/clear")
+def lock_at(out_dir, project):
+    return out_dir / (project + ".lock.json")
 
 
-def _pinned() -> list[dict]:
-    """The sealed service's pin inventory for the current corpus."""
-    return json.loads(_service_get("/control/pinned"))
+def walk_at(out_dir, project):
+    return out_dir / "staging" / (project + ".trail.json")
 
 
-def _fetched_urls() -> set[str]:
-    """URLs the harness has fetched from the sealed service so far this run."""
-    return set(json.loads(_service_get("/fetched-urls")))
+def deadlock_at(out_dir, project):
+    return out_dir / (project + ".conflict.json")
 
 
-def _seed_sql() -> str:
-    """The seed SQL the sealed service serves for the current corpus."""
-    return _service_get("/seed")
+def ladder_at(out_dir):
+    return out_dir / "index.json"
 
 
-def _load_config(pin: dict) -> dict:
-    """The unperturbed config document for a pin, as the migration would receive it. Used
-    only to read a field's CURRENT value so a perturbation can be expressed as a delta;
-    never to compute an expected output."""
-    query = urllib.parse.urlencode({"url": pin["config_url"]})
-    with urllib.request.urlopen(f"{SERVICE}/hf?{query}", timeout=20) as response:
-        return json.loads(response.read().decode("utf-8"))
+def load(path):
+    assert path.is_file(), f"missing artifact {path}"
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
-# --------------------------------------------------------------------------------------
-# Harness driving
-# --------------------------------------------------------------------------------------
-
-def _run_harness() -> tuple[bytes, dict]:
-    """Regenerate the export and return (raw bytes, parsed tables)."""
-    if EXPORT_PATH.exists():
-        EXPORT_PATH.unlink()
-    result = subprocess.run(_MVN_PACKAGE, cwd=str(HARNESS_DIR), capture_output=True,
-                            text=True, timeout=300, check=False)
-    assert result.returncode == 0, (
-        f"harness `mvn package` failed:\n{result.stdout}\n{result.stderr}")
-    assert EXPORT_PATH.is_file(), "harness did not produce target/registry_export.jsonl"
-    raw = EXPORT_PATH.read_bytes()
-    return raw, _parse(raw.decode("utf-8"))
+def reference_fingerprint(payload_lines):
+    """sha256 over a payload, as /app/docs/digest-spec.md defines it."""
+    if not payload_lines:
+        return hashlib.sha256(b"").hexdigest()
+    payload = ("\n".join(payload_lines) + "\n").encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
-def _parse(text: str) -> dict:
-    """Parse the harness's JSONL export into per-table row lists plus row order."""
-    tables: dict[str, list[dict]] = {
-        "registered_models": [], "model_architecture": [], "model_versions": []}
-    order: list[str] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        record = json.loads(line)
-        table = record["table"]
-        order.append(table)
-        tables.setdefault(table, []).append(record)
-    tables["_order"] = order
-    return tables
+def reference_lock_payload(doc):
+    lines = [
+        "protocol\t" + PROTOCOL,
+        "project\t" + doc["project"],
+        "allow-yanked\t" + ("true" if doc["allow_yanked"] else "false"),
+    ]
+    for entry in doc["packages"]:
+        lines.append(
+            "pkg\t%s\t%s\t%s\t%s"
+            % (
+                entry["name"],
+                entry["version"],
+                "true" if entry["yanked"] else "false",
+                ",".join(entry["features"]),
+            )
+        )
+    for waiver in doc["waived"]:
+        lines.append("waive\t" + waiver)
+    return lines
 
 
-def _models_by_name(tables: dict) -> dict[str, dict]:
-    """Index registered_models rows by name."""
-    return {r["name"]: r for r in tables["registered_models"]}
+def reference_walk_payload(doc):
+    lines = ["protocol\t" + PROTOCOL, "trail\t" + doc["project"]]
+    for entry in doc["steps"]:
+        lines.append(
+            "step\t%d\t%s\t%s\t%s"
+            % (
+                entry["step"],
+                entry["package"],
+                entry["version"],
+                ",".join(entry["candidates"]),
+            )
+        )
+    return lines
 
 
-def _arch_by_fingerprint(tables: dict) -> dict[str, dict]:
-    """Index model_architecture rows by fingerprint."""
-    return {r["fingerprint"]: r for r in tables["model_architecture"]}
+def reference_deadlock_payload(doc):
+    lines = [
+        "protocol\t" + PROTOCOL,
+        "conflict\t%s\t%s" % (doc["project"], doc["package"]),
+    ]
+    for item in doc["constraints"]:
+        lines.append("constraint\t%s\t%s" % (item["requirer"], item["range"]))
+    return lines
 
 
-def _versions_by_model(tables: dict) -> dict[str, list[dict]]:
-    """Group model_versions rows by model_name."""
-    out: dict[str, list[dict]] = {}
-    for row in tables["model_versions"]:
-        out.setdefault(row["model_name"], []).append(row)
+def reference_ladder_payload(doc):
+    lines = ["protocol\t" + PROTOCOL, "index\t%d" % len(doc["projects"])]
+    for entry in doc["projects"]:
+        lines.append(
+            "project\t%s\t%s\t%d\t%d\t%s"
+            % (
+                entry["project"],
+                entry["status"],
+                entry["packages"],
+                entry["backtracks"],
+                entry["digest"],
+            )
+        )
+    return lines
+
+
+def selection_of(doc):
+    return {entry["name"]: entry["version"] for entry in doc["packages"]}
+
+
+def walk_of(doc):
+    return [(s["package"], s["version"], s["candidates"]) for s in doc["steps"]]
+
+
+def copy_inputs(tmp_path):
+    registry = tmp_path / "registry"
+    manifests = tmp_path / "manifests"
+    shutil.copytree(REGISTRY, registry)
+    shutil.copytree(MANIFESTS, manifests)
+    return registry, manifests
+
+
+@pytest.fixture(scope="module")
+def published(tmp_path_factory):
+    """One batch run over the shipped projects, into a scratch directory."""
+    out = tmp_path_factory.mktemp("published")
+    resolve_batch(out)
     return out
 
 
-def _arch_of(tables: dict, model: str) -> dict:
-    """The architecture row a model's versions point at."""
-    versions = _versions_by_model(tables).get(model, [])
-    assert versions, f"no model_versions rows for {model!r}"
-    fingerprints = {v["hf_architecture_fingerprint"] for v in versions}
-    assert len(fingerprints) == 1, (
-        f"{model!r} versions disagree on hf_architecture_fingerprint: {fingerprints}")
-    fingerprint = fingerprints.pop()
-    assert fingerprint is not None, f"{model!r} has no architecture fingerprint"
-    arch = _arch_by_fingerprint(tables).get(fingerprint)
-    assert arch is not None, (
-        f"{model!r} references fingerprint {fingerprint} with no model_architecture row")
-    return arch
-
-
-# --------------------------------------------------------------------------------------
-# Repo <-> model mapping, taken from the pin inventory rather than hardcoded here.
-# --------------------------------------------------------------------------------------
-
-@pytest.fixture(scope="session")
-def pins() -> dict:
-    """The pin inventory, indexed by model and by repo, plus the in-scope subset."""
-    inventory = _pinned()
-    return {
-        "by_model": {p["model"]: p for p in inventory},
-        "by_repo": {p["repo"]: p for p in inventory},
-        "in_scope": [p for p in inventory if p["framework"] == "transformers"],
-    }
-
-
-@pytest.fixture(scope="session")
-def baseline() -> dict:
-    """Unperturbed run. Everything else compares against this.
-
-    Runs the harness before making any direct call to the sealed service: the service is
-    started lazily, the first time the harness's SeedDatabaseLoader touches it, and nothing
-    guarantees it is already running when this fixture is first instantiated (e.g. an oracle
-    run that only drops in a migration file and never invokes Maven itself). Calling
-    `_clear_perturbations()` first would hit a port nothing is listening on yet.
-    """
-    raw, tables = _run_harness()
-    _clear_perturbations()
-    fetched = _fetched_urls()
-    second_raw, _ = _run_harness()
-    return {"raw": raw, "tables": tables, "fetched": fetched, "second_raw": second_raw}
-
-
-@pytest.fixture
-def perturbed():
-    """Apply perturbations, run once, then always clear.
-
-    Usage: `tables = perturbed([(repo, field, value), ...])`
-    """
-    applied = False
-
-    def _apply(changes):
-        """Clear prior perturbations, apply `changes`, and return the regenerated tables."""
-        nonlocal applied
-        applied = True
-        _clear_perturbations()
-        for repo, field, value in changes:
-            _perturb(repo, field, value)
-        _, tables = _run_harness()
-        return tables
-
-    yield _apply
-    if applied:
-        _clear_perturbations()
-
-
-# --------------------------------------------------------------------------------------
-# Layer 1 -- digest
-# --------------------------------------------------------------------------------------
-
-def test_export_matches_expected_digest(baseline):
-    """The regenerated export matches the digest committed at image-build time."""
-    expected = _HEX64.search(EXPECTED_DIGEST_PATH.read_text(encoding="utf-8").strip())
-    assert expected, "expected digest file is not a 64-hex SHA-256"
-    actual = hashlib.sha256(baseline["raw"]).hexdigest().lower()
-    assert actual == expected.group(1).lower(), (
-        "sha256 of the regenerated export did not match the expected digest")
-
-
-def test_export_is_byte_stable(baseline):
-    """Two full harness runs produce identical bytes."""
-    assert baseline["raw"] == baseline["second_raw"], (
-        "re-running the harness produced a different export")
-
-
-# --------------------------------------------------------------------------------------
-# Layer 2 -- perturbation battery
-# --------------------------------------------------------------------------------------
-
-def _assert_only_changed(before: dict, after: dict, changed_models: set[str]):
-    """Every model outside `changed_models` must have a byte-identical architecture row and
-    identical version rows."""
-    before_versions = _versions_by_model(before)
-    after_versions = _versions_by_model(after)
-    assert set(before_versions) == set(after_versions), "model set changed under perturbation"
-
-    drifted = []
-    for model in before_versions:
-        if model in changed_models:
-            continue
-        if before_versions[model] != after_versions[model]:
-            drifted.append(model)
-            continue
-        try:
-            before_arch = _arch_of(before, model)
-            after_arch = _arch_of(after, model)
-        except AssertionError:
-            continue
-        if before_arch != after_arch:
-            drifted.append(model)
-    assert not drifted, (
-        f"perturbing {sorted(changed_models)} also changed unrelated models: {sorted(drifted)}. "
-        "Each model's architecture must derive only from its own checkpoint config.")
-
-
-def test_depth_perturbation_propagates(baseline, pins, perturbed):
-    """Changing a checkpoint's layer count must move exactly the quantities that depend on
-    depth, scale the KV cache proportionally, and leave every other model untouched."""
-    repo = pins["by_model"]["qa-encoder"]["repo"]
-    before = _arch_of(baseline["tables"], "qa-encoder")
-    new_layers = before["num_layers"] + 7
-
-    after_tables = perturbed([(repo, "num_hidden_layers", new_layers)])
-    after = _arch_of(after_tables, "qa-encoder")
-
-    assert after["num_layers"] == new_layers, "num_layers did not track the config"
-    assert after["hidden_size"] == before["hidden_size"], "depth must not change width"
-    assert after["num_heads"] == before["num_heads"], "depth must not change head count"
-    assert after["fingerprint"] != before["fingerprint"], "fingerprint ignored the change"
-
-    # KV cache is per-layer, so it scales exactly with depth.
-    assert (after["kv_cache_bytes_per_token"] * before["num_layers"]
-            == before["kv_cache_bytes_per_token"] * new_layers), (
-        "kv_cache_bytes_per_token did not scale proportionally with depth "
-        f"({before['kv_cache_bytes_per_token']} at {before['num_layers']} layers vs "
-        f"{after['kv_cache_bytes_per_token']} at {new_layers})")
-
-    # Parameters grow with depth, but not proportionally: embeddings are depth-independent,
-    # so the ratio must be strictly less than the depth ratio.
-    assert after["total_param_count"] > before["total_param_count"]
-    assert (after["total_param_count"] * before["num_layers"]
-            < before["total_param_count"] * new_layers), (
-        "total_param_count scaled proportionally with depth, which means depth-independent "
-        "parameters (embeddings) are being counted per layer or not at all")
-
-    _assert_only_changed(baseline["tables"], after_tables, {"qa-encoder"})
-
-
-def test_dtype_affects_cache_but_not_parameter_count(baseline, pins, perturbed):
-    """torch_dtype is a storage width. It changes how many *bytes* a cached token occupies
-    and nothing else -- parameter counts are counts, not sizes."""
-    repo = pins["by_model"]["reranker"]["repo"]
-    before = _arch_of(baseline["tables"], "reranker")
-
-    after_tables = perturbed([(repo, "torch_dtype", "float32")])
-    after = _arch_of(after_tables, "reranker")
-
-    assert after["total_param_count"] == before["total_param_count"], (
-        "total_param_count changed with torch_dtype; a parameter count must not depend on "
-        "the width it is stored at")
-    assert after["active_param_count"] == before["active_param_count"]
-    assert after["hidden_size"] == before["hidden_size"]
-    assert after["num_layers"] == before["num_layers"]
-    assert after["kv_cache_bytes_per_token"] == before["kv_cache_bytes_per_token"] * 2, (
-        "moving a bfloat16 checkpoint to float32 must exactly double the per-token cache")
-    assert after["fingerprint"] != before["fingerprint"]
-
-    _assert_only_changed(baseline["tables"], after_tables, {"reranker"})
-
-
-def test_kv_head_perturbation(baseline, pins, perturbed):
-    """Key-value head count drives the cache, the attention variant, and -- because K and V
-    projections are sized by it -- the parameter count. It must not touch the width."""
-    repo = pins["by_model"]["doc-classifier"]["repo"]
-    before = _arch_of(baseline["tables"], "doc-classifier")
-    assert before["num_kv_heads"] > 1, "fixture precondition: expected grouped-query"
-
-    after_tables = perturbed([(repo, "num_key_value_heads", 1)])
-    after = _arch_of(after_tables, "doc-classifier")
-
-    assert after["num_kv_heads"] == 1
-    assert after["attention_variant"] == "mqa", (
-        f"one key-value head is multi-query attention, got {after['attention_variant']!r}")
-    assert after["num_heads"] == before["num_heads"], "query head count must not move"
-    assert after["hidden_size"] == before["hidden_size"], "residual width must not move"
-    assert (after["kv_cache_bytes_per_token"] * before["num_kv_heads"]
-            == before["kv_cache_bytes_per_token"]), (
-        "per-token cache did not scale with the key-value head count")
-    assert after["total_param_count"] < before["total_param_count"], (
-        "narrowing the K and V projections must reduce the parameter count; unchanged means "
-        "attention is being sized by the query head count alone")
-
-    _assert_only_changed(baseline["tables"], after_tables, {"doc-classifier"})
-
-
-def test_query_heads_alone_do_not_change_cache(baseline, pins, perturbed):
-    """Holding the key-value head count and the head width fixed while changing the query
-    head count must leave the cache alone. This is the converse of the previous check and
-    fails any implementation that sizes the cache by query heads."""
-    repo = pins["by_model"]["doc-classifier"]["repo"]
-    before = _arch_of(baseline["tables"], "doc-classifier")
-    kv = before["num_kv_heads"]
-
-    # head_dim is pinned to its current value alongside the head-count change: this
-    # checkpoint does not declare one, so it would otherwise be re-derived from the new
-    # query head count and the cache would move for that reason instead.
-    after_tables = perturbed([(repo, "num_attention_heads", kv),
-                              (repo, "head_dim", before["head_dim"])])
-    after = _arch_of(after_tables, "doc-classifier")
-
-    assert after["num_heads"] == kv
-    assert after["head_dim"] == before["head_dim"]
-    assert after["attention_variant"] == "mha", (
-        "equal query and key-value head counts is plain multi-head attention")
-    assert after["kv_cache_bytes_per_token"] == before["kv_cache_bytes_per_token"], (
-        "per-token cache moved when only the query head count changed; the cache holds keys "
-        "and values, not queries")
-    assert after["total_param_count"] < before["total_param_count"], (
-        "narrowing the query projections must reduce the parameter count")
-
-    _assert_only_changed(baseline["tables"], after_tables, {"doc-classifier"})
-
-
-def test_expert_routing_moves_active_not_total(baseline, pins, perturbed):
-    """For a mixture-of-experts checkpoint, how many experts each token is routed to
-    changes the active parameter count and nothing else. Total counts every expert
-    regardless of routing."""
-    repo = pins["by_model"]["chat-assistant"]["repo"]
-    before = _arch_of(baseline["tables"], "chat-assistant")
-    assert before["active_param_count"] < before["total_param_count"], (
-        "fixture precondition: expected a sparse mixture-of-experts checkpoint")
-
-    # Pin the expert count and vary only the routing width, so the comparison holds no
-    # matter what the unperturbed checkpoint happens to declare.
-    narrow = perturbed([(repo, "num_local_experts", 4), (repo, "num_experts_per_tok", 1)])
-    narrow_arch = _arch_of(narrow, "chat-assistant")
-    wide = perturbed([(repo, "num_local_experts", 4), (repo, "num_experts_per_tok", 3)])
-    wide_arch = _arch_of(wide, "chat-assistant")
-
-    assert narrow_arch["total_param_count"] == wide_arch["total_param_count"], (
-        "total_param_count changed with the routing width; total must count every expert "
-        "regardless of how many are engaged per token")
-    assert narrow_arch["active_param_count"] < wide_arch["active_param_count"], (
-        "active_param_count ignored the routing width; routing to three experts must "
-        "engage more parameters per token than routing to one")
-    assert wide_arch["active_param_count"] < wide_arch["total_param_count"], (
-        "routing to three of four experts must still be sparse")
-    assert narrow_arch["hidden_size"] == before["hidden_size"]
-    assert narrow_arch["num_layers"] == before["num_layers"]
-
-    _assert_only_changed(baseline["tables"], wide, {"chat-assistant"})
-
-
-def test_expert_count_moves_total(baseline, pins, perturbed):
-    """Adding experts raises the total parameter count far faster than it raises the active
-    count: every added expert is counted in full by total, while a token still runs the same
-    number of them."""
-    repo = pins["by_model"]["chat-assistant"]["repo"]
-    before = _arch_of(baseline["tables"], "chat-assistant")
-
-    few = perturbed([(repo, "num_local_experts", 3), (repo, "num_experts_per_tok", 2)])
-    few_arch = _arch_of(few, "chat-assistant")
-    many = perturbed([(repo, "num_local_experts", 6), (repo, "num_experts_per_tok", 2)])
-    many_arch = _arch_of(many, "chat-assistant")
-
-    total_growth = many_arch["total_param_count"] - few_arch["total_param_count"]
-    active_growth = many_arch["active_param_count"] - few_arch["active_param_count"]
-
-    assert total_growth > 0, "raising the expert count must raise the total parameter count"
-    assert active_growth * 10 < total_growth, (
-        "doubling the number of available experts moved the active parameter count almost "
-        f"as much as the total (active +{active_growth}, total +{total_growth}). At a fixed "
-        "routing width the same number of experts runs per token; only the router widens.")
-    assert many_arch["hidden_size"] == before["hidden_size"]
-    assert many_arch["num_layers"] == before["num_layers"]
-    assert many_arch["ffn_dim"] == before["ffn_dim"]
-
-    _assert_only_changed(baseline["tables"], many, {"chat-assistant"})
-
-
-def test_top_level_declaration_wins_over_nested(baseline, pins, perturbed):
-    """A checkpoint that declares a quantity both at the top level and inside text_config
-    must resolve to the top-level value."""
-    repo = pins["by_model"]["ocr-reader"]["repo"]
-    before = _arch_of(baseline["tables"], "ocr-reader")
-    new_layers = before["num_layers"] + 5
-
-    after_tables = perturbed([(repo, "num_hidden_layers", new_layers)])
-    after = _arch_of(after_tables, "ocr-reader")
-
-    assert after["num_layers"] == new_layers, (
-        "changing the top-level num_hidden_layers had no effect, so the nested text_config "
-        "value is being preferred over the top-level one")
-
-    _assert_only_changed(baseline["tables"], after_tables, {"ocr-reader"})
-
-
-def test_vision_tower_is_ignored(baseline, pins, perturbed):
-    """For a dual-tower checkpoint, the resolved architecture describes the language-model
-    backbone. Perturbing the vision tower must change nothing at all."""
-    repo = pins["by_model"]["vision-captioner"]["repo"]
-    before = _arch_of(baseline["tables"], "vision-captioner")
-
-    after_tables = perturbed([
-        (repo, "vision_config.hidden_size", before["hidden_size"] * 2 + 64),
-        (repo, "vision_config.num_hidden_layers", 99),
-        (repo, "vision_config.num_attention_heads", 7),
-    ])
-    after = _arch_of(after_tables, "vision-captioner")
-
-    assert after == before, (
-        "perturbing the vision tower changed the resolved architecture; every quantity must "
-        "come from the language-model backbone")
-    _assert_only_changed(baseline["tables"], after_tables, set())
-
-
-def test_backbone_inside_text_config_is_used(baseline, pins, perturbed):
-    """The converse: for the same dual-tower checkpoint, the nested backbone *is* the
-    source, so perturbing it must propagate."""
-    repo = pins["by_model"]["vision-captioner"]["repo"]
-    before = _arch_of(baseline["tables"], "vision-captioner")
-    new_layers = before["num_layers"] + 3
-
-    after_tables = perturbed([(repo, "text_config.num_hidden_layers", new_layers)])
-    after = _arch_of(after_tables, "vision-captioner")
-
-    assert after["num_layers"] == new_layers, (
-        "the language-model backbone inside text_config was not used")
-    _assert_only_changed(baseline["tables"], after_tables, {"vision-captioner"})
-
-
-def test_absent_ffn_width_falls_back_to_library_default(baseline, pins, perturbed):
-    """A feed-forward width the config omits is supplied by the library's default, not left
-    unresolved."""
-    repo = pins["by_model"]["doc-classifier"]["repo"]
-    before = _arch_of(baseline["tables"], "doc-classifier")
-
-    after_tables = perturbed([(repo, "intermediate_size", None)])
-    after = _arch_of(after_tables, "doc-classifier")
-
-    assert after["ffn_dim"] is not None, (
-        "ffn_dim came back null; an omitted feed-forward width has a library default")
-    assert after["ffn_dim"] == 4 * after["hidden_size"], (
-        f"expected the 4x default of {4 * after['hidden_size']}, got {after['ffn_dim']}")
-    assert after["total_param_count"] != before["total_param_count"]
-
-    _assert_only_changed(baseline["tables"], after_tables, {"doc-classifier"})
-
-
-# --------------------------------------------------------------------------------------
-# Layer 2b -- differential identities.
-#
-# These are the sharpest checks in the suite. Each perturbs one config field by a known
-# amount and asserts that the parameter count moves by an EXACT quantity computed from the
-# columns the export itself reports. No answer key is involved: the expected delta is a
-# function of the row's own hidden_size / num_layers / head counts.
-#
-# An implementation that reached the right total by searching the digest, or by copying
-# values, will not have the right *structure*, and structure is exactly what a derivative
-# measures. Getting these right requires knowing which tensors a config's declarations
-# bring into existence and how they are shaped -- which is the thing this task exists to
-# measure.
-# --------------------------------------------------------------------------------------
-
-def test_gated_feed_forward_has_three_matrices(baseline, pins, perturbed):
-    """Widening the feed-forward of a gated checkpoint by d must add exactly 3*L*H*d:
-    a gated MLP instantiates gate, up and down. This checkpoint declares no MLP bias, so
-    there is no additive bias term."""
-    repo = pins["by_model"]["embedding-retriever"]["repo"]
-    before = _arch_of(baseline["tables"], "embedding-retriever")
-    delta = 512
-
-    after = _arch_of(perturbed([(repo, "intermediate_size", before["ffn_dim"] + delta)]),
-                     "embedding-retriever")
-
-    expected = 3 * before["num_layers"] * before["hidden_size"] * delta
-    actual = after["total_param_count"] - before["total_param_count"]
-    assert actual == expected, (
-        f"widening a gated feed-forward by {delta} changed the parameter count by "
-        f"{actual}, not {expected} (= 3 * {before['num_layers']} layers * "
-        f"{before['hidden_size']} hidden * {delta}). A gated activation instantiates "
-        "three feed-forward matrices.")
-
-
-def test_plain_feed_forward_has_two_matrices_and_a_bias(baseline, pins, perturbed):
-    """The converse family: a non-gated feed-forward that does declare biases. Widening by
-    d adds 2*L*H*d for the two matrices, plus L*d for the widened up-projection bias."""
-    repo = pins["by_model"]["qa-encoder"]["repo"]
-    before = _arch_of(baseline["tables"], "qa-encoder")
-    delta = 512
-
-    after = _arch_of(perturbed([(repo, "intermediate_size", before["ffn_dim"] + delta)]),
-                     "qa-encoder")
-
-    layers, hidden = before["num_layers"], before["hidden_size"]
-    expected = 2 * layers * hidden * delta + layers * delta
-    actual = after["total_param_count"] - before["total_param_count"]
-    assert actual == expected, (
-        f"widening a non-gated feed-forward by {delta} changed the parameter count by "
-        f"{actual}, not {expected} (= 2 * {layers} * {hidden} * {delta} for the two "
-        f"matrices, + {layers} * {delta} for the bias that widened with them)")
-
-
-def test_attention_bias_is_sized_by_projection_output(baseline, pins, perturbed):
-    """Turning attention biases on adds one bias per projection, each sized by that
-    projection's OUTPUT width -- so the K and V biases are key-value sized, not hidden
-    sized. An implementation that adds 4*H per layer fails on any grouped-query model."""
-    repo = pins["by_model"]["doc-classifier"]["repo"]
-    before = _arch_of(baseline["tables"], "doc-classifier")
-    assert before["num_kv_heads"] < before["num_heads"], (
-        "fixture precondition: this check is only meaningful on a grouped-query model")
-
-    after = _arch_of(perturbed([(repo, "attention_bias", True)]), "doc-classifier")
-
-    layers = before["num_layers"]
-    expected = layers * (before["num_heads"] * before["head_dim"]
-                         + 2 * before["num_kv_heads"] * before["head_dim"]
-                         + before["hidden_size"])
-    actual = after["total_param_count"] - before["total_param_count"]
-    assert actual == expected, (
-        f"enabling attention biases added {actual} parameters, not {expected}. Each "
-        "projection gets one bias sized by its own output width: the query and output "
-        "biases span the full projection, the key and value biases only the key-value "
-        "width.")
-
-
-def test_learned_positions_are_counted_and_rotary_are_not(baseline, pins, perturbed):
-    """A learned absolute position table is a parameter matrix of P x H, so extending the
-    context adds exactly d*H. A rotary checkpoint's position table is a buffer, so the
-    same perturbation adds nothing at all."""
-    learned_repo = pins["by_model"]["qa-encoder"]["repo"]
-    learned_before = _arch_of(baseline["tables"], "qa-encoder")
-    delta = 256
-
-    learned_cfg = _load_config(pins["by_model"]["qa-encoder"])
-    learned_after = _arch_of(
-        perturbed([(learned_repo, "max_position_embeddings",
-                    learned_cfg["max_position_embeddings"] + delta)]), "qa-encoder")
-    expected = delta * learned_before["hidden_size"]
-    actual = learned_after["total_param_count"] - learned_before["total_param_count"]
-    assert actual == expected, (
-        f"extending a learned absolute position table by {delta} added {actual} "
-        f"parameters, not {expected} (= {delta} * {learned_before['hidden_size']})")
-
-    rotary_repo = pins["by_model"]["embedding-retriever"]["repo"]
-    rotary_before = _arch_of(baseline["tables"], "embedding-retriever")
-    rotary_cfg = _load_config(pins["by_model"]["embedding-retriever"])
-    rotary_after = _arch_of(
-        perturbed([(rotary_repo, "max_position_embeddings",
-                    rotary_cfg["max_position_embeddings"] + 4096)]), "embedding-retriever")
-    assert rotary_after["total_param_count"] == rotary_before["total_param_count"], (
-        "extending the context of a rotary checkpoint changed its parameter count; "
-        "rotary position tables are buffers, not parameters")
-
-
-def test_vocabulary_counts_once_when_tied_and_twice_when_not(baseline, pins, perturbed):
-    """The tied/untied twins differ only in tie_word_embeddings. Growing the vocabulary by
-    d must add d*H to the tied checkpoint (embeddings only) and 2*d*H to the untied one
-    (embeddings plus a separate output head)."""
-    delta = 1024
-    for model, multiplier in (("doc-classifier", 2), ("doc-classifier-lite", 1)):
-        repo = pins["by_model"][model]["repo"]
-        before = _arch_of(baseline["tables"], model)
-        config = _load_config(pins["by_model"][model])
-
-        after = _arch_of(
-            perturbed([(repo, "vocab_size", config["vocab_size"] + delta)]), model)
-
-        expected = multiplier * delta * before["hidden_size"]
-        actual = after["total_param_count"] - before["total_param_count"]
-        assert actual == expected, (
-            f"{model}: growing the vocabulary by {delta} added {actual} parameters, not "
-            f"{expected} (= {multiplier} * {delta} * {before['hidden_size']}). A tied "
-            "head reuses the embedding matrix; an untied head is a second matrix.")
-
-
-def test_one_more_expert_adds_one_bank_and_one_router_row(baseline, pins, perturbed):
-    """Adding a single expert at a fixed routing width adds one expert's feed-forward plus
-    one row of the router, per layer -- and the router row alone is what active gains,
-    because a token traverses the router but not the new expert."""
-    repo = pins["by_model"]["chat-assistant"]["repo"]
-
-    few = _arch_of(perturbed([(repo, "num_local_experts", 4),
-                              (repo, "num_experts_per_tok", 2)]), "chat-assistant")
-    more = _arch_of(perturbed([(repo, "num_local_experts", 5),
-                               (repo, "num_experts_per_tok", 2)]), "chat-assistant")
-
-    layers, hidden, ffn = few["num_layers"], few["hidden_size"], few["ffn_dim"]
-    one_expert = 3 * hidden * ffn
-    expected_total = layers * (one_expert + hidden)
-    actual_total = more["total_param_count"] - few["total_param_count"]
-    assert actual_total == expected_total, (
-        f"adding one expert added {actual_total} parameters, not {expected_total} "
-        f"(= {layers} layers * (one gated expert of width {ffn}, plus one router row of "
-        f"width {hidden}))")
-
-    expected_active = layers * hidden
-    actual_active = more["active_param_count"] - few["active_param_count"]
-    assert actual_active == expected_active, (
-        f"adding one expert changed the active count by {actual_active}, not "
-        f"{expected_active}. At a fixed routing width a token still traverses the same "
-        "number of experts -- but the router it passes through got one row wider.")
-
-
-def test_depth_is_exactly_one_block_per_layer(baseline, pins, perturbed):
-    """Parameter count must be exactly affine in depth: every added layer contributes an
-    identical block. Catches per-layer terms that are miscounted once rather than per
-    layer, and depth-independent terms that are wrongly multiplied by depth."""
-    repo = pins["by_model"]["qa-encoder"]["repo"]
-    before = _arch_of(baseline["tables"], "qa-encoder")
-
-    one = _arch_of(perturbed([(repo, "num_hidden_layers", before["num_layers"] + 1)]),
-                   "qa-encoder")
-    five = _arch_of(perturbed([(repo, "num_hidden_layers", before["num_layers"] + 5)]),
-                    "qa-encoder")
-
-    block = one["total_param_count"] - before["total_param_count"]
-    assert five["total_param_count"] - before["total_param_count"] == 5 * block, (
-        "adding five layers did not add five times what adding one layer added; the "
-        "parameter count is not affine in depth")
-
-
-def test_identical_architectures_share_one_row(baseline):
-    """Deduplication: models resolving to the same architecture share a single
-    model_architecture row, and every row is referenced."""
-    tables = baseline["tables"]
-    arch_rows = tables["model_architecture"]
-    fingerprints = [r["fingerprint"] for r in arch_rows]
-    assert len(fingerprints) == len(set(fingerprints)), (
-        "model_architecture contains duplicate fingerprints; it is keyed by fingerprint")
-
-    referenced = {v["hf_architecture_fingerprint"] for v in tables["model_versions"]
-                  if v["hf_architecture_fingerprint"] is not None}
-    orphans = set(fingerprints) - referenced
-    assert not orphans, f"model_architecture rows nothing references: {sorted(orphans)}"
-
-    versions_by_model = _versions_by_model(tables)
-    in_scope = [m["name"] for m in tables["registered_models"]
-                if m["framework"] == "transformers" and m["hf_repo_id"]]
-    by_fingerprint: dict[str, set[str]] = {}
-    for model in in_scope:
-        for version in versions_by_model.get(model, []):
-            by_fingerprint.setdefault(version["hf_architecture_fingerprint"], set()).add(model)
-    shared = {f: m for f, m in by_fingerprint.items() if len(m) > 1}
-    assert shared, (
-        "no two models share an architecture row. The corpus contains models that resolve "
-        "to identical architectures; they must deduplicate onto one row")
-
-
-def test_perturbation_splits_a_shared_architecture(baseline, perturbed, pins):
-    """Two models sharing one architecture row must separate onto distinct rows once their
-    checkpoints stop agreeing -- and the untouched one must keep its original row."""
-    tables = baseline["tables"]
-    versions_by_model = _versions_by_model(tables)
-    in_scope = [m["name"] for m in tables["registered_models"]
-                if m["framework"] == "transformers" and m["hf_repo_id"]]
-    groups: dict[str, list[str]] = {}
-    for model in in_scope:
-        fingerprint = versions_by_model[model][0]["hf_architecture_fingerprint"]
-        groups.setdefault(fingerprint, []).append(model)
-    pair = next((sorted(m) for m in groups.values() if len(m) > 1), None)
-    assert pair, "fixture precondition: expected at least one shared architecture"
-    target, untouched = pair[0], pair[1]
-
-    before_shared = _arch_of(tables, target)
-    repo = pins["by_model"][target]["repo"]
-    after_tables = perturbed([(repo, "num_hidden_layers", before_shared["num_layers"] + 4)])
-
-    after_target = _arch_of(after_tables, target)
-    after_untouched = _arch_of(after_tables, untouched)
-
-    assert after_target["fingerprint"] != after_untouched["fingerprint"], (
-        f"{target} and {untouched} still share a fingerprint after their checkpoints "
-        "diverged")
-    assert after_untouched == before_shared, (
-        f"{untouched} changed when only {target}'s checkpoint was perturbed")
-    assert after_target["num_layers"] == before_shared["num_layers"] + 4
-
-
-# --------------------------------------------------------------------------------------
-# Layer 3 -- structure, scope, lineage, protocol
-# --------------------------------------------------------------------------------------
-
-def _seed_state():
-    """Parse the seed SQL into per-model and per-version dicts, as originally seeded."""
-    sql = _seed_sql()
-    models = {}
-    for name, created, description, framework in _SEED_MODEL_ROW.findall(sql):
-        models[name] = {"created_time": int(created),
-                        "description": description.replace("''", "'"),
-                        "framework": framework}
-    versions = {}
-    for name, version, run_id, parent, stage, fingerprint in _SEED_VERSION_ROW.findall(sql):
-        versions[(name, int(version))] = {
-            "source_run_id": run_id,
-            "parent_version": None if parent == "NULL" else int(parent),
-            "current_stage": stage,
-            "hf_architecture_fingerprint":
-                None if fingerprint == "NULL" else fingerprint.strip("'"),
-        }
-    return models, versions
-
-
-def test_out_of_scope_models_are_untouched(baseline):
-    """Models outside the migration's remit -- other frameworks -- keep the exact
-    fingerprint they were seeded with, including stale values from the abandoned earlier
-    backfill, and gain no resolved commit."""
-    seed_models, seed_versions = _seed_state()
-    tables = baseline["tables"]
-    models = _models_by_name(tables)
-
-    out_of_scope = [n for n, m in seed_models.items() if m["framework"] != "transformers"]
-    assert out_of_scope, "fixture precondition: expected out-of-scope models"
-
-    violations = []
-    for row in tables["model_versions"]:
-        name = row["model_name"]
-        if seed_models.get(name, {}).get("framework") == "transformers":
-            continue
-        seeded = seed_versions.get((name, row["version"]))
-        if seeded is None:
-            violations.append((name, row["version"], "row not in seed"))
-            continue
-        if row["hf_architecture_fingerprint"] != seeded["hf_architecture_fingerprint"]:
-            violations.append((name, row["version"], "fingerprint rewritten"))
-    assert not violations, (
-        f"rows outside the migration's scope were modified: {violations}. Scope is "
-        "framework = 'transformers'; other rows must survive untouched even when the value "
-        "they carry is stale.")
-
-    for name in out_of_scope:
-        assert models[name]["hf_resolved_commit"] is None, (
-            f"{name} is out of scope but was given a resolved commit")
-
-
-def test_in_scope_stale_fingerprints_were_replaced(baseline):
-    """The abandoned backfill's values must not survive on in-scope rows."""
-    seed_models, seed_versions = _seed_state()
-    stale = {v["hf_architecture_fingerprint"] for (n, _), v in seed_versions.items()
-             if seed_models.get(n, {}).get("framework") == "transformers"
-             and v["hf_architecture_fingerprint"] is not None}
-    assert stale, "fixture precondition: expected stale fingerprints on in-scope rows"
-
-    survivors = [(v["model_name"], v["version"]) for v in baseline["tables"]["model_versions"]
-                 if v["hf_architecture_fingerprint"] in stale]
-    assert not survivors, (
-        f"stale fingerprints from the abandoned backfill survived on {survivors}")
-
-
-def test_every_in_scope_model_is_fully_resolved(baseline, pins):
-    """No in-scope model may be left unresolved, and no unresolvable column may be null.
-
-    Reports which (model, column) pairs are outstanding -- not what they should contain.
-    """
-    tables = baseline["tables"]
-    models = _models_by_name(tables)
-    required = ("architecture", "model_type", "hidden_size", "num_layers", "num_heads",
-                "num_kv_heads", "head_dim", "ffn_dim", "attention_variant",
-                "total_param_count", "active_param_count", "kv_cache_bytes_per_token")
-
-    outstanding = []
-    for pin in pins["in_scope"]:
-        name = pin["model"]
-        assert models[name]["hf_resolved_commit"], f"{name}: no resolved commit recorded"
-        try:
-            arch = _arch_of(tables, name)
-        except AssertionError as e:
-            outstanding.append((name, str(e)))
-            continue
-        for column in required:
-            if arch.get(column) is None:
-                outstanding.append((name, column))
-    assert not outstanding, f"unresolved after backfill: {outstanding}"
-
-
-def test_tag_was_resolved_to_a_commit(baseline, pins):
-    """hf_revision is a tag; the migration must resolve it through the revision API and
-    fetch the config at the resulting commit, not at the tag."""
-    models = _models_by_name(baseline["tables"])
-    fetched = baseline["fetched"]
-
-    for pin in pins["in_scope"]:
-        name, repo, tag, sha = pin["model"], pin["repo"], pin["tag"], pin["sha"]
-        recorded = models[name]["hf_resolved_commit"]
-        assert recorded == sha, (
-            f"{name}: hf_resolved_commit is {recorded!r}; the revision API resolves "
-            f"{tag!r} to a different commit")
-        assert pin["revision_url"] in fetched, (
-            f"{name}: the revision API was never called for {repo}@{tag}")
-        assert pin["config_url"] in fetched, (
-            f"{name}: config.json was not fetched at the resolved commit")
-        tag_url = f"https://huggingface.co/{repo}/resolve/{tag}/config.json"
-        assert tag_url not in fetched, (
-            f"{name}: config.json was fetched at the tag rather than the resolved commit")
-
-
-def test_out_of_scope_checkpoints_are_not_fetched(baseline, pins):
-    """Models outside the migration's scope must not be fetched at all. Two out-of-scope
-    models carry perfectly valid pins; resolving them is wasted work against the Hub and
-    means the scope filter is not being applied before fetching."""
-    allowed = set()
-    for pin in pins["in_scope"]:
-        allowed.add(pin["revision_url"])
-        allowed.add(pin["config_url"])
-    stray = sorted(baseline["fetched"] - allowed)
-    assert not stray, f"fetched checkpoints outside the migration's scope: {stray}"
-
-
-def test_lineage_and_row_set_preserved(baseline):
-    """Version lineage is untouched and no rows are added or dropped."""
-    _seed_models, seed_versions = _seed_state()
-    versions = baseline["tables"]["model_versions"]
-    assert seed_versions, "could not parse lineage out of the seed SQL"
-
-    broken = []
-    for row in versions:
-        key = (row["model_name"], row["version"])
-        seeded = seed_versions.get(key)
-        if seeded is None:
-            broken.append((key, "row not present in seed"))
-            continue
-        for column in ("source_run_id", "parent_version", "current_stage"):
-            if row[column] != seeded[column]:
-                broken.append((key, column))
-    assert not broken, f"lineage altered by the backfill: {broken}"
-    assert len(versions) == len(seed_versions), (
-        f"expected {len(seed_versions)} version rows, got {len(versions)}")
-
-
-def test_canonical_export_order(baseline):
-    """Fixed table order, primary-key row order within each table."""
-    tables = baseline["tables"]
-    order = tables["_order"]
-    expected_order = ["registered_models", "model_architecture", "model_versions"]
-    seen = [t for i, t in enumerate(order) if i == 0 or order[i - 1] != t]
-    assert seen == [t for t in expected_order if t in seen], (
-        f"canonical table order violated: tables appear as {seen}")
-
-    names = [r["name"] for r in tables["registered_models"]]
-    assert names == sorted(names), "registered_models not sorted by name"
-    fingerprints = [r["fingerprint"] for r in tables["model_architecture"]]
-    assert fingerprints == sorted(fingerprints), "model_architecture not sorted by fingerprint"
-    keys = [(v["model_name"], v["version"]) for v in tables["model_versions"]]
-    assert keys == sorted(keys), "model_versions not sorted by (model_name, version)"
-
-
-def _strip_lua_comments(source: str) -> str:
-    """Remove Lua comments and string literals, so a substring scan reflects code rather
-    than prose. Without this, a migration that does nothing but mention the helper names
-    in a comment satisfies the scan."""
-    out, i, n = [], 0, len(source)
-    while i < n:
-        if source.startswith("--[[", i):
-            end = source.find("]]", i + 4)
-            i = n if end < 0 else end + 2
-        elif source.startswith("--", i):
-            end = source.find("\n", i)
-            i = n if end < 0 else end
-        elif source.startswith("[[", i):
-            end = source.find("]]", i + 2)
-            out.append(source[i:n if end < 0 else end + 2])
-            i = n if end < 0 else end + 2
-        elif source[i] in "\"'":
-            quote, i = source[i], i + 1
-            while i < n and source[i] != quote:
-                i += 2 if source[i] == "\\" else 1
-            i += 1
-            out.append('""')
-        else:
-            out.append(source[i])
-            i += 1
-    return "".join(out)
-
-
-def test_only_the_expected_migrations_exist():
-    """The backfill belongs in V003. The runner replays every VNNN_*.lua it finds and
-    re-applies everything from V003 up, so an additional migration file would be replayed
-    identically -- moving the graded work out of the file under review."""
-    present = sorted(p.name for p in (HARNESS_DIR / "migrations").glob("*.lua"))
-    assert present == [
-        "V001_add_hf_pin_columns.lua",
-        "V002_add_version_metadata_columns.lua",
-        "V003_backfill_hf_model_metadata.lua",
-    ], f"unexpected migration files present: {present}"
-
-
-def test_v003_is_what_produces_the_backfill(baseline):
-    """Causal, not syntactic: with V003 emptied the export must lose its architecture
-    rows. If it does not, the backfill is being produced somewhere else."""
-    saved = V003_PATH.read_bytes()
-    try:
-        V003_PATH.write_text("-- temporarily disabled by the verifier\n", encoding="utf-8")
-        _, tables = _run_harness()
-        assert not tables["model_architecture"], (
-            "the export still contains model_architecture rows with V003 disabled, so "
-            "V003 is not what produces the backfill")
-    finally:
-        V003_PATH.write_bytes(saved)
-        _run_harness()  # restore the graded state
-
-
-def test_uses_provided_apis_only():
-    """The migration reaches the database and the Hub only through the provided helpers."""
-    assert V003_PATH.is_file(), f"migration not found: {V003_PATH}"
-    source = _strip_lua_comments(V003_PATH.read_text(encoding="utf-8"))
-
-    forbidden = [
-        "io.open", "io.read", "io.lines", "io.popen", "io.input", "io.write",
-        "os.execute", "os.getenv", "os.remove", "os.rename", "os.tmpname", "popen",
-        "dofile", "loadfile", "require", "package.", "luasql", "socket.", "luajava",
-        "127.0.0.1", "localhost", "8743", "/control/", "registry_seed",
-        ".mv.db", "target/bundle",
+@pytest.fixture(scope="module")
+def holdout(tmp_path_factory):
+    """One batch run over the holdout library the agent image never carries."""
+    fixtures = Path(os.environ["TB3_SLATE_FIXTURES"])
+    out = tmp_path_factory.mktemp("holdout")
+    resolve_batch(out, registry=fixtures / "registry", manifests=fixtures / "manifests")
+    return out
+
+
+# --- the tool that shipped still behaves ------------------------------------
+
+
+def test_cli_announces_the_resolver_protocol():
+    """The instruction keeps slate version and its four constant lines."""
+    proc = run_slate("version")
+    assert proc.returncode == 0, proc.stderr
+    lines = proc.stdout.strip().splitlines()
+    assert lines[0].startswith("slate ")
+    assert lines[1] == "resolver-protocol " + PROTOCOL
+    assert lines[2] == "digest sha256"
+    assert lines[3] == "lock-schema 1"
+
+
+def test_browsing_commands_answer_exactly_as_before():
+    """The instruction forbids disturbing show, versions and audit."""
+    listing = run_slate("versions", "basalt")
+    assert listing.returncode == 0, listing.stderr
+    assert listing.stdout == "2.3.1 yanked\n2.3.0\n2.2.4\n1.9.0\n"
+    detail = run_slate("show", "chert")
+    assert "  feature trace requires tuff ^0.4.0" in detail.stdout.splitlines()
+
+
+def test_package_files_and_manifests_were_not_edited():
+    """The instruction pins the registry and manifest directories as shipped."""
+    totals = run_slate("audit")
+    assert totals.returncode == 0, totals.stderr
+    assert totals.stdout.strip() == "audit packages=10 releases=32 yanked=2"
+    assert sorted(p.stem for p in MANIFESTS.iterdir()) == sorted(
+        list(EXPECTED) + [DEAD_END]
+    )
+    chert = json.loads((REGISTRY / "chert.json").read_text(encoding="utf-8"))
+    assert [rel["version"] for rel in chert["releases"]] == ["1.5.0", "1.4.2", "1.3.0"]
+
+
+def test_argument_mistakes_are_told_apart_from_bad_input():
+    """slate-cli.md separates exit 2 (command line) from exit 4 (inputs), and
+    every exit-2 error prints the slate: line and then the usage block."""
+    usage_cases = [
+        ("resolve",),
+        ("resolve", "foundry", "--all"),
+        ("nosuchcommand",),
+        ("resolve", "--nosuchflag"),
     ]
-    offenders = [token for token in forbidden if token in source]
-    assert not offenders, (
-        f"V003 bypasses the provided helpers or reads harness internals via: {offenders}")
+    for argv in usage_cases:
+        proc = run_slate(*argv)
+        assert proc.returncode == 2, argv
+        assert proc.stdout == "", (argv, proc.stdout)
+        lines = proc.stderr.splitlines()
+        assert lines, argv
+        assert lines[0].startswith("slate: "), (argv, proc.stderr)
+        usage = [ln for ln in lines[1:] if ln.startswith("usage: slate")]
+        assert usage, ("usage block missing", argv, proc.stderr)
+        # the usage block lists the subcommands, resolve among them
+        assert any(re.match(r"\s+resolve\b", ln) for ln in lines), (argv, proc.stderr)
 
-    assert "db." in source, "V003 does not use the provided db helper"
-    assert "http.get" in source, "V003 does not use the provided http.get helper"
-    assert "crypto.sha256" in source, "V003 does not use the provided crypto.sha256 helper"
-
-
-def test_verifier_environment_is_not_shadowed():
-    """The grading process must be running the interpreter and plugins the image shipped.
-    User site-packages is writable by the account these tests run as, and a plugin, .pth
-    or usercustomize planted there executes inside this process."""
-    import site
-
-    import _pytest.config
-
-    assert not site.ENABLE_USER_SITE, (
-        "user site-packages is enabled in the grading process")
-    assert not os.environ.get("PYTHONPATH"), "PYTHONPATH is set in the grading process"
-
-    loaded = {d.project_name for d in
-              _pytest.config.get_plugin_manager().list_plugin_distinfo()}
-    unexpected = loaded - {"pytest-json-ctrf"}
-    assert not unexpected, f"unexpected pytest plugins loaded: {sorted(unexpected)}"
-
-    assert hashlib.sha256(b"").hexdigest() == (
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"), (
-        "hashlib.sha256 does not produce the standard digest")
+    # exit 4 is an input error, not a command-line mistake
+    assert run_slate("resolve", "nosuchproject").returncode == 4
 
 
-def test_project_junit_suite_passes():
-    """The project's own end-to-end suite passes."""
-    result = subprocess.run(_MVN_TEST, cwd=str(HARNESS_DIR), capture_output=True,
-                            text=True, timeout=600, check=False)
-    assert result.returncode == 0, (
-        f"project JUnit suite still failing:\n{result.stdout}\n{result.stderr}")
+def test_manifest_command_prints_and_exports_unchanged(tmp_path):
+    """The manifest subcommand keeps printing canonical JSON and exporting it."""
+    printed = run_slate("manifest", "kilnworks")
+    assert printed.returncode == 0, printed.stderr
+    doc = json.loads(printed.stdout)
+    assert doc["protocol"] == PROTOCOL
+    assert doc["project"] == "kilnworks"
+    assert doc["allow_yanked"] is False
+    assert [req["name"] for req in doc["requires"]] == ["dolomite", "chert", "quartz"]
+    assert [req["features"] for req in doc["requires"]] == [[], ["trace"], ["simd"]]
+    assert printed.stdout.endswith("}\n")
+    exported = run_slate("manifest", "kilnworks", "--export", "--out", str(tmp_path))
+    assert exported.returncode == 0, exported.stderr
+    staged = tmp_path / "staging" / "kilnworks.manifest.json"
+    assert staged.is_file()
+    assert exported.stdout.strip().endswith(str(staged))
+    assert json.loads(staged.read_text(encoding="utf-8")) == doc
+
+
+def test_directory_overrides_accept_both_spellings_anywhere(tmp_path):
+    """slate-cli.md promises --flag VALUE and --flag=VALUE, in any position."""
+    registry, manifests = copy_inputs(tmp_path)
+    expected = run_slate("resolve", "crucible", "--out", str(tmp_path / "baseline"))
+    assert expected.returncode == 0, expected.stderr
+    baseline = load(lock_at(tmp_path / "baseline", "crucible"))
+    spellings = [
+        ["--registry", str(registry), "--manifests", str(manifests), "resolve", "crucible"],
+        ["resolve", "--registry=" + str(registry), "crucible", "--manifests=" + str(manifests)],
+        ["resolve", "crucible", "--manifests", str(manifests), "--registry=" + str(registry)],
+    ]
+    for n, argv in enumerate(spellings):
+        out = tmp_path / ("form%d" % n)
+        proc = run_slate(*argv, "--out", str(out))
+        assert proc.returncode == 0, " ".join(argv) + "\n" + proc.stderr
+        assert load(lock_at(out, "crucible"))["digest"] == baseline["digest"], argv
+    listing = run_slate("versions", "basalt", "--registry=" + str(registry))
+    assert listing.returncode == 0, listing.stderr
+    assert listing.stdout == run_slate("versions", "basalt").stdout
+
+
+def test_input_errors_are_one_line_on_stderr(tmp_path):
+    """Every error is a single stderr line prefixed slate:, with a silent stdout."""
+    registry, manifests = copy_inputs(tmp_path)
+    (registry / "tuff.json").unlink()
+    (manifests / "brokenyard.slate").write_text(
+        "project brokenyard\nrequire chert ^1.5.0\nprefer chert 1.4.2\n", encoding="utf-8"
+    )
+    cases = [
+        ("resolve", "nosuchproject"),
+        ("resolve", "kilnworks", "--registry", str(registry)),
+        ("resolve", "brokenyard", "--manifests", str(manifests)),
+        ("show", "nosuchpackage"),
+    ]
+    for argv in cases:
+        proc = run_slate(*argv, "--out", str(tmp_path / "out"))
+        assert proc.returncode == 4, argv
+        lines = proc.stderr.strip().splitlines()
+        assert len(lines) == 1, (argv, proc.stderr)
+        assert lines[0].startswith("slate: "), (argv, proc.stderr)
+        assert proc.stdout == "", (argv, proc.stdout)
+
+
+def test_a_refused_batch_leaves_the_output_directory_alone(tmp_path):
+    """A batch that cannot read an input publishes nothing, not half a library."""
+    registry, manifests = copy_inputs(tmp_path)
+    # Sorts after every shipped project, so a resolver that publishes as it goes
+    # has already written most of the library by the time it reads this one.
+    project = "wrongyard"
+    (manifests / (project + ".slate")).write_text(
+        "project wrongyard\nrequire chert ^1.5.0\nprefer chert 1.4.2\n", encoding="utf-8"
+    )
+    out = tmp_path / "out"
+    out.mkdir()
+    proc = run_slate(
+        "resolve", "--all", "--registry", str(registry),
+        "--manifests", str(manifests), "--out", str(out),
+    )
+    assert proc.returncode == 4, proc.stdout + proc.stderr
+    assert list(out.iterdir()) == [], sorted(p.name for p in out.iterdir())
+    single = run_slate(
+        "resolve", project, "--registry", str(registry),
+        "--manifests", str(manifests), "--out", str(out),
+    )
+    assert single.returncode == 4
+    assert list(out.iterdir()) == []
+
+
+# --- lockfiles ---------------------------------------------------------------
+
+
+def test_each_manifest_yields_a_lockfile(published):
+    """Every satisfiable project in the manifest directory gets its lock."""
+    for project in EXPECTED:
+        assert lock_at(published, project).is_file(), project
+    assert not lock_at(published, DEAD_END).exists()
+
+
+def test_selected_versions_are_the_expected_ones(published):
+    """resolution-algorithm.md fixes one version per package per project."""
+    for project, want in EXPECTED.items():
+        doc = load(lock_at(published, project))
+        assert selection_of(doc) == want["packages"], project
+
+
+def test_counters_show_assignments_and_retreats(published):
+    """The stats block has to reflect the search that actually ran."""
+    for project, want in EXPECTED.items():
+        doc = load(lock_at(published, project))
+        assert doc["stats"] == want["stats"], project
+        assert doc["allow_yanked"] == want["allow_yanked"], project
+
+
+def test_waivers_are_the_expected_ones(published):
+    """Only a pin produces a waiver, and it names the range it rode over."""
+    for project, want in EXPECTED.items():
+        doc = load(lock_at(published, project))
+        assert doc["waived"] == want["waived"], project
+
+
+def test_fingerprint_covers_the_payload_not_the_artifact(published):
+    """digest-spec.md hashes tab-separated payload lines, never the JSON."""
+    for project in EXPECTED:
+        doc = load(lock_at(published, project))
+        assert doc["digest"] == reference_fingerprint(reference_lock_payload(doc)), project
+        assert HEX64_RE.match(doc["digest"])
+        assert doc["digest"] not in doc["project"]
+
+
+def test_lockfile_bytes_follow_the_house_style(published):
+    """Two-space indent, key order from lock-schema.json, no escaped angles."""
+    raw = lock_at(published, "foundry").read_text(encoding="utf-8")
+    assert raw.endswith("}\n") and not raw.endswith("}\n\n")
+    assert '\n  "project": "foundry",' in raw
+    assert "\\u003c" not in raw and "\\u003e" not in raw
+    assert '">=2.0.0 <3.0.0"' in raw
+    keys = [m.group(1) for m in re.finditer(r'^  "([a-z_]+)"', raw, re.M)]
+    assert keys == ["protocol", "project", "allow_yanked", "packages", "waived", "stats", "digest"]
+
+
+def test_foundry_attributes_every_requirer(published):
+    """required_by carries the labels of the constraints that pulled a package."""
+    doc = load(lock_at(published, "foundry"))
+    by_name = {entry["name"]: entry for entry in doc["packages"]}
+    assert by_name["basalt"]["required_by"] == ["chert@1.5.0", "gabbro@4.2.0"]
+    assert by_name["schist"]["required_by"] == ["root"]
+    assert by_name["quartz"]["required_by"] == ["dolomite@3.1.0", "marl@2.1.0"]
+    assert [entry["name"] for entry in doc["packages"]] == sorted(by_name)
+
+
+def test_kilnworks_turns_on_the_feature_edges(published):
+    """A +feature group adds the edges that feature declares, and only those."""
+    doc = load(lock_at(published, "kilnworks"))
+    by_name = {entry["name"]: entry for entry in doc["packages"]}
+    assert by_name["chert"]["features"] == ["trace"]
+    assert by_name["quartz"]["features"] == ["simd"]
+    assert by_name["dolomite"]["features"] == []
+    assert {"name": "tuff", "range": "^0.4.0"} in by_name["chert"]["requires"]
+    assert by_name["tuff"]["required_by"] == ["chert@1.5.0", "quartz@2.2.0"]
+
+
+def test_brackenfield_resolves_the_edges_of_a_pinned_release(published):
+    """A pin does not exempt its own release from contributing edges: dolomite
+    is overridden to 2.8.0, but 2.8.0's own requirement on chert still has to be
+    resolved, and that requirement's own basalt constraint still has to coexist
+    with gabbro's — which is exactly what forces the one recorded retreat."""
+    doc = load(lock_at(published, "brackenfield"))
+    by_name = {entry["name"]: entry for entry in doc["packages"]}
+    assert by_name["dolomite"]["required_by"] == ["schist@5.0.1"]
+    assert {"name": "chert", "range": "~1.3.0"} in by_name["dolomite"]["requires"]
+    assert by_name["chert"]["required_by"] == ["dolomite@2.8.0"]
+    assert by_name["basalt"]["required_by"] == ["chert@1.3.0", "gabbro@4.1.1"]
+    assert doc["waived"] == ["schist@5.0.1 requires dolomite ^3.0.0"]
+    assert doc["stats"]["backtracks"] == 1
+    walk = load(walk_at(published, "brackenfield"))
+    gabbro_step = next(s for s in walk["steps"] if s["package"] == "gabbro")
+    assert gabbro_step["candidates"] == ["4.2.0", "4.1.1"]
+    assert gabbro_step["version"] == "4.1.1"
+
+
+def test_driftworks_accepts_the_withdrawn_release(published):
+    """allow-yanked true lets a withdrawn release stand when nothing else fits."""
+    doc = load(lock_at(published, "driftworks"))
+    entry = doc["packages"][0]
+    assert (entry["name"], entry["version"]) == ("gneiss", "1.2.0")
+    assert entry["yanked"] is True
+    assert doc["allow_yanked"] is True
+
+
+def test_crucible_picks_a_release_candidate_only_where_asked(published):
+    """constraint-grammar.md hides prereleases from ranges that do not name one."""
+    crucible = selection_of(load(lock_at(published, "crucible")))
+    foundry = selection_of(load(lock_at(published, "foundry")))
+    assert (crucible["flint"], crucible["gneiss"]) == ("1.0.0-rc.2", "1.1.0")
+    assert (foundry["flint"], foundry["gneiss"]) == ("0.9.3", "1.1.0")
+
+
+def test_slagworks_retreats_onto_the_older_gabbro(published):
+    """The newest gabbro cannot stand next to the pinned marl line."""
+    doc = load(lock_at(published, "slagworks"))
+    assert doc["stats"]["backtracks"] == 2
+    assert selection_of(doc) == EXPECTED["slagworks"]["packages"]
+
+
+# --- the staging walk --------------------------------------------------------
+
+
+def test_search_walk_lands_in_the_staging_snapshot(published):
+    """The trail belongs under the staging directory, one file per project."""
+    for project in WALKS:
+        assert walk_at(published, project).is_file(), project
+
+
+def test_walk_preserves_the_pick_order_and_candidates(published):
+    """Steps are numbered in pick order and quote the list being iterated."""
+    for project, want in WALKS.items():
+        doc = load(walk_at(published, project))
+        assert walk_of(doc) == want, project
+        assert [s["step"] for s in doc["steps"]] == list(range(1, len(want) + 1))
+
+
+def test_walk_fingerprint_covers_its_own_steps(published):
+    """Recomputing the trail payload has to reproduce the published value."""
+    for project in WALKS:
+        doc = load(walk_at(published, project))
+        assert doc["digest"] == reference_fingerprint(reference_walk_payload(doc)), project
+        assert HEX64_RE.match(doc["digest"])
+
+
+def test_walk_and_lockfile_tell_the_same_story(published):
+    """Trail assignments and lock entries cannot disagree."""
+    for project in WALKS:
+        lock = load(lock_at(published, project))
+        walk = load(walk_at(published, project))
+        assert {s["package"]: s["version"] for s in walk["steps"]} == selection_of(lock)
+        assert len(walk["steps"]) == lock["stats"]["assignments"]
+
+
+# --- the project with no solution -------------------------------------------
+
+
+def test_emberyard_names_the_package_it_deadlocked_on(published):
+    """An exhausted search publishes the newest conflict it recorded."""
+    doc = load(deadlock_at(published, DEAD_END))
+    assert doc["package"] == EMBERYARD_DEADLOCK["package"]
+    assert doc["constraints"] == EMBERYARD_DEADLOCK["constraints"]
+    assert doc["backtracks"] == EMBERYARD_DEADLOCK["backtracks"]
+    assert doc["digest"] == reference_fingerprint(reference_deadlock_payload(doc))
+
+
+def test_emberyard_clears_the_artifacts_it_must_not_leave(published):
+    """A project without a solution keeps no lock and no trail."""
+    assert not lock_at(published, DEAD_END).exists()
+    assert not walk_at(published, DEAD_END).exists()
+
+
+def test_one_project_run_signals_a_dead_end(tmp_path):
+    """A named project exits 3 when nothing satisfies it, 0 when something does."""
+    fine = run_slate("resolve", "foundry", "--out", str(tmp_path))
+    assert fine.returncode == 0, fine.stderr
+    stuck = run_slate("resolve", DEAD_END, "--out", str(tmp_path))
+    assert stuck.returncode == 3, stuck.stdout + stuck.stderr
+    assert deadlock_at(tmp_path, DEAD_END).is_file()
+
+
+# --- the ladder --------------------------------------------------------------
+
+
+def test_ladder_covers_the_whole_manifest_directory(published):
+    """The index rows every project with its status, satisfiable or not."""
+    doc = load(ladder_at(published))
+    assert [e["project"] for e in doc["projects"]] == sorted(list(EXPECTED) + [DEAD_END])
+    by_project = {e["project"]: e for e in doc["projects"]}
+    assert by_project[DEAD_END]["status"] == "unsatisfiable"
+    assert by_project[DEAD_END]["packages"] == 0
+    assert by_project["foundry"]["status"] == "locked"
+    assert by_project["foundry"]["packages"] == 9
+    for project, want in EXPECTED.items():
+        assert by_project[project]["backtracks"] == want["stats"]["backtracks"], project
+
+
+def test_ladder_echoes_each_project_fingerprint(published):
+    """Every row carries that project's own digest, and the ladder its own."""
+    doc = load(ladder_at(published))
+    by_project = {e["project"]: e for e in doc["projects"]}
+    for project in EXPECTED:
+        assert by_project[project]["digest"] == load(lock_at(published, project))["digest"], project
+    assert by_project[DEAD_END]["digest"] == load(deadlock_at(published, DEAD_END))["digest"]
+    assert doc["digest"] == reference_fingerprint(reference_ladder_payload(doc))
+
+
+def test_batch_run_returns_zero_even_with_a_dead_end(tmp_path):
+    """A batch run reports per project in the ladder rather than failing."""
+    proc = run_slate("resolve", "--all", "--out", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert ladder_at(tmp_path).is_file()
+
+
+# --- repeatability -----------------------------------------------------------
+
+
+def test_a_second_pass_reproduces_the_first(tmp_path):
+    """Two runs over unchanged inputs have to persist identical bytes."""
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    resolve_batch(first)
+    resolve_batch(second)
+    for path in sorted(first.rglob("*.json")):
+        twin = second / path.relative_to(first)
+        assert twin.read_bytes() == path.read_bytes(), path.name
+
+
+def test_default_output_directory_was_left_populated(published):
+    """The instruction ends with a batch run into the default output directory."""
+    for project in EXPECTED:
+        assert load(lock_at(APP_OUT, project))["digest"] == load(lock_at(published, project))["digest"]
+    assert load(ladder_at(APP_OUT))["digest"] == load(ladder_at(published))["digest"]
+    assert load(deadlock_at(APP_OUT, DEAD_END))["digest"] == load(deadlock_at(published, DEAD_END))["digest"]
+
+
+# --- the holdout library -----------------------------------------------------
+
+
+def test_holdout_projects_resolve_as_predicted(holdout):
+    """Packages the image never carried must resolve from the contracts alone."""
+    fixtures = Path(os.environ["TB3_SLATE_FIXTURES"])
+    assert (fixtures / "registry").is_dir()
+    for project, want in HOLDOUT.items():
+        doc = load(lock_at(holdout, project))
+        assert selection_of(doc) == want["packages"], project
+        assert doc["stats"] == want["stats"], project
+
+
+def test_holdout_falls_back_to_the_older_line(holdout):
+    """The newest candidate forces a dependency the root range refuses."""
+    fixtures = Path(os.environ["TB3_SLATE_FIXTURES"])
+    assert (fixtures / "manifests").is_dir()
+    retreats = {name: want for name, want in HOLDOUT.items() if "steps" in want}
+    assert retreats, "no holdout project exercises a retreat"
+    for project, want in retreats.items():
+        walk = load(walk_at(holdout, project))
+        assert walk_of(walk) == want["steps"], project
+        assert load(lock_at(holdout, project))["stats"]["backtracks"] == 2
+
+
+def test_holdout_pin_waives_its_range(holdout):
+    """An override in a project nobody has seen still records its waiver."""
+    fixtures = Path(os.environ["TB3_SLATE_FIXTURES"])
+    assert (fixtures / "manifests").is_dir()
+    pinned = {name: want for name, want in HOLDOUT.items() if "waived" in want}
+    assert pinned, "no holdout project exercises a pin"
+    for project, want in pinned.items():
+        doc = load(lock_at(holdout, project))
+        assert doc["waived"] == want["waived"], project
+        assert selection_of(doc) == want["packages"], project
+    for project, want in HOLDOUT.items():
+        if "waived" not in want:
+            assert load(lock_at(holdout, project))["waived"] == [], project
+
+
+def test_holdout_dead_end_has_no_solution(holdout):
+    """Two lines that cannot meet produce a conflict artifact, not a lock."""
+    fixtures = Path(os.environ["TB3_SLATE_FIXTURES"])
+    assert (fixtures / "manifests").is_dir()
+    stuck = HOLDOUT_DEADLOCK["project"]
+    doc = load(deadlock_at(holdout, stuck))
+    assert doc["package"] == HOLDOUT_DEADLOCK["package"]
+    assert doc["constraints"] == HOLDOUT_DEADLOCK["constraints"]
+    assert doc["backtracks"] == HOLDOUT_DEADLOCK["backtracks"]
+    assert doc["digest"] == reference_fingerprint(reference_deadlock_payload(doc))
+    assert not lock_at(holdout, stuck).exists()
+
+
+def test_holdout_ladder_covers_the_unseen_projects(holdout):
+    """The ladder over unseen projects carries each row's own digest."""
+    fixtures = Path(os.environ["TB3_SLATE_FIXTURES"])
+    assert (fixtures / "registry").is_dir()
+    doc = load(ladder_at(holdout))
+    assert [e["project"] for e in doc["projects"]] == sorted(
+        list(HOLDOUT) + [HOLDOUT_DEADLOCK["project"]]
+    )
+    by_project = {e["project"]: e for e in doc["projects"]}
+    for project in HOLDOUT:
+        assert by_project[project]["digest"] == load(lock_at(holdout, project))["digest"], project
+    assert doc["digest"] == reference_fingerprint(reference_ladder_payload(doc))
+
+
+def test_holdout_artifacts_agree_among_themselves(holdout):
+    """Lock and trail of an unseen project have to describe one search."""
+    fixtures = Path(os.environ["TB3_SLATE_FIXTURES"])
+    assert (fixtures / "registry").is_dir()
+    for project in HOLDOUT:
+        lock = load(lock_at(holdout, project))
+        walk = load(walk_at(holdout, project))
+        assert lock["digest"] == reference_fingerprint(reference_lock_payload(lock)), project
+        assert walk["digest"] == reference_fingerprint(reference_walk_payload(walk)), project
+        assert {s["package"]: s["version"] for s in walk["steps"]} == selection_of(lock), project
+
+
+# --- edited inputs -----------------------------------------------------------
+
+
+def test_withdrawing_basalt_reshapes_the_closure(tmp_path):
+    """Marking 2.3.0 yanked forces an older gabbro and one retreat."""
+    registry, manifests = copy_inputs(tmp_path)
+    basalt = registry / "basalt.json"
+    doc = json.loads(basalt.read_text(encoding="utf-8"))
+    for release in doc["releases"]:
+        if release["version"] == "2.3.0":
+            release["yanked"] = True
+    basalt.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    out = tmp_path / "out"
+    proc = run_slate(
+        "resolve", "foundry", "--registry", str(registry),
+        "--manifests", str(manifests), "--out", str(out),
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    lock = load(lock_at(out, "foundry"))
+    got = selection_of(lock)
+    assert (got["basalt"], got["gabbro"]) == ("2.2.4", "4.1.1")
+    assert lock["stats"]["backtracks"] == 1
+
+
+def test_an_absent_package_file_is_bad_input(tmp_path):
+    """A constraint naming an unpublished package exits 4."""
+    registry, manifests = copy_inputs(tmp_path)
+    (registry / "tuff.json").unlink()
+    proc = run_slate(
+        "resolve", "kilnworks", "--registry", str(registry),
+        "--manifests", str(manifests), "--out", str(tmp_path / "out"),
+    )
+    assert proc.returncode == 4, proc.stdout + proc.stderr
+
+
+def test_a_stray_manifest_directive_is_bad_input(tmp_path):
+    """registry-format.md allows four directives and nothing else."""
+    registry, manifests = copy_inputs(tmp_path)
+    project = "brokenyard"
+    (manifests / (project + ".slate")).write_text(
+        "project brokenyard\nrequire chert ^1.5.0\nprefer chert 1.4.2\n", encoding="utf-8"
+    )
+    proc = run_slate(
+        "resolve", project, "--registry", str(registry),
+        "--manifests", str(manifests), "--out", str(tmp_path / "out"),
+    )
+    assert proc.returncode == 4, proc.stdout + proc.stderr
+
+
+def test_a_pin_on_an_unpublished_version_is_bad_input(tmp_path):
+    """An override has to name a version the registry actually publishes."""
+    registry, manifests = copy_inputs(tmp_path)
+    project = "ghostyard"
+    (manifests / (project + ".slate")).write_text(
+        "project ghostyard\nrequire gabbro ^4.2.0\noverride basalt 9.9.9\n", encoding="utf-8"
+    )
+    proc = run_slate(
+        "resolve", project, "--registry", str(registry),
+        "--manifests", str(manifests), "--out", str(tmp_path / "out"),
+    )
+    assert proc.returncode == 4, proc.stdout + proc.stderr
+
+
+def test_widening_the_marl_range_changes_the_selection(tmp_path):
+    """Relaxing the root range lets the newest gabbro stand with no retreat."""
+    registry, manifests = copy_inputs(tmp_path)
+    (manifests / ("slagworks" + ".slate")).write_text(
+        "project slagworks\nrequire gabbro ^4.0.0\nrequire marl ^2.0.0\n", encoding="utf-8"
+    )
+    out = tmp_path / "out"
+    proc = run_slate(
+        "resolve", "slagworks", "--registry", str(registry),
+        "--manifests", str(manifests), "--out", str(out),
+    )
+    assert proc.returncode == 0, proc.stderr
+    lock = load(lock_at(out, "slagworks"))
+    widened = selection_of(lock)
+    assert (widened["gabbro"], widened["marl"]) == ("4.2.0", "2.1.0")
+    assert lock["stats"]["backtracks"] == 0

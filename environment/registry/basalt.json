@@ -1,0 +1,25 @@
+{
+  "name": "basalt",
+  "releases": [
+    {
+      "version": "2.3.1",
+      "yanked": true,
+      "requires": []
+    },
+    {
+      "version": "2.3.0",
+      "yanked": false,
+      "requires": []
+    },
+    {
+      "version": "2.2.4",
+      "yanked": false,
+      "requires": []
+    },
+    {
+      "version": "1.9.0",
+      "yanked": false,
+      "requires": []
+    }
+  ]
+}

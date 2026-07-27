@@ -1,0 +1,35 @@
+{
+  "name": "marl",
+  "releases": [
+    {
+      "version": "2.1.0",
+      "yanked": false,
+      "requires": [
+        {
+          "name": "quartz",
+          "range": "^2.1.0"
+        }
+      ]
+    },
+    {
+      "version": "2.0.3",
+      "yanked": false,
+      "requires": [
+        {
+          "name": "quartz",
+          "range": "^2.0.0"
+        }
+      ]
+    },
+    {
+      "version": "1.8.2",
+      "yanked": false,
+      "requires": [
+        {
+          "name": "quartz",
+          "range": "~1.9.0"
+        }
+      ]
+    }
+  ]
+}

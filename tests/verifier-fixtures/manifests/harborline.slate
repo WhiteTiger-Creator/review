@@ -1,0 +1,3 @@
+# sealed: features on a direct requirement
+project harborline
+require birchwood ^1.0.0 +probe

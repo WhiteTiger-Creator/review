@@ -1,11 +1,27 @@
-The MLflow model registry harness in /app replays Lua migrations into an H2 database and writes a canonical export, checked against the digest recorded when the image was built via `mvn -q -f /app/pom.xml verify`.
+/app holds slate, the read-only front end for the package registry a build team keeps offline as JSON files. It can already print a package with its releases and edges, list versions newest first, echo back a parsed project manifest, and total up the registry. Planning a build is the one thing it cannot do: nothing here walks the dependency edges and turns a manifest into a lockfile of pinned versions, so every project is assembled by hand and no artifact says what went into it.
 
-`/app/migrations/V003_backfill_hf_model_metadata.lua` is supposed to resolve every registered model's pinned Hugging Face checkpoint and backfill its architecture — dimensions, attention layout, parameter counts, per-token KV cache footprint, and a fingerprint over the lot — into `model_architecture`, with each model's version rows pointing at the architecture they resolved to. It is half-written and wrong: it does not currently survive its first Hub fetch, and getting it running again is the beginning of the job rather than the end of it.
+Your job is to give slate a resolve subcommand that produces those artifacts.
 
-Repair it.
+Running slate resolve with a project name picks one version per package for that project — honouring the ranges every selected release declares, the features the manifest switches on, the pins it forces and its policy on withdrawn releases — then publishes the lockfile /app/out/<project>.lock.json together with the search walk in /app/out/staging/<project>.trail.json. Where no assignment exists it writes /app/out/<project>.conflict.json and exits 3 instead.
 
-`/app/spec/BACKFILL_CONTRACT.md` is the normative specification: scope, the two-step pin resolution, column meanings, the fingerprint grammar, and the re-application requirement. `/app/spec/worked/` gives the tensor inventory — every tensor a checkpoint instantiates, its shape in terms of the resolved dimensions, and the condition under which it exists — across three checkpoints chosen so that every conditional appears in both of its states. Between them they settle every question the contract states as a principle rather than a formula.
+Running slate resolve --all does the same for every project in /app/manifests and finishes by writing the ladder over the whole library, /app/out/index.json.
 
-The contract assumes you already know how a transformer is built. Registered checkpoints span BERT, DistilBERT, GPT-2, T5/Pegasus, Llama/Mistral, Falcon, Gemma, Mixtral, and dual-tower vision-language models. For a given checkpoint, each architectural quantity is exactly one of: declared under some family-specific spelling in the config, left unstated and covered by the library's default, derivable from other declared quantities (as `head_dim` often is), or genuinely absent for that architecture, in which case the column is null. The same four-way distinction governs the parameter and KV-cache counts: which weight and bias tensors a checkpoint instantiates — gated versus plain feed-forward, tied versus untied embeddings, dense versus mixture-of-experts routing — follows from what the config declares, not from a fixed formula. The migration must resolve every quantity and every tensor correctly under whichever case applies to that checkpoint, not just the case any single family uses.
+Four contracts decide what counts as correct:
 
-Migrations reach the database and the Hub only through the db/http/json/crypto helpers the bridge provides. After the migration runs: every version row of an in-scope model must point at a `model_architecture` row consistent with its checkpoint's resolved config; every row outside the migration's scope — other frameworks, unpinned models — must be byte-identical to how it was seeded, including any stale fingerprint already present; version lineage must be unchanged; and re-applying the migration against the same database must change nothing. The harness verifies the regenerated export against all of these, plus the digest recorded at image-build time.
+/app/docs/resolution-algorithm.md is the one that matters most — which package the search picks next, in which order candidates are tried, how a retreat is counted, and which artifacts each outcome leaves behind.
+
+/app/docs/constraint-grammar.md covers version ordering, the five range forms, and the rule that keeps release candidates out of sight.
+
+/app/docs/registry-format.md covers the package files and the manifest directives, and what makes either one unusable.
+
+/app/docs/digest-spec.md gives the tab-separated payload behind every fingerprint field, byte for byte.
+
+Flags, exit codes and the shape of each artifact are in /app/docs/slate-cli.md and /app/docs/lock-schema.json.
+
+Resolution has to be reproducible: the same inputs give the same bytes on every run. Two assignments can both honour every range without both being the answer, and an artifact only counts when the fingerprint it carries agrees with what that same artifact publishes.
+
+Code sits in /app/cmd and /app/internal. The module compiles with make all from /app, and packages you add under /app/internal need no Makefile edit. Leave a working /app/bin/slate behind.
+
+The browsing commands — show, versions, manifest, audit, version — must answer exactly as they answer now, the directory overrides must keep working everywhere, and nothing under /app/registry or /app/manifests may change.
+
+Nothing in this image reaches the network. Finish by running slate resolve --all, so /app/out carries a lock or a conflict for every project plus the ladder.

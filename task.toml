@@ -4,42 +4,25 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "machine-learning"
-subcategories = [
-    "db_interaction",
-    "tool_specific",
-    "api_integration",
-]
+category = "build-and-dependency-management"
+subcategories = []
 number_of_milestones = 0
 codebase_size = "small"
-languages = [
-    "lua",
-    "java",
-    "sql",
-]
-tags = [
-    "mlflow",
-    "huggingface",
-    "transformer-architecture",
-    "parameter-counting",
-    "mixture-of-experts",
-]
+languages = ["go", "bash"]
+tags = ["lockfile", "dependency-resolution", "reproducible-builds", "registry", "supply-chain"]
+expert_time_estimate_min = 110
+junior_time_estimate_min = 300
 
-expert_time_estimate_min = 150
-junior_time_estimate_min = 360
+[agent]
+timeout_sec = 1800.0
+
+[verifier]
+timeout_sec = 900.0
 
 [environment]
 allow_internet = false
-build_timeout_sec = 1800
+build_timeout_sec = 900.0
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-
-[agent]
-timeout_sec = 1800
-user = "agent"
-
-[verifier]
-timeout_sec = 1800
-environment_mode = "shared"
-user = "agent"
+workdir = "/app"
