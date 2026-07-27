@@ -5,26 +5,30 @@ author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
 category = "machine-learning"
-tags = ["machine-learning", "inference", "frozen-checkpoint", "nowcasting", "feature-embeddings", "held-out-evaluation"]
-languages = ["go"]
 codebase_size = "small"
-number_of_milestones = 0
 subcategories = ["tool_specific"]
-expert_time_estimate_min = 240
-junior_time_estimate_min = 600
-
-[agent]
-timeout_sec = 1800
+number_of_milestones = 0
+languages = ["r"]
+tags = [
+  "r",
+  "regression",
+  "ecology",
+  "counts",
+  "tabular"
+]
+expert_time_estimate_min = 120
+junior_time_estimate_min = 340
 
 [verifier]
 timeout_sec = 900
 
+[agent]
+timeout_sec = 1200
+user = 65534
+
 [environment]
-allow_internet = false
-build_timeout_sec = 600
+build_timeout_sec = 900
 cpus = 2
 memory_mb = 4096
-storage_mb = 10240
-
-[reference_pattern]
-justification_if_none = "No promoted reference task in docs/reference_tasks/index.json matches Go bed-occupancy effect-lattice invariant proof logs; agent brief reports none promoted."
+storage_mb = 8192
+allow_internet = false

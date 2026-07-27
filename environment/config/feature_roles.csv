@@ -1,0 +1,7 @@
+feature,role,data_type,description
+color,feature,categorical,Model input from Rdatasets vcdExtra CrabSatellites CSV snapshot
+spine,feature,categorical,Model input from Rdatasets vcdExtra CrabSatellites CSV snapshot
+width,feature,numeric,Model input from Rdatasets vcdExtra CrabSatellites CSV snapshot
+weight,feature,numeric,Model input from Rdatasets vcdExtra CrabSatellites CSV snapshot
+satellites,target,numeric,Prediction target
+group_key,group,categorical,Validation reporting group

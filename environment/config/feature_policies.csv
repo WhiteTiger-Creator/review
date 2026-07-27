@@ -1,0 +1,7 @@
+policy,active_features,policy_order
+all_features,color|spine|width|weight,1
+without_color,spine|width|weight,2
+without_spine,color|width|weight,3
+without_width,color|spine|weight,4
+without_weight,color|spine|width,5
+numeric_only,width|weight,6

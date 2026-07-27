@@ -1,32 +1,16 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
-export PATH="/usr/local/go/bin:/opt/verifier/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
-
-ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
-
-test -f "$ROOT_DIR/reference/n7/scr_n.go"
-test -f "$ROOT_DIR/reference/p3/lat_p.go"
-test -f "$ROOT_DIR/reference/w9/jw_w.go"
-test -f "$ROOT_DIR/reference/r2/prf_h.go"
-test -f "$ROOT_DIR/reference/internal/persist.go"
-test -f "$ROOT_DIR/reference/ocneval/lane_a.go"
-test -f "$ROOT_DIR/reference/ocneval/lane_b.go"
-test -f "$ROOT_DIR/reference/ocneval/lane_c.go"
-test -f "$ROOT_DIR/reference/ocneval/boot.go"
-
-install -m 0644 "$ROOT_DIR/reference/n7/scr_n.go" /app/environment/n7/scr_n.go
-install -m 0644 "$ROOT_DIR/reference/p3/lat_p.go" /app/environment/p3/lat_p.go
-install -m 0644 "$ROOT_DIR/reference/w9/jw_w.go" /app/environment/w9/jw_w.go
-install -m 0644 "$ROOT_DIR/reference/r2/prf_h.go" /app/environment/r2/prf_h.go
-install -m 0644 "$ROOT_DIR/reference/internal/persist.go" /app/environment/internal/persist.go
-install -m 0644 "$ROOT_DIR/reference/ocneval/lane_a.go" /app/environment/ocneval/lane_a.go
-install -m 0644 "$ROOT_DIR/reference/ocneval/lane_b.go" /app/environment/ocneval/lane_b.go
-install -m 0644 "$ROOT_DIR/reference/ocneval/lane_c.go" /app/environment/ocneval/lane_c.go
-install -m 0644 "$ROOT_DIR/reference/ocneval/boot.go" /app/environment/ocneval/boot.go
-
-go build -C /app/environment -o /tmp/bn_run /app/environment/cmd/bn_run
-test -x /tmp/bn_run
-mkdir -p /app/output
-/tmp/bn_run -root /app/environment -out /app/output/invariant_proof_log.json
-test -f /app/output/invariant_proof_log.json
+cp /solution/analysis.R /app/analysis.R
+Rscript /app/analysis.R
+test -s /app/outputs/predictions.csv
+test -s /app/outputs/validation_predictions.csv
+test -s /app/outputs/metrics.json
+test -s /app/outputs/model_manifest.json
+test -s /app/outputs/robust_selection_report.csv
+test -s /app/outputs/feature_summary.csv
+test -s /app/outputs/group_error_report.csv
+test -s /app/outputs/neighbor_evidence.csv
+test -s /app/outputs/interval_report.csv
+test -s /app/outputs/residual_bins.csv
+test -s /app/outputs/feature_pair_stress_report.csv

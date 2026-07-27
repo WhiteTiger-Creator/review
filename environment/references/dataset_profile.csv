@@ -1,0 +1,6 @@
+name,value
+n_rows_public,173
+n_fit,103
+n_validation,35
+n_test,35
+mode,regression
