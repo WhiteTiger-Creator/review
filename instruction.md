@@ -1,5 +1,24 @@
-Create /app/analysis.R to predict horseshoe crab satellite counts offline. Read /app/data/train.csv, with DATA_PATH then DATA_DIR/train.csv overrides, and config from CONFIG_DIR or /app/config. Write fresh outputs to OUT_DIR, then OUTPUT_DIR, then /app/outputs; OUT_DIR wins.
+Night shift blocked a mesh config promotion because the security posture reconciler at `/app/cmd/meshgate` is not producing a compliant `/app/output/posture.json`. The reconciler replays signed unit streams from `/app/data` against the mesh policy at `/app/spec/mesh_policy.json` and must report security posture per the normative contracts in `/app/spec/mesh_stream_protocol.md` and `/app/spec/posture_schema.md`.
 
-Compare every configured policy-lambda pair using fit rows and validation RMSE, group stability, and paired-feature sensitivity. Rank by ascending robust_score, validation_rmse, policy_order, candidate_lambda. Candidate stress takes the first robust_selection_pair_count unordered active-feature pairs in role order; replace validation numerics with fit medians and categoricals with first learned levels. Final stress uses the first feature_pair_stress_feature_count active features and combined-reference replacements. Refit the winner on fit plus validation; ignore blank test targets.
+Bring it into compliance with the security baseline. Treat both spec files as authoritative — every behavior the verifier checks must be derivable from them without reverse-engineering hidden reference logic.
 
-Write these schemas: predictions.csv (row_id, prediction, lower, upper, group_key); validation_predictions.csv (row_id, actual, prediction, residual, abs_error, group_key); robust_selection_report.csv (rank, candidate_policy, candidate_lambda, active_feature_count, validation_rmse, stability_gap, mean_abs_pair_shift, robust_score, selected); feature_summary.csv (feature, data_type, active_in_policy, missing_fit, missing_validation, missing_test); group_error_report.csv (group_key, mean_abs_error, n_validation); neighbor_evidence.csv (row_id, selected_policy, selected_lambda, nearest_fit_index, nearest_distance); interval_report.csv (split, interval_coverage, mean_width); residual_bins.csv (prediction_bin, mean_abs_error, count); feature_pair_stress_report.csv (rank, feature_a, feature_b, baseline_mean_prediction, stressed_mean_prediction, mean_prediction_shift, mean_abs_prediction_shift, max_abs_prediction_shift); metrics.json (task_mode, target_column, model_family, selected_policy, selected_lambda, n_fit, n_validation, n_test, validation_rmse, validation_mae, validation_r2, interval_coverage); model_manifest.json (task_mode, target_column, model_family, selected_policy, selected_lambda, feature_columns, active_feature_columns, feature_policy_source). Intervals use 0.08/0.92 R type-8 target quantiles from min(selected_lambda, available-reference-row count) nearest neighbors: fit-only for validation, fit-plus-validation for test. /app/config/artifact_contract.csv is authoritative for preprocessing, formulas, row scope/order, and final-reference rules.
+## Required behaviors (summary)
+
+**Output:** Write `/app/output/posture.json` with top-level fields `recoverable`, `gateways`, and `drift_events`. All list fields must serialize as JSON arrays (`[]`), never `null`.
+
+**Stream processing:** Validate records in the priority order documented in `mesh_stream_protocol.md`. Signature payloads use `gateway_id|seq|ts|unit_id|op|metric|val|offset` with four-decimal float formatting for `val` and `offset`.
+
+**Calibration:** `adjusted_val = raw_val + active_offset`. Each applied `TUNE` **replaces** the active offset (default `0.0`); offsets do not accumulate. Staged `TUNE` ops inside batches follow batch commit ordering — see the worked examples in `mesh_stream_protocol.md`.
+
+**Batch transactions:** Stage `TELEMETRY` and `TUNE` while a batch is open; apply on `BATCH_COMMIT` in chronological order. Abort discards staged state.
+
+**Recoverability:** Gateways with `invalid_seq`, `duplicate_seq`, or `bad_signature` are unrecoverable and omit unit output. When global `recoverable` is `false`, skip all policy evaluation.
+
+**Policy drift:**
+- `binding_breach` — evaluated **per gateway** for each bound pair; emit one policy-wide event (`gateway_id: ""`, `seq: 0`) per violating gateway, without deduplication. See the worked example in `posture_schema.md`.
+- `site_forbidden` — active unit on a gateway outside its home-site list.
+- `sync_skew` — cross-gateway reference-average delta strictly greater than `0.05` for a sync metric present on at least two gateways.
+
+**Drift events:** Use the exact `reason` labels and `detail` string formats from `posture_schema.md`, including `bad_signature`, `binding_breach`, `site_forbidden`, and `sync_skew`.
+
+Default paths are fine; keep support for `--data-root`/`--data`, `--policy`, and `--output`.

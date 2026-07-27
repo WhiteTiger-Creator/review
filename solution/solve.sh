@@ -1,16 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
-cp /solution/analysis.R /app/analysis.R
-Rscript /app/analysis.R
-test -s /app/outputs/predictions.csv
-test -s /app/outputs/validation_predictions.csv
-test -s /app/outputs/metrics.json
-test -s /app/outputs/model_manifest.json
-test -s /app/outputs/robust_selection_report.csv
-test -s /app/outputs/feature_summary.csv
-test -s /app/outputs/group_error_report.csv
-test -s /app/outputs/neighbor_evidence.csv
-test -s /app/outputs/interval_report.csv
-test -s /app/outputs/residual_bins.csv
-test -s /app/outputs/feature_pair_stress_report.csv
+cd /app
+mkdir -p /app/output
+
+SOL_DIR="${HARBOR_SOLUTION_DIR:-/solution}"
+
+cp "${SOL_DIR}/go.mod" /app/go.mod
+mkdir -p /app/internal/mesh /app/cmd/meshgate
+cp "${SOL_DIR}/internal/mesh/mesh.go" /app/internal/mesh/mesh.go
+cp "${SOL_DIR}/cmd/meshgate/main.go" /app/cmd/meshgate/main.go
+
+go run /app/cmd/meshgate/main.go reconcile
