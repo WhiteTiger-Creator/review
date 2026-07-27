@@ -1,24 +1,31 @@
-Night shift blocked a mesh config promotion because the security posture reconciler at `/app/cmd/meshgate` is not producing a compliant `/app/output/posture.json`. The reconciler replays signed unit streams from `/app/data` against the mesh policy at `/app/spec/mesh_policy.json` and must report security posture per the normative contracts in `/app/spec/mesh_stream_protocol.md` and `/app/spec/posture_schema.md`.
+# Restore OIDC gateway trust after mTLS policy migration failure
 
-Bring it into compliance with the security baseline. Treat both spec files as authoritative — every behavior the verifier checks must be derivable from them without reverse-engineering hidden reference logic.
+An offline security migration service under `/app/environment` converts a legacy mutual-TLS service call graph, authorization YAML, and security decision corpus into an OIDC gateway policy bundle plus SQLite audit evidence. A partial cutover left trust-boundary enforcement broken: unsafe JWKS material can be accepted, semantic issuer URLs are replaced with hardcoded values, transport fixture hosts leak into policy, parallel edges collapse, dossier authority is ignored, explicit denies are bypassed, and recursive coverage checks are skipped.
 
-## Required behaviors (summary)
+Recover gateway trust by repairing verifier logic under `/app/environment`. Static output writes or verifier edits are insufficient; the migrator binary must regenerate policy and audit artifacts through the normal pipeline.
 
-**Output:** Write `/app/output/posture.json` with top-level fields `recoverable`, `gateways`, and `drift_events`. All list fields must serialize as JSON arrays (`[]`), never `null`.
+After `/app/environment/bin/reset-state`, this command must exit zero from working directory `/app`:
 
-**Stream processing:** Validate records in the priority order documented in `mesh_stream_protocol.md`. Signature payloads use `gateway_id|seq|ts|unit_id|op|metric|val|offset` with four-decimal float formatting for `val` and `offset`.
+```bash
+/app/environment/bin/migrate-policy
+```
 
-**Calibration:** `adjusted_val = raw_val + active_offset`. Each applied `TUNE` **replaces** the active offset (default `0.0`); offsets do not accumulate. Staged `TUNE` ops inside batches follow batch commit ordering — see the worked examples in `mesh_stream_protocol.md`.
+Inputs live under `/app/environment/input` and `/app/environment/dossier`. Identity-provider metadata must be obtained through the configured offline transport. Effective policy must record semantic issuer URLs from bundled discovery documents, not loopback fixture hosts.
 
-**Batch transactions:** Stage `TELEMETRY` and `TUNE` while a batch is open; apply on `BATCH_COMMIT` in chronological order. Abort discards staged state.
+## Trust and security requirements
 
-**Recoverability:** Gateways with `invalid_seq`, `duplicate_seq`, or `bad_signature` are unrecoverable and omit unit output. When global `recoverable` is `false`, skip all policy evaluation.
+- Retire all mTLS-only certificate fields (`client_cert_subject`, `ca_bundle`, `serial_number`, `mtls_trust_bundle`) from emitted gateway policy.
+- JWKS ingestion must reject symmetric algorithms, `none`, encryption-only keys, and keys without verify operations.
+- Policy issuers must match bundled semantic discovery URLs; hardcoded or transport-derived issuer values are invalid.
+- Parallel graph edges with distinct environment, method, path, or authz_scope must remain distinct in policy output.
+- Dossier authority rules under `/data/dossier-authority` govern which decision statuses and scopes are authoritative.
+- Superseded and proposed dossier entries must not override accepted or amended audience decisions.
+- Explicit deny edges such as `api-gateway` to `payment-service` must remain `action: deny`.
+- Retired service `admin-api` must not appear with `action: allow`.
+- Recursive audit view `coverage_gaps` must be empty and `latest_complete_run.status` must be `COMPLETE`.
+- Re-running migration must be idempotent and produce byte-identical `/output/gateway-policy.yaml`.
+- Protected trees under `/data/canonical`, `/data/oidc-contracts`, and `/data/dossier-authority` must remain unchanged.
 
-**Policy drift:**
-- `binding_breach` — evaluated **per gateway** for each bound pair; emit one policy-wide event (`gateway_id: ""`, `seq: 0`) per violating gateway, without deduplication. See the worked example in `posture_schema.md`.
-- `site_forbidden` — active unit on a gateway outside its home-site list.
-- `sync_skew` — cross-gateway reference-average delta strictly greater than `0.05` for a sync metric present on at least two gateways.
+Write `/output/gateway-policy.yaml`, `/output/migration-summary.json`, and `/output/migration-audit.db`. The migration-contract at `/app/environment/docs/migration-contract.md` documents required `schema_version`, issuers, edges, edge `action`, `jwks_uri`, `run_id`, `edge_count`, and `status` fields.
 
-**Drift events:** Use the exact `reason` labels and `detail` string formats from `posture_schema.md`, including `bad_signature`, `binding_breach`, `site_forbidden`, and `sync_skew`.
-
-Default paths are fine; keep support for `--data-root`/`--data`, `--policy`, and `--output`.
+Grading uses Python's `sqlite3` module against `/output/migration-audit.db` and PyYAML against `/output/gateway-policy.yaml`, running `python3 -m pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py` after reset. Do not modify `/tests`.

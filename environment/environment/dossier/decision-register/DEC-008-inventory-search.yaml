@@ -1,0 +1,12 @@
+id: DEC-008
+status: accepted
+scope: edge
+effective_date: 2025-06-20
+source:
+  service: inventory-service
+  environment: production
+  method: GET
+  path: /search/index
+target_service: search-service
+audiences:
+  - https://search.example.com/index

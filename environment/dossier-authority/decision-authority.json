@@ -1,0 +1,12 @@
+{
+  "authoritative_statuses": [
+    "accepted",
+    "amended"
+  ],
+  "scope_order": [
+    "edge",
+    "service",
+    "environment",
+    "global"
+  ]
+}

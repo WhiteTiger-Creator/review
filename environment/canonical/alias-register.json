@@ -1,0 +1,6 @@
+{
+  "aliases": {
+    "auth-svc": "auth-service",
+    "auth_svc": "auth-service"
+  }
+}

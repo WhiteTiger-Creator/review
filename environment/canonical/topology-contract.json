@@ -1,0 +1,11 @@
+{
+  "edge_identity_fields": [
+    "id",
+    "source",
+    "target",
+    "environment",
+    "method",
+    "path",
+    "authz_scope"
+  ]
+}
