@@ -1,13 +1,9 @@
-#!/bin/bash
-set -uo pipefail
+#!/usr/bin/env bash
 mkdir -p /logs/verifier
-echo 0 > /logs/verifier/reward.txt
-export PYTHONSAFEPATH=1
-export PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
-cd /tests
-/usr/bin/python3 -m pytest -rA -c /dev/null --confcutdir=/tests /tests/test_outputs.py
-rc=$?
-if [ "$rc" -eq 0 ]; then
+cd /tests 2>/dev/null || cd "$(dirname "$0")" 2>/dev/null || true
+python3 -m pytest -rA --maxfail=1 -p no:cacheprovider --confcutdir=/tests -c /tests/pytest.ini --ctrf /logs/verifier/ctrf.json test_outputs.py
+status=$?
+if [ "$status" -eq 0 ]; then
     echo 1 > /logs/verifier/reward.txt
 else
     echo 0 > /logs/verifier/reward.txt
