@@ -1,0 +1,4 @@
+plot	depth	temp	moisture	clay	input	f_input
+pine	5	11	0.71	0.248	3.18	1.026
+pine	20	9.6	0.74	0.316	0.96	1.016
+pine	50	7.9	0.776	0.394	0.28	1.005

@@ -1,32 +1,28 @@
-# Task configuration schema version
 version = "2.0"
 
-# Task metadata (author, difficulty, categorization)
 [metadata]
-author_name = "anonymous"
-author_email = "anonymous"
+author_name = "Task Author"
+author_email = "author@example.com"
 difficulty = "hard"
-category = "security"
-subcategories = ["tool_specific"]
+category = "machine-learning"
+subcategories = ["db_interaction"]
+codebase_size = "small"
+languages = ["awk", "bash", "sql"]
+tags = ["cross-validation", "hyperparameter-selection", "regularization", "hierarchical-models", "model-selection", "profile-likelihood"]
+expert_time_estimate_min = 360
+junior_time_estimate_min = 840
 number_of_milestones = 0
-codebase_size = "minimal"
-languages = [ "go", "bash", "python" ]
-tags = [ "compliance", "security-posture", "mesh-policy", "signatures", "gateway-logs", "json" ]
-expert_time_estimate_min = 90
-junior_time_estimate_min = 180
 
-# Verifier: runs the test script to check task completion
 [verifier]
-timeout_sec = 450.0
+timeout_sec = 600.0
 
-# Agent: limits how long the agent can run when attempting the task
 [agent]
-timeout_sec = 900.0
+timeout_sec = 1800.0
 
-# Sandbox environment limits
 [environment]
 allow_internet = false
 build_timeout_sec = 600.0
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
+workdir = "/app"

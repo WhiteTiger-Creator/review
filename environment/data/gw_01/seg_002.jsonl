@@ -1,6 +1,0 @@
-{"seq":11,"ts":"2026-07-04T12:00:50Z","unit_id":"engine-01","op":"PING","sig":"7df68ec91c1aefaa4789ec32f9930a350535629b64909b88e6a47c15dfdabfe4"}
-{"seq":12,"ts":"2026-07-04T12:00:55Z","unit_id":"engine-01","op":"TELEMETRY","metric":"rpm","val":1400.0,"sig":"e6700720b4af4c0041bdec5140642c1d1ce4f22a7d49e55168f5914ac8236137"}
-{"seq":13,"ts":"2026-07-04T12:01:00Z","unit_id":"aux-01","op":"BOOT","sig":"559fbddb08bdc43131b1346375fd0d9bd03d0b6e2175b2892f142221f7c82579"}
-{"seq":14,"ts":"2026-07-04T12:01:05Z","unit_id":"aux-01","op":"TELEMETRY","metric":"rpm","val":3000.0,"sig":"f71b3ae85b5d5c67ed8ba2a972e5aa4a63bfc7078338551ec8abf77d3f7fb6a2"}
-{"seq":15,"ts":"2026-07-04T12:01:10Z","unit_id":"cabin-01","op":"SHUTDOWN","sig":"ea9f493e69a3ae59291ed3a661cb6ba583169cee815fd6bed1e39d374c2fd198"}
-{"seq":16,"ts":"2026-07-04T12:01:15Z","unit_id":"cabin-01","op":"TELEMETRY","metric":"rpm","val":900.0,"sig":"9bfcc69ef82da665217c7016d6a77dd5e160ee007209869aeea8379e36bc3125"}

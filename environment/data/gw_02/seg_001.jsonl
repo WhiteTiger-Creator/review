@@ -1,2 +1,0 @@
-{"seq":1,"ts":"2026-07-04T12:01:00Z","unit_id":"engine-01","op":"BOOT","sig":"ee485f915b631462a94fcab986978406962dfb8a96729e70995329dda58008b6"}
-{"seq":2,"ts":"2026-07-04T12:01:10Z","unit_id":"engine-01","op":"TELEMETRY","metric":"rpm","val":1210.0,"sig":"39d16316397b5dc7ca0fac1a0ca306a742805cb8a5ff4196aa5e636994fc84f7"}

@@ -1,0 +1,4 @@
+plot	depth	temp	moisture	clay	input	f_input
+fir	5	10.1	0.665	0.194	2.79	1.032
+fir	20	8.7	0.71	0.268	0.84	1.0205
+fir	50	7	0.758	0.352	0.235	1.008
