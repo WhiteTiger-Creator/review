@@ -1,0 +1,380 @@
+--- /dev/null
++++ b/internal/course/sweep.go
+@@ -0,0 +1,377 @@
++package course
++
++import (
++	"fmt"
++	"sort"
++
++	"slate/internal/sieve"
++	"slate/internal/manifest"
++	"slate/internal/registry"
++	"slate/internal/semver"
++)
++
++type frame struct {
++	pkg        string
++	candidates []string
++	next       int
++	mark       int
++	version    string
++}
++
++type searcher struct {
++	idx      *registry.Index
++	m        *manifest.Manifest
++	active   []Constraint
++	assigned map[string]string
++	features map[string][]string
++	stack    []*frame
++	ranges   map[string]sieve.Range
++	last     *Conflict
++	backs    int
++}
++
++// Resolve runs the search. A returned error means an input was unusable; a
++// Result with OK false means the manifest is unsatisfiable.
++func Resolve(idx *registry.Index, m *manifest.Manifest) (*Result, error) {
++	s := &searcher{
++		idx:      idx,
++		m:        m,
++		assigned: map[string]string{},
++		features: map[string][]string{},
++		ranges:   map[string]sieve.Range{},
++	}
++	for _, req := range m.Requires {
++		s.add(Constraint{Requirer: "root", Package: req.Name, Range: req.Range})
++		if len(req.Features) > 0 {
++			s.features[req.Name] = mergeFeatures(s.features[req.Name], req.Features)
++		}
++	}
++	ok, err := s.run()
++	if err != nil {
++		return nil, err
++	}
++	res := &Result{
++		Project:     m.Project,
++		AllowYanked: m.AllowYanked,
++		OK:          ok,
++		Packages:    []Locked{},
++		Waived:      []string{},
++		Steps:       []Step{},
++		Backtracks:  s.backs,
++	}
++	if !ok {
++		res.Conflict = s.last
++		return res, nil
++	}
++	for _, f := range s.stack {
++		res.Steps = append(res.Steps, Step{Package: f.pkg, Version: f.version, Candidates: f.candidates})
++	}
++	packages, err := s.locked()
++	if err != nil {
++		return nil, err
++	}
++	res.Packages = packages
++	res.Assignments = len(packages)
++	waived, err := s.waivers()
++	if err != nil {
++		return nil, err
++	}
++	res.Waived = waived
++	return res, nil
++}
++
++func (s *searcher) run() (bool, error) {
++	for {
++		pkg, cands, more, err := s.pick()
++		if err != nil {
++			return false, err
++		}
++		if !more {
++			return true, nil
++		}
++		if len(cands) == 0 {
++			s.record(pkg)
++		}
++		s.stack = append(s.stack, &frame{pkg: pkg, candidates: cands, mark: len(s.active)})
++		ok, err := s.advance()
++		if err != nil {
++			return false, err
++		}
++		if !ok {
++			return false, nil
++		}
++	}
++}
++
++// advance commits candidates of the newest frame, unwinding older frames when
++// none of them stands. It reports false once the search space is exhausted.
++func (s *searcher) advance() (bool, error) {
++	for {
++		if len(s.stack) == 0 {
++			return false, nil
++		}
++		top := s.stack[len(s.stack)-1]
++		if top.next >= len(top.candidates) {
++			s.stack = s.stack[:len(s.stack)-1]
++			if len(s.stack) == 0 {
++				return false, nil
++			}
++			prev := s.stack[len(s.stack)-1]
++			s.undo(prev)
++			s.backs++
++			continue
++		}
++		version := top.candidates[top.next]
++		top.next++
++		ok, err := s.commit(top, version)
++		if err != nil {
++			return false, err
++		}
++		if ok {
++			return true, nil
++		}
++		s.undo(top)
++		s.backs++
++	}
++}
++
++// commit assigns version to the frame's package and pushes the edges it brings.
++func (s *searcher) commit(f *frame, version string) (bool, error) {
++	rel := s.idx.Release(f.pkg, version)
++	if rel == nil {
++		return false, fmt.Errorf("registry %s: %s has no version %s", s.idx.Dir(), f.pkg, version)
++	}
++	f.mark = len(s.active)
++	f.version = version
++	s.assigned[f.pkg] = version
++	requirer := f.pkg + "@" + version
++	for _, req := range s.edges(*rel, f.pkg) {
++		s.add(Constraint{Requirer: requirer, Package: req.Name, Range: req.Range})
++	}
++	for _, c := range s.active[f.mark:] {
++		version, ok := s.assigned[c.Package]
++		if !ok {
++			continue
++		}
++		if _, pinned := s.m.OverrideFor(c.Package); pinned {
++			continue
++		}
++		match, err := s.matches(c.Range, version)
++		if err != nil {
++			return false, err
++		}
++		if !match {
++			s.record(c.Package)
++			return false, nil
++		}
++	}
++	return true, nil
++}
++
++// edges lists the requirements a release contributes: its own, then those of
++// each requested feature it declares, features ascending.
++func (s *searcher) edges(rel registry.Release, pkg string) []registry.Requirement {
++	out := append([]registry.Requirement{}, rel.Requires...)
++	for _, feat := range s.features[pkg] {
++		out = append(out, rel.Features[feat]...)
++	}
++	return out
++}
++
++func (s *searcher) undo(f *frame) {
++	s.active = s.active[:f.mark]
++	delete(s.assigned, f.pkg)
++	f.version = ""
++}
++
++// pick chooses the next package: fewest candidates, then name ascending.
++func (s *searcher) pick() (string, []string, bool, error) {
++	seen := map[string]bool{}
++	var names []string
++	for _, c := range s.active {
++		if _, done := s.assigned[c.Package]; done || seen[c.Package] {
++			continue
++		}
++		seen[c.Package] = true
++		names = append(names, c.Package)
++	}
++	if len(names) == 0 {
++		return "", nil, false, nil
++	}
++	sort.Strings(names)
++	best := ""
++	var bestCands []string
++	for _, name := range names {
++		cands, err := s.candidates(name)
++		if err != nil {
++			return "", nil, false, err
++		}
++		if best == "" || len(cands) < len(bestCands) {
++			best, bestCands = name, cands
++		}
++	}
++	return best, bestCands, true, nil
++}
++
++// candidates builds the ordered candidate list for a package.
++func (s *searcher) candidates(pkg string) ([]string, error) {
++	releases := s.idx.Releases(pkg)
++	if releases == nil {
++		return nil, fmt.Errorf("registry %s: no package %q", s.idx.Dir(), pkg)
++	}
++	if version, pinned := s.m.OverrideFor(pkg); pinned {
++		if s.idx.Release(pkg, version) == nil {
++			return nil, fmt.Errorf("manifest %s: override %s %s is not published", s.m.Project, pkg, version)
++		}
++		return []string{version}, nil
++	}
++	var plain, yanked []string
++	for _, rel := range releases {
++		ok, err := s.satisfies(pkg, rel.Version)
++		if err != nil {
++			return nil, err
++		}
++		if !ok {
++			continue
++		}
++		if rel.Yanked {
++			yanked = append(yanked, rel.Version)
++			continue
++		}
++		plain = append(plain, rel.Version)
++	}
++	if len(plain) == 0 && s.m.AllowYanked {
++		return yanked, nil
++	}
++	return plain, nil
++}
++
++func (s *searcher) satisfies(pkg, version string) (bool, error) {
++	for _, c := range s.active {
++		if c.Package != pkg {
++			continue
++		}
++		ok, err := s.matches(c.Range, version)
++		if err != nil || !ok {
++			return false, err
++		}
++	}
++	return true, nil
++}
++
++func (s *searcher) matches(rangeText, version string) (bool, error) {
++	r, ok := s.ranges[rangeText]
++	if !ok {
++		parsed, err := sieve.Parse(rangeText)
++		if err != nil {
++			return false, err
++		}
++		s.ranges[rangeText] = parsed
++		r = parsed
++	}
++	v, err := semver.Parse(version)
++	if err != nil {
++		return false, err
++	}
++	return r.Matches(v), nil
++}
++
++func (s *searcher) add(c Constraint) {
++	for _, have := range s.active {
++		if have == c {
++			return
++		}
++	}
++	s.active = append(s.active, c)
++}
++
++// record keeps the newest conflict: the package and the constraints on it.
++func (s *searcher) record(pkg string) {
++	conf := &Conflict{Package: pkg}
++	for _, c := range s.active {
++		if c.Package == pkg {
++			conf.Constraints = append(conf.Constraints, c)
++		}
++	}
++	sort.SliceStable(conf.Constraints, func(i, j int) bool {
++		return conf.Constraints[i].Requirer < conf.Constraints[j].Requirer
++	})
++	s.last = conf
++}
++
++func (s *searcher) locked() ([]Locked, error) {
++	requiredBy := map[string][]string{}
++	for _, c := range s.active {
++		requiredBy[c.Package] = appendUnique(requiredBy[c.Package], c.Requirer)
++	}
++	out := make([]Locked, 0, len(s.assigned))
++	for pkg, version := range s.assigned {
++		rel := s.idx.Release(pkg, version)
++		if rel == nil {
++			return nil, fmt.Errorf("registry %s: %s has no version %s", s.idx.Dir(), pkg, version)
++		}
++		labels := append([]string{}, requiredBy[pkg]...)
++		sort.Strings(labels)
++		feats := append([]string{}, s.features[pkg]...)
++		edges := s.edges(*rel, pkg)
++		if edges == nil {
++			edges = []registry.Requirement{}
++		}
++		if feats == nil {
++			feats = []string{}
++		}
++		out = append(out, Locked{
++			Name:       pkg,
++			Version:    version,
++			Yanked:     rel.Yanked,
++			Features:   feats,
++			Requires:   edges,
++			RequiredBy: labels,
++		})
++	}
++	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
++	return out, nil
++}
++
++// waivers lists the constraints an override rode over.
++func (s *searcher) waivers() ([]string, error) {
++	var out []string
++	for _, c := range s.active {
++		if _, pinned := s.m.OverrideFor(c.Package); !pinned {
++			continue
++		}
++		version, ok := s.assigned[c.Package]
++		if !ok {
++			continue
++		}
++		match, err := s.matches(c.Range, version)
++		if err != nil {
++			return nil, err
++		}
++		if !match {
++			out = appendUnique(out, fmt.Sprintf("%s requires %s %s", c.Requirer, c.Package, c.Range))
++		}
++	}
++	sort.Strings(out)
++	if out == nil {
++		out = []string{}
++	}
++	return out, nil
++}
++
++func appendUnique(list []string, value string) []string {
++	for _, have := range list {
++		if have == value {
++			return list
++		}
++	}
++	return append(list, value)
++}
++
++func mergeFeatures(have, add []string) []string {
++	for _, f := range add {
++		have = appendUnique(have, f)
++	}
++	sort.Strings(have)
++	return have
++}

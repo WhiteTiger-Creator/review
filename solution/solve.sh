@@ -1,9 +1,25 @@
-#!/usr/bin/env bash
+#!/bin/bash
+# Reference solution: land the range sieve, the search course and the artifact
+# scribe, teach the command table the new subcommand, rebuild the module and
+# publish every project. Fully offline.
 set -euo pipefail
-cp /solution/analysis.R /app/environment/analysis.R
-chmod a+r /app/environment/analysis.R
-mkdir -p /app/environment/outputs
-chmod 777 /app/environment /app/environment/outputs
-cd /app/environment
-Rscript /app/environment/analysis.R
-echo done
+
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+mkdir -p /app/internal/sieve /app/internal/course /app/internal/scribe
+
+patch -p1 -d /app < files/01-sieve-bounds.patch
+patch -p1 -d /app < files/02-sieve-admit.patch
+patch -p1 -d /app < files/03-course-frame.patch
+patch -p1 -d /app < files/04-course-sweep.patch
+patch -p1 -d /app < files/05-scribe-shape.patch
+patch -p1 -d /app < files/06-scribe-mint.patch
+patch -p1 -d /app < files/07-console-subrun.patch
+patch -p1 -d /app < files/08-console-dispatch.patch
+
+cd /app
+make clean
+make all
+
+mkdir -p /app/out
+/app/bin/slate resolve --all

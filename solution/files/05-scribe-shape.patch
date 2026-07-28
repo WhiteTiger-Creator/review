@@ -1,0 +1,203 @@
+--- /dev/null
++++ b/internal/scribe/shape.go
+@@ -0,0 +1,200 @@
++// Package scribe builds the four published documents and their digests.
++package scribe
++
++import (
++	"strconv"
++
++	"slate/internal/canon"
++	"slate/internal/registry"
++	"slate/internal/course"
++)
++
++// LockPackage is one entry of a lock document.
++type LockPackage struct {
++	Name       string                 `json:"name"`
++	Version    string                 `json:"version"`
++	Yanked     bool                   `json:"yanked"`
++	Features   []string               `json:"features"`
++	Requires   []registry.Requirement `json:"requires"`
++	RequiredBy []string               `json:"required_by"`
++}
++
++// Stats are the search counters.
++type Stats struct {
++	Assignments int `json:"assignments"`
++	Backtracks  int `json:"backtracks"`
++}
++
++// Lock is <out>/<project>.lock.json.
++type Lock struct {
++	Protocol    string        `json:"protocol"`
++	Project     string        `json:"project"`
++	AllowYanked bool          `json:"allow_yanked"`
++	Packages    []LockPackage `json:"packages"`
++	Waived      []string      `json:"waived"`
++	Stats       Stats         `json:"stats"`
++	Digest      string        `json:"digest"`
++}
++
++// TrailStep is one line of the search trail.
++type TrailStep struct {
++	Step       int      `json:"step"`
++	Package    string   `json:"package"`
++	Version    string   `json:"version"`
++	Candidates []string `json:"candidates"`
++}
++
++// Trail is <out>/staging/<project>.trail.json.
++type Trail struct {
++	Protocol string      `json:"protocol"`
++	Project  string      `json:"project"`
++	Steps    []TrailStep `json:"steps"`
++	Digest   string      `json:"digest"`
++}
++
++// ConflictConstraint is one constraint of a conflict document.
++type ConflictConstraint struct {
++	Requirer string `json:"requirer"`
++	Range    string `json:"range"`
++}
++
++// Conflict is <out>/<project>.conflict.json.
++type Conflict struct {
++	Protocol    string               `json:"protocol"`
++	Project     string               `json:"project"`
++	Package     string               `json:"package"`
++	Constraints []ConflictConstraint `json:"constraints"`
++	Backtracks  int                  `json:"backtracks"`
++	Digest      string               `json:"digest"`
++}
++
++// IndexEntry is one project row of the index.
++type IndexEntry struct {
++	Project    string `json:"project"`
++	Status     string `json:"status"`
++	Packages   int    `json:"packages"`
++	Backtracks int    `json:"backtracks"`
++	Digest     string `json:"digest"`
++}
++
++// Index is <out>/index.json.
++type Index struct {
++	Protocol string       `json:"protocol"`
++	Projects []IndexEntry `json:"projects"`
++	Digest   string       `json:"digest"`
++}
++
++// BuildLock renders a successful result as a lock document.
++func BuildLock(res *course.Result) Lock {
++	doc := Lock{
++		Protocol:    canon.Protocol,
++		Project:     res.Project,
++		AllowYanked: res.AllowYanked,
++		Packages:    []LockPackage{},
++		Waived:      res.Waived,
++		Stats:       Stats{Assignments: res.Assignments, Backtracks: res.Backtracks},
++	}
++	for _, p := range res.Packages {
++		doc.Packages = append(doc.Packages, LockPackage{
++			Name:       p.Name,
++			Version:    p.Version,
++			Yanked:     p.Yanked,
++			Features:   p.Features,
++			Requires:   p.Requires,
++			RequiredBy: p.RequiredBy,
++		})
++	}
++	lines := []string{
++		canon.Field("protocol", canon.Protocol),
++		canon.Field("project", doc.Project),
++		canon.Field("allow-yanked", strconv.FormatBool(doc.AllowYanked)),
++	}
++	for _, p := range doc.Packages {
++		lines = append(lines, canon.Field("pkg", p.Name, p.Version,
++			strconv.FormatBool(p.Yanked), join(p.Features)))
++	}
++	for _, w := range doc.Waived {
++		lines = append(lines, canon.Field("waive", w))
++	}
++	doc.Digest = canon.DigestLines(lines)
++	return doc
++}
++
++// BuildTrail renders the search trail.
++func BuildTrail(res *course.Result) Trail {
++	doc := Trail{Protocol: canon.Protocol, Project: res.Project, Steps: []TrailStep{}}
++	lines := []string{
++		canon.Field("protocol", canon.Protocol),
++		canon.Field("trail", res.Project),
++	}
++	for i, step := range res.Steps {
++		entry := TrailStep{
++			Step:       i + 1,
++			Package:    step.Package,
++			Version:    step.Version,
++			Candidates: step.Candidates,
++		}
++		if entry.Candidates == nil {
++			entry.Candidates = []string{}
++		}
++		doc.Steps = append(doc.Steps, entry)
++		lines = append(lines, canon.Field("step", strconv.Itoa(entry.Step),
++			entry.Package, entry.Version, join(entry.Candidates)))
++	}
++	doc.Digest = canon.DigestLines(lines)
++	return doc
++}
++
++// BuildConflict renders the conflict of an unsatisfiable project.
++func BuildConflict(res *course.Result) Conflict {
++	doc := Conflict{
++		Protocol:    canon.Protocol,
++		Project:     res.Project,
++		Constraints: []ConflictConstraint{},
++		Backtracks:  res.Backtracks,
++	}
++	if res.Conflict != nil {
++		doc.Package = res.Conflict.Package
++		for _, c := range res.Conflict.Constraints {
++			doc.Constraints = append(doc.Constraints, ConflictConstraint{Requirer: c.Requirer, Range: c.Range})
++		}
++	}
++	lines := []string{
++		canon.Field("protocol", canon.Protocol),
++		canon.Field("conflict", doc.Project, doc.Package),
++	}
++	for _, c := range doc.Constraints {
++		lines = append(lines, canon.Field("constraint", c.Requirer, c.Range))
++	}
++	doc.Digest = canon.DigestLines(lines)
++	return doc
++}
++
++// BuildIndex renders the ladder over every project of a --all run.
++func BuildIndex(entries []IndexEntry) Index {
++	doc := Index{Protocol: canon.Protocol, Projects: entries}
++	if doc.Projects == nil {
++		doc.Projects = []IndexEntry{}
++	}
++	lines := []string{
++		canon.Field("protocol", canon.Protocol),
++		canon.Field("index", strconv.Itoa(len(doc.Projects))),
++	}
++	for _, e := range doc.Projects {
++		lines = append(lines, canon.Field("project", e.Project, e.Status,
++			strconv.Itoa(e.Packages), strconv.Itoa(e.Backtracks), e.Digest))
++	}
++	doc.Digest = canon.DigestLines(lines)
++	return doc
++}
++
++func join(items []string) string {
++	out := ""
++	for i, item := range items {
++		if i > 0 {
++			out += ","
++		}
++		out += item
++	}
++	return out
++}

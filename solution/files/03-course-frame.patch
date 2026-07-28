@@ -1,0 +1,53 @@
+--- /dev/null
++++ b/internal/course/frame.go
+@@ -0,0 +1,50 @@
++// Package course turns one manifest into one assignment, following
++// docs/resolution-algorithm.md.
++package course
++
++import "slate/internal/registry"
++
++// Constraint is an active requirement: who asked, for what, with which range.
++type Constraint struct {
++	Requirer string
++	Package  string
++	Range    string
++}
++
++// Step is one committed assignment, with the candidate list as it stood when
++// the package was picked.
++type Step struct {
++	Package    string
++	Version    string
++	Candidates []string
++}
++
++// Locked is one package of a finished lock.
++type Locked struct {
++	Name       string
++	Version    string
++	Yanked     bool
++	Features   []string
++	Requires   []registry.Requirement
++	RequiredBy []string
++}
++
++// Conflict is the package a failed step happened on and the constraints that
++// were active on it at that moment.
++type Conflict struct {
++	Package     string
++	Constraints []Constraint
++}
++
++// Result is the outcome of resolving one project.
++type Result struct {
++	Project     string
++	AllowYanked bool
++	OK          bool
++	Packages    []Locked
++	Waived      []string
++	Steps       []Step
++	Assignments int
++	Backtracks  int
++	Conflict    *Conflict
++}
