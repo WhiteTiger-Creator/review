@@ -1,0 +1,4 @@
+plot	depth	temp	moisture	clay	input	f_input
+birch	5	9.5	0.635	0.158	2.53	1.036
+birch	20	8.1	0.69	0.236	0.76	1.0235
+birch	50	6.4	0.746	0.324	0.205	1.01

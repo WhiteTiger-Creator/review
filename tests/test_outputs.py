@@ -1,887 +1,628 @@
-"""Behavioral verification for the offline Go build-slice planner."""
+"""Behavioral verification for the penalized hierarchical profile fit."""
 
-import copy
-import itertools
-import json
-import re
+from __future__ import annotations
+
+import math
+import pathlib
+import shutil
+import sqlite3
 import subprocess
-from contextlib import contextmanager
-from pathlib import Path
 
+import numpy as np
 import pytest
+import scipy.optimize
 
-APP = Path("/app")
-ENV = APP / "environment"
-GRAPH_PATH = ENV / "vendor_tree" / "graph.json"
-SCENARIO_DIR = ENV / "scenarios"
-OUTPUT_DIR = APP / "output"
-REPORT_PATH = OUTPUT_DIR / "buildslice_report.json"
-CACHE_PATH = OUTPUT_DIR / "buildslice_cache.json"
-RUN_PATH = OUTPUT_DIR / "buildslice_run.json"
-COMMAND = (
-    "go run /app/environment/cmd/slice --all-scenarios "
-    "--write /app/output/buildslice_report.json"
-)
-BASELINE_IDS = sorted(path.stem for path in SCENARIO_DIR.glob("*.json"))
-HEX64 = re.compile(r"^[0-9a-f]{64}$")
-DROP_REASONS = {"retired", "tag_excluded", "budget_trim", "unreachable"}
-SCENARIO_FIELDS = {
-    "scenario_id",
-    "tags",
-    "roots",
-    "resolved_roots",
-    "ceiling",
-    "kept",
-    "dropped",
-    "drop_reasons",
-    "selected_options",
-    "option_score",
-    "budget_used",
-    "roots_reachable",
-    "within_budget",
-    "input_digest",
-    "plan_digest",
-}
-
-CASE_BASE_DOCS = "s01_base_docs"
-CASE_BASE_CACHE = "s02_base_cache"
-CASE_BASE_GLOBAL = "s03_base_global"
-CASE_INTEGRATION_TIGHT = "s06_integration_tight"
-CASE_EXPLICIT_NEGATION = "s09_explicit_negation"
-CASE_REPLACE_CHAIN = "s11_replace_chain"
+DATABASE = pathlib.Path("/app/data/soil.sqlite")
+COMMAND = pathlib.Path("/app/bin/soilfit")
+PARAMETERS = ("k0", "cue", "v")
+INPUT_TABLES = ("layers", "forcing", "observations", "bounds", "penalty_grid")
+OUTPUT_TABLES = ("fit_summary", "cv_scores", "fit_limits", "plot_fit", "profile")
+LAMBDA14 = math.log(2.0) / 5730.0
+THRESHOLD = 3.841459
 
 
-def _dynamic_scenario_id(number, *words):
-    return f"z{number}_{'_'.join(words)}"
+def rows(database: pathlib.Path, query: str) -> list[tuple]:
+    """return query rows from a database."""
+    with sqlite3.connect(database) as connection:
+        return connection.execute(query).fetchall()
 
 
-def _clone(value):
-    return copy.deepcopy(value)
-
-
-def _path_ending(paths, suffix):
-    return next(path for path in paths if path.endswith(suffix))
-
-
-def _parent_path(path):
-    return path.rsplit("/", 1)[0]
-
-
-def _is_hex64(value):
-    return HEX64.fullmatch(value) is not None
-
-ROOT_IMPORT = "corp.example/build/root"
-DOCS_IMPORT = "corp.example/build/optional/docs"
-CACHE_IMPORT = "corp.example/build/optional/cache"
-METRICS_IMPORT = "corp.example/build/optional/metrics"
-UTIL_IMPORT = "corp.example/build/util"
-REPLACED_CLIENT_IMPORT = "corp.example/shim/v2/client"
-PLATFORM_GENERIC_SUFFIX = "/platform/generic"
-PLATFORM_LINUX_SUFFIX = "/platform/linux"
-ROOT_SUFFIX = "/root"
-DOCS_SUFFIX = "/docs"
-CONFLICTING_LINUX_TAGS = ["linux", "!linux"]
-FRESH_PREFIX = _parent_path(ROOT_IMPORT) + "/probe"
-FRESH_ROOT = FRESH_PREFIX + "/root"
-FRESH_CORE = FRESH_PREFIX + "/core"
-FRESH_ALPHA = FRESH_PREFIX + "/alpha"
-FRESH_BETA = FRESH_PREFIX + "/beta"
-FRESH_SINGLE_ID = _dynamic_scenario_id(91, "fresh", "single")
-FRESH_PAIR_ID = _dynamic_scenario_id(92, "fresh", "pair")
-REPLACE_PROBE_ID = _dynamic_scenario_id(93, "replace", "probe")
-STALE_PROBE_ID = _dynamic_scenario_id(94, "stale", "probe")
-LEX_PROBE_ID = _dynamic_scenario_id(95, "lex", "probe")
-
-
-def _canonical(value):
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-
-
-def _sha256(payload):
-    result = subprocess.run(
-        ["cksum", "-a", "sha256"],
-        input=payload,
-        capture_output=True,
-        check=True,
-    )
-    return result.stdout.decode("ascii").split()[-1]
-
-
-def _load_graph():
-    return json.loads(GRAPH_PATH.read_text(encoding="utf-8"))
-
-
-def _load_scenarios():
-    return [
-        json.loads(path.read_text(encoding="utf-8"))
-        for path in sorted(SCENARIO_DIR.glob("*.json"))
-    ]
-
-
-def _fresh_variant(graph):
-    changed = _clone(graph)
-    changed["packages"].extend(
-        [
-            {
-                "import_path": FRESH_ROOT,
-                "tag_sets": [[]],
-                "imports": [
-                    {"path": FRESH_CORE, "optional": False, "priority": 0},
-                    {"path": FRESH_ALPHA, "optional": True, "priority": 5},
-                    {"path": FRESH_BETA, "optional": True, "priority": 5},
-                ],
-            },
-            {"import_path": FRESH_CORE, "tag_sets": [[]], "imports": []},
-            {"import_path": FRESH_ALPHA, "tag_sets": [[]], "imports": []},
-            {"import_path": FRESH_BETA, "tag_sets": [[]], "imports": []},
-        ]
-    )
-    first = {
-        "scenario_id": FRESH_SINGLE_ID,
-        "tags": [],
-        "roots": [FRESH_ROOT],
-        "ceiling": 3,
+def snapshot_inputs(database: pathlib.Path) -> dict[str, list[tuple]]:
+    """capture all input values in deterministic primary-key order."""
+    order = {
+        "layers": "plot, depth",
+        "forcing": "plot",
+        "observations": "plot, depth",
+        "bounds": "parameter",
+        "penalty_grid": "weight",
     }
-    second = {
-        "scenario_id": FRESH_PAIR_ID,
-        "tags": [],
-        "roots": [FRESH_ROOT],
-        "ceiling": 4,
-    }
-    return changed, first, second
-
-
-def _replacement_probe_scenario():
-    graph = _load_graph()
-    chained_source = next(
-        row["old"]
-        for row in graph["replaces"]
-        if any(other["old"] == row["new"] for other in graph["replaces"])
-    )
     return {
-        "scenario_id": REPLACE_PROBE_ID,
-        "tags": [],
-        "roots": [chained_source + "/client"],
-        "ceiling": 2,
+        table: rows(database, f"SELECT * FROM {table} ORDER BY {order[table]}")
+        for table in INPUT_TABLES
     }
 
 
-def _stale_probe_scenario():
+def snapshot_outputs(database: pathlib.Path) -> dict[str, list[tuple]]:
+    """capture every generated table for atomic failure checks."""
     return {
-        "scenario_id": STALE_PROBE_ID,
-        "tags": [],
-        "roots": ["corp.example/build/core"],
-        "ceiling": 2,
+        table: rows(database, f"SELECT * FROM {table} ORDER BY rowid")
+        for table in OUTPUT_TABLES
     }
 
 
-def _lexical_variant(graph):
-    changed = _clone(graph)
-    scenario_root = next(
-        manifest["roots"][0]
-        for manifest in _load_scenarios()
-        if manifest["scenario_id"] == CASE_BASE_DOCS
+def load_problem(database: pathlib.Path) -> tuple[dict, dict, list[float]]:
+    """load model inputs without relying on generated output tables."""
+    problem: dict[str, dict] = {}
+    with sqlite3.connect(database) as connection:
+        bounds = {
+            name: (float(lower), float(upper))
+            for name, lower, upper in connection.execute(
+                "SELECT parameter, lower, upper FROM bounds",
+            )
+        }
+        weights = sorted(
+            float(weight)
+            for (weight,) in connection.execute("SELECT weight FROM penalty_grid")
+        )
+        for plot, moisture_scale, oxygen_scale in connection.execute(
+            "SELECT plot, moisture_scale, oxygen_scale FROM forcing",
+        ):
+            problem[str(plot)] = {
+                "moisture_scale": float(moisture_scale),
+                "oxygen_scale": float(oxygen_scale),
+            }
+        for record in connection.execute(
+            "SELECT plot, depth, temp, moisture, clay, input, f_input "
+            "FROM layers ORDER BY plot, depth",
+        ):
+            plot = str(record[0])
+            problem[plot].setdefault("layers", []).append(
+                np.asarray(record[1:], dtype=float),
+            )
+        for record in connection.execute(
+            "SELECT plot, depth, carbon, respiration, f14c, sigma_c, sigma_r, "
+            "sigma_f, fold FROM observations ORDER BY plot, depth",
+        ):
+            plot = str(record[0])
+            problem[plot].setdefault("observations", []).append(
+                np.asarray(record[1:8], dtype=float),
+            )
+            problem[plot].setdefault("folds", []).append(int(record[8]))
+    for plot in problem.values():
+        plot["layers"] = np.vstack(plot["layers"])
+        plot["observations"] = np.vstack(plot["observations"])
+        plot["folds"] = np.asarray(plot["folds"], dtype=int)
+    return problem, bounds, weights
+
+
+def forward_plot(
+    plot: dict, parameters: np.ndarray, input_scale: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """independently solve carbon, respiration, isotope, and age balances."""
+    k0, cue, mixing = parameters
+    layer = plot["layers"]
+    modifier = (
+        np.exp(0.069314718 * (layer[:, 1] - 10.0))
+        * layer[:, 2]
+        * plot["moisture_scale"]
+        * plot["oxygen_scale"]
+        * (1.0 - 0.35 * layer[:, 3])
     )
-    option_prefix = _parent_path(scenario_root) + "/optional"
-    option_aaa = option_prefix + "/aaa"
-    option_zzz = option_prefix + "/zzz"
-    root = next(row for row in changed["packages"] if row["import_path"] == scenario_root)
-    root["imports"].extend(
-        [
-            {"path": option_aaa, "optional": True, "priority": 13},
-            {"path": option_zzz, "optional": True, "priority": 13},
-        ]
+    decay = k0 * modifier
+    count = len(layer)
+    balance = np.diag(decay)
+    for index in range(count - 1):
+        balance[index, index] += mixing
+        balance[index + 1, index + 1] += mixing
+        balance[index, index + 1] -= mixing
+        balance[index + 1, index] -= mixing
+    carbon = np.linalg.solve(balance, input_scale * layer[:, 4])
+    isotope = np.linalg.solve(
+        balance + LAMBDA14 * np.eye(count),
+        input_scale * layer[:, 4] * layer[:, 5],
     )
-    changed["packages"].extend(
-        [
-            {"import_path": option_aaa, "tag_sets": [[]], "imports": []},
-            {"import_path": option_zzz, "tag_sets": [[]], "imports": []},
-        ]
-    )
-    scenario = {
-        "scenario_id": LEX_PROBE_ID,
-        "tags": [],
-        "roots": [scenario_root],
-        "ceiling": 5,
-    }
-    return changed, scenario, scenario_root, option_aaa
+    age_moment = np.linalg.solve(balance, carbon)
+    respiration = (1.0 - cue) * decay * carbon
+    return carbon, respiration, isotope / carbon, age_moment / carbon
 
 
-def _tag_state(values):
-    enabled = set()
-    disabled = set()
-    for value in values:
-        if value.startswith("!"):
-            name = value[1:]
-            if not name or name in enabled:
-                raise ValueError("conflicting or empty tag")
-            disabled.add(name)
-        else:
-            if not value or value in disabled:
-                raise ValueError("conflicting or empty tag")
-            enabled.add(value)
-    return enabled, disabled
+def plot_effect(
+    plot: dict,
+    bounds: dict,
+    parameters: np.ndarray,
+    weight: float,
+    mask: np.ndarray,
+) -> float:
+    """profile one plot effect in closed form over the training rows."""
+    carbon, respiration, _, _ = forward_plot(plot, parameters, 1.0)
+    observed = plot["observations"]
+    numerator = weight
+    denominator = weight
+    numerator += np.sum((carbon * observed[:, 1] / observed[:, 4] ** 2)[mask])
+    numerator += np.sum((respiration * observed[:, 2] / observed[:, 5] ** 2)[mask])
+    denominator += np.sum((carbon**2 / observed[:, 4] ** 2)[mask])
+    denominator += np.sum((respiration**2 / observed[:, 5] ** 2)[mask])
+    return float(np.clip(numerator / denominator, *bounds["input_scale"]))
 
 
-def _matches(tags, clauses):
-    enabled, disabled = _tag_state(tags)
-    clauses = clauses or [[]]
-    for clause in clauses:
-        matched = True
-        for term in clause:
-            if term.startswith("!"):
-                name = term[1:]
-                if not name or name in enabled:
-                    matched = False
-                    break
-            elif term not in enabled or term in disabled:
-                matched = False
-                break
-        if matched:
-            return True
-    return False
+def residual_sum(
+    plot: dict, parameters: np.ndarray, input_scale: float, mask: np.ndarray,
+) -> float:
+    """standardized squared misfit over a chosen row subset."""
+    carbon, respiration, f14c, _ = forward_plot(plot, parameters, input_scale)
+    observed = plot["observations"]
+    total = np.sum((((carbon - observed[:, 1]) / observed[:, 4]) ** 2)[mask])
+    total += np.sum((((respiration - observed[:, 2]) / observed[:, 5]) ** 2)[mask])
+    total += np.sum((((f14c - observed[:, 3]) / observed[:, 6]) ** 2)[mask])
+    return float(total)
 
 
-def _resolver(replacements):
-    ordered = sorted(replacements, key=lambda row: (-len(row["old"]), row["old"]))
-
-    def resolve(path):
-        current = path
-        seen = {current}
-        for _ in range(len(ordered) + 1):
-            changed = False
-            for row in ordered:
-                old = row["old"]
-                if current == old or current.startswith(old + "/"):
-                    current = row["new"] + current[len(old) :]
-                    if current in seen:
-                        raise ValueError("replacement cycle")
-                    seen.add(current)
-                    changed = True
-                    break
-            if not changed:
-                return current
-        raise ValueError("replacement chain did not converge")
-
-    return resolve
+def training_masks(problem: dict, holdout: int | None) -> dict[str, np.ndarray]:
+    """rows kept for training once one fold is withheld."""
+    if holdout is None:
+        return {
+            name: np.ones(len(plot["folds"]), dtype=bool)
+            for name, plot in problem.items()
+        }
+    return {name: plot["folds"] != holdout for name, plot in problem.items()}
 
 
-def _reference_plan(graph, scenario):
-    resolve = _resolver(graph.get("replaces", []))
-    retired = set(graph.get("retired", []))
-    by_path = {row["import_path"]: row for row in graph["packages"]}
-    active = {
-        path
-        for path, row in by_path.items()
-        if path not in retired and _matches(scenario["tags"], row.get("tag_sets", [[]]))
-    }
-    resolved_roots = sorted(resolve(root) for root in scenario["roots"])
-    if not resolved_roots or any(root not in active for root in resolved_roots):
-        raise ValueError("inactive or missing root")
+def objective_value(
+    problem: dict,
+    bounds: dict,
+    parameters: np.ndarray,
+    weight: float,
+    masks: dict[str, np.ndarray],
+) -> float:
+    """penalized training criterion at one parameter triple."""
+    total = 0.0
+    for name, plot in problem.items():
+        effect = plot_effect(plot, bounds, parameters, weight, masks[name])
+        total += weight * (effect - 1.0) ** 2
+        total += residual_sum(plot, parameters, effect, masks[name])
+    return total
 
-    options = {}
-    for source, package in by_path.items():
-        if source not in active:
-            continue
-        for edge in package.get("imports", []):
-            target = resolve(edge["path"])
-            if target not in by_path:
-                raise ValueError("missing import target")
-            if edge["optional"]:
-                if not 1 <= edge["priority"] <= 1000:
-                    raise ValueError("invalid optional priority")
-                if target in active:
-                    option_id = f"{source}->{target}"
-                    if option_id in options:
-                        raise ValueError("duplicate option")
-                    options[option_id] = {
-                        "id": option_id,
-                        "from": source,
-                        "to": target,
-                        "priority": edge["priority"],
-                    }
-            elif edge["priority"] != 0:
-                raise ValueError("required priority must be zero")
 
-    def closure(selected):
-        kept = set()
-
-        def walk(path):
-            target = resolve(path)
-            if target not in active:
-                raise ValueError("required package inactive")
-            if target in kept:
-                return
-            kept.add(target)
-            for edge in by_path[target].get("imports", []):
-                resolved = resolve(edge["path"])
-                if resolved not in by_path:
-                    raise ValueError("missing import target")
-                if resolved not in active:
-                    continue
-                if edge["optional"] and f"{target}->{resolved}" not in selected:
-                    continue
-                walk(resolved)
-
-        for root in resolved_roots:
-            walk(root)
-        return kept
-
-    mandatory = closure(set())
-    if len(mandatory) > scenario["ceiling"]:
-        raise ValueError("mandatory closure exceeds ceiling")
-    potential = closure(set(options))
-    candidates = [options[key] for key in sorted(options) if options[key]["from"] in potential]
-    if len(candidates) > 20:
-        raise ValueError("too many options")
-
-    best = None
-    for size in range(len(candidates) + 1):
-        for combo in itertools.combinations(candidates, size):
-            ids = tuple(sorted(option["id"] for option in combo))
-            kept = closure(set(ids))
-            if len(kept) > scenario["ceiling"]:
-                continue
-            if any(option["from"] not in kept for option in combo):
-                continue
-            score = sum(option["priority"] for option in combo)
-            rank = (-score, -len(kept), ids)
-            if best is None or rank < best[0]:
-                best = (rank, kept, combo, score)
-    if best is None:
-        raise ValueError("no valid selection")
-
-    _, kept_set, selected_combo, option_score = best
-    kept = sorted(kept_set)
-    dropped = sorted(set(by_path) - kept_set)
-    reasons = {}
-    for path in dropped:
-        if path in retired:
-            reasons[path] = "retired"
-        elif path not in active:
-            reasons[path] = "tag_excluded"
-        elif path in potential:
-            reasons[path] = "budget_trim"
-        else:
-            reasons[path] = "unreachable"
-    selected_options = [
-        {"from": row["from"], "to": row["to"], "priority": row["priority"]}
-        for row in sorted(selected_combo, key=lambda row: row["id"])
+def minimize_criterion(
+    problem: dict, bounds: dict, weight: float, masks: dict[str, np.ndarray],
+) -> tuple[np.ndarray, float]:
+    """search the parameter box with an independent simplex solver."""
+    box = [bounds[name] for name in PARAMETERS]
+    starts = [
+        np.asarray([low + share * (high - low) for low, high in box])
+        for share in (0.25, 0.5, 0.75)
     ]
-    input_digest = _sha256(_canonical(graph) + b"\n" + _canonical(scenario))
-    plan = {
-        "scenario_id": scenario["scenario_id"],
-        "tags": list(scenario["tags"]),
-        "roots": list(scenario["roots"]),
-        "resolved_roots": resolved_roots,
-        "ceiling": scenario["ceiling"],
-        "kept": kept,
-        "dropped": dropped,
-        "drop_reasons": reasons,
-        "selected_options": selected_options,
-        "option_score": option_score,
-        "budget_used": len(kept),
-        "roots_reachable": all(root in kept_set for root in resolved_roots),
-        "within_budget": len(kept) <= scenario["ceiling"],
-        "input_digest": input_digest,
-    }
-    plan["plan_digest"] = _plan_digest(plan)
-    return plan
-
-
-def _plan_digest(plan):
-    unit = "\x1f"
-    lines = [
-        f"scenario_id={plan['scenario_id']}",
-        f"input_digest={plan['input_digest']}",
-        f"tags={unit.join(plan['tags'])}",
-        f"roots={unit.join(plan['roots'])}",
-        f"resolved_roots={unit.join(plan['resolved_roots'])}",
-        f"ceiling={plan['ceiling']}",
-        f"kept={unit.join(plan['kept'])}",
+    results = [
+        scipy.optimize.minimize(
+            lambda point: objective_value(problem, bounds, point, weight, masks),
+            start,
+            method="Nelder-Mead",
+            bounds=box,
+            options={"xatol": 1e-11, "fatol": 1e-10, "maxiter": 5000},
+        )
+        for start in starts
     ]
-    for path in plan["dropped"]:
-        lines.append(f"drop={path}:{plan['drop_reasons'][path]}")
-    for option in sorted(
-        plan["selected_options"], key=lambda row: f"{row['from']}->{row['to']}"
-    ):
-        lines.append(f"option={option['from']}->{option['to']}@{option['priority']}")
-    lines.extend(
-        [
-            f"option_score={plan['option_score']}",
-            f"budget_used={plan['budget_used']}",
-            f"roots_reachable={str(plan['roots_reachable']).lower()}",
-            f"within_budget={str(plan['within_budget']).lower()}",
-        ]
+    best = min(results, key=lambda item: item.fun)
+    assert best.success, best.message
+    return np.asarray(best.x), float(best.fun)
+
+
+def cross_validate(
+    problem: dict, bounds: dict, weights: list[float],
+) -> dict[float, dict]:
+    """score every candidate weight on withheld rows and on all rows."""
+    folds = sorted({int(fold) for plot in problem.values() for fold in plot["folds"]})
+    curve: dict[float, dict] = {}
+    for weight in weights:
+        held = 0.0
+        for fold in folds:
+            masks = training_masks(problem, fold)
+            parameters, _ = minimize_criterion(problem, bounds, weight, masks)
+            for name, plot in problem.items():
+                effect = plot_effect(plot, bounds, parameters, weight, masks[name])
+                held += residual_sum(plot, parameters, effect, plot["folds"] == fold)
+        full = training_masks(problem, None)
+        estimate, train = minimize_criterion(problem, bounds, weight, full)
+        curve[weight] = {
+            "heldout": held,
+            "train": train,
+            "estimate": estimate,
+        }
+    return curve
+
+
+def choose_weight(curve: dict[float, dict]) -> float:
+    """smallest weight among those with the lowest withheld loss."""
+    best = min(sorted(curve), key=lambda weight: curve[weight]["heldout"])
+    return float(best)
+
+
+def profile_minimum(
+    problem: dict,
+    bounds: dict,
+    weight: float,
+    estimate: np.ndarray,
+    index: int,
+    value: float,
+) -> float:
+    """minimize the criterion with one parameter pinned."""
+    free = [position for position in range(3) if position != index]
+    box = [bounds[name] for name in PARAMETERS]
+    masks = training_masks(problem, None)
+
+    def reduced(point: np.ndarray) -> float:
+        parameters = estimate.copy()
+        parameters[index] = value
+        parameters[free] = point
+        return objective_value(problem, bounds, parameters, weight, masks)
+
+    result = scipy.optimize.minimize(
+        reduced,
+        estimate[free],
+        method="Nelder-Mead",
+        bounds=[box[position] for position in free],
+        options={"xatol": 2e-10, "fatol": 1e-9, "maxiter": 3000},
     )
-    return _sha256("\n".join(lines).encode("utf-8"))
+    assert result.success, result.message
+    return float(result.fun)
 
 
-def _report_digest(plans):
-    lines = sorted(
-        f"{plan['scenario_id']}|{plan['input_digest']}|{plan['plan_digest']}"
-        for plan in plans
+def reference_fit(database: pathlib.Path, *, limits: bool = True) -> dict:
+    """rebuild the selection, the fit, and its interval endpoints independently."""
+    problem, bounds, weights = load_problem(database)
+    curve = cross_validate(problem, bounds, weights)
+    weight = choose_weight(curve)
+    estimate = curve[weight]["estimate"]
+    minimum = curve[weight]["train"]
+    reference = {
+        "problem": problem,
+        "bounds": bounds,
+        "weights": weights,
+        "curve": curve,
+        "weight": weight,
+        "estimate": estimate,
+        "objective": minimum,
+        "effects": {
+            name: plot_effect(
+                plot, bounds, estimate, weight, training_masks(problem, None)[name],
+            )
+            for name, plot in problem.items()
+        },
+    }
+    if not limits:
+        return reference
+    target = minimum + THRESHOLD
+    endpoints: dict[str, tuple[float, float]] = {}
+    for index, name in enumerate(PARAMETERS):
+        found = []
+        for edge in bounds[name]:
+            if profile_minimum(
+                problem, bounds, weight, estimate, index, edge,
+            ) <= target:
+                found.append(edge)
+                continue
+            root = scipy.optimize.root_scalar(
+                lambda value, index=index: profile_minimum(
+                    problem, bounds, weight, estimate, index, value,
+                ) - target,
+                bracket=sorted((edge, estimate[index])),
+                xtol=1e-10,
+            )
+            assert root.converged
+            found.append(float(root.root))
+        endpoints[name] = (found[0], found[1])
+    reference["limits"] = endpoints
+    return reference
+
+
+def run_command(database: pathlib.Path) -> subprocess.CompletedProcess:
+    """invoke the provided runner on one database."""
+    return subprocess.run(
+        [str(COMMAND), str(database)], capture_output=True, text=True, check=False,
     )
-    return _sha256("\n".join(lines).encode("utf-8"))
 
 
-def _cache_digest(entries):
-    lines = sorted(
-        f"{entry['scenario_id']}|{entry['input_digest']}|{entry['plan']['plan_digest']}"
-        for entry in entries
+def reported_fit(database: pathlib.Path) -> dict:
+    """read the single reported summary row."""
+    result = rows(
+        database, "SELECT k0, cue, v, penalty, objective FROM fit_summary",
     )
-    return _sha256("\n".join(lines).encode("utf-8"))
-
-
-def _clear_output():
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    for path in OUTPUT_DIR.iterdir():
-        if path.is_file() or path.is_symlink():
-            path.unlink()
-
-
-def _read_outputs():
-    return tuple(
-        json.loads(path.read_text(encoding="utf-8"))
-        for path in (REPORT_PATH, CACHE_PATH, RUN_PATH)
-    )
-
-
-def _run(binary, *, expect_success=True, cwd=ENV):
-    result = subprocess.run(
-        [
-            str(binary),
-            "--all-scenarios",
-            "--write",
-            str(REPORT_PATH),
-        ],
-        cwd=cwd,
-        capture_output=True,
-        check=False,
-        text=True,
-        timeout=300,
-    )
-    if expect_success:
-        assert result.returncode == 0, result.stderr + result.stdout
-        assert REPORT_PATH.exists()
-        assert CACHE_PATH.exists()
-        assert RUN_PATH.exists()
-    else:
-        assert result.returncode != 0
-    return result
-
-
-@contextmanager
-def _patched_json(path, value):
-    existed = path.exists()
-    original = path.read_bytes() if existed else None
-    path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
-    try:
-        yield
-    finally:
-        if existed:
-            path.write_bytes(original)
-        else:
-            path.unlink(missing_ok=True)
-
-
-@contextmanager
-def _patched_files(values):
-    originals = {}
-    for path, value in values.items():
-        originals[path] = path.read_bytes() if path.exists() else None
-        path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
-    try:
-        yield
-    finally:
-        for path, raw in originals.items():
-            if raw is None:
-                path.unlink(missing_ok=True)
-            else:
-                path.write_bytes(raw)
+    assert len(result) == 1
+    values = [float(item) for item in result[0]]
+    return {
+        "estimate": np.asarray(values[:3]),
+        "penalty": values[3],
+        "objective": values[4],
+    }
 
 
 @pytest.fixture(scope="session")
-def slice_binary(tmp_path_factory):
-    """Rebuild the current Go source and return the verifier-owned executable."""
-    output = tmp_path_factory.mktemp("bin") / "buildslice"
-    result = subprocess.run(
-        ["go", "build", "-trimpath", "-o", str(output), "./cmd/slice"],
-        cwd=ENV,
-        capture_output=True,
-        check=False,
-        text=True,
-        timeout=300,
-    )
-    assert result.returncode == 0, result.stderr + result.stdout
-    assert output.is_file()
-    return output
+def baseline() -> dict:
+    """regenerate baseline outputs so every assertion exercises the runner."""
+    before = snapshot_inputs(DATABASE)
+    with sqlite3.connect(DATABASE) as connection:
+        for table in OUTPUT_TABLES:
+            connection.execute(f"DROP TABLE IF EXISTS {table}")
+    completed = run_command(DATABASE)
+    assert completed.returncode == 0, completed.stderr
+    return {"inputs": before, "reference": reference_fit(DATABASE)}
 
 
-def test_rebuilt_binary_and_exact_command_generate_all_outputs(slice_binary):
-    """The rebuilt Go binary and the documented absolute command both run successfully."""
-    _clear_output()
-    _run(slice_binary)
-    exact = subprocess.run(
-        [
-            "go",
-            "run",
-            "/app/environment/cmd/slice",
-            "--all-scenarios",
-            "--write",
-            str(REPORT_PATH),
-        ],
-        cwd=APP,
-        capture_output=True,
-        check=False,
-        text=True,
-        timeout=300,
-    )
-    assert exact.returncode == 0, exact.stderr + exact.stdout
-    assert all(path.exists() for path in (REPORT_PATH, CACHE_PATH, RUN_PATH))
-
-
-def test_static_scenarios_match_independent_reference_and_drop_reasons(slice_binary):
-    """Every bundled scenario matches an independent planner, including all drop reasons."""
-    _clear_output()
-    _run(slice_binary)
-    report, cache_file, run = _read_outputs()
-    graph = _load_graph()
-    expected = [_reference_plan(graph, scenario) for scenario in _load_scenarios()]
-    assert report["scenarios"] == expected
-    assert report["summary"] == {
-        "scenarios_total": len(expected),
-        "all_converged": True,
-        "report_digest": _report_digest(expected),
+def test_result_tables_are_regenerated_with_documented_fields(baseline: dict) -> None:
+    """the runner creates each result table with its named fields and row count."""
+    del baseline
+    expected_columns = {
+        "fit_summary": {"k0", "cue", "v", "penalty", "objective"},
+        "cv_scores": {"weight", "heldout_loss", "train_loss"},
+        "fit_limits": {"parameter", "lower", "upper"},
+        "plot_fit": {"plot", "input_scale"},
+        "profile": {
+            "plot",
+            "depth",
+            "carbon_hat",
+            "respiration_hat",
+            "f14c_hat",
+            "mean_age",
+        },
     }
-    assert cache_file["entries"] == [
-        {
-            "scenario_id": plan["scenario_id"],
-            "input_digest": plan["input_digest"],
-            "plan": plan,
-        }
-        for plan in expected
-    ]
-    assert run["recomputed"] == BASELINE_IDS
-    assert run["reused"] == []
-
-
-def test_exact_json_schema_names_types_and_enums(slice_binary):
-    """All three JSON artifacts use the exact nested field names, types, and enums."""
-    _clear_output()
-    _run(slice_binary)
-    report, cache_file, run = _read_outputs()
-    assert set(report) == {"schema_version", "command", "scenarios", "summary"}
-    assert report["schema_version"] == 2 and type(report["schema_version"]) is int
-    assert report["command"] == COMMAND and type(report["command"]) is str
-    assert set(report["summary"]) == {
-        "scenarios_total",
-        "all_converged",
-        "report_digest",
+    expected_counts = {
+        "fit_summary": 1,
+        "cv_scores": 5,
+        "fit_limits": 3,
+        "plot_fit": 8,
+        "profile": 24,
     }
-    assert type(report["summary"]["scenarios_total"]) is int
-    assert type(report["summary"]["all_converged"]) is bool
-    for row in report["scenarios"]:
-        assert set(row) == SCENARIO_FIELDS
-        assert type(row["scenario_id"]) is str
-        assert type(row["tags"]) is list
-        assert type(row["roots"]) is list
-        assert type(row["resolved_roots"]) is list
-        assert type(row["ceiling"]) is int
-        assert type(row["kept"]) is list
-        assert type(row["dropped"]) is list
-        assert type(row["drop_reasons"]) is dict
-        assert type(row["selected_options"]) is list
-        assert type(row["option_score"]) is int
-        assert type(row["budget_used"]) is int
-        assert type(row["roots_reachable"]) is bool
-        assert type(row["within_budget"]) is bool
-        assert type(row["input_digest"]) is str
-        assert type(row["plan_digest"]) is str
-        assert row["kept"] == sorted(row["kept"])
-        assert row["dropped"] == sorted(row["dropped"])
-        assert set(row["drop_reasons"]) == set(row["dropped"])
-        assert set(row["drop_reasons"].values()) <= DROP_REASONS
-        for option in row["selected_options"]:
-            assert set(option) == {"from", "to", "priority"}
-            assert type(option["from"]) is str
-            assert type(option["to"]) is str
-            assert type(option["priority"]) is int
-    assert set(cache_file) == {"schema_version", "entries"}
-    assert cache_file["schema_version"] == 1
-    for entry in cache_file["entries"]:
-        assert set(entry) == {"scenario_id", "input_digest", "plan"}
-        assert set(entry["plan"]) == SCENARIO_FIELDS
-    assert set(run) == {
-        "schema_version",
-        "reused",
-        "recomputed",
-        "removed",
-        "cache_rebuilt",
-        "cache_digest",
-        "report_digest",
-    }
-    assert run["schema_version"] == 1
-    assert type(run["cache_rebuilt"]) is bool
+    with sqlite3.connect(DATABASE) as connection:
+        for table, names in expected_columns.items():
+            columns = {
+                row[1] for row in connection.execute(f"PRAGMA table_info({table})")
+            }
+            assert columns == names
+        for table, count in expected_counts.items():
+            found = connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            assert found == count
 
 
-def test_sha256_digest_inputs_formats_and_cross_artifact_binding(slice_binary):
-    """Input, plan, report, and cache digests bind the exact disclosed bytes."""
-    _clear_output()
-    _run(slice_binary)
-    report, cache_file, run = _read_outputs()
-    graph = _load_graph()
-    scenarios = {row["scenario_id"]: row for row in _load_scenarios()}
-    for plan in report["scenarios"]:
-        scenario = scenarios[plan["scenario_id"]]
-        assert plan["input_digest"] == _sha256(
-            _canonical(graph) + b"\n" + _canonical(scenario)
+def test_cross_validation_curve_matches_an_independent_refit(baseline: dict) -> None:
+    """every candidate weight reports the withheld and full-data losses it earns."""
+    reference = baseline["reference"]
+    reported = {
+        float(weight): (float(heldout), float(train))
+        for weight, heldout, train in rows(
+            DATABASE, "SELECT weight, heldout_loss, train_loss FROM cv_scores",
         )
-        assert plan["plan_digest"] == _plan_digest(plan)
-        assert _is_hex64(plan["input_digest"])
-        assert _is_hex64(plan["plan_digest"])
-    assert report["summary"]["report_digest"] == _report_digest(report["scenarios"])
-    assert run["report_digest"] == report["summary"]["report_digest"]
-    assert run["cache_digest"] == _cache_digest(cache_file["entries"])
-    assert _is_hex64(run["cache_digest"])
-
-
-def test_global_optional_selection_and_all_tie_break_levels(slice_binary):
-    """Selection maximizes global score, then budget use, then lexical edge IDs."""
-    _clear_output()
-    _run(slice_binary)
-    report, _, _ = _read_outputs()
-    rows = {row["scenario_id"]: row for row in report["scenarios"]}
-    assert rows[CASE_BASE_DOCS]["selected_options"] == [
-        {
-            "from": ROOT_IMPORT,
-            "to": DOCS_IMPORT,
-            "priority": 6,
-        }
-    ]
-    assert rows[CASE_BASE_CACHE]["selected_options"] == [
-        {
-            "from": ROOT_IMPORT,
-            "to": CACHE_IMPORT,
-            "priority": 6,
-        }
-    ]
-    assert rows[CASE_BASE_GLOBAL]["option_score"] == 12
-    assert [row["to"] for row in rows[CASE_BASE_GLOBAL]["selected_options"]] == [
-        CACHE_IMPORT,
-        DOCS_IMPORT,
-    ]
-    assert rows[CASE_INTEGRATION_TIGHT]["option_score"] == 13
-    assert [row["to"] for row in rows[CASE_INTEGRATION_TIGHT]["selected_options"]] == [
-        METRICS_IMPORT,
-        CACHE_IMPORT,
-    ]
-
-
-def test_tag_activation_replacement_chain_and_closure_are_semantically_coupled(
-    slice_binary,
-):
-    """Explicit negative tags and replacement chains affect closure and plan digests."""
-    _clear_output()
-    _run(slice_binary)
-    report, _, _ = _read_outputs()
-    rows = {row["scenario_id"]: row for row in report["scenarios"]}
-    negative = rows[CASE_EXPLICIT_NEGATION]
-    graph_paths = [package["import_path"] for package in _load_graph()["packages"]]
-    generic_path = _path_ending(graph_paths, PLATFORM_GENERIC_SUFFIX)
-    linux_path = _path_ending(graph_paths, PLATFORM_LINUX_SUFFIX)
-    assert generic_path in negative["kept"]
-    assert linux_path not in negative["kept"]
-    replacement = rows[CASE_REPLACE_CHAIN]
-    assert replacement["resolved_roots"] == [REPLACED_CLIENT_IMPORT]
-    assert replacement["kept"] == [UTIL_IMPORT, REPLACED_CLIENT_IMPORT]
-    assert negative["plan_digest"] != replacement["plan_digest"]
-
-
-def test_dynamic_variant_defeats_hardcoded_solution(slice_binary):
-    """Two fresh graph-backed scenarios force generalized planning and new digests."""
-    _clear_output()
-    _run(slice_binary)
-    baseline_report, _, baseline_run = _read_outputs()
-    graph = _load_graph()
-    changed_graph, first, second = _fresh_variant(graph)
-    values = {
-        GRAPH_PATH: changed_graph,
-        SCENARIO_DIR / f"{first['scenario_id']}.json": first,
-        SCENARIO_DIR / f"{second['scenario_id']}.json": second,
     }
-    with _patched_files(values):
-        _run(slice_binary)
-        report, cache_file, run = _read_outputs()
-        expected_first = _reference_plan(changed_graph, first)
-        expected_second = _reference_plan(changed_graph, second)
-    rows = {row["scenario_id"]: row for row in report["scenarios"]}
-    assert rows[first["scenario_id"]] == expected_first
-    assert rows[second["scenario_id"]] == expected_second
-    assert FRESH_ALPHA in rows[first["scenario_id"]]["kept"]
-    assert FRESH_BETA in rows[second["scenario_id"]]["kept"]
-    assert report["summary"]["scenarios_total"] == len(BASELINE_IDS) + 2
-    assert report["summary"]["report_digest"] != baseline_report["summary"]["report_digest"]
-    assert run["cache_digest"] != baseline_run["cache_digest"]
-    expected_recomputed = sorted(
-        BASELINE_IDS + [first["scenario_id"], second["scenario_id"]]
+    assert sorted(reported) == pytest.approx(reference["weights"])
+    for weight, scores in reference["curve"].items():
+        assert reported[weight][0] == pytest.approx(
+            scores["heldout"], rel=0.005, abs=0.02,
+        )
+        assert reported[weight][1] == pytest.approx(
+            scores["train"], rel=0.005, abs=0.02,
+        )
+
+
+def test_selected_penalty_minimizes_the_withheld_loss(baseline: dict) -> None:
+    """the reported penalty is the candidate with the lowest cross validated loss."""
+    reference = baseline["reference"]
+    reported = reported_fit(DATABASE)
+    assert reported["penalty"] == pytest.approx(reference["weight"], rel=1e-9)
+    losses = {
+        float(weight): float(loss)
+        for weight, loss in rows(DATABASE, "SELECT weight, heldout_loss FROM cv_scores")
+    }
+    lowest = min(sorted(losses), key=lambda weight: losses[weight])
+    assert lowest == pytest.approx(reported["penalty"], rel=1e-9)
+
+
+def test_parameters_minimize_the_penalized_criterion(baseline: dict) -> None:
+    """the reported triple and objective agree with an independent global search."""
+    reference = baseline["reference"]
+    reported = reported_fit(DATABASE)
+    assert np.allclose(
+        reported["estimate"], reference["estimate"], rtol=0.005, atol=2e-7,
     )
-    assert run["recomputed"] == expected_recomputed
-    assert len(cache_file["entries"]) == len(BASELINE_IDS) + 2
-
-
-def test_dynamic_longest_prefix_then_chain_changes_root_plan_and_digest(slice_binary):
-    """A fresh root requires longest-prefix choice followed by chained replacement."""
-    _clear_output()
-    scenario = _replacement_probe_scenario()
-    with _patched_json(SCENARIO_DIR / f"{scenario['scenario_id']}.json", scenario):
-        _run(slice_binary)
-        report, _, _ = _read_outputs()
-        expected = _reference_plan(_load_graph(), scenario)
-    row = {item["scenario_id"]: item for item in report["scenarios"]}[scenario["scenario_id"]]
-    assert row == expected
-    assert row["resolved_roots"] == [REPLACED_CLIENT_IMPORT]
-    assert row["plan_digest"] == _plan_digest(row)
-
-
-def test_warm_cache_reuses_all_and_stabilizes_every_artifact(slice_binary):
-    """After a cold run, unchanged warm reruns reuse all entries byte-for-byte."""
-    _clear_output()
-    _run(slice_binary)
-    cold_report = REPORT_PATH.read_bytes()
-    cold_cache = CACHE_PATH.read_bytes()
-    _run(slice_binary)
-    second = tuple(path.read_bytes() for path in (REPORT_PATH, CACHE_PATH, RUN_PATH))
-    _, _, warm_run = _read_outputs()
-    assert warm_run["reused"] == BASELINE_IDS
-    assert warm_run["recomputed"] == []
-    assert warm_run["removed"] == []
-    assert not warm_run["cache_rebuilt"]
-    assert second[0] == cold_report
-    assert second[1] == cold_cache
-    _run(slice_binary)
-    third = tuple(path.read_bytes() for path in (REPORT_PATH, CACHE_PATH, RUN_PATH))
-    assert third == second
-
-
-def test_one_manifest_change_invalidates_only_that_scenario(slice_binary):
-    """A manifest edit recomputes one plan while reusing every other cache entry."""
-    _clear_output()
-    _run(slice_binary)
-    _run(slice_binary)
-    baseline_report, _, _ = _read_outputs()
-    path = SCENARIO_DIR / f"{CASE_BASE_CACHE}.json"
-    changed = json.loads(path.read_text(encoding="utf-8"))
-    changed["ceiling"] = 7
-    with _patched_json(path, changed):
-        _run(slice_binary)
-        report, _, run = _read_outputs()
-        expected = _reference_plan(_load_graph(), changed)
-    assert run["recomputed"] == [changed["scenario_id"]]
-    expected_reused = sorted(set(BASELINE_IDS) - {changed["scenario_id"]})
-    assert run["reused"] == expected_reused
-    row = {item["scenario_id"]: item for item in report["scenarios"]}[changed["scenario_id"]]
-    assert row == expected
-    assert report["summary"]["report_digest"] != baseline_report["summary"]["report_digest"]
-
-
-def test_graph_change_invalidates_every_cache_entry(slice_binary):
-    """A graph mutation changes every input digest and forces full recomputation."""
-    _clear_output()
-    _run(slice_binary)
-    _run(slice_binary)
-    baseline_report, _, _ = _read_outputs()
-    graph = _load_graph()
-    changed = _clone(graph)
-    root_path = _path_ending(
-        [item["import_path"] for item in changed["packages"]], ROOT_SUFFIX
+    assert reported["objective"] == pytest.approx(
+        reference["objective"], rel=0.005, abs=0.02,
     )
-    root = next(row for row in changed["packages"] if row["import_path"] == root_path)
-    docs_path = _path_ending([item["path"] for item in root["imports"]], DOCS_SUFFIX)
-    option = next(edge for edge in root["imports"] if edge["path"] == docs_path)
-    option["priority"] = 11
-    with _patched_json(GRAPH_PATH, changed):
-        _run(slice_binary)
-        report, _, run = _read_outputs()
-    assert run["recomputed"] == BASELINE_IDS
-    assert run["reused"] == []
-    assert report["summary"]["report_digest"] != baseline_report["summary"]["report_digest"]
+    replay = objective_value(
+        reference["problem"],
+        reference["bounds"],
+        reported["estimate"],
+        reported["penalty"],
+        training_masks(reference["problem"], None),
+    )
+    assert replay == pytest.approx(reported["objective"], abs=0.02)
 
 
-def test_removed_manifest_is_purged_from_cache_and_run_record(slice_binary):
-    """Deleting a previously cached manifest removes its report and cache entry."""
-    _clear_output()
-    scenario = _stale_probe_scenario()
-    path = SCENARIO_DIR / f"{scenario['scenario_id']}.json"
-    with _patched_json(path, scenario):
-        _run(slice_binary)
-        assert scenario["scenario_id"] in {
-            entry["scenario_id"] for entry in json.loads(CACHE_PATH.read_text())["entries"]
-        }
-    _run(slice_binary)
-    report, cache_file, run = _read_outputs()
-    assert run["removed"] == [scenario["scenario_id"]]
-    assert scenario["scenario_id"] not in {
-        row["scenario_id"] for row in report["scenarios"]
+def test_plot_effects_are_penalized_optima(baseline: dict) -> None:
+    """each plot effect is the shrunken optimum implied by the reported fit."""
+    reference = baseline["reference"]
+    reported = reported_fit(DATABASE)
+    effects = dict(rows(DATABASE, "SELECT plot, input_scale FROM plot_fit"))
+    assert set(effects) == set(reference["problem"])
+    masks = training_masks(reference["problem"], None)
+    for name, plot in reference["problem"].items():
+        expected = plot_effect(
+            plot, reference["bounds"], reported["estimate"], reported["penalty"],
+            masks[name],
+        )
+        assert float(effects[name]) == pytest.approx(expected, rel=5e-4, abs=1e-7)
+
+
+def test_carbon_respiration_and_radiocarbon_predictions_replay(
+    baseline: dict,
+) -> None:
+    """profile rows reproduce all three balances at the reported fit."""
+    reference = baseline["reference"]
+    reported = reported_fit(DATABASE)
+    effects = dict(rows(DATABASE, "SELECT plot, input_scale FROM plot_fit"))
+    predicted = {
+        (plot, float(depth)): np.asarray((carbon, respiration, f14c), dtype=float)
+        for plot, depth, carbon, respiration, f14c in rows(
+            DATABASE,
+            "SELECT plot, depth, carbon_hat, respiration_hat, f14c_hat FROM profile",
+        )
     }
-    assert scenario["scenario_id"] not in {
-        entry["scenario_id"] for entry in cache_file["entries"]
+    for name, plot in reference["problem"].items():
+        expected = forward_plot(
+            plot, reported["estimate"], float(effects[name]),
+        )
+        for index, depth in enumerate(plot["layers"][:, 0]):
+            values = np.asarray(
+                (expected[0][index], expected[1][index], expected[2][index]),
+            )
+            assert np.allclose(
+                predicted[(name, float(depth))], values, rtol=5e-4, atol=2e-8,
+            )
+
+
+def test_mean_age_solves_the_first_moment_balance(baseline: dict) -> None:
+    """reported residence times match independently solved age moments."""
+    reference = baseline["reference"]
+    reported = reported_fit(DATABASE)
+    effects = dict(rows(DATABASE, "SELECT plot, input_scale FROM plot_fit"))
+    ages = dict(rows(DATABASE, "SELECT plot || ':' || depth, mean_age FROM profile"))
+    for name, plot in reference["problem"].items():
+        expected = forward_plot(plot, reported["estimate"], float(effects[name]))[3]
+        for index, depth in enumerate(plot["layers"][:, 0]):
+            key = f"{name}:{float(depth)}"
+            assert float(ages[key]) == pytest.approx(
+                float(expected[index]), rel=5e-4, abs=1e-7,
+            )
+
+
+def test_interval_endpoints_reach_the_stated_criterion_rise(baseline: dict) -> None:
+    """each endpoint reoptimizes the other parameters to the required rise."""
+    reference = baseline["reference"]
+    reported = reported_fit(DATABASE)
+    endpoints = {
+        name: (float(lower), float(upper))
+        for name, lower, upper in rows(
+            DATABASE, "SELECT parameter, lower, upper FROM fit_limits",
+        )
     }
+    assert set(endpoints) == set(PARAMETERS)
+    target = reference["objective"] + THRESHOLD
+    for index, name in enumerate(PARAMETERS):
+        assert np.allclose(
+            endpoints[name], reference["limits"][name], rtol=0.005, atol=2e-7,
+        )
+        for value in endpoints[name]:
+            reached = profile_minimum(
+                reference["problem"],
+                reference["bounds"],
+                reported["penalty"],
+                reference["estimate"],
+                index,
+                value,
+            )
+            assert reached == pytest.approx(target, abs=0.02)
 
 
-def test_malformed_cache_recovers_without_changing_semantic_report(slice_binary):
-    """An unreadable cache is discarded, rebuilt, and reported without report drift."""
-    _clear_output()
-    _run(slice_binary)
-    baseline_report = REPORT_PATH.read_bytes()
-    CACHE_PATH.write_text("{not-json\n", encoding="utf-8")
-    _run(slice_binary)
-    _, cache_file, run = _read_outputs()
-    assert REPORT_PATH.read_bytes() == baseline_report
-    assert run["cache_rebuilt"]
-    assert run["recomputed"] == BASELINE_IDS
-    assert run["reused"] == []
-    assert run["cache_digest"] == _cache_digest(cache_file["entries"])
+def test_changed_and_reordered_database_is_refit_without_hardcoding(
+    baseline: dict, tmp_path: pathlib.Path,
+) -> None:
+    """a perturbed database with reversed insertion order earns a fresh fit."""
+    altered = tmp_path / "altered.sqlite"
+    shutil.copy2(DATABASE, altered)
+    with sqlite3.connect(altered) as connection:
+        connection.execute(
+            "UPDATE forcing SET moisture_scale = moisture_scale * 0.83 "
+            "WHERE plot IN ('alder', 'pine')",
+        )
+        for table in ("layers", "forcing", "observations"):
+            connection.execute(
+                f"UPDATE {table} SET plot = 'tundra' WHERE plot = 'spruce'",
+            )
+        for table in ("layers", "observations"):
+            connection.execute(
+                f"CREATE TABLE shuffled AS SELECT * FROM {table} "
+                "ORDER BY plot DESC, depth DESC",
+            )
+            connection.execute(f"DELETE FROM {table}")
+            connection.execute(f"INSERT INTO {table} SELECT * FROM shuffled")
+            connection.execute("DROP TABLE shuffled")
+    completed = run_command(altered)
+    assert completed.returncode == 0, completed.stderr
+    reference = reference_fit(altered, limits=False)
+    reported = reported_fit(altered)
+    assert reported["penalty"] == pytest.approx(reference["weight"], rel=1e-9)
+    assert np.allclose(
+        reported["estimate"], reference["estimate"], rtol=0.005, atol=2e-7,
+    )
+    assert reported["objective"] == pytest.approx(
+        reference["objective"], rel=0.005, abs=0.02,
+    )
+    assert not np.allclose(
+        reported["estimate"], baseline["reference"]["estimate"], rtol=1e-4,
+    )
 
 
-def test_invalid_input_fails_atomically_without_replacing_valid_outputs(slice_binary):
-    """Conflicting tags fail before any valid report, cache, or run artifact is replaced."""
-    _clear_output()
-    _run(slice_binary)
-    before = {path: path.read_bytes() for path in (REPORT_PATH, CACHE_PATH, RUN_PATH)}
-    path = SCENARIO_DIR / "s05_linux.json"
-    invalid = json.loads(path.read_text(encoding="utf-8"))
-    invalid["tags"] = CONFLICTING_LINUX_TAGS
-    with _patched_json(path, invalid):
-        _run(slice_binary, expect_success=False)
-    after = {path: path.read_bytes() for path in (REPORT_PATH, CACHE_PATH, RUN_PATH)}
-    assert after == before
-
-
-def test_dynamic_lexical_tie_break_uses_sorted_edge_ids(slice_binary):
-    """Equal-score equal-budget fresh options choose the lexicographically smaller edge ID."""
-    _clear_output()
-    graph = _load_graph()
-    changed, scenario, scenario_root, option_aaa = _lexical_variant(graph)
-    values = {
-        GRAPH_PATH: changed,
-        SCENARIO_DIR / f"{scenario['scenario_id']}.json": scenario,
+def test_candidate_set_drives_the_selection(
+    baseline: dict, tmp_path: pathlib.Path,
+) -> None:
+    """withdrawing the winning candidate moves the penalty and the whole fit."""
+    reference = baseline["reference"]
+    reduced = tmp_path / "reduced.sqlite"
+    shutil.copy2(DATABASE, reduced)
+    with sqlite3.connect(reduced) as connection:
+        connection.execute(
+            "DELETE FROM penalty_grid WHERE ABS(weight - ?) < 1e-9",
+            (reference["weight"],),
+        )
+    completed = run_command(reduced)
+    assert completed.returncode == 0, completed.stderr
+    remaining = {
+        weight: scores
+        for weight, scores in reference["curve"].items()
+        if weight != reference["weight"]
     }
-    with _patched_files(values):
-        _run(slice_binary)
-        report, _, _ = _read_outputs()
-        expected = _reference_plan(changed, scenario)
-    row = {item["scenario_id"]: item for item in report["scenarios"]}[scenario["scenario_id"]]
-    assert row == expected
-    assert row["selected_options"] == [
-        {
-            "from": scenario_root,
-            "to": option_aaa,
-            "priority": 13,
-        }
-    ]
+    expected = choose_weight(remaining)
+    reported = reported_fit(reduced)
+    assert reported["penalty"] == pytest.approx(expected, rel=1e-9)
+    assert np.allclose(
+        reported["estimate"], remaining[expected]["estimate"], rtol=0.005, atol=2e-7,
+    )
+    assert reported["objective"] == pytest.approx(
+        remaining[expected]["train"], rel=0.005, abs=0.02,
+    )
+    assert rows(reduced, "SELECT COUNT(*) FROM cv_scores")[0][0] == 4
+
+
+def test_input_tables_remain_unchanged(baseline: dict) -> None:
+    """a successful fit replaces results without modifying any input row."""
+    assert snapshot_inputs(DATABASE) == baseline["inputs"]
+
+
+def test_invalid_inputs_fail_without_touching_results(
+    baseline: dict, tmp_path: pathlib.Path,
+) -> None:
+    """rejected databases keep whatever result tables they already carried."""
+    del baseline
+    mutations = (
+        "DROP TABLE forcing",
+        "DELETE FROM observations WHERE plot = 'alder' AND depth = 5",
+        "UPDATE observations SET sigma_f = 0 WHERE plot = 'birch' AND depth = 20",
+        "UPDATE layers SET moisture = 0 WHERE plot = 'cedar'",
+        "DELETE FROM penalty_grid",
+        "UPDATE penalty_grid SET weight = -4 WHERE weight = 64.0",
+        "UPDATE observations SET fold = 1",
+    )
+    for index, mutation in enumerate(mutations):
+        invalid = tmp_path / f"invalid_{index}.sqlite"
+        shutil.copy2(DATABASE, invalid)
+        before = snapshot_outputs(invalid)
+        with sqlite3.connect(invalid) as connection:
+            connection.execute(mutation)
+        completed = run_command(invalid)
+        assert completed.returncode != 0
+        assert snapshot_outputs(invalid) == before
+
+
+def test_missing_database_returns_nonzero(tmp_path: pathlib.Path) -> None:
+    """a nonexistent database path is rejected without creating a file."""
+    missing = tmp_path / "missing.sqlite"
+    completed = run_command(missing)
+    assert completed.returncode != 0
+    assert not missing.exists()

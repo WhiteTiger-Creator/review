@@ -1,0 +1,4 @@
+plot	depth	temp	moisture	clay	input	f_input
+larch	5	5.9	0.695	0.23	3.05	1.028
+larch	20	4.5	0.73	0.3	0.92	1.0175
+larch	50	2.8	0.77	0.38	0.265	1.006

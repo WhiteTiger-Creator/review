@@ -1,8 +1,0 @@
-{
-  "scenario_id": "s01_base_docs",
-  "tags": [],
-  "roots": [
-    "corp.example/build/root"
-  ],
-  "ceiling": 5
-}

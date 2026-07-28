@@ -1,0 +1,4 @@
+plot	depth	temp	moisture	clay	input	f_input
+cedar	5	6.8	0.65	0.176	2.66	1.034
+cedar	20	5.4	0.7	0.252	0.8	1.022
+cedar	50	3.7	0.752	0.338	0.22	1.009

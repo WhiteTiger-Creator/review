@@ -10,9 +10,7 @@
 **/dist/
 **/build/
 **/.venv/
-**/venv/
 .env
 *.log
 solution/
 tests/
-output_contract.toml
