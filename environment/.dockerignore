@@ -1,8 +1,8 @@
-**/.git
-**/__pycache__
-**/.pytest_cache
-**/.ruff_cache
-**/target
-**/*.zip
-solution/
-tests/
+.git
+.gitignore
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/node_modules/

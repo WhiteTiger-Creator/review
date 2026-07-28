@@ -1,0 +1,12 @@
+#!/bin/bash
+# Defective periodctl stub - rewrite required (see task instruction).
+#
+# Known defect areas (implement all of them):
+#   - concurrency lock at /tmp/periodctl.lock (PID liveness + EXIT cleanup)
+#   - safe quoting for paths that contain spaces
+#   - exit codes 0/1/2 per instruction semantics
+#   - invoke a correct reconciler that materializes the snapshot
+set -eu
+
+echo "periodctl: defective stub - not implemented" >&2
+exit 1

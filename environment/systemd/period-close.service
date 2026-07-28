@@ -1,0 +1,11 @@
+[Unit]
+Description=Fiscal period-close balance materializer
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/periodctl --postings /app/data/journals --accounts /app/data/chart.tsv --window /etc/period-close/window.json --snapshot /var/lib/period-close/snapshot.tsv
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

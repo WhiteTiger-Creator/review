@@ -1,567 +1,466 @@
-"""Verifier for YINSH championship report output."""
-
-from __future__ import annotations
-
 import hashlib
-import json
-import math
+import os
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
-SCENARIOS = Path("/app/scenarios")
-OUTPUT = Path("/app/output/championship_report.json")
-CONTRACT = Path("/app/docs/championship-rules.md")
-PROFILE = Path("/app/config/profiles/champ-v3/rules.toml")
-PROFILE_NAME = Path("/app/config/profile.name")
-BINARY = Path("/app/bin/yinsh-ring")
+import pytest
 
-RUN_ID = "yinsh-champ-v1"
-CORRECT = {
-    "run_id": RUN_ID,
-    "row_length": 5,
-    "rings_to_win": 3,
-    "rings_start": 5,
-    "flip_enabled": 1,
-    "leave_marker": 1,
-    "win_points": 3,
-    "draw_points": 1,
-}
-CORRECT_SEAL = "063467fd701342809041f9cbb843d8e83772f6076602cd1c772257a1cbd9095d"
+PERIODCTL = "/app/src/periodctl"
+DATA_DIR = Path("/app/data")
+JOURNALS = DATA_DIR / "journals"
+CHART = DATA_DIR / "chart.tsv"
+WINDOW = DATA_DIR / "window.json"
+ETC_WINDOW = Path("/etc/period-close/window.json")
+SBIN_LINK = Path("/usr/local/sbin/periodctl")
+SYSTEMD_UNIT = Path("/etc/systemd/system/period-close.service")
+VAR_LIB = Path("/var/lib/period-close")
+LOCKFILE = Path("/tmp/periodctl.lock")
 
-SCENARIO_SHA256 = {
-    "m01.json": "116e045f409e580f6362eee6bcb5d217d836066c69c42bf0c3647652dcfc2078",
-    "m02.json": "0a2425a211df31f54e83211adb79ff3e58fed63adcc44d6df11bae44f4bf6bc2",
-    "m03.json": "82efa601cbd23338e7aa2bb04b0b69a21f7462f52dc63f1c502789d6956799e9",
-    "m04.json": "a4b026c297536bb4c4e195eaf3874878ad18e89069e21b261aafb66177e6bb04",
-    "m05.json": "69cc53e64c70aeeffd0719a8f411e7c968ca9cdc0fb39eb261d7da2c30a61b92",
-    "m06.json": "1a7545fa98fd14b9c997046bfc560e62ea977a0d1c1f7334e750b80a094a158b",
-    "m07.json": "299f6033ee5a011f9b152a63429f8657801b342aca486e7040f5537eb1c09994",
-    "m08.json": "16523f7c1eb11659f3ba0ef825b4767ea3db55cbe788a46bc8a4f96205b30715",
-    "m09.json": "41492608060788181e100e8c8b9fa91df8a0489c98dcdf3aea47091ae6f2aeca",
-    "m10.json": "c69f5b9a56477e4af0adb2067590297f4841c937a7a2fc43d57bd7c9d57519d4",
-    "m11.json": "191996bb6be00e05da74d9545ad8112f5b19893ab57610be31b9a6597cd516b7",
-    "m12.json": "56f290cd8bec1bdc27bede0024fb374a17d2f310e7190c96578d4496583746c2",
-}
-LEGACY_OVERLAY = Path("/app/config/profiles.legacy/champ-v3/rules.toml")
-FLOOR_BASELINE = Path("/app/config/baselines/champ-v3-floor.toml")
-HEAT_ENV = Path("/app/config/baselines/heat.env")
-RUNTIME_OVERLAY = Path("/app/config/runtime/champ-v3.floor.toml")
-GOV_OVERLAY = Path("/app/config/runtime/heat-v2.gov.toml")
-CONTRACT_PATH = Path("/app/docs/championship-rules.md")
+EXPECTED_LINES = [
+    "CA-1000;53000;DR",
+    "CA-2000;8000;CR",
+    "EQ-3000;15000;CR",
+    "EXP-5000;20000;DR",
+    "REV-4000;50000;CR",
+]
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8192), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
-def _half_away_round(x: float) -> int:
-    if x >= 0:
-        return math.floor(x + 0.5)
-    return math.ceil(x - 0.5)
-
-
-def _config_seal(cfg: dict) -> str:
-    keys = [
-        "run_id",
-        "row_length",
-        "rings_to_win",
-        "rings_start",
-        "flip_enabled",
-        "leave_marker",
-        "win_points",
-        "draw_points",
-    ]
-    payload = "".join(f"{k}={cfg[k]}\n" for k in keys)
-    return hashlib.sha256(payload.encode()).hexdigest()
-
-
-def _color(side: str) -> int:
-    return 1 if side == "A" else 2
-
-
-def _find_row(markers: list[int], side: str, row_len: int, lines: list[list[int]]) -> list[int] | None:
-    want = _color(side)
-    for line in lines:
-        if len(line) < row_len:
-            continue
-        for start in range(len(line) - row_len + 1):
-            window = line[start : start + row_len]
-            if all(markers[i] == want for i in window):
-                return list(window)
-    return None
-
-
-def _sim(scenario: dict, cfg: dict) -> dict:
-    markers = list(scenario["markers"])
-    rings_a = list(scenario["rings_a"])
-    rings_b = list(scenario["rings_b"])
-    rem_a = rem_b = 0
-    flips = {"A": 0, "B": 0}
-    rows = {"A": 0, "B": 0}
-    lines = scenario["lines"]
-    for mv in scenario["moves"]:
-        side = mv.get("side") or "A"
-        frm = mv["from"]
-        to = mv["to"]
-        path = mv.get("path") or []
-        own = rings_a if side == "A" else rings_b
-        if frm not in own:
-            continue
-        if to in rings_a or to in rings_b:
-            continue
-        if cfg["leave_marker"] == 1:
-            markers[frm] = _color(side)
-        own.remove(frm)
-        own.append(to)
-        if side == "A":
-            rings_a = own
-        else:
-            rings_b = own
-        if cfg["flip_enabled"] == 1:
-            for p in path:
-                if markers[p] == 1:
-                    markers[p] = 2
-                    flips[side] += 1
-                elif markers[p] == 2:
-                    markers[p] = 1
-                    flips[side] += 1
-        window = _find_row(markers, side, cfg["row_length"], lines)
-        if window:
-            rows[side] += 1
-            for i in window:
-                markers[i] = 0
-            remove_at = mv.get("remove_ring", -1)
-            if remove_at in own:
-                own.remove(remove_at)
-            elif own:
-                own.sort()
-                own.pop(0)
-            if side == "A":
-                rings_a = own
-                rem_a += 1
-            else:
-                rings_b = own
-                rem_b += 1
-            if rem_a >= cfg["rings_to_win"] or rem_b >= cfg["rings_to_win"]:
-                break
-    return {
-        "rings_removed_a": rem_a,
-        "rings_removed_b": rem_b,
-        "flips_a": flips["A"],
-        "flips_b": flips["B"],
-        "rows_cleared_a": rows["A"],
-        "rows_cleared_b": rows["B"],
-        "rings_left_a": len(rings_a),
-        "rings_left_b": len(rings_b),
-    }
-
-
-def _decide(res: dict, cfg: dict) -> tuple[str, str]:
-    ra, rb = res["rings_removed_a"], res["rings_removed_b"]
-    if ra >= cfg["rings_to_win"] or rb >= cfg["rings_to_win"]:
-        if ra >= cfg["rings_to_win"] and rb >= cfg["rings_to_win"]:
-            if ra > rb:
-                return "A", "ring_target"
-            if rb > ra:
-                return "B", "ring_target"
-            return "draw", "mutual_draw"
-        if ra >= cfg["rings_to_win"]:
-            return "A", "ring_target"
-        return "B", "ring_target"
-    if ra != rb:
-        return ("A" if ra > rb else "B"), "ring_majority"
-    return "draw", "mutual_draw"
-
-
-def _score(reason: str) -> tuple[str, int]:
-    if reason == "ring_target":
-        return "critical", 94
-    if reason == "ring_majority":
-        return "high", 68
-    return "low", 18
-
-
-def _severity_rank(s: str) -> int:
-    return {"none": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}.get(s, 0)
-
-
-def _load_scenarios() -> list[dict]:
-    out = []
-    for path in sorted(SCENARIOS.glob("*.json")):
-        out.append(json.loads(path.read_text()))
-    out.sort(key=lambda s: s["match_id"])
-    return out
-
-
-def _expected_report() -> dict:
-    cfg = CORRECT
-    scenarios = _load_scenarios()
-    matches = []
-    for sc in scenarios:
-        res = _sim(sc, cfg)
-        winner, reason = _decide(res, cfg)
-        if winner == "A":
-            pa, pb = cfg["win_points"], 0
-        elif winner == "B":
-            pa, pb = 0, cfg["win_points"]
-        else:
-            pa = pb = cfg["draw_points"]
-        sev, sc_score = _score(reason)
-        matches.append(
-            {
-                "match_id": sc["match_id"],
-                "player_a": sc["player_a"],
-                "player_b": sc["player_b"],
-                "winner": winner,
-                "reason": reason,
-                "rings_removed_a": res["rings_removed_a"],
-                "rings_removed_b": res["rings_removed_b"],
-                "flips_a": res["flips_a"],
-                "flips_b": res["flips_b"],
-                "rows_cleared_a": res["rows_cleared_a"],
-                "rows_cleared_b": res["rows_cleared_b"],
-                "rings_left_a": res["rings_left_a"],
-                "rings_left_b": res["rings_left_b"],
-                "points_a": pa,
-                "points_b": pb,
-                "severity": sev,
-                "priority_score": sc_score,
-                "related_ids": [],
-            }
-        )
-    by_player: dict[str, list[str]] = {}
-    for m in matches:
-        by_player.setdefault(m["player_a"], []).append(m["match_id"])
-        by_player.setdefault(m["player_b"], []).append(m["match_id"])
-    for m in matches:
-        rel = set()
-        for pid in (m["player_a"], m["player_b"]):
-            for mid in by_player[pid]:
-                if mid != m["match_id"]:
-                    rel.add(mid)
-        m["related_ids"] = sorted(rel)
-
-    tab: dict[str, dict] = {}
-    for m in matches:
-        for pid, pts, rem_own, rem_opp in (
-            (m["player_a"], m["points_a"], m["rings_removed_a"], m["rings_removed_b"]),
-            (m["player_b"], m["points_b"], m["rings_removed_b"], m["rings_removed_a"]),
-        ):
-            row = tab.setdefault(
-                pid, {"points": 0, "wins": 0, "draws": 0, "losses": 0, "ring_diff": 0}
-            )
-            row["points"] += pts
-            row["ring_diff"] += rem_own - rem_opp
-            if m["winner"] == "draw":
-                row["draws"] += 1
-            elif (pid == m["player_a"] and m["winner"] == "A") or (
-                pid == m["player_b"] and m["winner"] == "B"
-            ):
-                row["wins"] += 1
-            else:
-                row["losses"] += 1
-
-    ids = sorted(
-        tab.keys(),
-        key=lambda pid: (-tab[pid]["points"], -tab[pid]["ring_diff"], pid),
-    )
-    standings = []
-    for rank, pid in enumerate(ids, start=1):
-        a = tab[pid]
-        standings.append(
-            {
-                "player_id": pid,
-                "points": a["points"],
-                "wins": a["wins"],
-                "draws": a["draws"],
-                "losses": a["losses"],
-                "ring_diff": a["ring_diff"],
-                "rank": rank,
-            }
-        )
-
-    mean = sum(m["priority_score"] for m in matches) / len(matches)
-    agg = min(100, _half_away_round(mean * 1.25))
-    max_sev = "none"
-    dec = drw = 0
-    for m in matches:
-        if _severity_rank(m["severity"]) > _severity_rank(max_sev):
-            max_sev = m["severity"]
-        if m["winner"] == "draw":
-            drw += 1
-        else:
-            dec += 1
-
-    return {
-        "schema_version": "1.0",
-        "run_id": cfg["run_id"],
-        "matches_played": len(matches),
-        "matches": matches,
-        "standings": standings,
-        "summary": {
-            "aggregate_priority": agg,
-            "max_severity": max_sev,
-            "decisive_matches": dec,
-            "draw_matches": drw,
-        },
-    }
-
-
-def _parse_profile(text: str) -> dict:
-    out = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        out[k.strip()] = v.strip().strip('"')
-    return out
-
-
-def _run_engine() -> None:
-    subprocess.run(
+def run_periodctl(
+    snapshot_path: Path,
+    postings_dir: Path = JOURNALS,
+    accounts: Path = CHART,
+    window: Path = WINDOW,
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
         [
-            str(BINARY),
-            "--scenarios",
-            str(SCENARIOS),
-            "--config",
-            "/app/config",
-            "--out",
-            "/app/output",
+            PERIODCTL,
+            "--postings",
+            str(postings_dir),
+            "--accounts",
+            str(accounts),
+            "--window",
+            str(window),
+            "--snapshot",
+            str(snapshot_path),
         ],
-        check=True,
+        capture_output=True,
+        text=True,
+        check=False,
     )
 
 
-def _load_report() -> dict:
-    return json.loads(OUTPUT.read_text())
+@pytest.fixture
+def data_hashes():
+    hashes = {}
+    for path in DATA_DIR.rglob("*"):
+        if path.is_file():
+            hashes[str(path.relative_to(DATA_DIR))] = sha256_file(path)
+    return hashes
 
 
-def test_scenario_fixtures_unchanged():
-    """Scenario fixture bytes must match the pinned SHA-256 digests."""
-    for name, digest in SCENARIO_SHA256.items():
-        assert _sha256(SCENARIOS / name) == digest
+def _mode(path: Path) -> str:
+    return oct(path.stat().st_mode & 0o777)
 
 
-def test_contract_and_profile_name_present():
-    """Contract file exists and profile.name selects champ-v3."""
-    assert CONTRACT.is_file()
-    assert CONTRACT_PATH.is_file()
-    assert "championship_mode" in CONTRACT_PATH.read_text()
-    assert PROFILE_NAME.read_text().strip() == "champ-v3"
+def test_periodctl_binary_mode_0755():
+    """Verify /app/src/periodctl exists and has executable mode 0755."""
+    assert Path(PERIODCTL).is_file()
+    assert _mode(Path(PERIODCTL)) == "0o755"
 
 
-def test_sealed_profile_floors_and_seal():
-    """Sealed profile carries championship floors with a matching config_seal."""
-    text = PROFILE.read_text()
-    for line in (
-        'run_id = "yinsh-champ-v1"',
-        "row_length = 5",
-        "rings_to_win = 3",
-        "rings_start = 5",
-        "flip_enabled = 1",
-        "leave_marker = 1",
-        "win_points = 3",
-        "draw_points = 1",
-        f'config_seal = "{CORRECT_SEAL}"',
-    ):
-        assert line in text
-    parsed = _parse_profile(text)
-    cfg = {k: (parsed[k] if k == "run_id" else int(parsed[k])) for k in CORRECT}
-    assert _config_seal(cfg) == CORRECT_SEAL
-    assert parsed["config_seal"] == CORRECT_SEAL
+def test_sbin_periodctl_symlink():
+    """Verify /usr/local/sbin/periodctl is a symlink to /app/src/periodctl."""
+    assert SBIN_LINK.is_symlink()
+    assert SBIN_LINK.resolve() == Path(PERIODCTL).resolve()
 
 
-def test_floor_baseline_and_heat_epoch_floors():
-    """Floor baseline seal and heat.env championship constants must be present."""
-    floor = FLOOR_BASELINE.read_text()
-    for line in (
-        'run_id = "yinsh-champ-v1"',
-        "row_length = 5",
-        "rings_to_win = 3",
-        "flip_enabled = 1",
-        "leave_marker = 1",
-        "win_points = 3",
-        "draw_points = 1",
-        f'floor_seal = "{CORRECT_SEAL}"',
-    ):
-        assert line in floor
-    heat = HEAT_ENV.read_text()
-    for line in (
-        "row_slack=0",
-        "target_pad=0",
-        "flip_latch_seed=1",
-        "leave_latch_seed=1",
-        "printer_win_floor=3",
-        "aggregate_scale=1.25",
-        "majority_score=68",
-        "championship_mode=1",
-    ):
-        assert line in heat
+def test_etc_window_installed():
+    """Verify /etc/period-close/window.json is a byte-identical install with mode 0644."""
+    assert ETC_WINDOW.is_file()
+    assert ETC_WINDOW.read_bytes() == WINDOW.read_bytes()
+    assert _mode(ETC_WINDOW) == "0o644"
 
 
-def test_seal_mismatch_uses_championship_baseline():
-    """Corrupting config_seal still yields championship floors via floor baseline."""
-    original = PROFILE.read_text()
+def test_var_lib_period_close_mode_0755():
+    """Verify /var/lib/period-close exists as a directory with mode 0755."""
+    assert VAR_LIB.is_dir()
+    assert _mode(VAR_LIB) == "0o755"
+
+
+def test_systemd_unit_mode_and_targets():
+    """Verify period-close.service is mode 0644 and references correct paths."""
+    assert SYSTEMD_UNIT.is_file()
+    assert _mode(SYSTEMD_UNIT) == "0o644"
+    text = SYSTEMD_UNIT.read_text(encoding="utf-8")
+    assert "/usr/local/sbin/periodctl" in text
+    assert "/etc/period-close/window.json" in text
+    assert "/var/lib/period-close/snapshot.tsv" in text
+    assert "Type=oneshot" in text
+
+
+def test_etc_window_path_produces_same_snapshot(tmp_path):
+    """Verify snapshots match whether --window points at data or etc install."""
+    via_data = tmp_path / "from_data.txt"
+    via_etc = tmp_path / "from_etc.txt"
+    code_data = run_periodctl(via_data, window=WINDOW).returncode
+    code_etc = run_periodctl(via_etc, window=ETC_WINDOW).returncode
+    assert code_data == code_etc == 1
+    assert via_data.read_text(encoding="utf-8") == via_etc.read_text(encoding="utf-8")
+
+
+def test_exit_code_with_unknown_account(tmp_path):
+    """Verify unknown in-window accounts yield exit code 1."""
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot)
+    assert result.returncode == 1, result.stderr
+
+
+def test_snapshot_line_count(tmp_path):
+    """Verify the shipped journals produce exactly five snapshot rows."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    lines = snapshot.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 5
+
+
+def test_snapshot_exact_content(tmp_path):
+    """Verify snapshot lines match expected account balances and sides."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    lines = snapshot.read_text(encoding="utf-8").splitlines()
+    assert lines == EXPECTED_LINES
+
+
+def test_snapshot_schema(tmp_path):
+    """Verify each snapshot line has ACCOUNT_ID;positive_cents;DR|CR format."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    for line in snapshot.read_text(encoding="utf-8").splitlines():
+        account_id, balance, side = line.split(";")
+        assert account_id
+        assert balance.isdigit()
+        assert int(balance) > 0
+        assert side in {"DR", "CR"}
+
+
+def test_case_insensitive_account_resolution(tmp_path):
+    """Verify journal account IDs resolve to canonical chart IDs case-insensitively."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    text = snapshot.read_text(encoding="utf-8")
+    assert "CA-1000;53000;DR" in text
+    assert "EQ-3000;15000;CR" in text
+    assert "ca-1000" not in text
+    assert "eq-3000" not in text
+
+
+def test_out_of_window_entries_excluded(tmp_path):
+    """Verify postings outside the fiscal window do not affect balances."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    text = snapshot.read_text(encoding="utf-8")
+    cash_balance = int(
+        next(line for line in text.splitlines() if line.startswith("CA-1000;")).split(";")[1]
+    )
+    assert cash_balance == 53000
+
+
+def test_sort_order_case_insensitive(tmp_path):
+    """Verify snapshot rows are sorted by account ID case-insensitively."""
+    snapshot = tmp_path / "snapshot.tsv"
+    run_periodctl(snapshot)
+    account_ids = [line.split(";")[0] for line in snapshot.read_text(encoding="utf-8").splitlines()]
+    assert account_ids == sorted(account_ids, key=str.casefold)
+
+
+def test_window_boundary_dates_inclusive(tmp_path):
+    """Verify start_date and end_date boundary postings are included in the window."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "boundary.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-01-01,CA-1000,100,0,start boundary\n"
+        "2025-01-01,REV-4000,0,100,start boundary\n"
+        "2025-03-31,CA-1000,0,200,end boundary\n"
+        "2025-03-31,EXP-5000,200,0,end boundary\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+    lines = {line.split(";")[0]: line for line in snapshot.read_text(encoding="utf-8").splitlines()}
+    assert lines["CA-1000"] == "CA-1000;100;CR"
+    assert lines["REV-4000"] == "REV-4000;100;CR"
+    assert lines["EXP-5000"] == "EXP-5000;200;DR"
+
+
+def test_deterministic_output(tmp_path):
+    """Verify repeated runs produce identical snapshots and exit codes."""
+    first = tmp_path / "first.tsv"
+    second = tmp_path / "second.tsv"
+    code_one = run_periodctl(first).returncode
+    code_two = run_periodctl(second).returncode
+    assert code_one == code_two == 1
+    assert first.read_text(encoding="utf-8") == second.read_text(encoding="utf-8")
+
+
+def test_data_files_not_modified(data_hashes):
+    """Verify periodctl does not modify files under /app/data/."""
+    snapshot = Path(tempfile.mkdtemp()) / "snapshot.tsv"
+    run_periodctl(snapshot)
+    for path in DATA_DIR.rglob("*"):
+        if path.is_file():
+            rel = str(path.relative_to(DATA_DIR))
+            assert sha256_file(path) == data_hashes[rel]
+
+
+def test_exit_code_all_clean(tmp_path):
+    """Verify a balanced window with no unknown accounts yields exit code 0."""
+    postings = tmp_path / "clean"
+    postings.mkdir()
+    shutil.copytree(JOURNALS, postings, dirs_exist_ok=True)
+    (postings / "legacy.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-03-15,EQ-3000,0,15000,Owner draw\n"
+        "2025-03-15,CA-1000,15000,0,Cash transfer for draw\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+
+
+def test_zero_balance_excluded(tmp_path):
+    """Verify accounts whose net balance is zero are omitted from the snapshot."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "zero.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-01,CA-1000,5000,0,payment\n"
+        "2025-02-01,REV-4000,0,5000,revenue\n"
+        "2025-02-15,CA-1000,0,5000,refund\n"
+        "2025-02-15,REV-4000,5000,0,rev reversal\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0
+    assert snapshot.read_text(encoding="utf-8").strip() == ""
+
+
+def test_exit_code_unbalanced_journals(tmp_path):
+    """Verify unbalanced in-window postings yield exit code 1."""
+    postings = tmp_path / "bad"
+    postings.mkdir()
+    (postings / "skew.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-10,CA-1000,5000,0,orphan debit\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 1, result.stderr
+
+
+def test_exit_code_invalid_arguments(tmp_path):
+    """Verify missing required CLI arguments yield exit code 2."""
+    snapshot = tmp_path / "snapshot.tsv"
+    result = subprocess.run(
+        [PERIODCTL, "--postings", str(JOURNALS), "--snapshot", str(snapshot)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+
+
+def test_exit_code_unreadable_accounts_path(tmp_path):
+    """Verify unreadable but existing accounts path yields exit code 2."""
+    unreadable = tmp_path / "locked.tsv"
+    unreadable.write_text("account_id\tname\ttype\tnormal_balance\n", encoding="utf-8")
+    unreadable.chmod(0o000)
+    snapshot = tmp_path / "snapshot.tsv"
     try:
-        lines = []
-        for line in original.splitlines():
-            if line.strip().startswith("config_seal"):
-                lines.append('config_seal = "' + ("0" * 64) + '"')
-            else:
-                lines.append(line)
-        PROFILE.write_text("\n".join(lines) + "\n")
-        _run_engine()
-        got = _load_report()
-        exp = _expected_report()
-        assert got["run_id"] == RUN_ID
-        assert got["matches"] == exp["matches"]
-        assert got["standings"] == exp["standings"]
-        assert got["summary"] == exp["summary"]
+        result = run_periodctl(snapshot, accounts=unreadable)
+        assert result.returncode == 2
     finally:
-        PROFILE.write_text(original)
-        _run_engine()
+        unreadable.chmod(0o644)
 
 
-def test_legacy_overlay_ignored_with_valid_seal():
-    """Corrupting overlays and governance files must not downgrade floors."""
-    legacy_orig = LEGACY_OVERLAY.read_text()
-    runtime_orig = RUNTIME_OVERLAY.read_text()
-    gov_orig = GOV_OVERLAY.read_text()
+def test_whitespace_trimmed_and_blank_lines_ignored(tmp_path):
+    """Verify whitespace is trimmed and blank journal lines are ignored."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "messy.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "\n"
+        "2025-02-03,  ca-1000  , 700 , 0 ,cash receipt\n"
+        "2025-02-03, REV-4000 ,0, 700 , revenue booking\n"
+        "\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+    assert snapshot.read_text(encoding="utf-8").splitlines() == [
+        "CA-1000;700;DR",
+        "REV-4000;700;CR",
+    ]
+
+
+def test_invalid_in_window_rows_fail_but_valid_rows_still_snapshot(tmp_path):
+    """Verify invalid rows fail the run but valid known-account rows still appear."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "mixed.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-10,CA-1000,700,0,valid debit\n"
+        "2025-02-10,REV-4000,0,700,valid credit\n"
+        "2025-02-11,CA-1000,10,10,both sides set\n"
+        "2025-02-12,EXP-5000,foo,0,non numeric debit\n"
+        "2025-02-13,CA-1000,-5,0,negative debit\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 1, result.stderr
+    assert snapshot.read_text(encoding="utf-8").splitlines() == [
+        "CA-1000;700;DR",
+        "REV-4000;700;CR",
+    ]
+
+
+def test_both_sides_zero_row_is_invalid(tmp_path):
+    """Verify rows with both debit and credit zero fail the run with exit code 1."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "zero_sides.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-10,CA-1000,700,0,valid debit\n"
+        "2025-02-10,REV-4000,0,700,valid credit\n"
+        "2025-02-11,CA-1000,0,0,both sides zero\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 1, result.stderr
+    assert snapshot.read_text(encoding="utf-8").splitlines() == [
+        "CA-1000;700;DR",
+        "REV-4000;700;CR",
+    ]
+
+
+def test_duplicate_chart_ids_case_insensitive_fail_with_empty_snapshot(tmp_path):
+    """Verify case-insensitive duplicate chart IDs fail with exit 1 and empty snapshot."""
+    chart = tmp_path / "chart.tsv"
+    chart.write_text(
+        "account_id\tname\ttype\tnormal_balance\n"
+        "\n"
+        "CA-1000\tCash\tasset\tdebit\n"
+        "ca-1000\tDuplicate Cash\tasset\tdebit\n"
+        "REV-4000\tRevenue\trevenue\tcredit\n",
+        encoding="utf-8",
+    )
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "simple.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-14,CA-1000,900,0,cash sale\n"
+        "2025-02-14,REV-4000,0,900,revenue\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings, accounts=chart)
+    assert result.returncode == 1, result.stderr
+    assert snapshot.read_text(encoding="utf-8") == ""
+
+
+def test_lockfile_concurrency_and_cleanup(tmp_path):
+    """Verify sequential runs succeed and the lockfile is cleaned up after each run."""
+    snapshot1 = tmp_path / "snapshot1.tsv"
+    res1 = run_periodctl(snapshot1)
+    assert res1.returncode == 1
+    assert not LOCKFILE.exists()
+
+    snapshot2 = tmp_path / "snapshot2.tsv"
+    res2 = run_periodctl(snapshot2)
+    assert res2.returncode == 1
+    assert not LOCKFILE.exists()
+
+    res3 = subprocess.run([PERIODCTL], capture_output=True, text=True, check=False)
+    assert res3.returncode == 2
+
+    snapshot3 = tmp_path / "snapshot3.tsv"
+    res4 = run_periodctl(snapshot3)
+    assert res4.returncode == 1
+    assert not LOCKFILE.exists()
+
+
+def test_stale_lockfile_dead_pid_takes_over(tmp_path):
+    """Verify periodctl takes over when lockfile holds a dead PID."""
+    LOCKFILE.write_text("99999999", encoding="utf-8")
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot)
+    assert result.returncode == 1
+    assert not LOCKFILE.exists()
+
+
+def test_active_lockfile_pid_blocks_run(tmp_path):
+    """Verify periodctl exits 1 when lockfile holds an active PID."""
+    LOCKFILE.write_text(str(os.getpid()), encoding="utf-8")
+    snapshot = tmp_path / "snapshot.tsv"
     try:
-        LEGACY_OVERLAY.write_text(
-            'run_id = "yinsh-legacy"\n'
-            "row_length = 4\n"
-            "rings_to_win = 2\n"
-            "flip_enabled = 0\n"
-            "leave_marker = 0\n"
-            "win_points = 2\n"
-            "draw_points = 0\n"
-        )
-        RUNTIME_OVERLAY.write_text(
-            "flip_enabled = 0\n"
-            "leave_marker = 0\n"
-            "rings_to_win = 2\n"
-            "row_length = 4\n"
-            "win_points = 2\n"
-            "draw_points = 0\n"
-        )
-        GOV_OVERLAY.write_text(
-            'run_id = "yinsh-legacy"\n'
-            "row_length = 4\n"
-            "rings_to_win = 2\n"
-            "flip_enabled = 0\n"
-            "leave_marker = 0\n"
-            "win_points = 2\n"
-            "draw_points = 0\n"
-        )
-        _run_engine()
-        got = _load_report()
-        exp = _expected_report()
-        assert got["matches"] == exp["matches"]
-        assert got["summary"] == exp["summary"]
+        result = run_periodctl(snapshot)
+        assert result.returncode == 1
     finally:
-        LEGACY_OVERLAY.write_text(legacy_orig)
-        RUNTIME_OVERLAY.write_text(runtime_orig)
-        GOV_OVERLAY.write_text(gov_orig)
-        _run_engine()
+        LOCKFILE.unlink(missing_ok=True)
 
 
-def test_report_schema_and_run_id():
-    """Report exposes the documented schema keys and championship run_id."""
-    rep = _load_report()
-    assert rep["schema_version"] == "1.0"
-    assert rep["run_id"] == RUN_ID
-    assert set(rep) >= {"schema_version", "run_id", "matches_played", "matches", "standings", "summary"}
-    assert rep["matches_played"] == len(rep["matches"])
-    for m in rep["matches"]:
-        assert set(m) >= {
-            "match_id",
-            "player_a",
-            "player_b",
-            "winner",
-            "reason",
-            "rings_removed_a",
-            "rings_removed_b",
-            "flips_a",
-            "flips_b",
-            "rows_cleared_a",
-            "rows_cleared_b",
-            "rings_left_a",
-            "rings_left_b",
-            "points_a",
-            "points_b",
-            "severity",
-            "priority_score",
-            "related_ids",
-        }
+def test_path_with_spaces(tmp_path):
+    """Verify CLI handles postings directories whose paths contain spaces."""
+    postings = tmp_path / "postings folder with spaces"
+    postings.mkdir()
+    (postings / "clean.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        "2025-02-01,CA-1000,100,0,payment\n"
+        "2025-02-01,REV-4000,0,100,revenue\n",
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+    lines = snapshot.read_text(encoding="utf-8").splitlines()
+    assert lines == [
+        "CA-1000;100;DR",
+        "REV-4000;100;CR",
+    ]
 
 
-def test_match_outcomes_match_ruleset_simulation():
-    """Each match row matches an independent ruleset simulation."""
-    got = _load_report()["matches"]
-    exp = _expected_report()["matches"]
-    assert got == exp
-
-
-def test_related_ids_share_players():
-    """related_ids lists other matches sharing a player, sorted ascending."""
-    got = _load_report()["matches"]
-    exp = _expected_report()["matches"]
-    for g, e in zip(got, exp, strict=True):
-        assert g["related_ids"] == e["related_ids"]
-        assert g["related_ids"] == sorted(g["related_ids"])
-
-
-def test_standings_order_and_aggregates():
-    """Standings order, ring_diff, and summary aggregates match the ruleset."""
-    got = _load_report()
-    exp = _expected_report()
-    assert got["standings"] == exp["standings"]
-    assert got["summary"] == exp["summary"]
-    assert got["standings"][0]["rank"] == 1
-
-
-def test_no_legacy_point_remap():
-    """Wins award win_points and draws award draw_points, never legacy 2/0."""
-    for m in _load_report()["matches"]:
-        if m["winner"] == "A":
-            assert m["points_a"] == 3 and m["points_b"] == 0
-        elif m["winner"] == "B":
-            assert m["points_a"] == 0 and m["points_b"] == 3
-        else:
-            assert m["points_a"] == 1 and m["points_b"] == 1
-
-
-def test_reason_token_vocabulary():
-    """Reason tokens and severity/score pairs follow the championship table."""
-    allowed = {"ring_target", "ring_majority", "mutual_draw"}
-    exp_by_id = {m["match_id"]: m for m in _expected_report()["matches"]}
-    for m in _load_report()["matches"]:
-        assert m["reason"] in allowed
-        sev, sc = _score(m["reason"])
-        assert m["severity"] == sev
-        assert m["priority_score"] == sc
-        assert m["reason"] == exp_by_id[m["match_id"]]["reason"]
-
-
-def test_key_match_resolutions():
-    """Spot-check matches that flip under legacy leave/flip/row/gate paths."""
-    by_id = {m["match_id"]: m for m in _load_report()["matches"]}
-    assert by_id["m01"]["winner"] == "A" and by_id["m01"]["reason"] == "ring_target"
-    assert by_id["m01"]["rings_removed_a"] == 3
-    assert by_id["m02"]["winner"] == "B" and by_id["m02"]["reason"] == "ring_target"
-    assert by_id["m05"]["flips_a"] == 3 and by_id["m05"]["rings_removed_a"] == 2
-    assert by_id["m06"]["rings_removed_a"] == 1
-    assert by_id["m08"]["winner"] == "draw" and by_id["m08"]["reason"] == "mutual_draw"
-    assert by_id["m09"]["rings_removed_a"] == 1 and by_id["m09"]["rows_cleared_a"] == 1
-    assert by_id["m10"]["rings_left_a"] == 4
-    assert by_id["m11"]["flips_a"] == 3
-    assert by_id["m12"]["winner"] == "B"
-
-
-def test_aggregate_priority_uses_championship_multiplier():
-    """Summary aggregate_priority uses mean(priority_score) * 1.25 capped at 100."""
-    summary = _load_report()["summary"]
-    exp = _expected_report()["summary"]
-    assert summary["aggregate_priority"] == exp["aggregate_priority"] == 80
+def test_memo_field_with_commas(tmp_path):
+    """Verify quoted memo fields containing commas are parsed correctly."""
+    postings = tmp_path / "postings"
+    postings.mkdir()
+    (postings / "comma_memo.csv").write_text(
+        "posting_date,account_id,debit_cents,credit_cents,memo\n"
+        '2025-02-01,CA-1000,150,0,"payment, partial"\n'
+        '2025-02-01,REV-4000,0,150,"revenue, deferred"\n',
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.tsv"
+    result = run_periodctl(snapshot, postings_dir=postings)
+    assert result.returncode == 0, result.stderr
+    lines = snapshot.read_text(encoding="utf-8").splitlines()
+    assert lines == [
+        "CA-1000;150;DR",
+        "REV-4000;150;CR",
+    ]
