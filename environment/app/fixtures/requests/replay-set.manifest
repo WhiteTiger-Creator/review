@@ -1,0 +1,4 @@
+# harbor replay manifest v2
+arrival	/app/fixtures/requests/arrival-replay.http
+manifest	/app/fixtures/requests/manifest-replay.http
+status	/app/fixtures/requests/status-replay.http

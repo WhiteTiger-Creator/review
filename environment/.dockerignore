@@ -6,9 +6,12 @@
 **/.mypy_cache/
 **/.ruff_cache/
 **/node_modules/
+**/target/
 **/dist/
-**/*.o
-**/*.so
+**/build/
+**/.venv/
+**/venv/
 .env
+*.log
 solution/
 tests/
