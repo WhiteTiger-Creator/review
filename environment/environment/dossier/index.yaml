@@ -1,0 +1,97 @@
+decisions:
+  - id: DEC-001
+    path: decision-register/DEC-001-accepted-edge-auth.yaml
+  - id: DEC-002
+    path: decision-register/DEC-002-superseded-audience.yaml
+  - id: DEC-003
+    path: decision-register/DEC-003-accepted-service-user.yaml
+  - id: DEC-004
+    path: decision-register/DEC-004-amendment.yaml
+  - id: DEC-005
+    path: decision-register/DEC-005-staging-readonly.yaml
+  - id: DEC-006
+    path: decision-register/DEC-006-proposed.yaml
+  - id: DEC-007
+    path: decision-register/DEC-007-billing.yaml
+  - id: DEC-008
+    path: decision-register/DEC-008-inventory-search.yaml
+  - id: ARCH-001
+    path: architecture/ARCH-001-review.md
+  - id: ARCH-002
+    path: architecture/ARCH-002-review.md
+  - id: ARCH-003
+    path: architecture/ARCH-003-review.md
+  - id: ARCH-004
+    path: architecture/ARCH-004-review.md
+  - id: ARCH-005
+    path: architecture/ARCH-005-review.md
+  - id: ARCH-006
+    path: architecture/ARCH-006-review.md
+  - id: ARCH-007
+    path: architecture/ARCH-007-review.md
+  - id: ARCH-008
+    path: architecture/ARCH-008-review.md
+  - id: ARCH-009
+    path: architecture/ARCH-009-review.md
+  - id: ARCH-010
+    path: architecture/ARCH-010-review.md
+  - id: ARCH-011
+    path: architecture/ARCH-011-review.md
+  - id: ARCH-012
+    path: architecture/ARCH-012-review.md
+  - id: ARCH-013
+    path: architecture/ARCH-013-review.md
+  - id: ARCH-014
+    path: architecture/ARCH-014-review.md
+  - id: ARCH-015
+    path: architecture/ARCH-015-review.md
+  - id: ARCH-016
+    path: architecture/ARCH-016-review.md
+  - id: ARCH-017
+    path: architecture/ARCH-017-review.md
+  - id: ARCH-018
+    path: architecture/ARCH-018-review.md
+  - id: ARCH-019
+    path: architecture/ARCH-019-review.md
+  - id: ARCH-020
+    path: architecture/ARCH-020-review.md
+  - id: ARCH-021
+    path: architecture/ARCH-021-review.md
+  - id: ARCH-022
+    path: architecture/ARCH-022-review.md
+  - id: ARCH-023
+    path: architecture/ARCH-023-review.md
+  - id: ARCH-024
+    path: architecture/ARCH-024-review.md
+  - id: ARCH-025
+    path: architecture/ARCH-025-review.md
+  - id: ARCH-026
+    path: architecture/ARCH-026-review.md
+  - id: ARCH-027
+    path: architecture/ARCH-027-review.md
+  - id: ARCH-028
+    path: architecture/ARCH-028-review.md
+  - id: ARCH-029
+    path: architecture/ARCH-029-review.md
+  - id: ARCH-030
+    path: architecture/ARCH-030-review.md
+  - id: ARCH-031
+    path: architecture/ARCH-031-review.md
+  - id: ARCH-032
+    path: architecture/ARCH-032-review.md
+  - id: ARCH-033
+    path: architecture/ARCH-033-review.md
+  - id: ARCH-034
+    path: architecture/ARCH-034-review.md
+  - id: ARCH-035
+    path: architecture/ARCH-035-review.md
+  - id: ARCH-036
+    path: architecture/ARCH-036-review.md
+  - id: ARCH-037
+    path: architecture/ARCH-037-review.md
+  - id: ARCH-038
+    path: architecture/ARCH-038-review.md
+  - id: ARCH-039
+    path: architecture/ARCH-039-review.md
+  - id: ARCH-040
+    path: architecture/ARCH-040-review.md

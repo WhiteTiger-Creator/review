@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+rm -rf /app/.runtime/* /output/*
+mkdir -p /app/.runtime /output /app/.cache/go-build

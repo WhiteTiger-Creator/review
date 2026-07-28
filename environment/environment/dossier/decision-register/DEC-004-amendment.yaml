@@ -1,0 +1,8 @@
+id: DEC-004
+status: amended
+scope: service
+effective_date: 2025-07-01
+amends: DEC-003
+target_service: user-service
+audiences:
+  - https://users.example.com/v2/prod
