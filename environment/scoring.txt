@@ -1,0 +1,25 @@
+Playbook authorship is limited to /app/work/playbook/strategy.json ordered contingency rules plus fallback. The sealed relayplayer applies the first matching rule; agents never replace relaymatch or relayplayer.
+
+Matches alternate board activations under a deterministic schedule until checkmate, stalemate, threefold repetition, or the action horizon. Team points combine board results, material still on the boards, and successful relay transfers. Checkmate awards one hundred team points to the mating side. Stalemate is neutral on that board. When a board ends by threefold repetition and the side to move trails on remaining material, that team loses five points.
+
+Ready drop inventory adds two points per ready piece. Captures that overflow a full queue forfeit the transfer and subtract the captured piece value from that team's pending relay score, so greedy takes into a full queue harm acceptance. Each public and graded scenario publishes an acceptance_floor. A seat meets acceptance only when protocol faults and belief faults are zero and team_a points are at least that floor. Long linked campaigns with horizon at least sixteen must also record at least one teammate request action in the authoritative ply log before the terminal message.
+
+Authoritative records publish under /app/output after atomic generation replacement. Generations live under /app/output/generations with an immutable directory name. The /app/output/current pointer is a relative text path updated only after full validation. Failed compilation, protocol faults, belief faults, sealed-asset mismatches, or publish aborts leave the previous current pointer unchanged.
+
+Each completed generation must contain these seven files with the fields below.
+
+summary.json — match_id (string), opponent (string), seed (integer), reason (string), scores (object with team_a and team_b integers), plies (integer), determinism (string, always seeded), acceptance_floor (integer), accepted (boolean: true when bot_faults and belief_faults are zero and scores.team_a meets acceptance_floor)
+
+plies.jsonl — one JSON object per line; move or drop lines include ply, board, team, side, uci; request lines include ply, board, team, action equal to request, and value; hold lines include ply, board, team, action equal to hold
+
+boards.json — alpha and beta final FEN strings
+
+visibility.jsonl — observation snapshots with team, visible_squares, stale_sightings, ready_drops, legal_moves, legal_drops, check
+
+relay.jsonl — step, queues, and public relay events
+
+terminal.json — reason (string), scores (object with team_a and team_b), winner (team_a, team_b, or draw), accepted (boolean)
+
+bot-diagnostics.json — bot_legal_actions (integer), bot_faults (integer), belief_faults (integer), protocol_ok (boolean: true only when bot_faults and belief_faults are both zero), notes (string)
+
+Public campaign acceptance floors are 60 for kingside-relay-attack, 8 for defensive-drop-fog, 9 for promotion-race, 100 for material-imbalance, and 3 for queue-pressure. Queue-pressure starts with capacity one and a ready pawn already filling the queue, so greedy captures into the full queue take an overflow penalty while drop-then-capture or suppress-then-transfer play can clear the floor. Horizon scoring uses remaining material and ready inventory when no terminal chess result lands first. Identical engine inputs must reproduce identical normalized score fields. Wall clocks are not used; each seat has a deterministic action budget counted in plies and messages.

@@ -1,0 +1,154 @@
+{
+  "rules": [
+    {
+      "id": "check-drop",
+      "when": { "in_check": true, "has_ready_drops": true },
+      "then": {
+        "action": "drop_near_king",
+        "avoid_stale_king_walk": true,
+        "set_flags": ["dropped_def"]
+      }
+    },
+    {
+      "id": "check-escape",
+      "when": { "in_check": true },
+      "then": {
+        "action": "escape",
+        "capture_weight": 20,
+        "check_escape_bonus": 8,
+        "avoid_stale_king_walk": true,
+        "stale_age_max": 2,
+        "king_move_penalty": 2,
+        "set_flags": ["escaped"]
+      }
+    },
+    {
+      "id": "fog-drop",
+      "when": {
+        "has_ready_drops": true,
+        "has_stale_near_king": true,
+        "lacks_flags": ["dropped_def"]
+      },
+      "then": {
+        "action": "drop_near_king",
+        "avoid_stale_king_walk": true,
+        "set_flags": ["dropped_def"]
+      }
+    },
+    {
+      "id": "early-request",
+      "when": {
+        "ply_at_most": 4,
+        "in_check": false,
+        "lacks_flags": ["requested"]
+      },
+      "then": {
+        "action": "request",
+        "request_piece": "q",
+        "set_flags": ["requested"]
+      }
+    },
+    {
+      "id": "busy-request",
+      "when": {
+        "ply_at_most": 6,
+        "visible_pieces_min": 4,
+        "has_ready_drops": false,
+        "in_check": false,
+        "lacks_flags": ["requested"]
+      },
+      "then": {
+        "action": "request",
+        "request_piece": "q",
+        "set_flags": ["requested"]
+      }
+    },
+    {
+      "id": "queue-full-suppress",
+      "when": {
+        "queue_full": true,
+        "has_legal_captures": true,
+        "in_check": false
+      },
+      "then": {
+        "action": "quiet",
+        "prefer_quiet": true,
+        "suppress_capture_max": 5,
+        "capture_weight": 0,
+        "king_hunt_weight": 2,
+        "avoid_stale_king_walk": true,
+        "stale_age_max": 2,
+        "king_move_penalty": 4,
+        "set_flags": ["queue_guard"]
+      }
+    },
+    {
+      "id": "promote-knight-full",
+      "when": {
+        "has_promotion": true,
+        "queue_full": true
+      },
+      "then": {
+        "action": "promote_knight",
+        "capture_weight": 10,
+        "avoid_stale_king_walk": true,
+        "set_flags": ["promoted"]
+      }
+    },
+    {
+      "id": "promote-queen",
+      "when": {
+        "has_promotion": true,
+        "queue_room_at_least": 1
+      },
+      "then": {
+        "action": "promote_queen",
+        "capture_weight": 15,
+        "king_hunt_weight": 2,
+        "avoid_stale_king_walk": true,
+        "set_flags": ["promoted"]
+      }
+    },
+    {
+      "id": "hunt-captures",
+      "when": {
+        "has_legal_captures": true,
+        "in_check": false
+      },
+      "then": {
+        "action": "capture",
+        "capture_weight": 20,
+        "king_hunt_weight": 3,
+        "avoid_stale_king_walk": true,
+        "stale_age_max": 2,
+        "king_move_penalty": 4,
+        "check_escape_bonus": 6,
+        "set_flags": ["hunted"]
+      }
+    },
+    {
+      "id": "periodic-drop",
+      "when": {
+        "has_ready_drops": true,
+        "ply_at_least": 2,
+        "in_check": false,
+        "queue_full": false
+      },
+      "then": {
+        "action": "drop_near_king",
+        "avoid_stale_king_walk": true,
+        "set_flags": ["dropped_def"]
+      }
+    }
+  ],
+  "fallback": {
+    "action": "quiet",
+    "prefer_quiet": true,
+    "capture_weight": 4,
+    "king_hunt_weight": 1,
+    "avoid_stale_king_walk": true,
+    "stale_age_max": 2,
+    "king_move_penalty": 4,
+    "check_escape_bonus": 2
+  }
+}

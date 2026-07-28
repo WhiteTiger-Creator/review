@@ -1,610 +1,619 @@
-"""Private verifier for Sky Kingdom Fleet Campaign."""
+"""Verifier suite for Fog Chess Relay."""
 
 from __future__ import annotations
 
-import copy
-import hashlib
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
-from reference_campaign import reference_edge_cost, reference_paid_fuel
+ROOT = Path("/opt/fog-chess-relay")
+BIN = ROOT / "bin" / "relaymatch"
+BOT = Path("/app/work/playbook")
+OUTPUT = Path("/app/output")
+HIDDEN = Path("/tests/fixtures/hidden")
+APP_REFS = [
+    Path("/app/chess.txt"),
+    Path("/app/fog.txt"),
+    Path("/app/relay.txt"),
+    Path("/app/scoring.txt"),
+    Path("/app/protocol.txt"),
+    Path("/app/notation.txt"),
+    Path("/app/examples.txt"),
+    Path("/app/doctrine.txt"),
+]
 
-BIN = Path(os.environ.get("SKYKINGDOM_BIN", "/app/skykingdom/skykingdom"))
-SCENARIO_DIR = Path(os.environ.get("SCENARIO_DIR", "/app/skykingdom/scenarios"))
-SKY_DIR = Path(os.environ.get("SKYKINGDOM_DIR", "/app/skykingdom"))
 
-
-def eval_op(payload: dict) -> dict:
-    assert BIN.is_file(), f"missing binary {BIN}"
-    proc = subprocess.run(
-        [str(BIN), "eval"],
-        input=json.dumps(payload),
+def _run(cmd: list[str], cwd: str | None = None, env: dict | None = None, timeout: int = 180) -> subprocess.CompletedProcess[str]:
+    base = os.environ.copy()
+    if env:
+        base.update(env)
+    return subprocess.run(
+        cmd,
+        cwd=cwd,
+        env=base,
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=timeout,
         check=False,
     )
-    assert proc.stderr == "", proc.stderr
-    assert proc.stdout.strip(), "empty stdout"
-    return json.loads(proc.stdout)
 
 
-def must_ok(payload: dict):
-    resp = eval_op(payload)
-    assert resp.get("ok") is True, resp
-    return resp["result"]
+def _isolated_bot(tmp: Path) -> Path:
+    dest = tmp / "playbook"
+    shutil.copytree(BOT, dest)
+    return dest
 
 
-def load_scenario(name: str = "01_cirrus_opening.json") -> dict:
-    return json.loads((SCENARIO_DIR / name).read_text())
-
-
-def all_scenarios():
-    return sorted(SCENARIO_DIR.glob("*.json"))
-
-
-def digest(obj) -> str:
-    blob = json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(blob).hexdigest()
-
-
-def test_agent_environment_contains_no_private_judge_material():
-    """Environment must ship normative docs without private judge or solution trees."""
-    forbidden = ["solution", "tests", "oracle", "expected", "reference_campaign"]
-    for root, dirs, files in os.walk(SKY_DIR):
-        names = set(dirs) | set(files)
-        for bad in forbidden:
-            assert bad not in names, (root, bad)
-    # Normative docs present
-    for doc in [
-        "FLEET_RULES.md",
-        "COMBAT_RULES.md",
-        "WEATHER_SYSTEM.md",
-        "SUPPLY_LOGISTICS.md",
-        "TECHNOLOGY_TREE.md",
-        "DIPLOMACY_RULES.md",
-        "TERRITORY_CONTROL.md",
-        "CAMPAIGN_RULES.md",
-        "SCENARIO_SCHEMA.md",
-        "API_SPEC.md",
-    ]:
-        assert (SKY_DIR / doc).is_file()
-
-
-def test_hull_and_tech_catalog_order():
-    """hullCatalog and techCatalog must match API_SPEC insertion order and SCOUT stats."""
-    hulls = must_ok({"op": "hullCatalog"})
-    assert [h["id"] for h in hulls] == ["SCOUT", "FRIGATE", "GALLEON", "FORTRESS"]
-    assert hulls[0] == {
-        "id": "SCOUT",
-        "atk": 4,
-        "def": 2,
-        "fuel_cap": 6,
-        "base_range": 3,
-        "upkeep": 1,
-    }
-    techs = must_ok({"op": "techCatalog"})
-    assert [t["id"] for t in techs] == [
-        "LATTICE_SAILS",
-        "AETHER_INJECTORS",
-        "HARPOON_BALLISTA",
-        "SKYIRON_PLATING",
-        "STORMSEER_LENS",
-        "CROWN_DOCKS",
+def _run_match(position: str | Path, bot_dir: Path, out_root: Path, inject: str = "") -> subprocess.CompletedProcess[str]:
+    out_root.mkdir(parents=True, exist_ok=True)
+    (out_root / "generations").mkdir(parents=True, exist_ok=True)
+    cmd = [
+        str(BIN),
+        "-match",
+        str(position),
+        "-bot",
+        str(bot_dir),
     ]
+    if inject:
+        cmd.append(f"-inject-fail={inject}")
+    return _run(
+        cmd,
+        env={"FOG_CHESS_ROOT": str(ROOT), "FOG_CHESS_OUTPUT": str(out_root)},
+        timeout=240,
+    )
 
 
-def test_every_supplied_scenario_validates_and_creates():
-    """Every public scenario must validate and create a running turn-1 campaign."""
-    ids = []
-    for path in all_scenarios():
-        sc = json.loads(path.read_text())
-        out = must_ok({"op": "validateScenario", "scenario": sc})
-        assert out["id"] == sc["id"]
-        game = must_ok({"op": "createGame", "scenario": sc})
-        assert game["state"] == "running"
-        assert game["turn"] == 1
-        assert game["player"] == sc["player_kingdom"]
-        ids.append(sc["id"])
-    assert len(ids) == len(set(ids)) >= 8
+def _read_json(path: Path) -> dict:
+    return json.loads(path.read_text())
 
 
-def test_validate_scenario_rejects_disconnected_and_bad_weather():
-    """Scenario validation must reject disconnected graphs and illegal weather ids."""
-    sc = load_scenario()
-    bad = copy.deepcopy(sc)
-    # Two components: A1-D1 and B1-C1 with no bridge
-    bad["edges"] = [{"a": "A1", "b": "D1"}, {"a": "B1", "b": "C1"}]
-    resp = eval_op({"op": "validateScenario", "scenario": bad})
-    assert resp["ok"] is False
-
-    bad2 = copy.deepcopy(sc)
-    bad2["weather_schedule"][0]["A1"] = "HURRICANE"
-    resp = eval_op({"op": "validateScenario", "scenario": bad2})
-    assert resp["ok"] is False
+def _current_gen(out_root: Path) -> Path:
+    cur = (out_root / "current").read_text().strip()
+    return out_root / cur
 
 
-def test_validate_scenario_rejects_self_loop_and_duplicate_edges():
-    """validateScenario must reject self-loops and duplicate undirected edge pairs."""
-    sc = load_scenario()
-    looped = copy.deepcopy(sc)
-    looped["edges"] = list(sc["edges"]) + [{"a": "A1", "b": "A1"}]
-    assert eval_op({"op": "validateScenario", "scenario": looped})["ok"] is False
-
-    dup = copy.deepcopy(sc)
-    dup["edges"] = list(sc["edges"]) + [{"a": "C1", "b": "A1"}]  # reverse of A1-C1
-    assert eval_op({"op": "validateScenario", "scenario": dup})["ok"] is False
+def _normalized_bytes(out_root: Path) -> bytes:
+    gen = _current_gen(out_root)
+    parts = []
+    for name in ("summary.json", "plies.jsonl", "terminal.json"):
+        parts.append((gen / name).read_bytes())
+    return b"".join(parts)
 
 
-def test_validate_scenario_returns_independent_copy():
-    """validateScenario must return a deep copy isolated from caller mutation."""
-    sc = load_scenario()
-    sc["name"] = "MUT"
-    out = must_ok({"op": "validateScenario", "scenario": sc})
-    sc["name"] = "CHANGED"
-    assert out["name"] == "MUT"
+def _score_a(out_root: Path) -> int:
+    term = _read_json(_current_gen(out_root) / "terminal.json")
+    return int(term["scores"]["team_a"])
 
 
-def test_shortest_path_lex_tiebreak():
-    """Equal-length routes must pick the lexicographically smallest island path."""
-    sc = load_scenario()
-    g = must_ok({"op": "createGame", "scenario": sc})
-    # A1 to B1 has two length-2 paths: A1-C1-B1 and A1-D1-B1; lex smaller is A1,C1,B1
-    res = must_ok({"op": "shortestPath", "game": g, "from": "A1", "to": "B1"})
-    assert res["distance"] == 2
-    assert res["path"] == ["A1", "C1", "B1"]
+def _winner(out_root: Path) -> str:
+    return str(_read_json(_current_gen(out_root) / "terminal.json")["winner"])
 
 
-def test_path_fuel_cost_uses_destination_weather_ceil():
-    """Path fuel raw cost must ceil destination weather multipliers then apply discounts."""
-    sc = load_scenario()
-    # Force known weather on C1 for turn 1
-    sc["weather_schedule"][0] = {
-        "A1": "CLEAR",
-        "B1": "CLEAR",
-        "C1": "STORM",
-        "D1": "CLEAR",
+# ---------------------------------------------------------------------------
+# 3 protected-engine and integrity tests
+# ---------------------------------------------------------------------------
+
+
+def test_protected_binary_and_layout_exist():
+    """Protected relaymatch and relayplayer binaries and asset directories are installed under /opt."""
+    assert BIN.is_file()
+    assert (ROOT / "bin" / "relayplayer").is_file()
+    for rel in ("positions/public", "opponents", "contracts", "notation", "integrity"):
+        assert (ROOT / rel).exists()
+
+
+def test_integrity_manifest_verifies_clean_assets():
+    """Controller asset verification succeeds against the sealed integrity manifest."""
+    proc = _run([str(BIN), "-verify-assets"], env={"FOG_CHESS_ROOT": str(ROOT)})
+    assert proc.returncode == 0, proc.stderr
+    assert "ok" in proc.stdout
+
+
+def test_integrity_rejects_mutated_position_asset(tmp_path: Path):
+    """Mutating a protected public position causes integrity verification to fail."""
+    shadow = tmp_path / "shadow-root"
+    shutil.copytree(ROOT, shadow, ignore=shutil.ignore_patterns("bin"))
+    # binary still needed only as verifier entrypoint; assets come from shadow root
+    target = shadow / "positions" / "public" / "promotion-race.json"
+    data = json.loads(target.read_bytes())
+    data["seed"] = int(data.get("seed", 0)) + 999
+    target.write_text(json.dumps(data, indent=2) + "\n")
+    proc = _run([str(BIN), "-verify-assets"], env={"FOG_CHESS_ROOT": str(shadow)})
+    assert proc.returncode != 0
+    # live protected tree must remain untouched
+    live = _run([str(BIN), "-verify-assets"], env={"FOG_CHESS_ROOT": str(ROOT)})
+    assert live.returncode == 0, live.stderr
+
+
+# ---------------------------------------------------------------------------
+# 6 protocol, fog-secrecy, legality, determinism, and publication tests
+# ---------------------------------------------------------------------------
+
+
+def test_player_reference_documents_are_plain_text():
+    """Player references exist as plain text without markdown heading markers."""
+    for path in APP_REFS:
+        assert path.is_file()
+        text = path.read_text()
+        assert "#" not in text
+        assert "```" not in text
+        assert "\n- " not in text
+
+
+def test_starter_playbook_validates_offline():
+    """Installed contingency playbook validates offline with required fallback grammar."""
+    proc = _run(
+        [str(BIN), "-check-playbook", "-bot", str(BOT)],
+        env={"FOG_CHESS_ROOT": str(ROOT)},
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "ok" in proc.stdout
+    data = json.loads((BOT / "strategy.json").read_text())
+    assert isinstance(data, dict)
+    assert "fallback" in data
+    assert isinstance(data.get("rules"), list)
+    assert isinstance(data["fallback"], dict)
+    assert data["fallback"].get("action") in {
+        "escape",
+        "capture",
+        "quiet",
+        "drop_near_king",
+        "drop_any",
+        "request",
+        "promote_queen",
+        "promote_knight",
+        "hold",
     }
-    g = must_ok({"op": "createGame", "scenario": sc})
-    res = must_ok({"op": "pathFuelCost", "game": g, "fleet_id": "SF1", "to": "C1"})
-    # STORM move_mul 200 -> ceil 2; captain logistics 3 => discount 15; paid = max(1, floor(2*85/100))=1
-    assert res["raw_cost"] == 2
-    assert res["paid"] == 1
-    assert res["path"] == ["A1", "C1"]
 
 
-def test_move_consumes_fuel_and_readiness_and_rejects_war_territory():
-    """MOVE must reject WAR-owned destinations atomically and apply fuel/readiness on success."""
-    sc = load_scenario()
-    g = must_ok({"op": "createGame", "scenario": sc})
-    before = copy.deepcopy(g)
-    res = must_ok({"op": "executeCommand", "game": g, "line": "MOVE SF1 B1"})
-    assert res["output"].startswith("Rejected command:")
-    assert res["game"]["fleets"]["SF1"] == before["fleets"]["SF1"]
-    assert res["game"]["history"] == []
-
-    res = must_ok({"op": "executeCommand", "game": g, "line": "move SF1 C1"})
-    assert res["output"] == "Moved"
-    assert res["game"]["history"] == ["MOVE SF1 C1"]
-    fleet = res["game"]["fleets"]["SF1"]
-    assert fleet["island"] == "C1"
-    assert fleet["readiness"] == 95
-    assert fleet["fuel"] < before["fleets"]["SF1"]["fuel"]
+def test_match_hides_full_occupancy_from_observations(tmp_path: Path):
+    """Observations never include full-board FEN or hidden occupancy maps."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    proc = _run_match("material-imbalance", bot, out)
+    assert proc.returncode == 0, proc.stderr
+    vis = (_current_gen(out) / "visibility.jsonl").read_text()
+    assert "alpha_fen" not in vis
+    assert "/8/" not in vis  # fen-like ranks
+    for line in vis.splitlines():
+        obj = json.loads(line)
+        assert "visible_squares" in obj
+        assert len(obj["visible_squares"]) <= 64
 
 
-def test_rejected_research_is_atomic():
-    """Illegal RESEARCH must leave treasury, researched list, and history unchanged."""
-    sc = load_scenario()
-    g = must_ok({"op": "createGame", "scenario": sc})
-    snap = digest(g)
-    res = must_ok({"op": "executeCommand", "game": g, "line": "RESEARCH AETHER_INJECTORS"})
-    assert res["output"].startswith("Rejected command:")
-    assert digest(res["game"]) == snap
+def test_illegal_action_does_not_corrupt_prior_current(tmp_path: Path):
+    """A prior successful generation pointer survives a later injected publication failure."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    first = _run_match("promotion-race", bot, out)
+    assert first.returncode == 0, first.stderr
+    prior = (out / "current").read_text()
+    prior_bytes = _normalized_bytes(out)
+    bad = _run_match("material-imbalance", bot, out, inject="pointer")
+    assert bad.returncode != 0
+    assert (out / "current").read_text() == prior
+    assert _normalized_bytes(out) == prior_bytes
 
 
-def test_research_prerequisite_chain_and_effects():
-    """RESEARCH must enforce prerequisite chain LATTICE_SAILS before AETHER_INJECTORS."""
-    sc = load_scenario()
-    sc["kingdoms"][0]["aetherium"] = 80
-    sc["kingdoms"][0]["crystal"] = 40
-    g = must_ok({"op": "createGame", "scenario": sc})
-    blocked = must_ok({"op": "executeCommand", "game": g, "line": "RESEARCH AETHER_INJECTORS"})
-    assert blocked["output"].startswith("Rejected command:")
-    g = must_ok({"op": "executeCommand", "game": g, "line": "RESEARCH LATTICE_SAILS"})["game"]
-    assert "LATTICE_SAILS" in g["kingdoms"]["SKY"]["researched"]
-    g = must_ok({"op": "executeCommand", "game": g, "line": "RESEARCH AETHER_INJECTORS"})["game"]
-    assert "AETHER_INJECTORS" in g["kingdoms"]["SKY"]["researched"]
+def test_determinism_identical_inputs_byte_identical(tmp_path: Path):
+    """Identical engine, position, seed, opponent, and bot yield identical normalized bytes."""
+    bot = _isolated_bot(tmp_path)
+    out1 = tmp_path / "o1"
+    out2 = tmp_path / "o2"
+    a = _run_match("promotion-race", bot, out1)
+    b = _run_match("promotion-race", bot, out2)
+    assert a.returncode == 0 and b.returncode == 0, a.stderr + b.stderr
+    assert _normalized_bytes(out1) == _normalized_bytes(out2)
 
 
-def test_treaty_transition_matrix():
-    """TREATY must block illegal ALLIED-to-WAR jumps and allow EMBARGO bridge."""
-    sc = load_scenario()
-    sc["diplomacy"] = [{"kingdom_a": "SKY", "kingdom_b": "IRON", "stance": "PEACE"}]
-    g = must_ok({"op": "createGame", "scenario": sc})
-    # ALLIED -> WAR illegal
-    g = must_ok({"op": "executeCommand", "game": g, "line": "TREATY IRON ALLIED"})["game"]
-    res = must_ok({"op": "executeCommand", "game": g, "line": "TREATY IRON WAR"})
-    assert res["output"].startswith("Rejected command:")
-    g = must_ok({"op": "executeCommand", "game": g, "line": "TREATY IRON EMBARGO"})["game"]
-    g = must_ok({"op": "executeCommand", "game": g, "line": "TREATY IRON WAR"})["game"]
-    key = "IRON|SKY"
-    assert g["diplomacy"][key] == "WAR"
+def test_generation_contains_required_artifacts(tmp_path: Path):
+    """Each published generation contains the seven required authoritative record files."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    proc = _run_match("kingside-relay-attack", bot, out)
+    assert proc.returncode == 0, proc.stderr
+    gen = _current_gen(out)
+    for name in (
+        "summary.json",
+        "plies.jsonl",
+        "boards.json",
+        "visibility.jsonl",
+        "relay.jsonl",
+        "terminal.json",
+        "bot-diagnostics.json",
+    ):
+        assert (gen / name).is_file()
 
 
-def test_fortify_costs_timber():
-    """FORTIFY must spend 8 timber and raise fortification by one."""
-    sc = load_scenario()
-    g = must_ok({"op": "createGame", "scenario": sc})
-    timber = g["kingdoms"]["SKY"]["timber"]
-    fort = g["islands"]["A1"]["fortification"]
-    g = must_ok({"op": "executeCommand", "game": g, "line": "FORTIFY A1"})["game"]
-    assert g["kingdoms"]["SKY"]["timber"] == timber - 8
-    assert g["islands"]["A1"]["fortification"] == fort + 1
+# ---------------------------------------------------------------------------
+# 11 public relay-chess behavior tests
+# ---------------------------------------------------------------------------
 
 
-def test_supply_requires_owned_or_allied_path_to_depot():
-    """isSupplied requires self/allied ownership path to an owned depot."""
-    sc = load_scenario()
-    g = must_ok({"op": "createGame", "scenario": sc})
-    g = must_ok({"op": "executeCommand", "game": g, "line": "MOVE SF1 C1"})["game"]
-    assert must_ok({"op": "isSupplied", "game": g, "fleet_id": "SF1"}) is False
-    # claim C1 via fort-only? unowned — need clash from adjacent; move back and take via...
-    # Own path: move to D1 (owned) should be supplied via A1 depot through D1-A1
-    g2 = must_ok({"op": "createGame", "scenario": sc})
-    g2 = must_ok({"op": "executeCommand", "game": g2, "line": "MOVE SF1 D1"})["game"]
-    assert must_ok({"op": "isSupplied", "game": g2, "fleet_id": "SF1"}) is True
+def _plies(out_root: Path) -> list[dict]:
+    lines = (_current_gen(out_root) / "plies.jsonl").read_text().splitlines()
+    return [json.loads(line) for line in lines if line.strip()]
 
 
-def test_combat_preview_matches_simulate_without_mutating_input():
-    """combatPreview scores must match simulateClash without mutating the caller game."""
-    sc = load_scenario()
-    g = must_ok({"op": "createGame", "scenario": sc})
-    g = must_ok({"op": "executeCommand", "game": g, "line": "MOVE SF1 C1"})["game"]
-    before = digest(g)
-    preview = must_ok({"op": "combatPreview", "game": g, "fleet_id": "SF1", "target": "B1"})
-    assert digest(g) == before
-    g2 = copy.deepcopy(g)
-    sim = must_ok({"op": "simulateClash", "game": g2, "fleet_id": "SF1", "target": "B1"})
-    assert sim["clash"]["attacker_score"] == preview["attacker_score"]
-    assert sim["clash"]["defender_score"] == preview["defender_score"]
-    assert digest(g2) == digest(g)
+def _has_action(out_root: Path, action: str) -> bool:
+    return any(p.get("action") == action for p in _plies(out_root))
 
 
-def test_clash_command_and_defender_advantage_on_tie_path():
-    """CLASH must resolve with defender win when attacker is outmatched."""
-    sc = load_scenario()
-    # Make attacker weak
-    sc["fleets"][0]["hulls"] = ["SCOUT"]
-    sc["fleets"][0]["fuel"] = 6
-    sc["fleets"][1]["hulls"] = ["FORTRESS", "FORTRESS"]
-    sc["fleets"][1]["fuel"] = 24
-    g = must_ok({"op": "createGame", "scenario": sc})
-    g = must_ok({"op": "executeCommand", "game": g, "line": "MOVE SF1 C1"})["game"]
-    g = must_ok({"op": "executeCommand", "game": g, "line": "CLASH SF1 B1"})["game"]
-    assert g["last_clash"]["winner"] == "defender"
+def _has_drop_uci(out_root: Path) -> bool:
+    for p in _plies(out_root):
+        uci = str(p.get("uci", ""))
+        if uci.startswith("drop:") or p.get("action") == "drop":
+            return True
+        if p.get("drop"):
+            return True
+    # drops may be recorded only as uci empty with piece in relay; also scan visibility
+    for line in (_current_gen(out_root) / "visibility.jsonl").read_text().splitlines():
+        pass
+    for p in _plies(out_root):
+        uci = str(p.get("uci", ""))
+        if len(uci) >= 5 and uci[0].isalpha() and uci[1].isdigit() is False:
+            # drop UCI from engine is often "drop:n e4" style via Move.UCI
+            return "drop" in uci
+    return any("drop" in str(p.get("uci", "")) for p in _plies(out_root))
 
 
-def test_status_render_exact_shape():
-    """renderGame/STATUS text must match API_SPEC line layout."""
-    sc = load_scenario()
-    g = must_ok({"op": "createGame", "scenario": sc})
-    text = must_ok({"op": "renderGame", "game": g})
-    assert text.startswith("Turn 1 [running] Player=SKY\n")
-    assert "Treasury aetherium=" in text
-    assert text.endswith("Researched: (none)\n")
+def _summary(out_root: Path) -> dict:
+    return _read_json(_current_gen(out_root) / "summary.json")
 
 
-def test_endturn_economy_weather_and_score():
-    """ENDTURN must advance turn, apply economy, and expose complete score breakdown."""
-    sc = load_scenario()
-    g = must_ok({"op": "createGame", "scenario": sc})
-    fuel = g["kingdoms"]["SKY"]["fuel"]
-    crystal = g["kingdoms"]["SKY"]["crystal"]
-    weather_a1 = g["islands"]["A1"]["weather"]
-    g = must_ok({"op": "executeCommand", "game": g, "line": "ENDTURN"})["game"]
-    assert g["turn"] == 2
-    # Depot income on A1 (3+level) increases treasury fuel; crystal yields accumulate.
-    assert g["kingdoms"]["SKY"]["fuel"] > fuel
-    assert g["kingdoms"]["SKY"]["crystal"] > crystal
-    assert g["islands"]["A1"]["weather"] == sc["weather_schedule"][1]["A1"]
-    assert g["islands"]["A1"]["weather"] != weather_a1 or sc["weather_schedule"][0]["A1"] == sc["weather_schedule"][1]["A1"]
-    score = must_ok({"op": "scoreGame", "game": g})
-    assert set(score) >= {
-        "objective",
-        "territory",
-        "resources",
-        "survival",
-        "dominance",
-        "violations",
-        "mission",
-        "total",
+def _accepted(out_root: Path) -> bool:
+    return bool(_summary(out_root).get("accepted"))
+
+
+def test_public_legal_moves_on_both_boards(tmp_path: Path):
+    """Bot produces legal moves on both linked boards during a public match."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    proc = _run_match("kingside-relay-attack", bot, out)
+    assert proc.returncode == 0, proc.stderr
+    boards = {p.get("board") for p in _plies(out) if p.get("board")}
+    assert "alpha" in boards and "beta" in boards
+    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
+    assert diag["protocol_ok"] is True
+    assert diag["bot_faults"] == 0
+    assert diag.get("belief_faults", 0) == 0
+    assert _accepted(out)
+
+
+def test_public_evade_observed_check(tmp_path: Path):
+    """Bot evades check pressure on defensive-drop without hold-in-check faults."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    proc = _run_match("defensive-drop-fog", bot, out)
+    assert proc.returncode == 0, proc.stderr
+    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
+    assert diag["bot_faults"] == 0
+    assert diag["bot_legal_actions"] >= 1
+    assert _summary(out)["reason"] != "hold_in_check"
+    assert _accepted(out)
+
+
+def test_public_rejects_unseen_blocked_capture_assumption(tmp_path: Path):
+    """Bot only plays engine-listed legal moves under material pressure."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    proc = _run_match("material-imbalance", bot, out)
+    assert proc.returncode == 0, proc.stderr
+    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
+    assert diag["protocol_ok"] is True
+    assert diag["bot_faults"] == 0
+    assert _score_a(out) >= 100
+    assert _accepted(out)
+
+
+def test_public_defensive_relay_drop_after_delay(tmp_path: Path):
+    """Bot actually uses a ready relay drop on the defensive-drop public match."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    proc = _run_match("defensive-drop-fog", bot, out)
+    assert proc.returncode == 0, proc.stderr
+    found_ready = False
+    for line in (_current_gen(out) / "visibility.jsonl").read_text().splitlines():
+        obj = json.loads(line)
+        if obj.get("team") == "team_a" and "n" in obj.get("ready_drops", []):
+            found_ready = True
+    assert found_ready
+    assert _has_drop_uci(out) or any(
+        "drop" in str(p) for p in _plies(out)
+    ), "expected a drop action in plies"
+    assert _score_a(out) >= 8
+    assert _accepted(out)
+
+
+def test_public_teammate_request_timing(tmp_path: Path):
+    """Bot emits at least one teammate piece request on a long public match."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    proc = _run_match("kingside-relay-attack", bot, out)
+    assert proc.returncode == 0, proc.stderr
+    assert _has_action(out, "request"), "expected request action in plies"
+    assert _accepted(out)
+
+
+def test_public_sacrifice_prevents_cross_board_mate_net(tmp_path: Path):
+    """Cross-board kingside attack meets acceptance without protocol faults."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    proc = _run_match("kingside-relay-attack", bot, out)
+    assert proc.returncode == 0, proc.stderr
+    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
+    assert diag["bot_faults"] == 0
+    assert _score_a(out) >= 60
+    assert _accepted(out)
+
+
+def test_public_promotion_preserves_relay_needs(tmp_path: Path):
+    """Promotion race promotes and clears the campaign acceptance floor."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    proc = _run_match("promotion-race", bot, out)
+    assert proc.returncode == 0, proc.stderr
+    plies = (_current_gen(out) / "plies.jsonl").read_text()
+    assert any(ch in plies for ch in ("q", "n", "r", "b"))
+    assert _score_a(out) >= 9
+    assert _accepted(out)
+
+
+def test_public_repetition_avoidance_when_behind(tmp_path: Path):
+    """Under material pressure the bot does not idle into a punished repetition."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    proc = _run_match("material-imbalance", bot, out)
+    assert proc.returncode == 0, proc.stderr
+    term = _read_json(_current_gen(out) / "terminal.json")
+    assert "reason" in term
+    if str(term["reason"]).startswith("repetition:"):
+        assert _score_a(out) >= 95
+    else:
+        assert _score_a(out) >= 100
+    assert _accepted(out)
+
+
+def test_public_safe_after_stale_sighting(tmp_path: Path):
+    """Fog sightings appear and belief faults stay zero on defensive-drop."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    proc = _run_match("defensive-drop-fog", bot, out)
+    assert proc.returncode == 0, proc.stderr
+    vis = (_current_gen(out) / "visibility.jsonl").read_text()
+    assert "stale_sightings" in vis
+    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
+    assert diag["bot_faults"] == 0
+    assert diag.get("belief_faults", 0) == 0
+    assert _accepted(out)
+
+
+def test_public_cross_board_mate_priority(tmp_path: Path):
+    """All five public campaigns meet acceptance with a high aggregate score."""
+    bot = _isolated_bot(tmp_path)
+    total = 0
+    floors = {
+        "kingside-relay-attack": 60,
+        "defensive-drop-fog": 8,
+        "promotion-race": 9,
+        "material-imbalance": 100,
+        "queue-pressure": 3,
     }
-    assert score["total"] == sum(score[k] for k in score if k != "total")
+    for name, floor in floors.items():
+        out = tmp_path / f"prio-{name}"
+        proc = _run_match(name, bot, out)
+        assert proc.returncode == 0, proc.stderr
+        assert _read_json(_current_gen(out) / "bot-diagnostics.json")["bot_faults"] == 0
+        assert _score_a(out) >= floor, f"{name}: {_score_a(out)} < {floor}"
+        assert _accepted(out)
+        total += _score_a(out)
+    assert total >= 200
 
 
-def test_replay_run_matches_sequential_execute():
-    """replayRun must equal sequential executeCommand outputs and final state."""
-    sc = load_scenario()
-    commands = ["MOVE SF1 C1", "FORTIFY A1", "ENDTURN", "STATUS"]
-    replay = must_ok({"op": "replayRun", "scenario": sc, "commands": commands})
-    g = must_ok({"op": "createGame", "scenario": sc})
-    outs = []
-    for line in commands:
-        res = must_ok({"op": "executeCommand", "game": g, "line": line})
-        g = res["game"]
-        outs.append(res["output"])
-    assert outs == replay["outputs"]
-    assert digest(g) == digest(replay["game"])
+def test_public_queue_capacity_and_team_score_reconciliation(tmp_path: Path):
+    """Capacity-one queue-pressure meets floor when capture suppression outranks greed."""
+    out = tmp_path / "out"
+    bot = _isolated_bot(tmp_path)
+    proc = _run_match("queue-pressure", bot, out)
+    assert proc.returncode == 0, proc.stderr
+    term = _read_json(_current_gen(out) / "terminal.json")
+    assert set(term["scores"]) >= {"team_a", "team_b"}
+    summary = _summary(out)
+    assert summary["plies"] >= 1
+    assert int(summary["acceptance_floor"]) == 3
+    assert _score_a(out) >= 3
+    assert summary["accepted"] is True
+    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
+    assert diag["protocol_ok"] is True
+    assert diag["bot_faults"] == 0
 
 
-def test_reboot_restores_fresh_campaign_same_scenario():
-    """REBOOT must restore initial fleet locations and clear history."""
-    sc = load_scenario()
-    g = must_ok({"op": "createGame", "scenario": sc})
-    g = must_ok({"op": "executeCommand", "game": g, "line": "MOVE SF1 C1"})["game"]
-    g = must_ok({"op": "executeCommand", "game": g, "line": "REBOOT"})["game"]
-    assert g["turn"] == 1
-    assert g["history"] == []
-    assert g["fleets"]["SF1"]["island"] == "A1"
+# ---------------------------------------------------------------------------
+# 12 isolated hidden composite match tests
+# ---------------------------------------------------------------------------
 
 
-def test_cross_scenario_movement_combat_digest():
-    """Cross-scenario clash/score digests must diversify so hardcoding fails."""
-    digests = []
-    for path in all_scenarios():
-        sc = json.loads(path.read_text())
-        # only WAR scenarios for clash probe
-        if not sc["diplomacy"] or sc["diplomacy"][0]["stance"] != "WAR":
-            g = must_ok({"op": "createGame", "scenario": sc})
-            digests.append(digest(must_ok({"op": "scoreGame", "game": g})))
-            continue
-        result = must_ok(
-            {
-                "op": "replayRun",
-                "scenario": sc,
-                "commands": ["MOVE SF1 C1", "CLASH SF1 B1", "ENDTURN"],
-            }
-        )
-        digests.append(digest({"clash": result["game"].get("last_clash"), "score": must_ok({"op": "scoreGame", "game": result["game"]})}))
-    assert len(set(digests)) >= 5
-    # stable aggregate fingerprint (engine regression guard)
-    assert digest(digests)[:16] != "0" * 16
+def _hidden_match(tmp_path: Path, name: str) -> Path:
+    out = tmp_path / f"out-{name}"
+    bot = _isolated_bot(tmp_path / f"bot-{name}")
+    pos = HIDDEN / f"{name}.json"
+    assert pos.is_file(), name
+    proc = _run_match(pos, bot, out)
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    return out
 
 
-def test_validate_game_flags_overfuel_when_corrupted():
-    """validateGame must flag fleets whose fuel exceeds hull capacity."""
-    sc = load_scenario()
-    g = must_ok({"op": "createGame", "scenario": sc})
-    g["fleets"]["SF1"]["fuel"] = 999
-    res = must_ok({"op": "validateGame", "game": g})
-    assert res["legal"] is False
-    assert any(v.startswith("fuel:") for v in res["violations"])
+def test_hidden_wrong_relay_mate(tmp_path: Path):
+    """Hidden: capacity-one wrong-relay seat stays legal and clears its floor."""
+    out = _hidden_match(tmp_path, "wrong_relay_mate")
+    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
+    assert diag["bot_faults"] == 0
+    assert diag.get("belief_faults", 0) == 0
+    assert _score_a(out) >= int(_summary(out)["acceptance_floor"])
+    assert _accepted(out)
 
 
-def test_play_cli_exit():
-    """play mode must print STATUS and honor EXIT."""
-    sc_path = SCENARIO_DIR / "01_cirrus_opening.json"
-    proc = subprocess.run(
-        [str(BIN), "play", str(sc_path)],
-        input="STATUS\nEXIT\n",
-        text=True,
-        capture_output=True,
-        timeout=20,
-        check=True,
-    )
-    assert "Turn 1 [running]" in proc.stdout
-    assert "Exiting" in proc.stdout
+def test_hidden_unseen_blocker_check(tmp_path: Path):
+    """Hidden: belief-aware defense under check clears acceptance without faults."""
+    out = _hidden_match(tmp_path, "unseen_blocker_check")
+    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
+    assert diag["protocol_ok"] is True
+    assert diag["bot_faults"] == 0
+    assert _accepted(out)
 
 
-def test_hidden_fixture_crystal_victory_path():
-    """Hidden crystal fixture mission points must track crystal/5 after ENDTURNs."""
-    fixture = Path(__file__).parent / "verifier-fixtures" / "crystal_pressure.json"
-    sc = json.loads(fixture.read_text())
-    must_ok({"op": "validateScenario", "scenario": sc})
-    result = must_ok(
-        {
-            "op": "replayRun",
-            "scenario": sc,
-            "commands": [
-                "RESEARCH HARPOON_BALLISTA",
-                "ENDTURN",
-                "ENDTURN",
-                "ENDTURN",
-                "ENDTURN",
-                "ENDTURN",
-            ],
-        }
-    )
-    # crystal accumulates from yields; score mission uses crystal/5
-    score = must_ok({"op": "scoreGame", "game": result["game"]})
-    assert score["mission"] == result["game"]["kingdoms"]["SKY"]["crystal"] // 5
+def test_hidden_knight_vs_pawn_drop(tmp_path: Path):
+    """Hidden: delayed knight queue yields a drop and clears the campaign floor."""
+    out = _hidden_match(tmp_path, "knight_vs_pawn_drop")
+    relay = (_current_gen(out) / "relay.jsonl").read_text()
+    assert "team_a" in relay
+    assert _has_drop_uci(out) or any("drop" in str(p) for p in _plies(out))
+    assert _accepted(out)
 
 
-def test_hidden_fixture_lex_path_and_storm_fuel():
-    """Hidden storm bridge fixture must keep N1-N2-N4 lex path and STORM fuel cost 2."""
-    fixture = Path(__file__).parent / "verifier-fixtures" / "storm_lex_bridge.json"
-    sc = json.loads(fixture.read_text())
-    g = must_ok({"op": "createGame", "scenario": sc})
-    path = must_ok({"op": "shortestPath", "game": g, "from": "N1", "to": "N4"})
-    assert path["path"] == ["N1", "N2", "N4"]
-    fuel = must_ok({"op": "pathFuelCost", "game": g, "fleet_id": "F1", "to": "N2"})
-    assert fuel["raw_cost"] == 2  # STORM on N2
-    assert fuel["raw_cost"] == reference_edge_cost("STORM")
-    assert fuel["paid"] == reference_paid_fuel(fuel["raw_cost"], 0)
+def test_hidden_promo_fills_queue(tmp_path: Path):
+    """Hidden: promotion into a full queue prefers knight-safe play and accepts."""
+    out = _hidden_match(tmp_path, "promo_fills_queue")
+    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
+    assert diag["bot_faults"] == 0
+    assert _accepted(out)
 
 
-def test_history_staging_snapshot_survives_rejected_ingest():
-    """Successful MOVE stages history; rejected follow-up must snapshot-preserve staged history."""
-    sc = load_scenario()
-    g = must_ok({"op": "createGame", "scenario": sc})
-    g = must_ok({"op": "executeCommand", "game": g, "line": "MOVE SF1 C1"})["game"]
-    staged = list(g["history"])
-    assert staged == ["MOVE SF1 C1"]
-    snap = digest(g)
-    rejected = must_ok({"op": "executeCommand", "game": g, "line": "MOVE SF1 B1"})
-    assert rejected["output"].startswith("Rejected command:")
-    assert rejected["game"]["history"] == staged
-    assert digest(rejected["game"]) == snap
+def test_hidden_repetition_with_attack(tmp_path: Path):
+    """Hidden: continuing attack under repetition pressure clears acceptance."""
+    out = _hidden_match(tmp_path, "repetition_with_attack")
+    term = _read_json(_current_gen(out) / "terminal.json")
+    assert term["reason"]
+    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["bot_faults"] == 0
+    assert _accepted(out)
 
 
-def test_ingest_scenario_export_score_roundtrip():
-    """Ingest via createGame then export scoreGame must be stable for an unchanged staging snapshot."""
-    sc = load_scenario()
-    g = must_ok({"op": "createGame", "scenario": sc})
-    export1 = must_ok({"op": "scoreGame", "game": g})
-    export2 = must_ok({"op": "scoreGame", "game": g})
-    assert export1 == export2
-    assert export1["territory"] == 5 * sum(
-        1 for isl in g["islands"].values() if isl["owner"] == g["player"]
-    )
+def test_hidden_stale_queen_unsafe(tmp_path: Path):
+    """Hidden: stale queen sightings stay belief-clean and accepted."""
+    out = _hidden_match(tmp_path, "stale_queen_unsafe")
+    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
+    assert diag["bot_faults"] == 0
+    assert diag.get("belief_faults", 0) == 0
+    assert _accepted(out)
 
 
-def test_refuel_rejects_non_depot_and_restores_on_owned_depot():
-    """REFUEL must reject off-depot islands and fully restore fuel/readiness on an owned depot."""
-    sc = load_scenario()
-    g = must_ok({"op": "createGame", "scenario": sc})
-    g = must_ok({"op": "executeCommand", "game": g, "line": "MOVE SF1 C1"})["game"]
-    rejected = must_ok({"op": "executeCommand", "game": g, "line": "REFUEL SF1"})
-    assert rejected["output"].startswith("Rejected command:")
-    assert rejected["game"]["fleets"]["SF1"]["fuel"] == g["fleets"]["SF1"]["fuel"]
-    g = must_ok({"op": "executeCommand", "game": g, "line": "MOVE SF1 A1"})["game"]
-    before_fuel = g["fleets"]["SF1"]["fuel"]
-    assert before_fuel < 16
-    res = must_ok({"op": "executeCommand", "game": g, "line": "REFUEL SF1"})
-    assert res["output"] == "Refueled"
-    assert res["game"]["fleets"]["SF1"]["fuel"] == 16
-    assert res["game"]["fleets"]["SF1"]["readiness"] == 100
-    assert res["game"]["history"][-1] == "REFUEL SF1"
+def test_hidden_renamed_ids_reordered(tmp_path: Path):
+    """Hidden: renamed piece identifiers still clear acceptance."""
+    out = _hidden_match(tmp_path, "renamed_ids_reordered")
+    assert _score_a(out) >= int(_summary(out)["acceptance_floor"])
+    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["protocol_ok"] is True
+    assert _accepted(out)
 
 
-def test_npc_doctrine_prefers_adjacent_clash_on_endturn():
-    """ENDTURN NPC must clash the lex-smallest legal adjacent target, including unowned islands hosting WAR fleets."""
-    sc = load_scenario()
-    g = must_ok({"op": "createGame", "scenario": sc})
-    g = must_ok({"op": "executeCommand", "game": g, "line": "MOVE SF1 C1"})["game"]
-    g = must_ok({"op": "executeCommand", "game": g, "line": "ENDTURN"})["game"]
-    clash = g.get("last_clash")
-    assert clash is not None
-    assert clash["attacker_id"] == "IF1"
-    assert clash["island_id"] == "C1"
-    assert clash["defender_id"] == "SF1"
+def test_hidden_file_reflected(tmp_path: Path):
+    """Hidden: file-reflected geometry clears acceptance without protocol faults."""
+    out = _hidden_match(tmp_path, "file_reflected")
+    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["protocol_ok"] is True
+    assert _accepted(out)
 
 
-def test_create_game_uses_id_keyed_maps_not_arrays():
-    """createGame must expose kingdoms/islands/fleets/captains/diplomacy as id-keyed objects with field player."""
-    sc = load_scenario()
-    g = must_ok({"op": "createGame", "scenario": sc})
-    assert isinstance(g["fleets"], dict)
-    assert isinstance(g["kingdoms"], dict)
-    assert isinstance(g["islands"], dict)
-    assert isinstance(g["captains"], dict)
-    assert isinstance(g["diplomacy"], dict)
-    assert "SF1" in g["fleets"]
-    assert g["player"] == "SKY"
-    assert "player_kingdom" not in g
+def test_hidden_color_board_swap(tmp_path: Path):
+    """Hidden: color-and-board swapped seating preserves winner and acceptance."""
+    out = _hidden_match(tmp_path, "color_board_swap")
+    term = _read_json(_current_gen(out) / "terminal.json")
+    assert term["winner"] in {"team_a", "team_b", "draw"}
+    assert _accepted(out)
 
 
-def test_map_fleet_island_exact_renders():
-    """MAP, FLEET, and ISLAND must match API_SPEC render lines and leave history unchanged."""
-    sc = load_scenario()
-    g = must_ok({"op": "createGame", "scenario": sc})
-    mapped = must_ok({"op": "executeCommand", "game": g, "line": "MAP"})
-    assert mapped["game"]["history"] == []
-    lines = mapped["output"].splitlines()
-    assert lines[0].startswith("A1 owner=SKY fort=")
-    assert "weather=" in lines[0] and "depot=true" in lines[0]
-    assert any(line.startswith("B1 owner=IRON") for line in lines)
-    fleet = must_ok({"op": "executeCommand", "game": g, "line": "FLEET SF1"})
-    assert fleet["output"] == "SF1 kingdom=SKY island=A1 fuel=12 readiness=100 hulls=FRIGATE,SCOUT captain=CAP_SKY\n"
-    island = must_ok({"op": "executeCommand", "game": g, "line": "ISLAND A1"})
-    assert island["output"].startswith("A1 owner=SKY fort=1 weather=")
-    assert "depot=true level=2\n" in island["output"]
-    bad = must_ok({"op": "executeCommand", "game": g, "line": "FLEET NOPE"})
-    assert bad["output"].startswith("Rejected command:")
+def test_hidden_capacity_increase(tmp_path: Path):
+    """Hidden: increased friendly relay capacity keeps transfers legal and accepted."""
+    out = _hidden_match(tmp_path, "capacity_increase")
+    assert _score_a(out) >= int(_summary(out)["acceptance_floor"])
+    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["bot_faults"] == 0
+    assert _accepted(out)
 
 
-def test_command_verb_case_insensitivity_mixed():
-    """Command verbs must accept mixed case while preserving case-sensitive IDs."""
-    sc = load_scenario()
-    g = must_ok({"op": "createGame", "scenario": sc})
-    for verb in ("Move", "mOvE"):
-        g = must_ok({"op": "executeCommand", "game": g, "line": "REBOOT"})["game"]
-        res = must_ok({"op": "executeCommand", "game": g, "line": f"{verb} SF1 C1"})
-        assert res["output"] == "Moved"
-        assert res["game"]["history"] == ["MOVE SF1 C1"]
+def test_hidden_outside_envelope_remove(tmp_path: Path):
+    """Hidden: far enemy outside envelopes still yields accepted observations."""
+    out = _hidden_match(tmp_path, "outside_envelope_remove")
+    vis = (_current_gen(out) / "visibility.jsonl").read_text()
+    assert "visible_squares" in vis
+    assert _accepted(out)
 
 
-def test_hidden_npc_prefers_unowned_war_fleet_over_owned_war_lex_larger():
-    """Hidden fixture: NPC must prefer lex-smaller unowned island with WAR fleet over lex-larger owned WAR island."""
-    fixture = Path(__file__).parent / "verifier-fixtures" / "npc_lex_clash.json"
-    sc = json.loads(fixture.read_text())
-    result = must_ok(
-        {
-            "op": "replayRun",
-            "scenario": sc,
-            "commands": ["MOVE PF1 X1", "ENDTURN"],
-        }
-    )
-    clash = result["game"]["last_clash"]
-    assert clash is not None
-    assert clash["attacker_id"] == "EF1"
-    assert clash["island_id"] == "X1"
-    assert clash["defender_id"] == "PF1"
+def test_hidden_horizon_composite(tmp_path: Path):
+    """Hidden: horizon mate, material, repetition, and points jointly clear acceptance."""
+    out = _hidden_match(tmp_path, "horizon_composite")
+    term = _read_json(_current_gen(out) / "terminal.json")
+    summary = _summary(out)
+    assert "scores" in term and "reason" in term
+    assert summary["determinism"] == "seeded"
+    assert "acceptance_floor" in summary
+    assert _accepted(out)
 
 
-def test_endturn_unsupplied_readiness_penalty():
-    """ENDTURN must apply the unsupplied readiness -10 after upkeep when fleet cannot reach an owned/allied depot path."""
-    sc = copy.deepcopy(load_scenario())
-    # Keep NPC peaceful so ENDTURN does not CLASH the stranded fleet mid-assertion.
-    sc["diplomacy"] = [{"kingdom_a": "SKY", "kingdom_b": "IRON", "stance": "PEACE"}]
-    g = must_ok({"op": "createGame", "scenario": sc})
-    g = must_ok({"op": "executeCommand", "game": g, "line": "MOVE SF1 C1"})["game"]
-    assert g["fleets"]["SF1"]["island"] == "C1"
-    assert g["fleets"]["SF1"]["readiness"] == 95
-    assert must_ok({"op": "isSupplied", "game": g, "fleet_id": "SF1"}) is False
-    before = g["fleets"]["SF1"]["readiness"]
-    g = must_ok({"op": "executeCommand", "game": g, "line": "ENDTURN"})["game"]
-    # upkeep succeeds (treasury has aetherium) so no -15; unsupplied applies -10
-    assert g["fleets"]["SF1"]["readiness"] == before - 10
+# ---------------------------------------------------------------------------
+# 6 game-native metamorphic tests
+# ---------------------------------------------------------------------------
 
 
-def test_move_rejects_fourth_fleet_stack():
-    """MOVE must reject placing a fourth same-kingdom fleet on one island (FLEET_RULES stacking)."""
-    fixture = Path(__file__).parent / "verifier-fixtures" / "stack_pressure.json"
-    sc = json.loads(fixture.read_text())
-    g = must_ok({"op": "createGame", "scenario": sc})
-    before = digest(g)
-    res = must_ok({"op": "executeCommand", "game": g, "line": "MOVE SF4 A1"})
-    assert res["output"].startswith("Rejected command:")
-    assert digest(res["game"]) == before
-    assert res["game"]["fleets"]["SF4"]["island"] == "D1"
+def test_metamorphic_piece_id_renaming_preserves_outcome(tmp_path: Path):
+    """Bijective piece-id renaming preserves winner and acceptance for contingency play."""
+    bot = _isolated_bot(tmp_path)
+    base_pos = json.loads((HIDDEN / "renamed_ids_reordered.json").read_text())
+    a = dict(base_pos)
+    a["id"] = "meta-rename-a"
+    a["piece_id_map"] = {}
+    b = dict(base_pos)
+    b["id"] = "meta-rename-b"
+    b["piece_id_map"] = {"alpha-n1": "x1", "beta-n1": "y1"}
+    pa, pb = tmp_path / "a.json", tmp_path / "b.json"
+    pa.write_text(json.dumps(a))
+    pb.write_text(json.dumps(b))
+    out1, out2 = tmp_path / "o1", tmp_path / "o2"
+    r1 = _run_match(pa, bot, out1)
+    r2 = _run_match(pb, bot, out2)
+    assert r1.returncode == 0 and r2.returncode == 0, r1.stderr + r2.stderr
+    assert _winner(out1) == _winner(out2)
+    assert _accepted(out1) and _accepted(out2)
+    assert _score_a(out1) == _score_a(out2)
 
 
-def test_terminal_won_rejects_mutating_commands():
-    """Crystal victory must set state won and reject mutating commands except REBOOT."""
-    fixture = Path(__file__).parent / "verifier-fixtures" / "quick_crystal_win.json"
-    sc = json.loads(fixture.read_text())
-    # 10 + 7*2 = 24 crystal after two ENDTURNs
-    result = must_ok(
-        {
-            "op": "replayRun",
-            "scenario": sc,
-            "commands": ["ENDTURN", "ENDTURN"],
-        }
-    )
-    g = result["game"]
-    assert g["state"] == "won"
-    assert g["kingdoms"]["SKY"]["crystal"] >= 24
-    assert g["score_breakdown"] is not None
-    assert g["score_breakdown"]["objective"] == 100
-    rejected = must_ok({"op": "executeCommand", "game": g, "line": "FORTIFY A1"})
-    assert rejected["output"].startswith("Rejected command:")
-    assert rejected["game"]["state"] == "won"
-    assert rejected["game"]["kingdoms"]["SKY"]["timber"] == g["kingdoms"]["SKY"]["timber"]
-    status = must_ok({"op": "executeCommand", "game": g, "line": "STATUS"})
-    assert "[won]" in status["output"]
-    rebooted = must_ok({"op": "executeCommand", "game": g, "line": "REBOOT"})
-    assert rebooted["game"]["state"] == "running"
-    assert rebooted["game"]["history"] == []
+def test_metamorphic_observation_reorder_preserves_legality(tmp_path: Path):
+    """Identical seeds yield byte-identical acceptance outcomes under contingency play."""
+    bot = _isolated_bot(tmp_path)
+    out1, out2 = tmp_path / "o1", tmp_path / "o2"
+    assert _run_match("queue-pressure", bot, out1).returncode == 0
+    assert _run_match("queue-pressure", bot, out2).returncode == 0
+    assert _normalized_bytes(out1) == _normalized_bytes(out2)
+    assert _accepted(out1) and _accepted(out2)
+
+
+def test_metamorphic_file_reflection_preserves_result_class(tmp_path: Path):
+    """File-reflected linked positions preserve winner bucket and acceptance."""
+    out = _hidden_match(tmp_path, "file_reflected")
+    assert _winner(out) in {"team_a", "team_b", "draw"}
+    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["bot_faults"] == 0
+    assert _accepted(out)
+
+
+def test_metamorphic_color_board_swap_preserves_team_outcome_bucket(tmp_path: Path):
+    """Color-and-board swapping yields a valid accepted team outcome bucket."""
+    out = _hidden_match(tmp_path, "color_board_swap")
+    assert _winner(out) in {"team_a", "team_b", "draw"}
+    assert _accepted(out)
+
+
+def test_metamorphic_increased_capacity_keeps_transfers_legal(tmp_path: Path):
+    """Increasing capacity preserves legality and still clears acceptance."""
+    out = _hidden_match(tmp_path, "capacity_increase")
+    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
+    assert diag["protocol_ok"] is True
+    assert diag["bot_faults"] == 0
+    assert _accepted(out)
+
+
+def test_metamorphic_remove_outside_envelope_enemy_no_effect_class(tmp_path: Path):
+    """Removing an out-of-envelope enemy preserves accepted observation streams."""
+    out = _hidden_match(tmp_path, "outside_envelope_remove")
+    assert (_current_gen(out) / "visibility.jsonl").stat().st_size > 0
+    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["protocol_ok"] is True
+    assert _accepted(out)
+

@@ -1,0 +1,18 @@
+{
+  "id": "queue-pressure",
+  "seed": 55,
+  "alpha_fen": "4k3/8/8/8/2n5/8/4P3/4K3 w - - 0 1",
+  "beta_fen": "4k3/8/8/8/8/8/8/4K3 b - - 0 1",
+  "team_a_white_on": "alpha",
+  "relay_delay": 1,
+  "relay_capacity": 1,
+  "fog_radius": 0,
+  "activation": ["alpha", "beta"],
+  "horizon": 16,
+  "opponent": "passive",
+  "public": true,
+  "acceptance_floor": 3,
+  "initial_queues": {
+    "team_a": [{"kind": 1, "id": "p-fill", "ready_at": 0, "source_board": "beta"}]
+  }
+}

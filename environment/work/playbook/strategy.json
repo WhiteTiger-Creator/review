@@ -1,0 +1,12 @@
+{
+  "rules": [],
+  "fallback": {
+    "action": "quiet",
+    "prefer_quiet": true,
+    "capture_weight": 0,
+    "king_hunt_weight": 0,
+    "avoid_stale_king_walk": false,
+    "check_escape_bonus": 2,
+    "king_move_penalty": 0
+  }
+}

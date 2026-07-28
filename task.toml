@@ -5,23 +5,23 @@ author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
 category = "games"
-subcategories = ["tool_specific"]
-number_of_milestones = 0
+subcategories = []
+languages = ["bash"]
 codebase_size = "small"
-languages = ["go"]
-tags = ["go", "golang", "sky-kingdoms", "fleet-campaign", "deterministic-sim", "terminal-game"]
-expert_time_estimate_min = 300
-junior_time_estimate_min = 900
-
-[environment]
-build_timeout_sec = 600.0
-cpus = 2
-memory_mb = 4096
-storage_mb = 10240
-allow_internet = false
-
-[agent]
-timeout_sec = 1800
+number_of_milestones = 0
+tags = ["fog-chess", "relay-drops", "contingency-playbook", "belief-state"]
+expert_time_estimate_min = 240
+junior_time_estimate_min = 480
 
 [verifier]
-timeout_sec = 450.0
+timeout_sec = 900.0
+
+[agent]
+timeout_sec = 1800.0
+
+[environment]
+allow_internet = false
+build_timeout_sec = 900.0
+cpus = 4
+memory_mb = 8192
+storage_mb = 10240
