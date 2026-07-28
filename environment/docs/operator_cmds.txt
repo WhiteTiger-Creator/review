@@ -1,0 +1,18 @@
+Ward-census occupancy nowcast ML evaluation entrypoint
+
+The offline inference evaluation binary is built from `/app/environment/cmd/bn_run`.
+Compile with:
+  go build -C /app/environment -o /tmp/bn_run /app/environment/cmd/bn_run
+
+Emit the occupancy evaluation proof log at /app/output/invariant_proof_log.json:
+  /tmp/bn_run -root /app/environment -out /app/output/invariant_proof_log.json
+
+Flags:
+  -root <dir>   evaluation root with feature packs, frozen checkpoint weights, and held-out arms (default /app/environment)
+  -out <path>   ML evaluation proof log path (default /app/output/invariant_proof_log.json)
+
+Optional helper:
+  /app/environment/scripts/build_all.sh
+
+Verifier-local binary name used by acceptance:
+  /tmp/bn_run_verify

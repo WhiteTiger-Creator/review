@@ -3,43 +3,28 @@ version = "2.0"
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
-difficulty = "medium"
+difficulty = "hard"
 category = "machine-learning"
-subcategories = [
-    "db_interaction",
-    "tool_specific",
-    "api_integration",
-]
-number_of_milestones = 0
+tags = ["machine-learning", "inference", "frozen-checkpoint", "nowcasting", "feature-embeddings", "held-out-evaluation"]
+languages = ["go"]
 codebase_size = "small"
-languages = [
-    "lua",
-    "java",
-    "sql",
-]
-tags = [
-    "mlflow",
-    "huggingface",
-    "transformer-architecture",
-    "parameter-counting",
-    "mixture-of-experts",
-]
+number_of_milestones = 0
+subcategories = ["tool_specific"]
+expert_time_estimate_min = 240
+junior_time_estimate_min = 600
 
-expert_time_estimate_min = 150
-junior_time_estimate_min = 360
+[agent]
+timeout_sec = 1800
+
+[verifier]
+timeout_sec = 900
 
 [environment]
 allow_internet = false
-build_timeout_sec = 1800
+build_timeout_sec = 600
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
 
-[agent]
-timeout_sec = 1800
-user = "agent"
-
-[verifier]
-timeout_sec = 1800
-environment_mode = "shared"
-user = "agent"
+[reference_pattern]
+justification_if_none = "No promoted reference task in docs/reference_tasks/index.json matches Go bed-occupancy effect-lattice invariant proof logs; agent brief reports none promoted."
