@@ -1,59 +1,22 @@
-# Period-Close Control Plane
+Certify TrustLoom's TL-ALS-CONF-1 implicit-feedback collaborative filter on the spare-parts pick co-occurrence logs under `/app/data`. The trainer under `/opt/trustloom` still runs an outdated ALS path, so fitted factors, query scores, holdout ranking metrics, remassed stride folds, and fit diagnostics miss the shipping card on confidence locality and ceiling, item residual blend, ridge jitter, update order, conditional fade, packing, polarity alignment, degree-damped scoring, and train-item ranking masks.
 
-Finance hosts materialize a fiscal-window balance snapshot through `periodctl` and a oneshot systemd unit. This image ships a broken control-plane layout and a defective `periodctl` binary. Restore both so snapshots are deterministic.
+Authoritative docs (read in order; later wins on conflict):
+1. `/app/model-card/trustloom-spec.txt`
+2. every file under `/app/model-card/errata/` sorted by filename
 
-## Host layout (must be restored)
+`/app/docs/als-handbook.md` section 3.1 Final applies only when it does not conflict with those. Ignore handbook drafts, `/app/notes/`, and any sklearn / Vowpal notes.
 
-- `/app/src/periodctl` must be mode `0755` and implement the CLI below.
-- `/usr/local/sbin/periodctl` must be a symlink to `/app/src/periodctl` (replace the stub binary).
-- `/etc/period-close/window.json` must exist as a byte-identical install of `/app/data/window.json` with mode `0644`.
-- `/var/lib/period-close/` must exist as a directory with mode `0755`.
-- `/etc/systemd/system/period-close.service` must remain the oneshot unit and must be mode `0644` (not world-writable). It must launch `/usr/local/sbin/periodctl` with `--window /etc/period-close/window.json` and `--snapshot /var/lib/period-close/snapshot.tsv`.
+Implement the full TL-ALS-CONF-1 training and evaluation recipe from that chain in `/opt/trustloom`. Grading rebuilds `/opt/trustloom` from source before scoring.
 
-Do not modify files under `/app/data/`. Installing a copy under `/etc/period-close/` is required.
+Required run (exit 0):
 
-## CLI
+`/opt/trustloom/bin/trustloom --interactions /app/data/interactions.csv --queries /app/data/queries.csv --holdout /app/data/holdout.csv --out /var/lib/trustloom`
 
-```text
-/app/src/periodctl \
-  --postings <directory> \
-  --accounts <tsv> \
-  --window <json> \
-  --snapshot <file>
-```
+Required artifacts (all produced by the single command above):
+- `/var/lib/trustloom/model.json` — packed user/item factors
+- `/var/lib/trustloom/scores.json` — query scores
+- `/var/lib/trustloom/metrics.json` — holdout ranking metrics
+- `/var/lib/trustloom/diagnostics.json` — fit diagnostics
+- `/var/lib/trustloom/folds.json` — remassed stride-fold MAP checks
 
-`--postings` is `/app/data/journals/` (CSV: `posting_date,account_id,debit_cents,credit_cents,memo`). `--accounts` is `/app/data/chart.tsv` (`account_id`, `name`, `type`, `normal_balance`). `--window` may be `/app/data/window.json` or the installed `/etc/period-close/window.json` (`period_id`, `start_date`, `end_date`). Amounts are integer cents. `normal_balance` is `debit` or `credit`. Dates use `YYYY-MM-DD`.
-
-## Snapshot semantics
-
-An in-window posting to a registered account can produce a snapshot row `ACCOUNT_ID;balance_cents;SIDE`. An in-window posting to an unknown account fails the run with exit code `1` while still writing rows for valid known accounts. Duplicate chart IDs (case-insensitive) fail with exit code `1` and an empty snapshot. Missing arguments or unreadable paths yield exit code `2`.
-
-Process every in-window posting from all journal CSVs. Ignore blank lines in journals and the chart. Only postings whose `posting_date` falls within `start_date`-`end_date` (inclusive) count. Trim leading and trailing ASCII whitespace from `account_id`, `debit_cents`, and `credit_cents` before validation or aggregation. Resolve `account_id` case-insensitively and emit the chart's canonical account ID.
-
-Each in-window posting must use non-negative integer cents and exactly one non-zero side (debit or credit). Both-zero and both-nonzero rows are invalid: they fail the run with exit code `1`, but valid known-account rows from the same run still appear in the snapshot.
-
-Concurrent executions must not corrupt the balance snapshot. `periodctl` must coordinate through a lock file at the fixed path `/tmp/periodctl.lock`, containing the plain-text PID of the process holding it; this path and content format are part of the external interface (other tooling inspects and seeds this file) and must match exactly. Given that lock file, the required behavior is:
-
-- If the file exists and its recorded PID belongs to a still-running process, `periodctl` must exit with code `1` without touching the snapshot.
-- If the file exists but its recorded PID does not belong to a running process (a stale lock), `periodctl` must take over and proceed normally.
-- The lock file must be removed on exit under all conditions (normal completion or error termination).
-
-How liveness is checked internally (e.g. signaling the PID, reading `/proc`) is left to the implementation as long as this observable behavior holds. All CLI paths and arguments must be handled safely to support paths containing spaces. Journal CSV files must be parsed robustly, supporting fields (such as `memo`) that contain commas enclosed in double quotes.
-
-For each account with in-window activity, net debits and credits according to its `normal_balance`, emit the canonical account ID with a positive magnitude and a `DR`/`CR` side marker, and exclude zero nets. Across valid in-window postings to known accounts, total debits must equal total credits or the run fails.
-
-Write one snapshot line per account with in-window activity and a non-zero net, sorted by account ID (case-insensitive ascending).
-
-## Snapshot format
-
-```text
-ACCOUNT_ID;balance_cents;SIDE
-```
-
-`balance_cents` is a positive integer. `SIDE` is `DR` or `CR`. One line per account; no blank lines.
-
-## Exit codes
-
-- `0`: balanced window and no unknown accounts
-- `1`: unknown account, unbalanced totals, invalid rows, or duplicate chart IDs
-- `2`: missing arguments, missing paths, or unreadable inputs
+All five must satisfy the full normative chain for the bundled inputs and for other contract-conforming inputs of the same shape.

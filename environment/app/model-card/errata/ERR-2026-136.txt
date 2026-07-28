@@ -1,0 +1,12 @@
+ERR-2026-136 — Leading-factor sign canon
+Status: shipping / extends packing
+
+After per-vector L2 packing (ERR-2026-058) and catalog polarity alignment
+(ERR-2026-154), canonicalize each user and item factor vector as follows:
+  if factors[0] < 0, multiply the entire vector by -1
+  if factors[0] == 0, leave the vector unchanged
+
+Apply this after polarity alignment and before scoring, ranking, diagnostics
+mean_abs_score, and folds evaluation that reuse the packed model.
+Fold refits apply the same packing → polarity → canon order on their own
+factors.

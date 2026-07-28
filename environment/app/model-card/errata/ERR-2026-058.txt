@@ -1,0 +1,14 @@
+ERR-2026-058 — Unit-sphere packing
+Status: shipping / supersedes model card serialization + scoring
+
+After the final ALS iteration completes (and only then), L2-normalize every
+user factor vector and every item factor vector to Euclidean length 1.0
+before writing model.json and before computing query scores, holdout
+rankings, diagnostics mean_abs_score, or folds that consume the packed
+global model.
+
+If a factor vector has Euclidean norm 0, leave it as the zero vector.
+
+Do not normalize between intermediate ALS iterations. Conditional fade
+(if any) applies to un-normalized factors during the loop; packing is last
+(before sign canon).

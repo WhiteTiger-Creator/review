@@ -1,466 +1,550 @@
-import hashlib
-import os
-import shutil
+"""Verifier for TrustLoom TL-ALS-CONF-1 (nested folds / local R* / sign canon)."""
+
+from __future__ import annotations
+
+import csv
+import json
+import math
 import subprocess
-import tempfile
 from pathlib import Path
 
-import pytest
+ROOT = Path("/opt/trustloom")
+BIN = ROOT / "bin" / "trustloom"
+INTERACTIONS = Path("/app/data/interactions.csv")
+QUERIES = Path("/app/data/queries.csv")
+HOLDOUT = Path("/app/data/holdout.csv")
+OUT = Path("/var/lib/trustloom")
+MODEL = OUT / "model.json"
+SCORES = OUT / "scores.json"
+METRICS = OUT / "metrics.json"
+DIAG = OUT / "diagnostics.json"
+FOLDS = OUT / "folds.json"
+BUILD_PATH = Path("/app/remediation/build-path.txt")
 
-PERIODCTL = "/app/src/periodctl"
-DATA_DIR = Path("/app/data")
-JOURNALS = DATA_DIR / "journals"
-CHART = DATA_DIR / "chart.tsv"
-WINDOW = DATA_DIR / "window.json"
-ETC_WINDOW = Path("/etc/period-close/window.json")
-SBIN_LINK = Path("/usr/local/sbin/periodctl")
-SYSTEMD_UNIT = Path("/etc/systemd/system/period-close.service")
-VAR_LIB = Path("/var/lib/period-close")
-LOCKFILE = Path("/tmp/periodctl.lock")
-
-EXPECTED_LINES = [
-    "CA-1000;53000;DR",
-    "CA-2000;8000;CR",
-    "EQ-3000;15000;CR",
-    "EXP-5000;20000;DR",
-    "REV-4000;50000;CR",
-]
+F, LAMBDA, ALPHA, ITERS, INIT_SCALE, K = 4, 0.15, 25.0, 8, 0.02, 3
+FADE, MID, FK, GAMMA, JITTER = 0.994, 4, 4, 5.0, 1e-8
+BETA, CONF_CEIL = 0.5, 40.0
+FNV_OFFSET, FNV_PRIME = 14695981039346656037, 1099511628211
+ABS_TOL, MET_TOL = 1e-9, 1e-12
 
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(8192), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def _fnv1a64(data: bytes) -> int:
+    h = FNV_OFFSET
+    for b in data:
+        h ^= b
+        h = (h * FNV_PRIME) & 0xFFFFFFFFFFFFFFFF
+    return h
 
 
-def run_periodctl(
-    snapshot_path: Path,
-    postings_dir: Path = JOURNALS,
-    accounts: Path = CHART,
-    window: Path = WINDOW,
-) -> subprocess.CompletedProcess:
+def _unit_hash(kind: str, id_: int, f: int) -> float:
+    h = _fnv1a64(f"{kind}|{id_}|{f}".encode("ascii"))
+    return ((h % 1000003) / 1000003.0) * 2.0 - 1.0
+
+
+def _load_pairs(path: Path):
+    with open(path) as fh:
+        rows = list(csv.DictReader(fh))
+    totals_u, totals_i = {}, {}
+    raw = []
+    for row in rows:
+        u, i, c = int(row["user_id"]), int(row["item_id"]), int(row["count"])
+        totals_u[u] = totals_u.get(u, 0) + c
+        totals_i[i] = totals_i.get(i, 0) + c
+        raw.append((u, i, c))
+    keep_u = {u for u, t in totals_u.items() if t >= 2}
+    keep_i = {i for i, t in totals_i.items() if t >= 2}
+    pairs = {}
+    for u, i, c in raw:
+        if u in keep_u and i in keep_i:
+            pairs[(u, i)] = pairs.get((u, i), 0) + c
+    return pairs
+
+
+def _remass(pairs):
+    totals_u, totals_i = {}, {}
+    for (u, i), c in pairs.items():
+        totals_u[u] = totals_u.get(u, 0) + c
+        totals_i[i] = totals_i.get(i, 0) + c
+    keep_u = {u for u, t in totals_u.items() if t >= 2}
+    keep_i = {i for i, t in totals_i.items() if t >= 2}
+    return {(u, i): c for (u, i), c in pairs.items() if u in keep_u and i in keep_i}
+
+
+def _catalog(pairs):
+    users = sorted({u for u, _ in pairs})
+    items = sorted({i for _, i in pairs})
+    u_index = {u: idx for idx, u in enumerate(users)}
+    i_index = {i: idx for idx, i in enumerate(items)}
+    user_obs = {ui: [] for ui in range(len(users))}
+    item_obs = {ii: [] for ii in range(len(items))}
+    for (u, i), r in pairs.items():
+        user_obs[u_index[u]].append((i_index[i], r))
+        item_obs[i_index[i]].append((u_index[u], r))
+    r_star = max(pairs.values()) if pairs else 1
+    return users, items, user_obs, item_obs, u_index, i_index, r_star, len(pairs)
+
+
+def _eye(n):
+    return [[1.0 if a == b else 0.0 for b in range(n)] for a in range(n)]
+
+
+def _add(a, b):
+    n = len(a)
+    return [[a[i][j] + b[i][j] for j in range(n)] for i in range(n)]
+
+
+def _scale(a, s):
+    n = len(a)
+    return [[a[i][j] * s for j in range(n)] for i in range(n)]
+
+
+def _outer(v):
+    n = len(v)
+    return [[v[i] * v[j] for j in range(n)] for i in range(n)]
+
+
+def _gram(M):
+    f = len(M[0])
+    g = [[0.0] * f for _ in range(f)]
+    for row in M:
+        for a in range(f):
+            for b in range(f):
+                g[a][b] += row[a] * row[b]
+    return g
+
+
+def _chol_solve(A, b):
+    n = len(b)
+    L = [[0.0] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(i + 1):
+            s = sum(L[i][k] * L[j][k] for k in range(j))
+            if i == j:
+                L[i][j] = math.sqrt(max(A[i][i] - s, 0.0))
+            else:
+                L[i][j] = (A[i][j] - s) / L[j][j]
+    y = [0.0] * n
+    for i in range(n):
+        y[i] = (b[i] - sum(L[i][k] * y[k] for k in range(i))) / L[i][i]
+    x = [0.0] * n
+    for i in range(n - 1, -1, -1):
+        x[i] = (y[i] - sum(L[k][i] * x[k] for k in range(i + 1, n))) / L[i][i]
+    return x
+
+
+def _normalize(M):
+    out = []
+    for row in M:
+        nrm = math.sqrt(sum(v * v for v in row))
+        out.append(list(row) if nrm == 0 else [v / nrm for v in row])
+    return out
+
+
+def _sign_canon(M):
+    out = []
+    for row in M:
+        if row and row[0] < 0:
+            out.append([-v for v in row])
+        else:
+            out.append(list(row))
+    return out
+
+
+def _polarity_align(X, Y):
+    s = sum(row[0] for row in X if row)
+    if s >= 0:
+        return X, Y
+    return [[-v for v in row] for row in X], [[-v for v in row] for row in Y]
+
+
+def _add_jitter(A, lt):
+    j = JITTER * lt
+    n = len(A)
+    out = [row[:] for row in A]
+    for f in range(n):
+        out[f][f] += j
+    return out
+
+
+def _fade(M):
+    return [[v * FADE for v in row] for row in M]
+
+
+def _local_max(obs):
+    return max((r for _, r in obs), default=1)
+
+
+def _conf(r, r_local):
+    return min(1.0 + ALPHA * math.log1p(r) / math.log1p(r_local), CONF_CEIL)
+
+
+def _fit(users, items, user_obs, item_obs):
+    u_n, i_n = len(users), len(items)
+    X = [[INIT_SCALE * _unit_hash("user", users[u], f) for f in range(F)] for u in range(u_n)]
+    Y = [[INIT_SCALE * _unit_hash("item", items[i], f) for f in range(F)] for i in range(i_n)]
+    schedule = []
+    for t in range(1, ITERS + 1):
+        lt = LAMBDA if t <= MID else 2 * LAMBDA
+        schedule.append(lt)
+        do_fade = lt == LAMBDA
+        xtx = _gram(X)
+        new_y = []
+        for i in range(i_n):
+            n_i = len(item_obs[i])
+            r_i = _local_max(item_obs[i])
+            A = _add(xtx, _scale(_eye(F), lt * n_i))
+            b = [0.0] * F
+            for ui, r in item_obs[i]:
+                c = _conf(r, r_i)
+                A = _add(A, _scale(_outer(X[ui]), c - 1.0))
+                for f in range(F):
+                    b[f] += c * X[ui][f]
+            new_y.append(_chol_solve(_add_jitter(A, lt), b))
+        blended = [
+            [(1.0 - BETA) * Y[i][f] + BETA * new_y[i][f] for f in range(F)] for i in range(i_n)
+        ]
+        Y = _fade(blended) if do_fade else blended
+        yty = _gram(Y)
+        new_x = []
+        for u in range(u_n):
+            n_u = len(user_obs[u])
+            r_u = _local_max(user_obs[u])
+            A = _add(yty, _scale(_eye(F), lt * n_u))
+            b = [0.0] * F
+            for ii, r in user_obs[u]:
+                c = _conf(r, r_u)
+                A = _add(A, _scale(_outer(Y[ii]), c - 1.0))
+                for f in range(F):
+                    b[f] += c * Y[ii][f]
+            new_x.append(_chol_solve(_add_jitter(A, lt), b))
+        X = _fade(new_x) if do_fade else new_x
+    xn, yn = _normalize(X), _normalize(Y)
+    xn, yn = _polarity_align(xn, yn)
+    return _sign_canon(xn), _sign_canon(yn), schedule
+
+
+def _dot(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+
+def _score(X, Y, user_obs, item_obs, u_index, i_index, uid, iid):
+    if uid not in u_index or iid not in i_index:
+        return 0.0
+    ui, ii = u_index[uid], i_index[iid]
+    raw = _dot(X[ui], Y[ii])
+    n_u = len(user_obs[ui])
+    n_i = len(item_obs[ii])
+    return raw * math.sqrt((n_u + n_i) / (n_u + n_i + GAMMA))
+
+
+def _ranked_candidates(X, Y, user_obs, item_obs, items, u_index, i_index, uid):
+    ui = u_index[uid]
+    observed = {items[ii] for ii, _ in user_obs[ui]}
+    scored = [
+        (iid, _score(X, Y, user_obs, item_obs, u_index, i_index, uid, iid))
+        for iid in items
+        if iid not in observed
+    ]
+    scored.sort(key=lambda t: (-t[1], t[0]))
+    return [iid for iid, _ in scored[:K]]
+
+
+def _ap_macro(X, Y, user_obs, item_obs, users, items, u_index, i_index, relevant_by_user):
+    aps = []
+    for u in sorted(relevant_by_user):
+        if u not in u_index:
+            continue
+        R = {i for i in relevant_by_user[u] if i in i_index}
+        if not R:
+            continue
+        top = _ranked_candidates(X, Y, user_obs, item_obs, items, u_index, i_index, u)
+        hit_count = 0
+        ap_sum = 0.0
+        for rank, iid in enumerate(top, start=1):
+            if iid in R:
+                hit_count += 1
+                ap_sum += hit_count / rank
+        denom = min(K, len(R))
+        aps.append(ap_sum / denom if hit_count else 0.0)
+    if not aps:
+        return 0.0, 0
+    return sum(aps) / len(aps), len(aps)
+
+
+def _holdout_metrics(X, Y, user_obs, item_obs, users, items, u_index, i_index, holdout_path: Path):
+    by_user = {}
+    with open(holdout_path) as fh:
+        for row in csv.DictReader(fh):
+            u, i, lab = int(row["user_id"]), int(row["item_id"]), int(row["label"])
+            by_user.setdefault(u, []).append((i, lab))
+    precs, aps, ndcgs = [], [], []
+    for u in sorted(by_user):
+        if u not in u_index:
+            continue
+        R = {i for i, lab in by_user[u] if lab == 1 and i in i_index}
+        if not R:
+            continue
+        top = _ranked_candidates(X, Y, user_obs, item_obs, items, u_index, i_index, u)
+        hits = sum(1 for iid in top if iid in R)
+        precs.append(hits / K)
+        hit_count = 0
+        ap_sum = 0.0
+        dcg = 0.0
+        for rank, iid in enumerate(top, start=1):
+            if iid in R:
+                hit_count += 1
+                ap_sum += hit_count / rank
+                dcg += 1.0 / math.log2(rank + 1)
+        denom = min(K, len(R))
+        aps.append(ap_sum / denom if hit_count else 0.0)
+        ideal = min(K, len(R))
+        idcg = sum(1.0 / math.log2(r + 1) for r in range(1, ideal + 1))
+        ndcgs.append(dcg / idcg if idcg else 0.0)
+    n = len(precs)
+    if not n:
+        return 0.0, 0.0, 0.0, 0
+    return sum(precs) / n, sum(aps) / n, sum(ndcgs) / n, n
+
+
+def _folds(global_pairs):
+    _users, _items, _uo, _io, u_index, i_index, _rs, _np = _catalog(global_pairs)
+    out = []
+    for f in range(FK):
+        train, hold = {}, {}
+        for (u, i), c in global_pairs.items():
+            bucket = (2 * u_index[u] + 3 * i_index[i]) % FK
+            (hold if bucket == f else train)[(u, i)] = c
+        train = _remass(train)
+        tu, ti, uo, io, uix, iix, _rs2, npairs = _catalog(train)
+        X, Y, _sched = _fit(tu, ti, uo, io)
+        rel = {}
+        for (u, i) in hold:
+            if u in uix and i in iix:
+                rel.setdefault(u, set()).add(i)
+        m, e = _ap_macro(X, Y, uo, io, tu, ti, uix, iix, rel)
+        out.append(
+            {
+                "fold_index": f,
+                "n_train_users": len(tu),
+                "n_train_items": len(ti),
+                "n_train_pairs": npairs,
+                "eligible_users": e,
+                "map_at_k": m,
+            }
+        )
+    return out
+
+
+def _expected():
+    pairs = _load_pairs(INTERACTIONS)
+    users, items, user_obs, item_obs, u_index, i_index, r_star, n_pairs = _catalog(pairs)
+    X, Y, schedule = _fit(users, items, user_obs, item_obs)
+    with open(QUERIES) as fh:
+        queries = [(int(r["user_id"]), int(r["item_id"])) for r in csv.DictReader(fh)]
+    scores = [_score(X, Y, user_obs, item_obs, u_index, i_index, u, i) for u, i in queries]
+    p, m, n, e = _holdout_metrics(X, Y, user_obs, item_obs, users, items, u_index, i_index, HOLDOUT)
+    mean_abs = sum(abs(_dot(X[u], Y[i])) for u in range(len(users)) for i in range(len(items)))
+    mean_abs /= max(len(users) * len(items), 1)
+    return users, items, X, Y, queries, scores, p, m, n, e, r_star, n_pairs, schedule, mean_abs, _folds(pairs)
+
+
+def _no_active_labals(path: Path) -> None:
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or stripped == "":
+            continue
+        assert "labals" not in stripped, f"{path} still forces labals: {stripped}"
+
+
+def _rebuild():
+    result = subprocess.run(["make", "clean", "all"], cwd=str(ROOT), capture_output=True, text=True, check=False)
+    assert result.returncode == 0, f"make failed:\n{result.stdout}{result.stderr}"
+    assert BIN.exists()
+
+
+def _run_fit(interactions=INTERACTIONS, queries=QUERIES, holdout=HOLDOUT, out=OUT):
+    if out.exists():
+        for child in out.iterdir():
+            if child.is_file():
+                child.unlink()
+    out.mkdir(parents=True, exist_ok=True)
     return subprocess.run(
-        [
-            PERIODCTL,
-            "--postings",
-            str(postings_dir),
-            "--accounts",
-            str(accounts),
-            "--window",
-            str(window),
-            "--snapshot",
-            str(snapshot_path),
-        ],
+        [str(BIN), "--interactions", str(interactions), "--queries", str(queries), "--holdout", str(holdout), "--out", str(out)],
         capture_output=True,
         text=True,
         check=False,
     )
 
 
-@pytest.fixture
-def data_hashes():
-    hashes = {}
-    for path in DATA_DIR.rglob("*"):
+def _assert_close(a, b, tol, label):
+    assert abs(float(a) - float(b)) <= tol, f"{label}: got {a}, expected {b}"
+
+
+def _helpers_disabled() -> None:
+    makefile = (ROOT / "Makefile").read_text() if (ROOT / "Makefile").exists() else ""
+    for name in ("tl-coerce.sh", "tl-handbook-sync.sh"):
+        path = ROOT / "scripts" / name
+        if not path.exists():
+            continue
+        for line in makefile.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#") or stripped == "":
+                continue
+            assert name not in stripped, (
+                f"active Makefile line still invokes {name}: {stripped}"
+            )
+
+
+def test_packaging_and_rebuild():
+    _no_active_labals(ROOT / "staging.mk")
+    _no_active_labals(ROOT / ".cutover.mk")
+    _helpers_disabled()
+    assert BUILD_PATH.read_bytes() == b"default:!labals\n"
+    _rebuild()
+    assert BIN.read_bytes()[:4] == b"\x7fELF"
+    result = _run_fit()
+    assert result.returncode == 0, result.stderr
+    assert MODEL.exists() and SCORES.exists() and METRICS.exists() and DIAG.exists() and FOLDS.exists()
+
+
+def test_model_schema_and_factors():
+    _rebuild()
+    _run_fit()
+    users, items, X, Y = _expected()[:4]
+    doc = json.loads(MODEL.read_text())
+    assert doc["algorithm"] == "tl-als-conf-1"
+    assert [u["id"] for u in doc["users"]] == users
+    assert [i["id"] for i in doc["items"]] == items
+    for idx, u in enumerate(doc["users"]):
+        for f in range(F):
+            _assert_close(u["factors"][f], X[idx][f], ABS_TOL, f"user {u['id']} f{f}")
+        assert u["factors"][0] >= 0.0 or all(abs(v) < ABS_TOL for v in u["factors"])
+        nrm = math.sqrt(sum(v * v for v in u["factors"]))
+        _assert_close(nrm, 1.0, ABS_TOL, f"user {u['id']} norm")
+    for idx, it in enumerate(doc["items"]):
+        for f in range(F):
+            _assert_close(it["factors"][f], Y[idx][f], ABS_TOL, f"item {it['id']} f{f}")
+        assert it["factors"][0] >= 0.0 or all(abs(v) < ABS_TOL for v in it["factors"])
+
+
+def test_scores_match_expected():
+    _rebuild()
+    _run_fit()
+    exp = _expected()
+    queries, scores = exp[4], exp[5]
+    doc = json.loads(SCORES.read_text())
+    for got, (uid, iid), want in zip(doc["scores"], queries, scores):
+        assert got["user_id"] == uid and got["item_id"] == iid
+        _assert_close(got["score"], want, ABS_TOL, f"score {uid},{iid}")
+
+
+def test_metrics_match_expected():
+    _rebuild()
+    _run_fit()
+    exp = _expected()
+    p, m, n, e = exp[6], exp[7], exp[8], exp[9]
+    doc = json.loads(METRICS.read_text())
+    assert doc["k"] == K
+    assert doc["eligible_users"] == e
+    _assert_close(doc["precision_at_k"], p, MET_TOL, "precision")
+    _assert_close(doc["map_at_k"], m, MET_TOL, "map")
+    _assert_close(doc["ndcg_at_k"], n, MET_TOL, "ndcg")
+
+
+def test_diagnostics_match_expected():
+    _rebuild()
+    _run_fit()
+    exp = _expected()
+    users, items = exp[0], exp[1]
+    r_star, n_pairs, schedule, mean_abs = exp[10], exp[11], exp[12], exp[13]
+    doc = json.loads(DIAG.read_text())
+    assert doc["r_star"] == r_star
+    assert doc["n_users"] == len(users)
+    assert doc["n_items"] == len(items)
+    assert doc["n_pairs"] == n_pairs
+    _assert_close(doc["fade"], FADE, ABS_TOL, "fade")
+    assert doc["lambda_schedule"] == schedule
+    _assert_close(doc["mean_abs_score"], mean_abs, ABS_TOL, "mean_abs_score")
+
+
+def test_folds_match_expected():
+    _rebuild()
+    _run_fit()
+    fold_exp = _expected()[14]
+    doc = json.loads(FOLDS.read_text())
+    assert doc["k"] == FK
+    assert len(doc["folds"]) == FK
+    for got, want in zip(doc["folds"], fold_exp):
+        assert got["fold_index"] == want["fold_index"]
+        assert got["n_train_users"] == want["n_train_users"]
+        assert got["n_train_items"] == want["n_train_items"]
+        assert got["n_train_pairs"] == want["n_train_pairs"]
+        assert got["eligible_users"] == want["eligible_users"]
+        _assert_close(got["map_at_k"], want["map_at_k"], MET_TOL, f"fold {want['fold_index']} map")
+
+
+def test_catalog_excludes_low_mass_ids():
+    _rebuild()
+    _run_fit()
+    doc = json.loads(MODEL.read_text())
+    user_ids = {u["id"] for u in doc["users"]}
+    item_ids = {i["id"] for i in doc["items"]}
+    assert 99 not in user_ids and 999 not in item_ids and 70 not in user_ids
+
+
+def test_cold_start_scores_are_zero():
+    _rebuild()
+    _run_fit()
+    by_pair = {(s["user_id"], s["item_id"]): s["score"] for s in json.loads(SCORES.read_text())["scores"]}
+    _assert_close(by_pair[(99, 100)], 0.0, ABS_TOL, "user 99 cold")
+    _assert_close(by_pair[(10, 999)], 0.0, ABS_TOL, "item 999 cold")
+    _assert_close(by_pair[(70, 200)], 0.0, ABS_TOL, "user 70 cold")
+
+
+def test_agent_tree_has_no_verifier_assets():
+    assert not (ROOT / "tests").exists()
+    for path in ROOT.rglob("*"):
         if path.is_file():
-            hashes[str(path.relative_to(DATA_DIR))] = sha256_file(path)
-    return hashes
+            assert "test_outputs" not in path.name
 
 
-def _mode(path: Path) -> str:
-    return oct(path.stat().st_mode & 0o777)
-
-
-def test_periodctl_binary_mode_0755():
-    """Verify /app/src/periodctl exists and has executable mode 0755."""
-    assert Path(PERIODCTL).is_file()
-    assert _mode(Path(PERIODCTL)) == "0o755"
-
-
-def test_sbin_periodctl_symlink():
-    """Verify /usr/local/sbin/periodctl is a symlink to /app/src/periodctl."""
-    assert SBIN_LINK.is_symlink()
-    assert SBIN_LINK.resolve() == Path(PERIODCTL).resolve()
-
-
-def test_etc_window_installed():
-    """Verify /etc/period-close/window.json is a byte-identical install with mode 0644."""
-    assert ETC_WINDOW.is_file()
-    assert ETC_WINDOW.read_bytes() == WINDOW.read_bytes()
-    assert _mode(ETC_WINDOW) == "0o644"
-
-
-def test_var_lib_period_close_mode_0755():
-    """Verify /var/lib/period-close exists as a directory with mode 0755."""
-    assert VAR_LIB.is_dir()
-    assert _mode(VAR_LIB) == "0o755"
-
-
-def test_systemd_unit_mode_and_targets():
-    """Verify period-close.service is mode 0644 and references correct paths."""
-    assert SYSTEMD_UNIT.is_file()
-    assert _mode(SYSTEMD_UNIT) == "0o644"
-    text = SYSTEMD_UNIT.read_text(encoding="utf-8")
-    assert "/usr/local/sbin/periodctl" in text
-    assert "/etc/period-close/window.json" in text
-    assert "/var/lib/period-close/snapshot.tsv" in text
-    assert "Type=oneshot" in text
-
-
-def test_etc_window_path_produces_same_snapshot(tmp_path):
-    """Verify snapshots match whether --window points at data or etc install."""
-    via_data = tmp_path / "from_data.txt"
-    via_etc = tmp_path / "from_etc.txt"
-    code_data = run_periodctl(via_data, window=WINDOW).returncode
-    code_etc = run_periodctl(via_etc, window=ETC_WINDOW).returncode
-    assert code_data == code_etc == 1
-    assert via_data.read_text(encoding="utf-8") == via_etc.read_text(encoding="utf-8")
-
-
-def test_exit_code_with_unknown_account(tmp_path):
-    """Verify unknown in-window accounts yield exit code 1."""
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot)
-    assert result.returncode == 1, result.stderr
-
-
-def test_snapshot_line_count(tmp_path):
-    """Verify the shipped journals produce exactly five snapshot rows."""
-    snapshot = tmp_path / "snapshot.tsv"
-    run_periodctl(snapshot)
-    lines = snapshot.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 5
-
-
-def test_snapshot_exact_content(tmp_path):
-    """Verify snapshot lines match expected account balances and sides."""
-    snapshot = tmp_path / "snapshot.tsv"
-    run_periodctl(snapshot)
-    lines = snapshot.read_text(encoding="utf-8").splitlines()
-    assert lines == EXPECTED_LINES
-
-
-def test_snapshot_schema(tmp_path):
-    """Verify each snapshot line has ACCOUNT_ID;positive_cents;DR|CR format."""
-    snapshot = tmp_path / "snapshot.tsv"
-    run_periodctl(snapshot)
-    for line in snapshot.read_text(encoding="utf-8").splitlines():
-        account_id, balance, side = line.split(";")
-        assert account_id
-        assert balance.isdigit()
-        assert int(balance) > 0
-        assert side in {"DR", "CR"}
-
-
-def test_case_insensitive_account_resolution(tmp_path):
-    """Verify journal account IDs resolve to canonical chart IDs case-insensitively."""
-    snapshot = tmp_path / "snapshot.tsv"
-    run_periodctl(snapshot)
-    text = snapshot.read_text(encoding="utf-8")
-    assert "CA-1000;53000;DR" in text
-    assert "EQ-3000;15000;CR" in text
-    assert "ca-1000" not in text
-    assert "eq-3000" not in text
-
-
-def test_out_of_window_entries_excluded(tmp_path):
-    """Verify postings outside the fiscal window do not affect balances."""
-    snapshot = tmp_path / "snapshot.tsv"
-    run_periodctl(snapshot)
-    text = snapshot.read_text(encoding="utf-8")
-    cash_balance = int(
-        next(line for line in text.splitlines() if line.startswith("CA-1000;")).split(";")[1]
+def test_alternate_interactions_recompute():
+    _rebuild()
+    alt = Path("/tmp/alt_interactions.csv")
+    alt.write_text(
+        "user_id,item_id,count\n"
+        "1,10,3\n1,20,2\n2,10,4\n2,20,1\n2,30,3\n3,20,2\n3,30,5\n3,10,1\n"
+        "4,10,2\n4,30,2\n1,30,1\n"
     )
-    assert cash_balance == 53000
+    alt_q = Path("/tmp/alt_queries.csv")
+    alt_q.write_text("user_id,item_id\n1,10\n2,30\n3,20\n9,10\n")
+    alt_h = Path("/tmp/alt_holdout.csv")
+    alt_h.write_text("user_id,item_id,label\n1,10,1\n1,30,0\n2,20,1\n2,30,1\n3,10,0\n3,30,1\n4,10,1\n")
+    alt_out = Path("/tmp/alt_out")
+    assert _run_fit(alt, alt_q, alt_h, alt_out).returncode == 0
 
+    pairs = _load_pairs(alt)
+    users, items, user_obs, item_obs, u_index, i_index, _r_star, _n_pairs = _catalog(pairs)
+    X, Y, _schedule = _fit(users, items, user_obs, item_obs)
+    queries = [(1, 10), (2, 30), (3, 20), (9, 10)]
+    exp_scores = [_score(X, Y, user_obs, item_obs, u_index, i_index, u, i) for u, i in queries]
+    p, m, _n, e = _holdout_metrics(X, Y, user_obs, item_obs, users, items, u_index, i_index, alt_h)
+    fold_exp = _folds(pairs)
 
-def test_sort_order_case_insensitive(tmp_path):
-    """Verify snapshot rows are sorted by account ID case-insensitively."""
-    snapshot = tmp_path / "snapshot.tsv"
-    run_periodctl(snapshot)
-    account_ids = [line.split(";")[0] for line in snapshot.read_text(encoding="utf-8").splitlines()]
-    assert account_ids == sorted(account_ids, key=str.casefold)
+    got_scores = json.loads((alt_out / "scores.json").read_text())["scores"]
+    for got, exp, (uid, iid) in zip(got_scores, exp_scores, queries):
+        _assert_close(got["score"], exp, ABS_TOL, f"alt score {uid},{iid}")
+    met = json.loads((alt_out / "metrics.json").read_text())
+    _assert_close(met["precision_at_k"], p, MET_TOL, "alt precision")
+    _assert_close(met["map_at_k"], m, MET_TOL, "alt map")
+    assert met["eligible_users"] == e
+    folds_doc = json.loads((alt_out / "folds.json").read_text())
+    for got, exp in zip(folds_doc["folds"], fold_exp):
+        assert got["n_train_pairs"] == exp["n_train_pairs"]
+        _assert_close(got["map_at_k"], exp["map_at_k"], MET_TOL, "alt fold map")
 
-
-def test_window_boundary_dates_inclusive(tmp_path):
-    """Verify start_date and end_date boundary postings are included in the window."""
-    postings = tmp_path / "postings"
-    postings.mkdir()
-    (postings / "boundary.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "2025-01-01,CA-1000,100,0,start boundary\n"
-        "2025-01-01,REV-4000,0,100,start boundary\n"
-        "2025-03-31,CA-1000,0,200,end boundary\n"
-        "2025-03-31,EXP-5000,200,0,end boundary\n",
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 0, result.stderr
-    lines = {line.split(";")[0]: line for line in snapshot.read_text(encoding="utf-8").splitlines()}
-    assert lines["CA-1000"] == "CA-1000;100;CR"
-    assert lines["REV-4000"] == "REV-4000;100;CR"
-    assert lines["EXP-5000"] == "EXP-5000;200;DR"
-
-
-def test_deterministic_output(tmp_path):
-    """Verify repeated runs produce identical snapshots and exit codes."""
-    first = tmp_path / "first.tsv"
-    second = tmp_path / "second.tsv"
-    code_one = run_periodctl(first).returncode
-    code_two = run_periodctl(second).returncode
-    assert code_one == code_two == 1
-    assert first.read_text(encoding="utf-8") == second.read_text(encoding="utf-8")
-
-
-def test_data_files_not_modified(data_hashes):
-    """Verify periodctl does not modify files under /app/data/."""
-    snapshot = Path(tempfile.mkdtemp()) / "snapshot.tsv"
-    run_periodctl(snapshot)
-    for path in DATA_DIR.rglob("*"):
-        if path.is_file():
-            rel = str(path.relative_to(DATA_DIR))
-            assert sha256_file(path) == data_hashes[rel]
-
-
-def test_exit_code_all_clean(tmp_path):
-    """Verify a balanced window with no unknown accounts yields exit code 0."""
-    postings = tmp_path / "clean"
-    postings.mkdir()
-    shutil.copytree(JOURNALS, postings, dirs_exist_ok=True)
-    (postings / "legacy.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "2025-03-15,EQ-3000,0,15000,Owner draw\n"
-        "2025-03-15,CA-1000,15000,0,Cash transfer for draw\n",
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 0, result.stderr
-
-
-def test_zero_balance_excluded(tmp_path):
-    """Verify accounts whose net balance is zero are omitted from the snapshot."""
-    postings = tmp_path / "postings"
-    postings.mkdir()
-    (postings / "zero.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "2025-02-01,CA-1000,5000,0,payment\n"
-        "2025-02-01,REV-4000,0,5000,revenue\n"
-        "2025-02-15,CA-1000,0,5000,refund\n"
-        "2025-02-15,REV-4000,5000,0,rev reversal\n",
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 0
-    assert snapshot.read_text(encoding="utf-8").strip() == ""
-
-
-def test_exit_code_unbalanced_journals(tmp_path):
-    """Verify unbalanced in-window postings yield exit code 1."""
-    postings = tmp_path / "bad"
-    postings.mkdir()
-    (postings / "skew.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "2025-02-10,CA-1000,5000,0,orphan debit\n",
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 1, result.stderr
-
-
-def test_exit_code_invalid_arguments(tmp_path):
-    """Verify missing required CLI arguments yield exit code 2."""
-    snapshot = tmp_path / "snapshot.tsv"
-    result = subprocess.run(
-        [PERIODCTL, "--postings", str(JOURNALS), "--snapshot", str(snapshot)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 2
-
-
-def test_exit_code_unreadable_accounts_path(tmp_path):
-    """Verify unreadable but existing accounts path yields exit code 2."""
-    unreadable = tmp_path / "locked.tsv"
-    unreadable.write_text("account_id\tname\ttype\tnormal_balance\n", encoding="utf-8")
-    unreadable.chmod(0o000)
-    snapshot = tmp_path / "snapshot.tsv"
-    try:
-        result = run_periodctl(snapshot, accounts=unreadable)
-        assert result.returncode == 2
-    finally:
-        unreadable.chmod(0o644)
-
-
-def test_whitespace_trimmed_and_blank_lines_ignored(tmp_path):
-    """Verify whitespace is trimmed and blank journal lines are ignored."""
-    postings = tmp_path / "postings"
-    postings.mkdir()
-    (postings / "messy.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "\n"
-        "2025-02-03,  ca-1000  , 700 , 0 ,cash receipt\n"
-        "2025-02-03, REV-4000 ,0, 700 , revenue booking\n"
-        "\n",
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 0, result.stderr
-    assert snapshot.read_text(encoding="utf-8").splitlines() == [
-        "CA-1000;700;DR",
-        "REV-4000;700;CR",
-    ]
-
-
-def test_invalid_in_window_rows_fail_but_valid_rows_still_snapshot(tmp_path):
-    """Verify invalid rows fail the run but valid known-account rows still appear."""
-    postings = tmp_path / "postings"
-    postings.mkdir()
-    (postings / "mixed.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "2025-02-10,CA-1000,700,0,valid debit\n"
-        "2025-02-10,REV-4000,0,700,valid credit\n"
-        "2025-02-11,CA-1000,10,10,both sides set\n"
-        "2025-02-12,EXP-5000,foo,0,non numeric debit\n"
-        "2025-02-13,CA-1000,-5,0,negative debit\n",
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 1, result.stderr
-    assert snapshot.read_text(encoding="utf-8").splitlines() == [
-        "CA-1000;700;DR",
-        "REV-4000;700;CR",
-    ]
-
-
-def test_both_sides_zero_row_is_invalid(tmp_path):
-    """Verify rows with both debit and credit zero fail the run with exit code 1."""
-    postings = tmp_path / "postings"
-    postings.mkdir()
-    (postings / "zero_sides.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "2025-02-10,CA-1000,700,0,valid debit\n"
-        "2025-02-10,REV-4000,0,700,valid credit\n"
-        "2025-02-11,CA-1000,0,0,both sides zero\n",
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 1, result.stderr
-    assert snapshot.read_text(encoding="utf-8").splitlines() == [
-        "CA-1000;700;DR",
-        "REV-4000;700;CR",
-    ]
-
-
-def test_duplicate_chart_ids_case_insensitive_fail_with_empty_snapshot(tmp_path):
-    """Verify case-insensitive duplicate chart IDs fail with exit 1 and empty snapshot."""
-    chart = tmp_path / "chart.tsv"
-    chart.write_text(
-        "account_id\tname\ttype\tnormal_balance\n"
-        "\n"
-        "CA-1000\tCash\tasset\tdebit\n"
-        "ca-1000\tDuplicate Cash\tasset\tdebit\n"
-        "REV-4000\tRevenue\trevenue\tcredit\n",
-        encoding="utf-8",
-    )
-    postings = tmp_path / "postings"
-    postings.mkdir()
-    (postings / "simple.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "2025-02-14,CA-1000,900,0,cash sale\n"
-        "2025-02-14,REV-4000,0,900,revenue\n",
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings, accounts=chart)
-    assert result.returncode == 1, result.stderr
-    assert snapshot.read_text(encoding="utf-8") == ""
-
-
-def test_lockfile_concurrency_and_cleanup(tmp_path):
-    """Verify sequential runs succeed and the lockfile is cleaned up after each run."""
-    snapshot1 = tmp_path / "snapshot1.tsv"
-    res1 = run_periodctl(snapshot1)
-    assert res1.returncode == 1
-    assert not LOCKFILE.exists()
-
-    snapshot2 = tmp_path / "snapshot2.tsv"
-    res2 = run_periodctl(snapshot2)
-    assert res2.returncode == 1
-    assert not LOCKFILE.exists()
-
-    res3 = subprocess.run([PERIODCTL], capture_output=True, text=True, check=False)
-    assert res3.returncode == 2
-
-    snapshot3 = tmp_path / "snapshot3.tsv"
-    res4 = run_periodctl(snapshot3)
-    assert res4.returncode == 1
-    assert not LOCKFILE.exists()
-
-
-def test_stale_lockfile_dead_pid_takes_over(tmp_path):
-    """Verify periodctl takes over when lockfile holds a dead PID."""
-    LOCKFILE.write_text("99999999", encoding="utf-8")
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot)
-    assert result.returncode == 1
-    assert not LOCKFILE.exists()
-
-
-def test_active_lockfile_pid_blocks_run(tmp_path):
-    """Verify periodctl exits 1 when lockfile holds an active PID."""
-    LOCKFILE.write_text(str(os.getpid()), encoding="utf-8")
-    snapshot = tmp_path / "snapshot.tsv"
-    try:
-        result = run_periodctl(snapshot)
-        assert result.returncode == 1
-    finally:
-        LOCKFILE.unlink(missing_ok=True)
-
-
-def test_path_with_spaces(tmp_path):
-    """Verify CLI handles postings directories whose paths contain spaces."""
-    postings = tmp_path / "postings folder with spaces"
-    postings.mkdir()
-    (postings / "clean.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        "2025-02-01,CA-1000,100,0,payment\n"
-        "2025-02-01,REV-4000,0,100,revenue\n",
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 0, result.stderr
-    lines = snapshot.read_text(encoding="utf-8").splitlines()
-    assert lines == [
-        "CA-1000;100;DR",
-        "REV-4000;100;CR",
-    ]
-
-
-def test_memo_field_with_commas(tmp_path):
-    """Verify quoted memo fields containing commas are parsed correctly."""
-    postings = tmp_path / "postings"
-    postings.mkdir()
-    (postings / "comma_memo.csv").write_text(
-        "posting_date,account_id,debit_cents,credit_cents,memo\n"
-        '2025-02-01,CA-1000,150,0,"payment, partial"\n'
-        '2025-02-01,REV-4000,0,150,"revenue, deferred"\n',
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "snapshot.tsv"
-    result = run_periodctl(snapshot, postings_dir=postings)
-    assert result.returncode == 0, result.stderr
-    lines = snapshot.read_text(encoding="utf-8").splitlines()
-    assert lines == [
-        "CA-1000;150;DR",
-        "REV-4000;150;CR",
-    ]
+    _run_fit()
+    bundled = json.loads(SCORES.read_text())["scores"]
+    assert got_scores[0]["score"] != bundled[0]["score"] or got_scores[1]["score"] != bundled[1]["score"]

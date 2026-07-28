@@ -1,0 +1,9 @@
+ERR-2026-160 — Fold stride weights
+Status: shipping / supersedes ERR-2026-142 bucket formula only
+
+Replace the fold bucket assignment with:
+
+  bucket = (2 * dense_user_index + 3 * dense_item_index) % 4
+
+All other fold rules in ERR-2026-142 (train/hold split, remass, fit,
+eligibility, AP@k, schema) remain in force.

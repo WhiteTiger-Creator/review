@@ -1,0 +1,16 @@
+ERR-2026-041 — Ridge mass scaling
+Status: shipping / supersedes model card ALS ridge term
+
+When forming the normal equations for a user u, replace
+  A = YtY + lambda_t * I
+with
+  A = YtY + lambda_t * n_u * I
+where n_u is the number of distinct observed items retained for that user
+after catalog filtering (not the sum of counts).
+
+Symmetrically for an item i:
+  A = XtX + lambda_t * n_i * I
+with n_i = number of distinct observed users retained for that item.
+
+The (c-1) yy^T / xx^T accumulations and the right-hand side are unchanged.
+Using plain lambda_t * I without the n_u / n_i multiplier is a reject.

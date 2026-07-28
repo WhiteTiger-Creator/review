@@ -1,0 +1,16 @@
+ERR-2026-172 — Item residual blend
+Status: shipping / extends item half-step; does not apply to user half-step
+
+Let beta = 0.5.
+
+After the item-factor Cholesky solves for iteration t produce candidate
+vectors Y_hat[i] for every item i, REPLACE the working item factors with
+the residual blend against the previous item factors Y_prev:
+
+  Y[i] = (1 - beta) * Y_prev[i] + beta * Y_hat[i]
+
+Then apply the conditional fade from ERR-2026-091 to these blended Y
+vectors (fade only when lambda_t equals base lambda).
+
+User-factor updates remain full replacement (no residual blend on X).
+Fold remass fits use the same item-only blend rule.

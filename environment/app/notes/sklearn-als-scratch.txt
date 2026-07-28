@@ -1,0 +1,3 @@
+sklearn.decomposition.NMF and implicit ALS defaults from an old notebook:
+alpha=1.0, regularization without n_u scaling, no min-mass filter, no
+final unit-norm packing. Kept only as scratch; not normative.

@@ -1,0 +1,13 @@
+ERR-2026-178 — Confidence ceiling
+Status: shipping / extends local confidence from ERR-2026-130
+
+After computing the local relative confidence
+
+  c_raw = 1 + alpha * log1p(r) / log1p(r_local)
+
+clamp it:
+
+  c = min(c_raw, 40.0)
+
+Use c (not c_raw) in every ALS outer-product and rhs accumulation for
+both item and user half-steps, including fold remass fits.

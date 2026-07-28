@@ -1,0 +1,34 @@
+ERR-2026-125 — Shipping recipe selection
+Status: shipping / default ALS path must be active
+
+Staging left `/opt/trustloom` forcing the `labals` Go build tag through
+included make fragments and post-build sync helpers. Grading runs
+`make clean all` before scoring, so a cutover-injected binary will not stick.
+
+For the shipping TL-ALS-CONF-1 fit to be the one that is scored, all of the
+following must hold:
+
+1. `/opt/trustloom/staging.mk` must contain no active (non-comment) line
+   that forces `labals`.
+2. `/opt/trustloom/.cutover.mk` must contain no active (non-comment) line
+   that forces `labals` (delete the file or neutralize every active line).
+3. The helpers `/opt/trustloom/scripts/tl-coerce.sh` and
+   `/opt/trustloom/scripts/tl-handbook-sync.sh` must not run during
+   `make clean all`. Either delete both files, or leave them on disk but
+   ensure no active (non-comment) Makefile line invokes either script by
+   name. Merely clearing the executable bit is not sufficient if an
+   active Makefile line still references the script.
+4. The linked `/opt/trustloom/bin/trustloom` produced by `make clean all`
+   must come from the default (`!labals`) Go packages built from
+   `/opt/trustloom` sources. Replacing that binary with a script or
+   non-Go stub is non-compliant.
+
+Recipe-selection receipt
+------------------------
+Write `/app/remediation/build-path.txt` as exactly these 15 characters
+followed by a newline (16 bytes total):
+
+  default:!labals
+
+This is a recipe-selection status token. It is NOT a directory path. Do not
+write `/opt/trustloom` or any other filesystem path into this file.

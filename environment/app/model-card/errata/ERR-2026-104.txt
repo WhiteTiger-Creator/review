@@ -1,0 +1,9 @@
+ERR-2026-104 — Hash separator bytes
+Status: shipping / supersedes unit_hash byte layout
+
+unit_hash(kind, id, f) must FNV-1a 64 the ASCII bytes of:
+  kind + "|" + decimal(id) + "|" + decimal(f)
+
+The colon-separated form in the base card is retired. The modulus and
+affine map to (-1, 1) are unchanged:
+  ((h % 1000003) / 1000003.0) * 2.0 - 1.0
