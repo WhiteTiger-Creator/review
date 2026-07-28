@@ -1,41 +1,17 @@
-FROM golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
-        asciinema \
-        ca-certificates \
-        g++ \
-        make \
-        python3 \
-        python3-pip \
-        python3-venv \
-        sqlite3 \
-        tmux; \
-    apt-get clean; \
-    rm -rf /var/lib/apt/lists/*
-
-ENV TEST_VENV=/opt/test-venv
-ENV PATH="${TEST_VENV}/bin:${PATH}"
-
-RUN set -eux; \
-    python3 -m venv "${TEST_VENV}"; \
-    "${TEST_VENV}/bin/pip" install --no-cache-dir \
-        pytest==8.4.1 \
-        pytest-json-ctrf==0.3.5 \
-        cryptography==43.0.3
-
-ENV GOFLAGS=-mod=mod
-ENV GOTOOLCHAIN=local
+FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
 
 WORKDIR /app
 
-RUN mkdir -p /app/output /app/trust-remediator/build
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends r-base-core tmux asciinema && \
+    rm -rf /var/lib/apt/lists/*
 
-COPY data/              /app/data/
-COPY operator_handbook/ /app/operator_handbook/
-COPY trust-remediator/  /app/trust-remediator/
+COPY requirements.lock /tmp/requirements.lock
+RUN python -m pip install --no-cache-dir --require-hashes -r /tmp/requirements.lock && \
+    rm /tmp/requirements.lock
 
-CMD ["/bin/bash"]
+COPY docs/ /app/docs/
+COPY data/ /app/data/
+COPY estimate.R /app/estimate.R
+COPY --chmod=0755 run.sh /app/run.sh
+RUN mkdir -p /app/outputs

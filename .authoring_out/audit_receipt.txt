@@ -1,8 +1,0 @@
-warrants_honored=3
-warrants_inert=9
-restored_fingerprints=282b7727e49e973baf41a55c66563f598eb8f8b8c5d9f7fd2df183d692b72dff,bf96bac4fa33f43c01e968216be265abb1c1f4973208499423b493d33f451c41
-containment_names=xc-alpha,xc-epsil
-containment_size=2
-journal_reconcile_digest=329150ed5beacf1772b7948c0550c0984061e321bbc75917953959869c1cf671
-compromised_leaves=leaf-mesh-cascade,leaf-revoked-byname,leaf-revoked-byname-deep,leaf-ring-cycle,leaf-xc-one
-artifact_digest=ed90f2209178187ceb89a2d773a0ba884b02d32e9916906ccc3bfc9af52da1ec

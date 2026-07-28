@@ -1,5 +1,19 @@
-Anchor deduplication during the trust store migration quietly dropped fingerprint distrust rows that standing warrants still authorize, so `/app/data/trust_store.db` now trusts material operators had already rejected. Incident EXP-7741 landed on top, naming subjects that must stop validating and one that must not. The Go utility under `/app/trust-remediator/` has drifted from the handbook in several places. Warrants are honoured on the wrong evidence, the exposure containment it writes down is not the one the handbook would choose, and signing events are reconciled against the custodian roster terms incorrectly. Those three are the loudest symptoms, and each one throws off the artifacts that depend on it downstream.
+Train an importance-weighted marked Hawkes model in R through /app/run.sh.
+Learn cluster-held-out event scores for every policy, then search the prescribed
+randomized policy portfolios. Portfolio branching includes pairwise and
+three-way nonlinear switching excitation, so values, support, dispersion,
+stability, and feasibility must be
+recomputed after every one-cluster and two-cluster deletion. Select the robust
+full portfolio and independently certify the nested deletion surfaces.
 
-Rebuild through the shipped `Makefile` so the binary is `/app/trust-remediator/build/trust_attest`, then run `trust_attest --incident /app/data --write /app/output`. The incident directory is read only: the post-migration store, `/app/data/warrants/warrants.db`, `/app/data/remediation.policy`, `/app/data/eval_time.txt`, `/app/data/exposure.tsv`, the journal `/app/data/access/access.journal` beside `/app/data/access/access_audit.db`, and PEM material under `/app/data/authorities/` and `/app/data/leaves/`. `/app/operator_handbook/` defines warrant honouring, custodian-window signing reconciliation, exposure containment, and every output artifact. Grading reconciles additional SIGN events of the same schema from a held-out journal shard when present.
+Read the bundle from the first argument, defaulting to /app/data, and atomically
+replace the CSV at the second argument, defaulting to
+/app/outputs/results.csv. The complete validation, numerical, portfolio,
+selection, certificate, and audit contract is in
+/app/docs/OUTPUT-CONTRACT.md.
 
-A clean run leaves seven files in `/app/output`: `remediated_trust_store.db`, `remediation.sql`, `remediated.policy`, `access_evidence.tsv`, `signing_reconcile.tsv`, `certificate_decisions.tsv` and `audit_receipt.txt`. If the policy's chain depth bounds contradict each other, exit non-zero with only `remediated.policy` and its rejection trailer written. A binary older than its sources will not be accepted. Go and its runtime dependencies are installed system-wide.
+Derive all results from the supplied bundle. Hidden bundles vary labels,
+geometry, time scale, switching strength, support boundaries, and influential
+cluster pairs. Results must be deterministic and representation-invariant.
+Reject malformed bundles without creating or replacing the destination.
+Internet access is unavailable; only base R is guaranteed.
