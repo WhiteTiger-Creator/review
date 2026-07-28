@@ -1,513 +1,282 @@
-import subprocess
+"""Verifier for the calibrated purchase-intent task.
+
+Grades the agent's held-out probabilities against a reference model refit on the
+active data file, globally and within each engagement band (low ProductRelated
+<= 7, med 8..20, high >= 21), on discrimination (ROC-AUC, PR-AUC), Brier score,
+and calibration-in-the-large (per band and overall). Held-out labels live in
+/tests/labels.csv, never in the agent-visible data.
+"""
+
+import json
+import os
 from pathlib import Path
 
-APP = Path("/app")
-ADMIN = APP / "usr/sbin/site-admin"
-ACTIVATE = APP / "usr/sbin/site-activate"
+import numpy as np
+import pandas as pd
+import pytest
+from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
+
+OUT = Path(os.environ.get("AGENT_OUTPUT_DIR", "/app/environment/outputs"))
+DATA = Path(os.environ.get("RAW_DATA_DIR", "/app/environment/data"))
+LABELS = Path(os.environ.get("LABELS_PATH", "/tests/labels.csv"))
+SRC = Path(os.environ.get("AGENT_SOURCE", "/app/environment/analysis.R"))
+
+DATAFILE = "online_shoppers.csv"
+NUMS = [
+    "Administrative",
+    "Administrative_Duration",
+    "Informational",
+    "Informational_Duration",
+    "ProductRelated",
+    "ProductRelated_Duration",
+    "BounceRates",
+    "ExitRates",
+    "PageValues",
+    "SpecialDay",
+]
+CATS = [
+    "OperatingSystems",
+    "Browser",
+    "Region",
+    "TrafficType",
+    "VisitorType",
+    "Weekend",
+]
+BAND_NAMES = ["low", "med", "high"]
+# Global discrimination bar. The reference is a gradient-boosted model; a plain
+# base-R glm tops out ~0.02 ROC-AUC below it, so this tolerance requires the agent
+# to match the boosted reference's ranking (a from-scratch boosted/ensemble model
+# in base R), not just fit a logistic regression.
+AUC_TOL = 0.015
+PR_TOL = 0.060
+BRIER_MULT = 1.00
+BAND_AUC_TOL = 0.060
+# Band calibration-in-the-large tolerance. The only labeled window on the target
+# regime is the 600-row pilot; a band there holds ~130-320 labeled rows, so the
+# band purchase rate carries roughly 0.03-0.04 of sampling noise as an estimate of
+# the held-out band rate, and the deterministically subsampled variant widens that
+# gap to ~0.07 in the med band. The tolerance must clear that irreducible
+# proxy-vs-held-out gap so a sound shift-adapted fit passes on every variant, while
+# staying well under the >=0.10 low/high-band miss that a mis-adapted fit incurs.
+CAL_TOL = 0.09
+# Overall (global) calibration-in-the-large tolerance: the mean prediction over
+# all unscored rows must track the overall held-out purchase rate. Looser than a
+# single band because it aggregates the whole test set.
+GLOBAL_CAL_TOL = 0.04
 
 
-def write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+def _bands(pr):
+    p = np.asarray(pr, dtype=float)
+    return np.where(p >= 21, "high", np.where(p >= 8, "med", "low"))
 
 
-def make_state(tmp_path: Path, *, pending: str = "drop:retired/link\n") -> Path:
-    root = tmp_path / "target"
-    write(root / "payload/alpha.txt", "alpha payload\n")
-    write(root / "payload/nested/beta.txt", "nested payload\n")
-    write(root / "namespace/retired/link", "old namespace entry\n")
-    write(root / ".site/busy", "0\n")
-    write(root / ".site/sequence", "0\n")
-    write(root / ".site/pending", pending)
-    write(root / ".site/events", "")
-    write(root / ".site/status", "prepared\n")
-    write(root / ".site/ready", "")
-    write(root / ".site/account", "count=99\nfingerprint=stale\ngeneration=1\n")
-    return root
+@pytest.fixture(scope="module")
+def labels():
+    d = pd.read_csv(LABELS)
+    return dict(zip(d["row_id"].astype(int), d["target"].astype(int), strict=False))
 
 
-def events_text(root: Path) -> str:
-    path = root / ".site/events"
-    if not path.exists():
-        return ""
-    return path.read_text()
+@pytest.fixture(scope="module")
+def preds():
+    return pd.read_csv(OUT / "predictions.csv")
 
 
-def assert_no_noted_residue(root: Path) -> None:
-    for line in events_text(root).splitlines():
-        if not line.startswith("noted="):
-            continue
-        relative = line.split("=", 1)[1]
-        assert not (root / "namespace" / relative).exists()
+@pytest.fixture(scope="module")
+def metrics():
+    return json.loads((OUT / "metrics.json").read_text())
 
 
-def run(entry: Path, root: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [str(entry), str(root)],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-
-def run_core(action: str, root: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["/app/bin/site-core", action, str(root)],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-
-def payload_snapshot(root: Path) -> dict[str, bytes]:
-    result = {}
-    for path in sorted((root / "payload").rglob("*")):
-        if path.is_file():
-            result[path.relative_to(root / "payload").as_posix()] = path.read_bytes()
-    return result
-
-
-def payload_fingerprint(root: Path) -> str:
-    """Independent FNV-1a over sorted relative paths and file bytes."""
-    value = 1469598103934665603
-    for path in sorted((root / "payload").rglob("*")):
-        if path.is_file():
-            relative = path.relative_to(root / "payload").as_posix().encode()
-            for byte in relative + path.read_bytes():
-                value ^= byte
-                value = (value * 1099511628211) & 0xFFFFFFFFFFFFFFFF
-    return f"{value:016x}"
-
-
-def read_account(root: Path) -> dict[str, str]:
-    return dict(
-        line.split("=", 1)
-        for line in (root / ".site/account").read_text().splitlines()
-        if "=" in line
-    )
-
-
-def assert_serviceable(root: Path, before: dict[str, bytes]) -> None:
-    account = read_account(root)
-    assert (root / ".site/pending").read_text() == ""
-    assert (root / ".site/ready").read_text() == "1\n"
-    assert (root / ".site/status").read_text() == "published\n"
-    assert account["count"] == str(len(before))
-    assert account["fingerprint"] == payload_fingerprint(root)
-    assert int(account["generation"]) >= 0
-    assert payload_snapshot(root) == before
-    assert_no_noted_residue(root)
-    assert "noted=" not in events_text(root)
-
-
-def snapshot(root: Path) -> dict[str, bytes]:
+@pytest.fixture(scope="module")
+def oracle(labels):
+    df = pd.read_csv(DATA / DATAFILE)
+    assert "row_id" in df.columns, "row_id column missing from data file"
+    lab = df["target"].notna()
+    train = df.loc[lab].reset_index(drop=True)
+    test = df.loc[~lab].reset_index(drop=True)
+    ytr = train["target"].astype(int).to_numpy()
+    y_true = np.array([labels[int(r)] for r in test["row_id"]])
+    cols = [(c, False) for c in NUMS] + [(c, True) for c in CATS]
+    Xtr = np.empty((len(train), len(cols)))
+    Xte = np.empty((len(test), len(cols)))
+    mask = []
+    for j, (c, is_cat) in enumerate(cols):
+        if is_cat:
+            levels = sorted(df[c].astype(str).unique())
+            m = {v: i for i, v in enumerate(levels)}
+            Xtr[:, j] = train[c].astype(str).map(m).to_numpy()
+            Xte[:, j] = test[c].astype(str).map(m).to_numpy()
+        else:
+            Xtr[:, j] = train[c].astype(float).to_numpy()
+            Xte[:, j] = test[c].astype(float).to_numpy()
+        mask.append(is_cat)
+    fm = HistGradientBoostingClassifier(
+        random_state=42,
+        max_iter=300,
+        learning_rate=0.08,
+        categorical_features=mask,
+    ).fit(Xtr, ytr)
+    pte = fm.predict_proba(Xte)[:, 1]
+    band = _bands(test["ProductRelated"])
+    per_band = {}
+    for g in BAND_NAMES:
+        m = band == g
+        per_band[g] = {
+            "auc": roc_auc_score(y_true[m], pte[m]),
+            "brier": brier_score_loss(y_true[m], pte[m]),
+            "base_rate": float(y_true[m].mean()),
+            "n": int(m.sum()),
+        }
+    n_pilot = int((train["domain"].astype(str) == "target").sum())
     return {
-        path.relative_to(root).as_posix(): path.read_bytes()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
+        "n_train": int(lab.sum()),
+        "n_pilot": n_pilot,
+        "n_test": int((~lab).sum()),
+        "test_ids": {int(r) for r in test["row_id"]},
+        "auc": roc_auc_score(y_true, pte),
+        "ap": average_precision_score(y_true, pte),
+        "brier": brier_score_loss(y_true, pte),
+        "per_band": per_band,
+        "bands": dict(zip(test["row_id"].astype(int), band, strict=False)),
     }
 
 
-def observed_text(root: Path) -> str:
-    """Match site-core scan output for the live payload tree."""
-    paths = sorted(
-        path.relative_to(root / "payload").as_posix()
-        for path in (root / "payload").rglob("*")
-        if path.is_file()
-    )
-    lines = [
-        f"count={len(paths)}",
-        f"fingerprint={payload_fingerprint(root)}",
-        *[f"path={path}" for path in paths],
-        "",
-    ]
-    return "\n".join(lines)
+@pytest.fixture(scope="module")
+def merged(preds, labels, oracle):
+    m = preds.copy()
+    m["row_id"] = m["row_id"].astype(int)
+    m["target"] = m["row_id"].map(labels)
+    m["band"] = m["row_id"].map(oracle["bands"])
+    return m.dropna(subset=["target"])
 
 
-def make_clean(root: Path) -> None:
-    (root / ".site/pending").write_text("")
-    (root / ".site/events").write_text("")
-    if (root / "namespace/retired/link").exists():
-        (root / "namespace/retired/link").unlink()
-    write(
-        root / ".site/account",
-        "\n".join(
-            [
-                "count=2",
-                f"fingerprint={payload_fingerprint(root)}",
-                "generation=1",
-                "",
-            ]
-        ),
-    )
-    write(root / ".site/observed", observed_text(root))
-    (root / ".site/status").write_text("published\n")
-    (root / ".site/ready").write_text("1\n")
+class TestArtifacts:
+    def test_predictions_exist(self):
+        assert (OUT / "predictions.csv").is_file()
+
+    def test_metrics_schema(self, metrics):
+        expected = {
+            "n_train",
+            "n_pilot",
+            "n_test",
+            "n_test_low",
+            "n_test_med",
+            "n_test_high",
+            "n_bands",
+        }
+        assert set(metrics) == expected
+        for k, v in metrics.items():
+            assert isinstance(v, str), f"metrics value {k} must be a quoted string"
+
+    def test_n_bands(self, metrics):
+        assert int(metrics["n_bands"]) == len(BAND_NAMES)
 
 
-def highest_matching_generation(root: Path) -> str:
-    scan_fp = payload_fingerprint(root)
-    count = str(len(payload_snapshot(root)))
-    best = -1
-    for name in ("slot-a", "slot-b"):
-        path = root / ".site" / name
-        if not path.exists():
-            continue
-        record = dict(
-            line.split("=", 1) for line in path.read_text().splitlines() if "=" in line
+class TestCoverage:
+    def test_covers_every_test_row(self, preds, oracle):
+        got = set(preds["row_id"].astype(int))
+        assert got == oracle["test_ids"], (
+            "predictions must cover exactly the unscored rows"
         )
-        if record.get("count") != count or record.get("fingerprint") != scan_fp:
-            continue
-        generation = int(record.get("generation", "-1"))
-        best = max(best, generation)
-    assert best >= 0
-    return str(best)
+
+    def test_schema_sorted_unique(self, preds):
+        assert list(preds.columns) == ["row_id", "pred_proba"], (
+            "predictions.csv must have exactly the columns row_id,pred_proba "
+            "(no extra or renamed columns)"
+        )
+        ids = preds["row_id"].astype(int).tolist()
+        assert ids == sorted(ids), "predictions not sorted by row_id"
+        assert len(ids) == len(set(ids)), "duplicate row_id"
+
+    def test_proba_in_unit_interval(self, preds):
+        p = preds["pred_proba"].to_numpy(dtype=float)
+        assert np.isfinite(p).all() and (p >= 0).all() and (p <= 1).all()
+
+    def test_n_train_reported(self, metrics, oracle):
+        assert int(metrics["n_train"]) == oracle["n_train"]
+
+    def test_n_pilot_reported(self, metrics, oracle):
+        assert int(metrics["n_pilot"]) == oracle["n_pilot"]
+
+    def test_n_test_reported(self, metrics, oracle):
+        assert int(metrics["n_test"]) == oracle["n_test"]
+
+    def test_band_counts_reported(self, metrics, oracle):
+        for key, band in [
+            ("n_test_low", "low"),
+            ("n_test_med", "med"),
+            ("n_test_high", "high"),
+        ]:
+            assert int(metrics[key]) == oracle["per_band"][band]["n"], (
+                f"{key} does not match the unscored count in the {band} band"
+            )
+
+    def test_band_counts_sum_to_n_test(self, metrics):
+        parts = (
+            int(metrics["n_test_low"])
+            + int(metrics["n_test_med"])
+            + int(metrics["n_test_high"])
+        )
+        assert parts == int(metrics["n_test"]), (
+            "per-band unscored counts do not sum to n_test"
+        )
 
 
-def test_alpha(tmp_path: Path) -> None:
-    """Manual entry completes deferred namespace work."""
-    root = make_state(tmp_path)
-    before = payload_snapshot(root)
-    run(ADMIN, root)
-    assert_serviceable(root, before)
-    assert not (root / "namespace/retired/link").exists()
+class TestGlobalDiscrimination:
+    def test_auc_near_reference(self, merged, oracle):
+        auc = roc_auc_score(
+            merged["target"].to_numpy(int), merged["pred_proba"].to_numpy(float)
+        )
+        assert auc >= oracle["auc"] - AUC_TOL, (
+            f"held-out AUC {auc:.4f} below reference {oracle['auc']:.4f} - {AUC_TOL}"
+        )
+
+    def test_pr_auc_near_reference(self, merged, oracle):
+        ap = average_precision_score(
+            merged["target"].to_numpy(int), merged["pred_proba"].to_numpy(float)
+        )
+        assert ap >= oracle["ap"] - PR_TOL, (
+            f"held-out PR-AUC {ap:.4f} below reference {oracle['ap']:.4f} - {PR_TOL}"
+        )
+
+    def test_brier_not_worse_than_reference(self, merged, oracle):
+        brier = brier_score_loss(
+            merged["target"].to_numpy(int), merged["pred_proba"].to_numpy(float)
+        )
+        assert brier <= oracle["brier"] * BRIER_MULT, (
+            f"held-out Brier {brier:.5f} worse than reference {oracle['brier']:.5f}"
+        )
+
+    def test_global_calibration_in_the_large(self, merged):
+        gap = abs(float(merged["pred_proba"].mean()) - float(merged["target"].mean()))
+        assert gap <= GLOBAL_CAL_TOL, (
+            f"overall mean prediction is {gap:.4f} away from the overall held-out "
+            "purchase rate; predictions are not globally calibrated to the target "
+            "regime"
+        )
 
 
-def test_beta(tmp_path: Path) -> None:
-    """Stale accounting converges without payload loss."""
-    root = make_state(tmp_path, pending="")
-    before = payload_snapshot(root)
-    run(ADMIN, root)
-    assert_serviceable(root, before)
+class TestBandCalibration:
+    @pytest.mark.parametrize("band", BAND_NAMES)
+    def test_band_auc_floor(self, merged, oracle, band):
+        group = merged[merged["band"] == band]
+        ref = oracle["per_band"][band]
+        auc = roc_auc_score(
+            group["target"].to_numpy(int), group["pred_proba"].to_numpy(float)
+        )
+        assert auc >= ref["auc"] - BAND_AUC_TOL, (
+            f"{band}-band AUC {auc:.4f} below reference "
+            f"{ref['auc']:.4f} - {BAND_AUC_TOL}; the ranking does not hold up "
+            "within this engagement band"
+        )
 
-
-def test_gamma(tmp_path: Path) -> None:
-    """Publication residue cannot stand in for serviceability."""
-    root = make_state(tmp_path)
-    write(root / ".site/ready", "1\n")
-    before = payload_snapshot(root)
-    run(ADMIN, root)
-    assert_serviceable(root, before)
-    assert not (root / "namespace/retired/link").exists()
-
-
-def test_delta(tmp_path: Path) -> None:
-    """An early interruption can be reconstructed."""
-    root = make_state(tmp_path)
-    (root / ".site/account").unlink()
-    before = payload_snapshot(root)
-    run(ADMIN, root)
-    assert_serviceable(root, before)
-    assert not (root / "namespace/retired/link").exists()
-
-
-def test_epsilon(tmp_path: Path) -> None:
-    """Competing durable candidates resolve to the newer matching generation."""
-    root = make_state(tmp_path, pending="")
-    fingerprint = payload_fingerprint(root)
-    write(
-        root / ".site" / "slot-a",
-        "\n".join(
-            [
-                "count=2",
-                f"fingerprint={fingerprint}",
-                "generation=11",
-                "",
-            ]
-        ),
-    )
-    write(
-        root / ".site" / "slot-b",
-        "\n".join(
-            [
-                "count=2",
-                f"fingerprint={fingerprint}",
-                "generation=4",
-                "",
-            ]
-        ),
-    )
-    expected_generation = highest_matching_generation(root)
-    before = payload_snapshot(root)
-    run(ADMIN, root)
-    assert_serviceable(root, before)
-    assert read_account(root)["generation"] == expected_generation
-    assert expected_generation == "11"
-
-
-def test_zeta(tmp_path: Path) -> None:
-    """Activation and manual entry converge identically."""
-    manual = make_state(tmp_path / "layout-a")
-    activation = make_state(tmp_path / "layout-b")
-    manual_payload = payload_snapshot(manual)
-    activation_payload = payload_snapshot(activation)
-    run(ADMIN, manual)
-    run(ACTIVATE, activation)
-    assert_serviceable(manual, manual_payload)
-    assert_serviceable(activation, activation_payload)
-    assert snapshot(manual) == snapshot(activation)
-
-
-def test_eta(tmp_path: Path) -> None:
-    """Mixed deferred drops and acknowledgements preserve a larger payload tree."""
-    root = make_state(tmp_path)
-    write(root / "payload/archive/gamma.txt", "archived payload\n")
-    write(root / "namespace/retired/second", "retired\n")
-    write(
-        root / ".site/pending",
-        "note:audit/trail\ndrop:retired/link\ndrop:retired/second\n",
-    )
-    before = payload_snapshot(root)
-    run(ADMIN, root)
-    assert_serviceable(root, before)
-    assert not (root / "namespace/retired/link").exists()
-    assert not (root / "namespace/retired/second").exists()
-    assert "kept=audit/trail" in events_text(root)
-    assert "noted=retired/link" not in events_text(root)
-    assert "noted=retired/second" not in events_text(root)
-
-
-def test_theta(tmp_path: Path) -> None:
-    """A successful repeat is byte-stable."""
-    root = make_state(tmp_path)
-    before = payload_snapshot(root)
-    run(ADMIN, root)
-    assert_serviceable(root, before)
-    first = snapshot(root)
-    run(ADMIN, root)
-    assert snapshot(root) == first
-
-
-def test_iota(tmp_path: Path) -> None:
-    """Activation clears an incomplete publication state."""
-    root = make_state(tmp_path)
-    write(root / ".site/ready", "1\n")
-    before = payload_snapshot(root)
-    run(ACTIVATE, root)
-    assert_serviceable(root, before)
-    assert not (root / "namespace/retired/link").exists()
-
-
-def test_kappa(tmp_path: Path) -> None:
-    """An already clean target remains unchanged."""
-    root = make_state(tmp_path)
-    make_clean(root)
-    before = snapshot(root)
-    run(ADMIN, root)
-    assert snapshot(root) == before
-
-
-def test_lambda(tmp_path: Path) -> None:
-    """Malformed durable work fails closed and remains inspectable."""
-    root = make_state(tmp_path, pending="unknown-record\n")
-    before_payload = payload_snapshot(root)
-    result = run(ADMIN, root)
-    assert result.returncode != 0
-    assert (root / ".site/pending").read_text() == "unknown-record\n"
-    assert payload_snapshot(root) == before_payload
-    assert (root / ".site/ready").read_text() != "1\n"
-    inspect = run_core("inspect", root)
-    assert inspect.returncode == 0
-    assert "state=serviceable" not in inspect.stdout
-    assert "pending=yes" in inspect.stdout
-
-
-def test_mu(tmp_path: Path) -> None:
-    """An in-use target is refused without mutation."""
-    root = make_state(tmp_path)
-    write(root / ".site/busy", "1\n")
-    before = snapshot(root)
-    result = run(ADMIN, root)
-    assert result.returncode != 0
-    assert snapshot(root) == before
-
-
-def test_nu(tmp_path: Path) -> None:
-    """Payload content changes must change recorded accounting fingerprints."""
-    root = make_state(tmp_path, pending="")
-    first_before = payload_snapshot(root)
-    run(ADMIN, root)
-    assert_serviceable(root, first_before)
-    first_fp = read_account(root)["fingerprint"]
-
-    write(root / "payload/alpha.txt", "alpha payload mutated\n")
-    write(root / ".site/status", "prepared\n")
-    write(root / ".site/ready", "")
-    write(root / ".site/account", "count=99\nfingerprint=stale\ngeneration=1\n")
-    write(root / ".site/sequence", "3\n")
-    second_before = payload_snapshot(root)
-    expected = payload_fingerprint(root)
-    assert expected != first_fp
-    run(ADMIN, root)
-    assert_serviceable(root, second_before)
-    assert read_account(root)["fingerprint"] == expected
-    assert read_account(root)["fingerprint"] != first_fp
-
-
-def test_xi(tmp_path: Path) -> None:
-    """site-core inspect/check report the same serviceable end state as admin."""
-    root = make_state(tmp_path)
-    before = payload_snapshot(root)
-    run(ADMIN, root)
-    assert_serviceable(root, before)
-    inspect = run_core("inspect", root)
-    assert inspect.returncode == 0
-    assert "root=valid" in inspect.stdout
-    assert "busy=no" in inspect.stdout
-    assert "pending=no" in inspect.stdout
-    assert "account=current" in inspect.stdout
-    assert "state=serviceable" in inspect.stdout
-    check = run_core("check", root)
-    assert check.returncode == 0
-    assert "state=serviceable" in check.stdout
-
-
-def test_omicron(tmp_path: Path) -> None:
-    """Lower-level commit and publish refuse while deferred work remains."""
-    root = make_state(tmp_path)
-    fingerprint = payload_fingerprint(root)
-    write(
-        root / ".site/account",
-        "\n".join(
-            [
-                "count=2",
-                f"fingerprint={fingerprint}",
-                "generation=3",
-                "",
-            ]
-        ),
-    )
-    before = snapshot(root)
-    commit = run_core("commit", root)
-    assert commit.returncode != 0
-    publish = run_core("publish", root)
-    assert publish.returncode != 0
-    assert (root / ".site/pending").read_text() == "drop:retired/link\n"
-    assert (root / ".site/ready").read_text() != "1\n"
-    assert snapshot(root) == before
-
-
-def test_pi(tmp_path: Path) -> None:
-    """Deferred ledger text alone is not enough — namespace side effects must apply."""
-    root = make_state(tmp_path)
-    before = payload_snapshot(root)
-    run(ADMIN, root)
-    assert_serviceable(root, before)
-    assert not (root / "namespace/retired/link").exists()
-    assert (root / ".site/pending").read_text() == ""
-    # A marker-only refresh must not be what produced serviceability.
-    assert (root / ".site/status").read_text() == "published\n"
-
-
-def test_rho(tmp_path: Path) -> None:
-    """Post-replay stale accounting still converges through activation."""
-    root = make_state(tmp_path, pending="")
-    if (root / "namespace/retired/link").exists():
-        (root / "namespace/retired/link").unlink()
-    write(root / ".site/status", "replayed\n")
-    write(root / ".site/ready", "")
-    write(root / ".site/account", "count=99\nfingerprint=stale\ngeneration=1\n")
-    before = payload_snapshot(root)
-    run(ACTIVATE, root)
-    assert_serviceable(root, before)
-
-
-def test_sigma(tmp_path: Path) -> None:
-    """Accounted targets with empty deferred work still need a real publish path."""
-    root = make_state(tmp_path, pending="")
-    if (root / "namespace/retired/link").exists():
-        (root / "namespace/retired/link").unlink()
-    write(
-        root / ".site/account",
-        "\n".join(
-            [
-                "count=2",
-                f"fingerprint={payload_fingerprint(root)}",
-                "generation=5",
-                "",
-            ]
-        ),
-    )
-    write(root / ".site/status", "accounted\n")
-    write(root / ".site/ready", "")
-    write(root / ".site/observed", observed_text(root))
-    before = payload_snapshot(root)
-    run(ACTIVATE, root)
-    assert_serviceable(root, before)
-
-
-def test_tau(tmp_path: Path) -> None:
-    """Publication markers with stale accounting must reconverge on manual entry."""
-    root = make_state(tmp_path, pending="")
-    if (root / "namespace/retired/link").exists():
-        (root / "namespace/retired/link").unlink()
-    write(root / ".site/status", "published\n")
-    write(root / ".site/ready", "1\n")
-    write(root / ".site/account", "count=99\nfingerprint=stale\ngeneration=1\n")
-    write(root / ".site/observed", observed_text(root))
-    before = payload_snapshot(root)
-    run(ADMIN, root)
-    assert_serviceable(root, before)
-
-
-def test_phi(tmp_path: Path) -> None:
-    """Activation must not trust publication markers when accounting drifted."""
-    root = make_state(tmp_path, pending="")
-    if (root / "namespace/retired/link").exists():
-        (root / "namespace/retired/link").unlink()
-    write(root / ".site/status", "published\n")
-    write(root / ".site/ready", "1\n")
-    write(root / ".site/account", "count=99\nfingerprint=stale\ngeneration=7\n")
-    write(root / ".site/observed", observed_text(root))
-    before = payload_snapshot(root)
-    run(ACTIVATE, root)
-    assert_serviceable(root, before)
-
-
-def test_chi(tmp_path: Path) -> None:
-    """Inventory refresh alone is not enough — durable candidates must be staged."""
-    root = make_state(tmp_path, pending="")
-    if (root / "namespace/retired/link").exists():
-        (root / "namespace/retired/link").unlink()
-    write(root / ".site/status", "scanned\n")
-    write(root / ".site/ready", "")
-    write(root / ".site/account", "count=99\nfingerprint=stale\ngeneration=1\n")
-    before = payload_snapshot(root)
-    sync = run_core("sync", root)
-    assert sync.returncode == 0
-    assert not (root / ".site" / "slot-a").exists()
-    assert not (root / ".site" / "slot-b").exists()
-    commit = run_core("commit", root)
-    assert commit.returncode != 0
-    run(ADMIN, root)
-    assert_serviceable(root, before)
-    assert read_account(root)["fingerprint"] == payload_fingerprint(root)
-
-
-def test_psi(tmp_path: Path) -> None:
-    """Acknowledgement-only deferred work must land in the event ledger."""
-    root = make_state(tmp_path, pending="note:audit/trail\n")
-    if (root / "namespace/retired/link").exists():
-        (root / "namespace/retired/link").unlink()
-    before = payload_snapshot(root)
-    run(ADMIN, root)
-    assert_serviceable(root, before)
-    assert "kept=audit/trail" in events_text(root)
-    inspect = run_core("inspect", root)
-    assert "pending=no" in inspect.stdout
-    assert "state=serviceable" in inspect.stdout
-
-
-def test_omega(tmp_path: Path) -> None:
-    """Activation must finish mixed acknowledgement and namespace retirement together."""
-    root = make_state(
-        tmp_path,
-        pending="note:audit/trail\ndrop:retired/link\n",
-    )
-    write(root / ".site/ready", "1\n")
-    before = payload_snapshot(root)
-    run(ACTIVATE, root)
-    assert_serviceable(root, before)
-    assert not (root / "namespace/retired/link").exists()
-    assert "kept=audit/trail" in events_text(root)
-    assert "noted=" not in events_text(root)
+    @pytest.mark.parametrize("band", BAND_NAMES)
+    def test_band_calibration_in_the_large(self, merged, oracle, band):
+        group = merged[merged["band"] == band]
+        ref = oracle["per_band"][band]
+        gap = abs(float(group["pred_proba"].mean()) - ref["base_rate"])
+        assert gap <= CAL_TOL, (
+            f"{band}-band mean prediction is {gap:.4f} away from the band "
+            f"held-out purchase rate {ref['base_rate']:.4f}; probabilities are "
+            "not calibrated to the peak-season regime within this band"
+        )
