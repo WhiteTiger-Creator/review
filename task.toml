@@ -3,21 +3,15 @@ version = "2.0"
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
-difficulty = "medium"
-category = "machine-learning"
-tags = ["rust", "decision-tree", "weighted-learning", "missing-values"]
-expert_time_estimate_min = 180
-junior_time_estimate_min = 720
-codebase_size = "minimal"
-subcategories = []
-languages = ["rust"]
+difficulty = "hard"
+category = "games"
+subcategories = ["tool_specific"]
 number_of_milestones = 0
-
-[verifier]
-timeout_sec = 300.0
-
-[agent]
-timeout_sec = 1800.0
+codebase_size = "small"
+languages = ["go"]
+tags = ["go", "golang", "sky-kingdoms", "fleet-campaign", "deterministic-sim", "terminal-game"]
+expert_time_estimate_min = 300
+junior_time_estimate_min = 900
 
 [environment]
 build_timeout_sec = 600.0
@@ -25,3 +19,9 @@ cpus = 2
 memory_mb = 4096
 storage_mb = 10240
 allow_internet = false
+
+[agent]
+timeout_sec = 1800
+
+[verifier]
+timeout_sec = 450.0
