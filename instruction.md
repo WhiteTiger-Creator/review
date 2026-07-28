@@ -1,5 +1,31 @@
-Win linked fog-chess campaigns by authoring the ordered contingency playbook at /app/work/playbook/strategy.json. The sealed match program relaymatch under /opt/fog-chess-relay runs two-board fog matches with delayed teammate relay drops; the sealed relayplayer applies the first matching rule then fallback. Do not replace the match program or player, and do not inspect protected boards, opponent lines, hidden occupancy, or future transfers.
+Calibrated purchase-probability estimation under a seasonal distribution shift
 
-Checked seats need escape or defensive drops before quiet play. Busy boards with queue room need a ply-bounded teammate request. Full queues need capture suppression before greedy takes. Promotion with room prefers queen; promotion into a full queue prefers knight. Always-quiet, always-capture, and always-request playbooks each fail at least one public family. Durable flags record which contingencies already fired inside a match.
+This is a supervised machine-learning task: train a probabilistic classifier on
+labeled browsing sessions and use it to predict calibrated purchase probabilities
+for unlabeled sessions that come from a different, shifted distribution. It is a
+domain-adaptation and probability-calibration problem, not a lookup or aggregation.
 
-Campaign grammar and thresholds live under /app in chess.txt, fog.txt, relay.txt, scoring.txt, protocol.txt, notation.txt, examples.txt, and doctrine.txt. Each finished generation under /app/output must include summary.json, plies.jsonl, boards.json, visibility.jsonl, relay.jsonl, terminal.json, and bot-diagnostics.json as defined in scoring.txt. Win when protocol_ok is true, scores.team_a meets each public floor in scoring.txt, and long matches record at least one teammate request in plies.jsonl. Identical seeds and playbooks must produce byte-identical generations and remain correct across renamed ids, reflections, color-swaps, and compatible parameters.
+The labeled training sessions (the off-season "source" regime) and the sessions
+you must score (the peak-season "target" regime) come from different
+distributions; purchase behaviour differs between the regimes. Every source
+session is labeled. In the target regime only a small labeled pilot is provided;
+the remaining target sessions have a blank outcome and are the ones you must
+score.
+
+The dataset at /app/environment/data/online_shoppers.csv holds 12330 e-commerce
+sessions: a stable row_id, ten numeric engagement features, six categorical
+context features, a domain indicator, and a binary purchase outcome. The data
+directory's notes and summaries document the columns and the split; derive any
+distributional quantities you need from the data itself.
+
+Your predictions are graded on both discrimination and calibration, within
+engagement bands and overall, against withheld outcomes and a reference model
+refit on the active data. The verifier re-fits and re-scores on several
+deterministically perturbed resamples of the data, so every reported quantity
+must be derived from the data you read, never hardcoded.
+
+A starting template is provided at /app/environment/analysis_template.R. Write
+your solution as /app/environment/analysis.R -- train your model and report the
+per-session probabilities and the summary statistics exactly as specified in
+/app/environment/contracts/output_contract.md. The verifier runs Rscript
+/app/environment/analysis.R.

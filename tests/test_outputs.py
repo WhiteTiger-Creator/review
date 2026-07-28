@@ -1,619 +1,282 @@
-"""Verifier suite for Fog Chess Relay."""
+"""Verifier for the calibrated purchase-intent task.
 
-from __future__ import annotations
+Grades the agent's held-out probabilities against a reference model refit on the
+active data file, globally and within each engagement band (low ProductRelated
+<= 7, med 8..20, high >= 21), on discrimination (ROC-AUC, PR-AUC), Brier score,
+and calibration-in-the-large (per band and overall). Held-out labels live in
+/tests/labels.csv, never in the agent-visible data.
+"""
 
 import json
 import os
-import shutil
-import subprocess
 from pathlib import Path
 
-ROOT = Path("/opt/fog-chess-relay")
-BIN = ROOT / "bin" / "relaymatch"
-BOT = Path("/app/work/playbook")
-OUTPUT = Path("/app/output")
-HIDDEN = Path("/tests/fixtures/hidden")
-APP_REFS = [
-    Path("/app/chess.txt"),
-    Path("/app/fog.txt"),
-    Path("/app/relay.txt"),
-    Path("/app/scoring.txt"),
-    Path("/app/protocol.txt"),
-    Path("/app/notation.txt"),
-    Path("/app/examples.txt"),
-    Path("/app/doctrine.txt"),
+import numpy as np
+import pandas as pd
+import pytest
+from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
+
+OUT = Path(os.environ.get("AGENT_OUTPUT_DIR", "/app/environment/outputs"))
+DATA = Path(os.environ.get("RAW_DATA_DIR", "/app/environment/data"))
+LABELS = Path(os.environ.get("LABELS_PATH", "/tests/labels.csv"))
+SRC = Path(os.environ.get("AGENT_SOURCE", "/app/environment/analysis.R"))
+
+DATAFILE = "online_shoppers.csv"
+NUMS = [
+    "Administrative",
+    "Administrative_Duration",
+    "Informational",
+    "Informational_Duration",
+    "ProductRelated",
+    "ProductRelated_Duration",
+    "BounceRates",
+    "ExitRates",
+    "PageValues",
+    "SpecialDay",
 ]
+CATS = [
+    "OperatingSystems",
+    "Browser",
+    "Region",
+    "TrafficType",
+    "VisitorType",
+    "Weekend",
+]
+BAND_NAMES = ["low", "med", "high"]
+# Global discrimination bar. The reference is a gradient-boosted model; a plain
+# base-R glm tops out ~0.02 ROC-AUC below it, so this tolerance requires the agent
+# to match the boosted reference's ranking (a from-scratch boosted/ensemble model
+# in base R), not just fit a logistic regression.
+AUC_TOL = 0.015
+PR_TOL = 0.060
+BRIER_MULT = 1.00
+BAND_AUC_TOL = 0.060
+# Band calibration-in-the-large tolerance. The only labeled window on the target
+# regime is the 600-row pilot; a band there holds ~130-320 labeled rows, so the
+# band purchase rate carries roughly 0.03-0.04 of sampling noise as an estimate of
+# the held-out band rate, and the deterministically subsampled variant widens that
+# gap to ~0.07 in the med band. The tolerance must clear that irreducible
+# proxy-vs-held-out gap so a sound shift-adapted fit passes on every variant, while
+# staying well under the >=0.10 low/high-band miss that a mis-adapted fit incurs.
+CAL_TOL = 0.09
+# Overall (global) calibration-in-the-large tolerance: the mean prediction over
+# all unscored rows must track the overall held-out purchase rate. Looser than a
+# single band because it aggregates the whole test set.
+GLOBAL_CAL_TOL = 0.04
 
 
-def _run(cmd: list[str], cwd: str | None = None, env: dict | None = None, timeout: int = 180) -> subprocess.CompletedProcess[str]:
-    base = os.environ.copy()
-    if env:
-        base.update(env)
-    return subprocess.run(
-        cmd,
-        cwd=cwd,
-        env=base,
-        text=True,
-        capture_output=True,
-        timeout=timeout,
-        check=False,
-    )
+def _bands(pr):
+    p = np.asarray(pr, dtype=float)
+    return np.where(p >= 21, "high", np.where(p >= 8, "med", "low"))
 
 
-def _isolated_bot(tmp: Path) -> Path:
-    dest = tmp / "playbook"
-    shutil.copytree(BOT, dest)
-    return dest
+@pytest.fixture(scope="module")
+def labels():
+    d = pd.read_csv(LABELS)
+    return dict(zip(d["row_id"].astype(int), d["target"].astype(int), strict=False))
 
 
-def _run_match(position: str | Path, bot_dir: Path, out_root: Path, inject: str = "") -> subprocess.CompletedProcess[str]:
-    out_root.mkdir(parents=True, exist_ok=True)
-    (out_root / "generations").mkdir(parents=True, exist_ok=True)
-    cmd = [
-        str(BIN),
-        "-match",
-        str(position),
-        "-bot",
-        str(bot_dir),
-    ]
-    if inject:
-        cmd.append(f"-inject-fail={inject}")
-    return _run(
-        cmd,
-        env={"FOG_CHESS_ROOT": str(ROOT), "FOG_CHESS_OUTPUT": str(out_root)},
-        timeout=240,
-    )
+@pytest.fixture(scope="module")
+def preds():
+    return pd.read_csv(OUT / "predictions.csv")
 
 
-def _read_json(path: Path) -> dict:
-    return json.loads(path.read_text())
+@pytest.fixture(scope="module")
+def metrics():
+    return json.loads((OUT / "metrics.json").read_text())
 
 
-def _current_gen(out_root: Path) -> Path:
-    cur = (out_root / "current").read_text().strip()
-    return out_root / cur
-
-
-def _normalized_bytes(out_root: Path) -> bytes:
-    gen = _current_gen(out_root)
-    parts = []
-    for name in ("summary.json", "plies.jsonl", "terminal.json"):
-        parts.append((gen / name).read_bytes())
-    return b"".join(parts)
-
-
-def _score_a(out_root: Path) -> int:
-    term = _read_json(_current_gen(out_root) / "terminal.json")
-    return int(term["scores"]["team_a"])
-
-
-def _winner(out_root: Path) -> str:
-    return str(_read_json(_current_gen(out_root) / "terminal.json")["winner"])
-
-
-# ---------------------------------------------------------------------------
-# 3 protected-engine and integrity tests
-# ---------------------------------------------------------------------------
-
-
-def test_protected_binary_and_layout_exist():
-    """Protected relaymatch and relayplayer binaries and asset directories are installed under /opt."""
-    assert BIN.is_file()
-    assert (ROOT / "bin" / "relayplayer").is_file()
-    for rel in ("positions/public", "opponents", "contracts", "notation", "integrity"):
-        assert (ROOT / rel).exists()
-
-
-def test_integrity_manifest_verifies_clean_assets():
-    """Controller asset verification succeeds against the sealed integrity manifest."""
-    proc = _run([str(BIN), "-verify-assets"], env={"FOG_CHESS_ROOT": str(ROOT)})
-    assert proc.returncode == 0, proc.stderr
-    assert "ok" in proc.stdout
-
-
-def test_integrity_rejects_mutated_position_asset(tmp_path: Path):
-    """Mutating a protected public position causes integrity verification to fail."""
-    shadow = tmp_path / "shadow-root"
-    shutil.copytree(ROOT, shadow, ignore=shutil.ignore_patterns("bin"))
-    # binary still needed only as verifier entrypoint; assets come from shadow root
-    target = shadow / "positions" / "public" / "promotion-race.json"
-    data = json.loads(target.read_bytes())
-    data["seed"] = int(data.get("seed", 0)) + 999
-    target.write_text(json.dumps(data, indent=2) + "\n")
-    proc = _run([str(BIN), "-verify-assets"], env={"FOG_CHESS_ROOT": str(shadow)})
-    assert proc.returncode != 0
-    # live protected tree must remain untouched
-    live = _run([str(BIN), "-verify-assets"], env={"FOG_CHESS_ROOT": str(ROOT)})
-    assert live.returncode == 0, live.stderr
-
-
-# ---------------------------------------------------------------------------
-# 6 protocol, fog-secrecy, legality, determinism, and publication tests
-# ---------------------------------------------------------------------------
-
-
-def test_player_reference_documents_are_plain_text():
-    """Player references exist as plain text without markdown heading markers."""
-    for path in APP_REFS:
-        assert path.is_file()
-        text = path.read_text()
-        assert "#" not in text
-        assert "```" not in text
-        assert "\n- " not in text
-
-
-def test_starter_playbook_validates_offline():
-    """Installed contingency playbook validates offline with required fallback grammar."""
-    proc = _run(
-        [str(BIN), "-check-playbook", "-bot", str(BOT)],
-        env={"FOG_CHESS_ROOT": str(ROOT)},
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert "ok" in proc.stdout
-    data = json.loads((BOT / "strategy.json").read_text())
-    assert isinstance(data, dict)
-    assert "fallback" in data
-    assert isinstance(data.get("rules"), list)
-    assert isinstance(data["fallback"], dict)
-    assert data["fallback"].get("action") in {
-        "escape",
-        "capture",
-        "quiet",
-        "drop_near_king",
-        "drop_any",
-        "request",
-        "promote_queen",
-        "promote_knight",
-        "hold",
+@pytest.fixture(scope="module")
+def oracle(labels):
+    df = pd.read_csv(DATA / DATAFILE)
+    assert "row_id" in df.columns, "row_id column missing from data file"
+    lab = df["target"].notna()
+    train = df.loc[lab].reset_index(drop=True)
+    test = df.loc[~lab].reset_index(drop=True)
+    ytr = train["target"].astype(int).to_numpy()
+    y_true = np.array([labels[int(r)] for r in test["row_id"]])
+    cols = [(c, False) for c in NUMS] + [(c, True) for c in CATS]
+    Xtr = np.empty((len(train), len(cols)))
+    Xte = np.empty((len(test), len(cols)))
+    mask = []
+    for j, (c, is_cat) in enumerate(cols):
+        if is_cat:
+            levels = sorted(df[c].astype(str).unique())
+            m = {v: i for i, v in enumerate(levels)}
+            Xtr[:, j] = train[c].astype(str).map(m).to_numpy()
+            Xte[:, j] = test[c].astype(str).map(m).to_numpy()
+        else:
+            Xtr[:, j] = train[c].astype(float).to_numpy()
+            Xte[:, j] = test[c].astype(float).to_numpy()
+        mask.append(is_cat)
+    fm = HistGradientBoostingClassifier(
+        random_state=42,
+        max_iter=300,
+        learning_rate=0.08,
+        categorical_features=mask,
+    ).fit(Xtr, ytr)
+    pte = fm.predict_proba(Xte)[:, 1]
+    band = _bands(test["ProductRelated"])
+    per_band = {}
+    for g in BAND_NAMES:
+        m = band == g
+        per_band[g] = {
+            "auc": roc_auc_score(y_true[m], pte[m]),
+            "brier": brier_score_loss(y_true[m], pte[m]),
+            "base_rate": float(y_true[m].mean()),
+            "n": int(m.sum()),
+        }
+    n_pilot = int((train["domain"].astype(str) == "target").sum())
+    return {
+        "n_train": int(lab.sum()),
+        "n_pilot": n_pilot,
+        "n_test": int((~lab).sum()),
+        "test_ids": {int(r) for r in test["row_id"]},
+        "auc": roc_auc_score(y_true, pte),
+        "ap": average_precision_score(y_true, pte),
+        "brier": brier_score_loss(y_true, pte),
+        "per_band": per_band,
+        "bands": dict(zip(test["row_id"].astype(int), band, strict=False)),
     }
 
 
-def test_match_hides_full_occupancy_from_observations(tmp_path: Path):
-    """Observations never include full-board FEN or hidden occupancy maps."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    proc = _run_match("material-imbalance", bot, out)
-    assert proc.returncode == 0, proc.stderr
-    vis = (_current_gen(out) / "visibility.jsonl").read_text()
-    assert "alpha_fen" not in vis
-    assert "/8/" not in vis  # fen-like ranks
-    for line in vis.splitlines():
-        obj = json.loads(line)
-        assert "visible_squares" in obj
-        assert len(obj["visible_squares"]) <= 64
-
-
-def test_illegal_action_does_not_corrupt_prior_current(tmp_path: Path):
-    """A prior successful generation pointer survives a later injected publication failure."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    first = _run_match("promotion-race", bot, out)
-    assert first.returncode == 0, first.stderr
-    prior = (out / "current").read_text()
-    prior_bytes = _normalized_bytes(out)
-    bad = _run_match("material-imbalance", bot, out, inject="pointer")
-    assert bad.returncode != 0
-    assert (out / "current").read_text() == prior
-    assert _normalized_bytes(out) == prior_bytes
-
-
-def test_determinism_identical_inputs_byte_identical(tmp_path: Path):
-    """Identical engine, position, seed, opponent, and bot yield identical normalized bytes."""
-    bot = _isolated_bot(tmp_path)
-    out1 = tmp_path / "o1"
-    out2 = tmp_path / "o2"
-    a = _run_match("promotion-race", bot, out1)
-    b = _run_match("promotion-race", bot, out2)
-    assert a.returncode == 0 and b.returncode == 0, a.stderr + b.stderr
-    assert _normalized_bytes(out1) == _normalized_bytes(out2)
-
-
-def test_generation_contains_required_artifacts(tmp_path: Path):
-    """Each published generation contains the seven required authoritative record files."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    proc = _run_match("kingside-relay-attack", bot, out)
-    assert proc.returncode == 0, proc.stderr
-    gen = _current_gen(out)
-    for name in (
-        "summary.json",
-        "plies.jsonl",
-        "boards.json",
-        "visibility.jsonl",
-        "relay.jsonl",
-        "terminal.json",
-        "bot-diagnostics.json",
-    ):
-        assert (gen / name).is_file()
-
-
-# ---------------------------------------------------------------------------
-# 11 public relay-chess behavior tests
-# ---------------------------------------------------------------------------
-
-
-def _plies(out_root: Path) -> list[dict]:
-    lines = (_current_gen(out_root) / "plies.jsonl").read_text().splitlines()
-    return [json.loads(line) for line in lines if line.strip()]
-
-
-def _has_action(out_root: Path, action: str) -> bool:
-    return any(p.get("action") == action for p in _plies(out_root))
-
-
-def _has_drop_uci(out_root: Path) -> bool:
-    for p in _plies(out_root):
-        uci = str(p.get("uci", ""))
-        if uci.startswith("drop:") or p.get("action") == "drop":
-            return True
-        if p.get("drop"):
-            return True
-    # drops may be recorded only as uci empty with piece in relay; also scan visibility
-    for line in (_current_gen(out_root) / "visibility.jsonl").read_text().splitlines():
-        pass
-    for p in _plies(out_root):
-        uci = str(p.get("uci", ""))
-        if len(uci) >= 5 and uci[0].isalpha() and uci[1].isdigit() is False:
-            # drop UCI from engine is often "drop:n e4" style via Move.UCI
-            return "drop" in uci
-    return any("drop" in str(p.get("uci", "")) for p in _plies(out_root))
-
-
-def _summary(out_root: Path) -> dict:
-    return _read_json(_current_gen(out_root) / "summary.json")
-
-
-def _accepted(out_root: Path) -> bool:
-    return bool(_summary(out_root).get("accepted"))
-
-
-def test_public_legal_moves_on_both_boards(tmp_path: Path):
-    """Bot produces legal moves on both linked boards during a public match."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    proc = _run_match("kingside-relay-attack", bot, out)
-    assert proc.returncode == 0, proc.stderr
-    boards = {p.get("board") for p in _plies(out) if p.get("board")}
-    assert "alpha" in boards and "beta" in boards
-    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
-    assert diag["protocol_ok"] is True
-    assert diag["bot_faults"] == 0
-    assert diag.get("belief_faults", 0) == 0
-    assert _accepted(out)
-
-
-def test_public_evade_observed_check(tmp_path: Path):
-    """Bot evades check pressure on defensive-drop without hold-in-check faults."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    proc = _run_match("defensive-drop-fog", bot, out)
-    assert proc.returncode == 0, proc.stderr
-    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
-    assert diag["bot_faults"] == 0
-    assert diag["bot_legal_actions"] >= 1
-    assert _summary(out)["reason"] != "hold_in_check"
-    assert _accepted(out)
-
-
-def test_public_rejects_unseen_blocked_capture_assumption(tmp_path: Path):
-    """Bot only plays engine-listed legal moves under material pressure."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    proc = _run_match("material-imbalance", bot, out)
-    assert proc.returncode == 0, proc.stderr
-    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
-    assert diag["protocol_ok"] is True
-    assert diag["bot_faults"] == 0
-    assert _score_a(out) >= 100
-    assert _accepted(out)
-
-
-def test_public_defensive_relay_drop_after_delay(tmp_path: Path):
-    """Bot actually uses a ready relay drop on the defensive-drop public match."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    proc = _run_match("defensive-drop-fog", bot, out)
-    assert proc.returncode == 0, proc.stderr
-    found_ready = False
-    for line in (_current_gen(out) / "visibility.jsonl").read_text().splitlines():
-        obj = json.loads(line)
-        if obj.get("team") == "team_a" and "n" in obj.get("ready_drops", []):
-            found_ready = True
-    assert found_ready
-    assert _has_drop_uci(out) or any(
-        "drop" in str(p) for p in _plies(out)
-    ), "expected a drop action in plies"
-    assert _score_a(out) >= 8
-    assert _accepted(out)
-
-
-def test_public_teammate_request_timing(tmp_path: Path):
-    """Bot emits at least one teammate piece request on a long public match."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    proc = _run_match("kingside-relay-attack", bot, out)
-    assert proc.returncode == 0, proc.stderr
-    assert _has_action(out, "request"), "expected request action in plies"
-    assert _accepted(out)
-
-
-def test_public_sacrifice_prevents_cross_board_mate_net(tmp_path: Path):
-    """Cross-board kingside attack meets acceptance without protocol faults."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    proc = _run_match("kingside-relay-attack", bot, out)
-    assert proc.returncode == 0, proc.stderr
-    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
-    assert diag["bot_faults"] == 0
-    assert _score_a(out) >= 60
-    assert _accepted(out)
-
-
-def test_public_promotion_preserves_relay_needs(tmp_path: Path):
-    """Promotion race promotes and clears the campaign acceptance floor."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    proc = _run_match("promotion-race", bot, out)
-    assert proc.returncode == 0, proc.stderr
-    plies = (_current_gen(out) / "plies.jsonl").read_text()
-    assert any(ch in plies for ch in ("q", "n", "r", "b"))
-    assert _score_a(out) >= 9
-    assert _accepted(out)
-
-
-def test_public_repetition_avoidance_when_behind(tmp_path: Path):
-    """Under material pressure the bot does not idle into a punished repetition."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    proc = _run_match("material-imbalance", bot, out)
-    assert proc.returncode == 0, proc.stderr
-    term = _read_json(_current_gen(out) / "terminal.json")
-    assert "reason" in term
-    if str(term["reason"]).startswith("repetition:"):
-        assert _score_a(out) >= 95
-    else:
-        assert _score_a(out) >= 100
-    assert _accepted(out)
-
-
-def test_public_safe_after_stale_sighting(tmp_path: Path):
-    """Fog sightings appear and belief faults stay zero on defensive-drop."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    proc = _run_match("defensive-drop-fog", bot, out)
-    assert proc.returncode == 0, proc.stderr
-    vis = (_current_gen(out) / "visibility.jsonl").read_text()
-    assert "stale_sightings" in vis
-    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
-    assert diag["bot_faults"] == 0
-    assert diag.get("belief_faults", 0) == 0
-    assert _accepted(out)
-
-
-def test_public_cross_board_mate_priority(tmp_path: Path):
-    """All five public campaigns meet acceptance with a high aggregate score."""
-    bot = _isolated_bot(tmp_path)
-    total = 0
-    floors = {
-        "kingside-relay-attack": 60,
-        "defensive-drop-fog": 8,
-        "promotion-race": 9,
-        "material-imbalance": 100,
-        "queue-pressure": 3,
-    }
-    for name, floor in floors.items():
-        out = tmp_path / f"prio-{name}"
-        proc = _run_match(name, bot, out)
-        assert proc.returncode == 0, proc.stderr
-        assert _read_json(_current_gen(out) / "bot-diagnostics.json")["bot_faults"] == 0
-        assert _score_a(out) >= floor, f"{name}: {_score_a(out)} < {floor}"
-        assert _accepted(out)
-        total += _score_a(out)
-    assert total >= 200
-
-
-def test_public_queue_capacity_and_team_score_reconciliation(tmp_path: Path):
-    """Capacity-one queue-pressure meets floor when capture suppression outranks greed."""
-    out = tmp_path / "out"
-    bot = _isolated_bot(tmp_path)
-    proc = _run_match("queue-pressure", bot, out)
-    assert proc.returncode == 0, proc.stderr
-    term = _read_json(_current_gen(out) / "terminal.json")
-    assert set(term["scores"]) >= {"team_a", "team_b"}
-    summary = _summary(out)
-    assert summary["plies"] >= 1
-    assert int(summary["acceptance_floor"]) == 3
-    assert _score_a(out) >= 3
-    assert summary["accepted"] is True
-    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
-    assert diag["protocol_ok"] is True
-    assert diag["bot_faults"] == 0
-
-
-# ---------------------------------------------------------------------------
-# 12 isolated hidden composite match tests
-# ---------------------------------------------------------------------------
-
-
-def _hidden_match(tmp_path: Path, name: str) -> Path:
-    out = tmp_path / f"out-{name}"
-    bot = _isolated_bot(tmp_path / f"bot-{name}")
-    pos = HIDDEN / f"{name}.json"
-    assert pos.is_file(), name
-    proc = _run_match(pos, bot, out)
-    assert proc.returncode == 0, proc.stderr + proc.stdout
-    return out
-
-
-def test_hidden_wrong_relay_mate(tmp_path: Path):
-    """Hidden: capacity-one wrong-relay seat stays legal and clears its floor."""
-    out = _hidden_match(tmp_path, "wrong_relay_mate")
-    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
-    assert diag["bot_faults"] == 0
-    assert diag.get("belief_faults", 0) == 0
-    assert _score_a(out) >= int(_summary(out)["acceptance_floor"])
-    assert _accepted(out)
-
-
-def test_hidden_unseen_blocker_check(tmp_path: Path):
-    """Hidden: belief-aware defense under check clears acceptance without faults."""
-    out = _hidden_match(tmp_path, "unseen_blocker_check")
-    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
-    assert diag["protocol_ok"] is True
-    assert diag["bot_faults"] == 0
-    assert _accepted(out)
-
-
-def test_hidden_knight_vs_pawn_drop(tmp_path: Path):
-    """Hidden: delayed knight queue yields a drop and clears the campaign floor."""
-    out = _hidden_match(tmp_path, "knight_vs_pawn_drop")
-    relay = (_current_gen(out) / "relay.jsonl").read_text()
-    assert "team_a" in relay
-    assert _has_drop_uci(out) or any("drop" in str(p) for p in _plies(out))
-    assert _accepted(out)
-
-
-def test_hidden_promo_fills_queue(tmp_path: Path):
-    """Hidden: promotion into a full queue prefers knight-safe play and accepts."""
-    out = _hidden_match(tmp_path, "promo_fills_queue")
-    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
-    assert diag["bot_faults"] == 0
-    assert _accepted(out)
-
-
-def test_hidden_repetition_with_attack(tmp_path: Path):
-    """Hidden: continuing attack under repetition pressure clears acceptance."""
-    out = _hidden_match(tmp_path, "repetition_with_attack")
-    term = _read_json(_current_gen(out) / "terminal.json")
-    assert term["reason"]
-    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["bot_faults"] == 0
-    assert _accepted(out)
-
-
-def test_hidden_stale_queen_unsafe(tmp_path: Path):
-    """Hidden: stale queen sightings stay belief-clean and accepted."""
-    out = _hidden_match(tmp_path, "stale_queen_unsafe")
-    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
-    assert diag["bot_faults"] == 0
-    assert diag.get("belief_faults", 0) == 0
-    assert _accepted(out)
-
-
-def test_hidden_renamed_ids_reordered(tmp_path: Path):
-    """Hidden: renamed piece identifiers still clear acceptance."""
-    out = _hidden_match(tmp_path, "renamed_ids_reordered")
-    assert _score_a(out) >= int(_summary(out)["acceptance_floor"])
-    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["protocol_ok"] is True
-    assert _accepted(out)
-
-
-def test_hidden_file_reflected(tmp_path: Path):
-    """Hidden: file-reflected geometry clears acceptance without protocol faults."""
-    out = _hidden_match(tmp_path, "file_reflected")
-    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["protocol_ok"] is True
-    assert _accepted(out)
-
-
-def test_hidden_color_board_swap(tmp_path: Path):
-    """Hidden: color-and-board swapped seating preserves winner and acceptance."""
-    out = _hidden_match(tmp_path, "color_board_swap")
-    term = _read_json(_current_gen(out) / "terminal.json")
-    assert term["winner"] in {"team_a", "team_b", "draw"}
-    assert _accepted(out)
-
-
-def test_hidden_capacity_increase(tmp_path: Path):
-    """Hidden: increased friendly relay capacity keeps transfers legal and accepted."""
-    out = _hidden_match(tmp_path, "capacity_increase")
-    assert _score_a(out) >= int(_summary(out)["acceptance_floor"])
-    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["bot_faults"] == 0
-    assert _accepted(out)
-
-
-def test_hidden_outside_envelope_remove(tmp_path: Path):
-    """Hidden: far enemy outside envelopes still yields accepted observations."""
-    out = _hidden_match(tmp_path, "outside_envelope_remove")
-    vis = (_current_gen(out) / "visibility.jsonl").read_text()
-    assert "visible_squares" in vis
-    assert _accepted(out)
-
-
-def test_hidden_horizon_composite(tmp_path: Path):
-    """Hidden: horizon mate, material, repetition, and points jointly clear acceptance."""
-    out = _hidden_match(tmp_path, "horizon_composite")
-    term = _read_json(_current_gen(out) / "terminal.json")
-    summary = _summary(out)
-    assert "scores" in term and "reason" in term
-    assert summary["determinism"] == "seeded"
-    assert "acceptance_floor" in summary
-    assert _accepted(out)
-
-
-# ---------------------------------------------------------------------------
-# 6 game-native metamorphic tests
-# ---------------------------------------------------------------------------
-
-
-def test_metamorphic_piece_id_renaming_preserves_outcome(tmp_path: Path):
-    """Bijective piece-id renaming preserves winner and acceptance for contingency play."""
-    bot = _isolated_bot(tmp_path)
-    base_pos = json.loads((HIDDEN / "renamed_ids_reordered.json").read_text())
-    a = dict(base_pos)
-    a["id"] = "meta-rename-a"
-    a["piece_id_map"] = {}
-    b = dict(base_pos)
-    b["id"] = "meta-rename-b"
-    b["piece_id_map"] = {"alpha-n1": "x1", "beta-n1": "y1"}
-    pa, pb = tmp_path / "a.json", tmp_path / "b.json"
-    pa.write_text(json.dumps(a))
-    pb.write_text(json.dumps(b))
-    out1, out2 = tmp_path / "o1", tmp_path / "o2"
-    r1 = _run_match(pa, bot, out1)
-    r2 = _run_match(pb, bot, out2)
-    assert r1.returncode == 0 and r2.returncode == 0, r1.stderr + r2.stderr
-    assert _winner(out1) == _winner(out2)
-    assert _accepted(out1) and _accepted(out2)
-    assert _score_a(out1) == _score_a(out2)
-
-
-def test_metamorphic_observation_reorder_preserves_legality(tmp_path: Path):
-    """Identical seeds yield byte-identical acceptance outcomes under contingency play."""
-    bot = _isolated_bot(tmp_path)
-    out1, out2 = tmp_path / "o1", tmp_path / "o2"
-    assert _run_match("queue-pressure", bot, out1).returncode == 0
-    assert _run_match("queue-pressure", bot, out2).returncode == 0
-    assert _normalized_bytes(out1) == _normalized_bytes(out2)
-    assert _accepted(out1) and _accepted(out2)
-
-
-def test_metamorphic_file_reflection_preserves_result_class(tmp_path: Path):
-    """File-reflected linked positions preserve winner bucket and acceptance."""
-    out = _hidden_match(tmp_path, "file_reflected")
-    assert _winner(out) in {"team_a", "team_b", "draw"}
-    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["bot_faults"] == 0
-    assert _accepted(out)
-
-
-def test_metamorphic_color_board_swap_preserves_team_outcome_bucket(tmp_path: Path):
-    """Color-and-board swapping yields a valid accepted team outcome bucket."""
-    out = _hidden_match(tmp_path, "color_board_swap")
-    assert _winner(out) in {"team_a", "team_b", "draw"}
-    assert _accepted(out)
-
-
-def test_metamorphic_increased_capacity_keeps_transfers_legal(tmp_path: Path):
-    """Increasing capacity preserves legality and still clears acceptance."""
-    out = _hidden_match(tmp_path, "capacity_increase")
-    diag = _read_json(_current_gen(out) / "bot-diagnostics.json")
-    assert diag["protocol_ok"] is True
-    assert diag["bot_faults"] == 0
-    assert _accepted(out)
-
-
-def test_metamorphic_remove_outside_envelope_enemy_no_effect_class(tmp_path: Path):
-    """Removing an out-of-envelope enemy preserves accepted observation streams."""
-    out = _hidden_match(tmp_path, "outside_envelope_remove")
-    assert (_current_gen(out) / "visibility.jsonl").stat().st_size > 0
-    assert _read_json(_current_gen(out) / "bot-diagnostics.json")["protocol_ok"] is True
-    assert _accepted(out)
-
+@pytest.fixture(scope="module")
+def merged(preds, labels, oracle):
+    m = preds.copy()
+    m["row_id"] = m["row_id"].astype(int)
+    m["target"] = m["row_id"].map(labels)
+    m["band"] = m["row_id"].map(oracle["bands"])
+    return m.dropna(subset=["target"])
+
+
+class TestArtifacts:
+    def test_predictions_exist(self):
+        assert (OUT / "predictions.csv").is_file()
+
+    def test_metrics_schema(self, metrics):
+        expected = {
+            "n_train",
+            "n_pilot",
+            "n_test",
+            "n_test_low",
+            "n_test_med",
+            "n_test_high",
+            "n_bands",
+        }
+        assert set(metrics) == expected
+        for k, v in metrics.items():
+            assert isinstance(v, str), f"metrics value {k} must be a quoted string"
+
+    def test_n_bands(self, metrics):
+        assert int(metrics["n_bands"]) == len(BAND_NAMES)
+
+
+class TestCoverage:
+    def test_covers_every_test_row(self, preds, oracle):
+        got = set(preds["row_id"].astype(int))
+        assert got == oracle["test_ids"], (
+            "predictions must cover exactly the unscored rows"
+        )
+
+    def test_schema_sorted_unique(self, preds):
+        assert list(preds.columns) == ["row_id", "pred_proba"], (
+            "predictions.csv must have exactly the columns row_id,pred_proba "
+            "(no extra or renamed columns)"
+        )
+        ids = preds["row_id"].astype(int).tolist()
+        assert ids == sorted(ids), "predictions not sorted by row_id"
+        assert len(ids) == len(set(ids)), "duplicate row_id"
+
+    def test_proba_in_unit_interval(self, preds):
+        p = preds["pred_proba"].to_numpy(dtype=float)
+        assert np.isfinite(p).all() and (p >= 0).all() and (p <= 1).all()
+
+    def test_n_train_reported(self, metrics, oracle):
+        assert int(metrics["n_train"]) == oracle["n_train"]
+
+    def test_n_pilot_reported(self, metrics, oracle):
+        assert int(metrics["n_pilot"]) == oracle["n_pilot"]
+
+    def test_n_test_reported(self, metrics, oracle):
+        assert int(metrics["n_test"]) == oracle["n_test"]
+
+    def test_band_counts_reported(self, metrics, oracle):
+        for key, band in [
+            ("n_test_low", "low"),
+            ("n_test_med", "med"),
+            ("n_test_high", "high"),
+        ]:
+            assert int(metrics[key]) == oracle["per_band"][band]["n"], (
+                f"{key} does not match the unscored count in the {band} band"
+            )
+
+    def test_band_counts_sum_to_n_test(self, metrics):
+        parts = (
+            int(metrics["n_test_low"])
+            + int(metrics["n_test_med"])
+            + int(metrics["n_test_high"])
+        )
+        assert parts == int(metrics["n_test"]), (
+            "per-band unscored counts do not sum to n_test"
+        )
+
+
+class TestGlobalDiscrimination:
+    def test_auc_near_reference(self, merged, oracle):
+        auc = roc_auc_score(
+            merged["target"].to_numpy(int), merged["pred_proba"].to_numpy(float)
+        )
+        assert auc >= oracle["auc"] - AUC_TOL, (
+            f"held-out AUC {auc:.4f} below reference {oracle['auc']:.4f} - {AUC_TOL}"
+        )
+
+    def test_pr_auc_near_reference(self, merged, oracle):
+        ap = average_precision_score(
+            merged["target"].to_numpy(int), merged["pred_proba"].to_numpy(float)
+        )
+        assert ap >= oracle["ap"] - PR_TOL, (
+            f"held-out PR-AUC {ap:.4f} below reference {oracle['ap']:.4f} - {PR_TOL}"
+        )
+
+    def test_brier_not_worse_than_reference(self, merged, oracle):
+        brier = brier_score_loss(
+            merged["target"].to_numpy(int), merged["pred_proba"].to_numpy(float)
+        )
+        assert brier <= oracle["brier"] * BRIER_MULT, (
+            f"held-out Brier {brier:.5f} worse than reference {oracle['brier']:.5f}"
+        )
+
+    def test_global_calibration_in_the_large(self, merged):
+        gap = abs(float(merged["pred_proba"].mean()) - float(merged["target"].mean()))
+        assert gap <= GLOBAL_CAL_TOL, (
+            f"overall mean prediction is {gap:.4f} away from the overall held-out "
+            "purchase rate; predictions are not globally calibrated to the target "
+            "regime"
+        )
+
+
+class TestBandCalibration:
+    @pytest.mark.parametrize("band", BAND_NAMES)
+    def test_band_auc_floor(self, merged, oracle, band):
+        group = merged[merged["band"] == band]
+        ref = oracle["per_band"][band]
+        auc = roc_auc_score(
+            group["target"].to_numpy(int), group["pred_proba"].to_numpy(float)
+        )
+        assert auc >= ref["auc"] - BAND_AUC_TOL, (
+            f"{band}-band AUC {auc:.4f} below reference "
+            f"{ref['auc']:.4f} - {BAND_AUC_TOL}; the ranking does not hold up "
+            "within this engagement band"
+        )
+
+    @pytest.mark.parametrize("band", BAND_NAMES)
+    def test_band_calibration_in_the_large(self, merged, oracle, band):
+        group = merged[merged["band"] == band]
+        ref = oracle["per_band"][band]
+        gap = abs(float(group["pred_proba"].mean()) - ref["base_rate"])
+        assert gap <= CAL_TOL, (
+            f"{band}-band mean prediction is {gap:.4f} away from the band "
+            f"held-out purchase rate {ref['base_rate']:.4f}; probabilities are "
+            "not calibrated to the peak-season regime within this band"
+        )
