@@ -1,731 +1,430 @@
-"""Behavioral verification for marked Hawkes policy certificates."""
-
-from __future__ import annotations
+"""Behavioral verifier for tag-neighborhood artist classification."""
 
 import csv
-import gzip
-import json
+import hashlib
 import math
 import os
-import random
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
 
-ROOT = Path("/tmp/retail-hawkes-verifier")
-FIXTURES = {
-    "public": Path("/app/data"),
-    "hidden-a": Path("/tests/fixtures/hidden-a"),
-    "hidden-b": Path("/tests/fixtures/hidden-b"),
+ROOT = Path(__file__).resolve().parent
+FIXTURES = ROOT / "fixtures"
+BASE = FIXTURES / "ordered"
+CANDIDATE = Path(os.environ.get("CANDIDATE_PATH", "/tmp/artist_country_classifier"))
+CLASSES = ("DE", "GB", "US")
+QUALITY = {
+    "ordered": (0.58, 1.40),
+    "permuted": (0.58, 1.40),
+    "renamed": (0.58, 1.40),
+    "rotated": (0.52, 1.80),
+    "type_holdout": (0.45, 1.90),
+    "cold_tags": (0.58, 1.40),
 }
-SANDBOX = ("/usr/bin/python3", "/tests/landlock_exec.py")
-CANDIDATE_UID = 65534
-CANDIDATE_GID = 65534
-SCHEMA = [
-    "case_id",
-    "selected_portfolio",
-    "feasible_count",
-    "robust_value",
-    "full_value",
-    "branching_radius",
-    "worst_deletion_radius",
-    "worst_pair_radius",
-    "effective_sample_size",
-    "pair_effective_sample_size",
-    "jackknife_instability",
-    "second_order_instability",
-    "policy_dispersion",
-    "mixture_concentration",
-    "deletion_code",
-    "pair_deletion_code",
-    "audit_signature",
-]
-FLOAT_COLUMNS = {
-    "robust_value",
-    "full_value",
-    "branching_radius",
-    "worst_deletion_radius",
-    "worst_pair_radius",
-    "effective_sample_size",
-    "pair_effective_sample_size",
-    "jackknife_instability",
-    "second_order_instability",
-    "policy_dispersion",
-    "mixture_concentration",
-}
-OBSERVED: dict[str, list[dict[str, str]]] = {}
 
 
-def read_csv(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="", encoding="utf-8") as handle:
-        return list(csv.DictReader(handle))
+def _table(path):
+    with path.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        return list(reader.fieldnames or []), list(reader)
 
 
-def write_csv(
-    path: Path,
-    rows: list[dict[str, str]],
-    fieldnames: list[str] | None = None,
-) -> None:
-    columns = fieldnames or list(rows[0])
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=columns, lineterminator="\n")
+def _write(path, fieldnames, rows):
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
 
 
-def sealed(label: str) -> list[dict[str, str | float]]:
-    with gzip.open(
-        Path("/tests/sealed") / f"{label}.json.gz",
-        "rt",
-        encoding="utf-8",
-    ) as handle:
-        value = json.load(handle)
-    assert isinstance(value, list)
-    assert len(value) == 24
-    return value
+def _stable(text):
+    return int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "big")
 
 
-def candidate_access(path: Path) -> None:
-    for current, directories, files in os.walk(path):
-        os.chown(current, CANDIDATE_UID, CANDIDATE_GID)
-        os.chmod(current, 0o700)
-        for directory in directories:
-            child = Path(current, directory)
-            os.chown(child, CANDIDATE_UID, CANDIDATE_GID)
-            os.chmod(child, 0o700)
-        for filename in files:
-            child = Path(current, filename)
-            os.chown(child, CANDIDATE_UID, CANDIDATE_GID)
-            os.chmod(child, 0o600)
+def _ordered(rows, reverse=False):
+    return sorted(
+        rows,
+        key=lambda row: _stable("|".join(str(value) for value in row.values())),
+        reverse=reverse,
+    )
 
 
-def sandbox_run(
-    run_root: Path,
-    command: list[str],
-    extra_writes: tuple[Path, ...] = (),
-) -> subprocess.CompletedProcess[str]:
-    home = run_root / "home"
-    home.mkdir(mode=0o700, exist_ok=True)
-    candidate_access(run_root)
-    environment = os.environ.copy()
-    environment.update({"HOME": str(home), "TMPDIR": str(home)})
-    write_flags = [
-        item for path in (run_root, *extra_writes) for item in ("--write", str(path))
+def _full_labels():
+    labels = {
+        row["artist_id"]: row["country"] for row in _table(BASE / "train_labels.csv")[1]
+    }
+    labels.update(
+        {
+            row["artist_id"]: row["country"]
+            for row in _table(FIXTURES / "targets.csv")[1]
+        }
+    )
+    return labels
+
+
+def _materialize(name):
+    artist_header, artists = _table(BASE / "artists.csv")
+    tag_header, tags = _table(BASE / "tags.csv")
+    edge_header, edges = _table(BASE / "artist_tags.csv")
+    labels = _full_labels()
+    ids = [row["artist_id"] for row in artists]
+    base_queries = {row["artist_id"] for row in _table(BASE / "queries.csv")[1]}
+
+    if name in {"ordered", "permuted", "renamed", "cold_tags"}:
+        queries = base_queries
+    elif name == "rotated":
+        queries = {artist_id for artist_id in ids if _stable(artist_id) % 4 == 1}
+    elif name == "type_holdout":
+        queries = {
+            row["artist_id"] for row in artists if row["artist_type"] == "Person"
+        }
+    else:
+        raise ValueError(name)
+
+    train_ids = [artist_id for artist_id in ids if artist_id not in queries]
+    assert queries
+    assert {labels[artist_id] for artist_id in train_ids} == set(CLASSES)
+    rename = name == "renamed"
+    artist_mapping = {
+        artist_id: (
+            f"artist-{position:04x}-{hashlib.sha256(artist_id.encode()).hexdigest()[:10]}"
+            if rename
+            else artist_id
+        )
+        for position, artist_id in enumerate(sorted(ids, key=_stable))
+    }
+    tag_ids = [row["tag_id"] for row in tags]
+    tag_mapping = {
+        tag_id: (
+            f"tag-{position:04x}-{hashlib.sha256(tag_id.encode()).hexdigest()[:10]}"
+            if rename
+            else tag_id
+        )
+        for position, tag_id in enumerate(sorted(tag_ids, key=_stable))
+    }
+    canonical = {mapped: artist_id for artist_id, mapped in artist_mapping.items()}
+
+    artist_rows = []
+    for row in artists:
+        out = dict(row)
+        out["artist_id"] = artist_mapping[row["artist_id"]]
+        artist_rows.append(out)
+    tag_rows = [{"tag_id": tag_mapping[row["tag_id"]]} for row in tags]
+    edge_rows = [
+        {
+            "artist_id": artist_mapping[row["artist_id"]],
+            "tag_id": tag_mapping[row["tag_id"]],
+        }
+        for row in edges
     ]
-    return subprocess.run(
-        [*SANDBOX, *write_flags, "--", *command],
-        cwd="/tmp",
-        env=environment,
+
+    if name == "cold_tags":
+        for artist_id in sorted(queries):
+            cold = f"query-only-{hashlib.sha256(artist_id.encode()).hexdigest()[:12]}"
+            tag_rows.append({"tag_id": cold})
+            edge_rows.append({"artist_id": artist_mapping[artist_id], "tag_id": cold})
+
+    train_rows = [
+        {"artist_id": artist_mapping[artist_id], "country": labels[artist_id]}
+        for artist_id in train_ids
+    ]
+    query_rows = [{"artist_id": artist_mapping[artist_id]} for artist_id in queries]
+    if name != "ordered":
+        artist_rows = _ordered(artist_rows, reverse=True)
+        tag_rows = _ordered(tag_rows)
+        edge_rows = _ordered(edge_rows, reverse=True)
+        train_rows = _ordered(train_rows, reverse=True)
+        query_rows = _ordered(query_rows)
+
+    root = Path(tempfile.mkdtemp(prefix=f"artist-{name}-"))
+    data = root / "data"
+    data.mkdir()
+    _write(data / "artists.csv", artist_header, artist_rows)
+    _write(data / "tags.csv", tag_header, tag_rows)
+    _write(data / "artist_tags.csv", edge_header, edge_rows)
+    _write(data / "train_labels.csv", ["artist_id", "country"], train_rows)
+    _write(data / "queries.csv", ["artist_id"], query_rows)
+    root.chmod(0o755)
+    data.chmod(0o755)
+    for path in data.iterdir():
+        path.chmod(0o644)
+
+    targets = {artist_mapping[artist_id]: labels[artist_id] for artist_id in queries}
+    return root, data, targets, canonical
+
+
+def _tree_digest(path):
+    digest = hashlib.sha256()
+    for item in sorted(path.iterdir()):
+        digest.update(item.name.encode())
+        digest.update(item.read_bytes())
+    return digest.hexdigest()
+
+
+def _invoke(data):
+    parent = Path(tempfile.mkdtemp(prefix="artist-output-"))
+    parent.chmod(0o777)
+    output = parent / "output"
+    env = dict(os.environ)
+    env.update(
+        {
+            "DATA_PATH": str(data),
+            "OUTPUT_PATH": str(output),
+            "HOME": "/tmp",
+            "TMPDIR": "/tmp",
+        }
+    )
+    proc = subprocess.run(
+        [
+            "/usr/bin/setpriv",
+            "--reuid=65534",
+            "--regid=65534",
+            "--clear-groups",
+            str(CANDIDATE),
+        ],
+        env=env,
         capture_output=True,
-        check=False,
         text=True,
-        timeout=300,
+        timeout=40,
+        check=False,
     )
+    return parent, output, proc
 
 
-def compare_rows(
-    actual: list[dict[str, str]],
-    target: list[dict[str, str | float]],
-) -> None:
-    assert actual
-    assert list(actual[0]) == SCHEMA
-    assert len(actual) == len(target)
-    for actual_row, target_row in zip(actual, target, strict=True):
-        assert set(actual_row) == set(target_row)
-        for column in SCHEMA:
-            if column in FLOAT_COLUMNS:
-                observed = float(actual_row[column])
-                reference = float(target_row[column])
-                assert math.isfinite(observed)
-                assert math.isclose(
-                    observed,
-                    reference,
-                    rel_tol=2e-6,
-                    abs_tol=2e-6,
-                ), (actual_row["case_id"], column, observed, reference)
-            else:
-                assert actual_row[column] == str(target_row[column])
-
-
-def run_bundle(
-    label: str,
-    source: Path,
-    expected_label: str,
-    mutate=None,
-    expect_success: bool = True,
-    stale_output: bytes | None = None,
-) -> tuple[list[dict[str, str]], Path, subprocess.CompletedProcess[str]]:
-    run_root = ROOT / label
-    if run_root.exists():
-        shutil.rmtree(run_root)
-    run_root.mkdir(mode=0o700)
-    data_root = run_root / "input"
-    shutil.copytree(source, data_root)
-    if mutate:
-        mutate(data_root)
-    output = run_root / "results.csv"
-    if stale_output is not None:
-        output.write_bytes(stale_output)
-    completed = sandbox_run(
-        run_root,
-        ["/app/run.sh", str(data_root), str(output)],
-    )
-    if not expect_success:
-        return [], output, completed
-    assert completed.returncode == 0, completed.stderr
-    assert output.exists()
-    result = read_csv(output)
-    compare_rows(result, sealed(expected_label))
-    return result, output, completed
-
-
-def observed_profile(label: str) -> list[dict[str, str]]:
-    if label not in OBSERVED:
-        rows, _, _ = run_bundle(label, FIXTURES[label], label)
-        OBSERVED[label] = rows
-    return OBSERVED[label]
-
-
-@pytest.fixture(scope="session", autouse=True)
-def clean_workspace():
-    """Reset scratch space and prove verifier references are candidate-invisible."""
-    if ROOT.exists():
-        shutil.rmtree(ROOT)
-    ROOT.mkdir(parents=True, mode=0o700)
-    os.chown(ROOT, CANDIDATE_UID, CANDIDATE_GID)
-    probe = ROOT / "reference-probe"
-    probe.mkdir(mode=0o700)
-    protected = [
-        "/tests/test_outputs.py",
-        "/tests/sealed/public.json.gz",
-        "/tests/fixtures/hidden-a/cases.csv",
-        "/solution/estimate.R",
-    ]
-    shell = " ".join(f'"{path}"' for path in protected)
-    command = (
-        f"for path in {shell}; do "
-        'if head -c 1 "$path" >/dev/null 2>&1; then exit 41; fi; '
-        "done"
-    )
-    completed = sandbox_run(probe, ["/bin/sh", "-c", command])
-    assert completed.returncode == 0, completed.stderr
-
-
-def test_candidate_reference_isolation(clean_workspace):
-    """Prevent candidates from reading tests, sealed results, or solution files."""
-    assert clean_workspace is None
-
-
-@pytest.mark.parametrize("profile", ["public", "hidden-a", "hidden-b"])
-@pytest.mark.parametrize("case_number", range(24))
-def test_semantic_case(profile: str, case_number: int):
-    """Check every field of each independent public and hidden semantic case."""
-    actual = observed_profile(profile)
-    target = sealed(profile)
-    compare_rows([actual[case_number]], [target[case_number]])
-
-
-def permute_rows_and_columns(data_root: Path) -> None:
-    rows = read_csv(data_root / "records.csv")
-    random.Random(736_291).shuffle(rows)
-    write_csv(data_root / "records.csv", rows, list(reversed(rows[0])))
-
-
-def translate_time_and_cluster(data_root: Path) -> None:
-    rows = read_csv(data_root / "records.csv")
-    cluster_map = {"0": "83", "1": "11", "2": "47", "3": "29"}
-    for row in rows:
-        row["cluster"] = cluster_map[row["cluster"]]
-        row["t"] = str(int(row["t"]) + 1009)
-    write_csv(data_root / "records.csv", rows)
-
-
-def scale_time_decay_and_horizon(data_root: Path) -> None:
-    records = read_csv(data_root / "records.csv")
-    for row in records:
-        row["t"] = str(2 * int(row["t"]))
-    write_csv(data_root / "records.csv", records)
-    cases = read_csv(data_root / "cases.csv")
-    for row in cases:
-        row["alpha"] = format(float(row["alpha"]) / 2, ".15g")
-        row["history_horizon"] = str(2 * int(row["history_horizon"]))
-    write_csv(data_root / "cases.csv", cases)
-
-
-def rescale_probability_gauge(data_root: Path) -> None:
-    rows = read_csv(data_root / "records.csv")
-    for row in rows:
-        row["target_prob"] = format(float(row["target_prob"]) * 0.5, ".15g")
-        row["behavior_prob"] = format(float(row["behavior_prob"]) * 0.5, ".15g")
-    write_csv(data_root / "records.csv", rows)
-
-
-def translate_opaque_identifiers(data_root: Path) -> None:
-    rows = read_csv(data_root / "records.csv")
-    policies = {
-        "P0": "kappa-7",
-        "P1": "alpha-19",
-        "P2": "omega-3",
-        "P3": "beta-41",
-    }
-    clusters = {"0": "307", "1": "101", "2": "401", "3": "211"}
-    for row in rows:
-        row["policy_id"] = policies[row["policy_id"]]
-        row["cluster"] = clusters[row["cluster"]]
-        row["source_id"] = f"src-{row['source_id']}"
-    write_csv(data_root / "records.csv", rows)
-
-
-def scale_rewards_and_costs(data_root: Path) -> None:
-    rows = read_csv(data_root / "records.csv")
-    for row in rows:
-        row["reward"] = format(1.7 * float(row["reward"]), ".15g")
-        row["cost"] = format(1.7 * float(row["cost"]), ".15g")
-    write_csv(data_root / "records.csv", rows)
-
-
-def tighten_horizon_and_ridge(data_root: Path) -> None:
-    cases = read_csv(data_root / "cases.csv")
-    for index, row in enumerate(cases):
-        row["history_horizon"] = str(1 + index % 3)
-        row["ridge"] = format(0.015 + 0.005 * (index % 4), ".15g")
-    write_csv(data_root / "cases.csv", cases)
-
-
-def tighten_pair_constraints(data_root: Path) -> None:
-    cases = read_csv(data_root / "cases.csv")
-    for index, row in enumerate(cases):
-        row["pair_budget"] = format(0.70 + 0.025 * (index % 5), ".15g")
-        row["interaction_limit"] = format(
-            0.02 + 0.015 * (index % 4),
-            ".15g",
-        )
-    write_csv(data_root / "cases.csv", cases)
-
-
-def increase_switching_excitation(data_root: Path) -> None:
-    cases = read_csv(data_root / "cases.csv")
-    for index, row in enumerate(cases):
-        row["switch_gain"] = format(0.12 + 0.04 * (index % 5), ".15g")
-    write_csv(data_root / "cases.csv", cases)
-
-
-def tighten_portfolio_constraints(data_root: Path) -> None:
-    cases = read_csv(data_root / "cases.csv")
-    for index, row in enumerate(cases):
-        row["max_concentration"] = format(
-            0.29 + 0.02 * (index % 4),
-            ".15g",
-        )
-        row["dispersion_limit"] = format(
-            0.35 + 0.12 * (index % 5),
-            ".15g",
-        )
-    write_csv(data_root / "cases.csv", cases)
-
-
-def reorder_cases_and_records(data_root: Path) -> None:
-    cases = read_csv(data_root / "cases.csv")
-    random.Random(81_017).shuffle(cases)
-    write_csv(data_root / "cases.csv", cases)
-    records = read_csv(data_root / "records.csv")
-    random.Random(81_018).shuffle(records)
-    write_csv(data_root / "records.csv", records, list(reversed(records[0])))
-
-
-VARIANTS = [
-    ("permuted", "hidden-a", permute_rows_and_columns),
-    ("translated", "hidden-a", translate_time_and_cluster),
-    ("time-scale", "hidden-a", scale_time_decay_and_horizon),
-    ("probability-gauge", "hidden-a", rescale_probability_gauge),
-    ("opaque-labels", "hidden-b", translate_opaque_identifiers),
-    ("mark-scale", "hidden-b", scale_rewards_and_costs),
-    ("tight-parameters", "hidden-b", tighten_horizon_and_ridge),
-    ("pair-tight", "hidden-b", tighten_pair_constraints),
-    ("switch-stress", "hidden-b", increase_switching_excitation),
-    ("portfolio-tight", "hidden-b", tighten_portfolio_constraints),
-    ("case-order", "hidden-b", reorder_cases_and_records),
-]
-
-
-@pytest.mark.parametrize(("label", "profile", "mutate"), VARIANTS)
-@pytest.mark.parametrize("case_number", range(24))
-def test_variant_semantic_case(
-    label: str,
-    profile: str,
-    mutate,
-    case_number: int,
-):
-    """Check refits on transformed hidden bundles against sealed references."""
-    if label not in OBSERVED:
-        rows, _, _ = run_bundle(label, FIXTURES[profile], label, mutate)
-        OBSERVED[label] = rows
-    compare_rows(
-        [OBSERVED[label][case_number]],
-        [sealed(label)[case_number]],
-    )
-
-
-def test_feasibility_boundaries_are_decision_relevant():
-    """Exercise empty through all-feasible pools across independent profiles."""
-    counts = {
-        int(row["feasible_count"])
-        for profile in FIXTURES
-        for row in observed_profile(profile)
-    }
-    assert 0 in counts
-    assert 1 in counts
-    assert len(counts) >= 10
-    assert max(counts) >= 20
-
-
-def test_nested_certificate_shapes_cover_every_deletion_surface():
-    """Require four nested single deletions and all six ordered cluster pairs."""
-    for profile in FIXTURES:
-        for row in observed_profile(profile):
-            single_tokens = row["deletion_code"].split("|")
-            pair_tokens = row["pair_deletion_code"].split("|")
-            assert len(single_tokens) == 4
-            assert all(len(token.split(":")) == 10 for token in single_tokens)
-            assert len(pair_tokens) == 6
-            assert all(len(token.split(":")) == 7 for token in pair_tokens)
-            pairs = [token.split(":", 1)[0] for token in pair_tokens]
-            components = [
-                tuple(int(value) for value in pair.split("+")) for pair in pairs
+def _evaluate(name, require_quality=True, mutation=None):
+    root, data, targets, canonical = _materialize(name)
+    output_parent = None
+    try:
+        if mutation is not None:
+            mutation(data)
+        before = _tree_digest(data)
+        output_parent, output, proc = _invoke(data)
+        assert proc.returncode == 0, proc.stderr
+        assert output.is_dir()
+        assert sorted(path.name for path in output.iterdir()) == ["predictions.csv"]
+        path = output / "predictions.csv"
+        raw = path.read_bytes()
+        with path.open(newline="") as handle:
+            reader = csv.DictReader(handle)
+            rows = list(reader)
+            assert reader.fieldnames == [
+                "artist_id",
+                "prob_DE",
+                "prob_GB",
+                "prob_US",
+                "predicted_country",
             ]
-            assert all(left < right for left, right in components)
-            assert components == sorted(components)
+        assert rows
+        assert [row["artist_id"] for row in rows] == sorted(targets)
+        assert _tree_digest(data) == before
+
+        correct = {country: [0, 0] for country in set(targets.values())}
+        loss = 0.0
+        probabilities = {}
+        for row in rows:
+            artist_id = row["artist_id"]
+            values = [float(row[f"prob_{country}"]) for country in CLASSES]
+            assert all(math.isfinite(value) and 0.0 <= value <= 1.0 for value in values)
+            assert abs(sum(values) - 1.0) <= 1e-8
+            best = max(range(3), key=lambda position: (values[position], -position))
+            assert row["predicted_country"] == CLASSES[best]
+            truth = targets[artist_id]
+            correct[truth][1] += 1
+            correct[truth][0] += row["predicted_country"] == truth
+            loss -= math.log(max(values[CLASSES.index(truth)], 1e-15))
+            probabilities[canonical[artist_id]] = values
+
+        balanced = sum(hit / total for hit, total in correct.values()) / len(correct)
+        mean_loss = loss / len(rows)
+        if require_quality:
+            minimum_balanced, maximum_loss = QUALITY[name]
+            assert balanced >= minimum_balanced, (name, balanced, mean_loss)
+            assert mean_loss <= maximum_loss, (name, balanced, mean_loss)
+        return {
+            "probabilities": probabilities,
+            "raw": raw,
+            "balanced": balanced,
+            "loss": mean_loss,
+        }
+    finally:
+        shutil.rmtree(root)
+        if output_parent is not None:
+            shutil.rmtree(output_parent)
 
 
-def test_pair_constraints_change_the_robust_decision_surface():
-    """Prove pair risk and interaction limits affect hidden policy decisions."""
-    baseline = observed_profile("hidden-b")
-    if "pair-tight" not in OBSERVED:
-        rows, _, _ = run_bundle(
-            "pair-tight",
-            FIXTURES["hidden-b"],
-            "pair-tight",
-            tighten_pair_constraints,
+def _thin_tag_edges(data):
+    path = data / "artist_tags.csv"
+    header, rows = _table(path)
+    grouped = {}
+    for row in rows:
+        grouped.setdefault(row["artist_id"], []).append(row)
+    kept = []
+    for artist_rows in grouped.values():
+        kept.append(artist_rows[0])
+        kept.extend(
+            row for position, row in enumerate(artist_rows[1:], 1) if position % 3
         )
-        OBSERVED["pair-tight"] = rows
-    transformed = OBSERVED["pair-tight"]
-    changed = sum(
-        actual["selected_portfolio"] != reference["selected_portfolio"]
-        or actual["feasible_count"] != reference["feasible_count"]
-        or not math.isclose(
-            float(actual["robust_value"]),
-            float(reference["robust_value"]),
-            rel_tol=2e-6,
-            abs_tol=2e-6,
-        )
-        for actual, reference in zip(transformed, baseline, strict=True)
-    )
-    assert changed >= 12
+    _write(path, header, kept)
 
 
-def test_switching_excitation_changes_portfolio_dynamics():
-    """Make nonlinear cross-policy excitation decisive on hidden portfolios."""
-    baseline = observed_profile("hidden-b")
-    if "switch-stress" not in OBSERVED:
-        rows, _, _ = run_bundle(
-            "switch-stress",
-            FIXTURES["hidden-b"],
-            "switch-stress",
-            increase_switching_excitation,
-        )
-        OBSERVED["switch-stress"] = rows
-    transformed = OBSERVED["switch-stress"]
-    changed = sum(
-        actual["selected_portfolio"] != reference["selected_portfolio"]
-        or not math.isclose(
-            float(actual["branching_radius"]),
-            float(reference["branching_radius"]),
-            rel_tol=2e-6,
-            abs_tol=2e-6,
-        )
-        for actual, reference in zip(transformed, baseline, strict=True)
-    )
-    assert changed >= 18
+def _append_unknown_artist_edge(data):
+    path = data / "artist_tags.csv"
+    tag_id = path.read_text().splitlines()[1].split(",")[1]
+    with path.open("a") as handle:
+        handle.write(f"missing-artist,{tag_id}\n")
 
 
-def test_portfolio_constraints_change_feasible_search():
-    """Make concentration and fitted-policy dispersion decision relevant."""
-    baseline = observed_profile("hidden-b")
-    if "portfolio-tight" not in OBSERVED:
-        rows, _, _ = run_bundle(
-            "portfolio-tight",
-            FIXTURES["hidden-b"],
-            "portfolio-tight",
-            tighten_portfolio_constraints,
-        )
-        OBSERVED["portfolio-tight"] = rows
-    transformed = OBSERVED["portfolio-tight"]
-    changed = sum(
-        actual["selected_portfolio"] != reference["selected_portfolio"]
-        or actual["feasible_count"] != reference["feasible_count"]
-        for actual, reference in zip(transformed, baseline, strict=True)
-    )
-    assert changed >= 12
+def _append_unknown_tag_edge(data):
+    path = data / "artist_tags.csv"
+    artist_id = path.read_text().splitlines()[1].split(",")[0]
+    with path.open("a") as handle:
+        handle.write(f"{artist_id},missing-tag\n")
 
 
-def test_invariant_surfaces_preserve_exact_certificate():
-    """Require irrelevant gauges to preserve decisions and tolerated numerics."""
-    baseline = observed_profile("hidden-a")
-    invariants = {
-        "permuted": permute_rows_and_columns,
-        "time-scale": scale_time_decay_and_horizon,
-        "probability-gauge": rescale_probability_gauge,
-    }
-    for label, mutate in invariants.items():
-        if label not in OBSERVED:
-            rows, _, _ = run_bundle(
-                label,
-                FIXTURES["hidden-a"],
-                label,
-                mutate,
+def _append_duplicate_edge(data):
+    path = data / "artist_tags.csv"
+    first = path.read_text().splitlines()[1]
+    with path.open("a") as handle:
+        handle.write(first + "\n")
+
+
+def _duplicate_artist(data):
+    path = data / "artists.csv"
+    first = path.read_text().splitlines()[1]
+    with path.open("a") as handle:
+        handle.write(first + "\n")
+
+
+def _duplicate_tag(data):
+    path = data / "tags.csv"
+    first = path.read_text().splitlines()[1]
+    with path.open("a") as handle:
+        handle.write(first + "\n")
+
+
+def _unknown_query(data):
+    with (data / "queries.csv").open("a") as handle:
+        handle.write("missing-artist\n")
+
+
+def _duplicate_query(data):
+    path = data / "queries.csv"
+    first = path.read_text().splitlines()[1]
+    with path.open("a") as handle:
+        handle.write(first + "\n")
+
+
+def _overlap_split(data):
+    artist_id = (data / "queries.csv").read_text().splitlines()[1]
+    with (data / "train_labels.csv").open("a") as handle:
+        handle.write(f"{artist_id},DE\n")
+
+
+def _remove_training_class(data):
+    path = data / "train_labels.csv"
+    header, rows = _table(path)
+    for row in rows:
+        if row["country"] == "GB":
+            row["country"] = "DE"
+    _write(path, header, rows)
+
+
+def _remove_query_edges(data):
+    query = (data / "queries.csv").read_text().splitlines()[1]
+    path = data / "artist_tags.csv"
+    header, rows = _table(path)
+    _write(path, header, [row for row in rows if row["artist_id"] != query])
+
+
+def _assert_invalid(mutation):
+    root, data, _targets, _canonical = _materialize("ordered")
+    output_parent = None
+    try:
+        mutation(data)
+        for path in data.iterdir():
+            path.chmod(0o644)
+        output_parent, output, proc = _invoke(data)
+        assert proc.returncode != 0
+        assert not (output / "predictions.csv").exists()
+    finally:
+        shutil.rmtree(root)
+        if output_parent is not None:
+            shutil.rmtree(output_parent)
+
+
+def test_hidden_quality_across_split_type_and_cold_tag_variants():
+    """Predictions generalize across hidden splits, artist types, and cold tags."""
+    minimum_rows = {"ordered": 42, "rotated": 30, "type_holdout": 50, "cold_tags": 42}
+    for name, minimum in minimum_rows.items():
+        result = _evaluate(name)
+        assert len(result["probabilities"]) >= minimum
+
+
+def test_order_and_identifier_invariance():
+    """CSV order plus opaque artist and tag identifiers preserve probabilities."""
+    baseline = _evaluate("ordered")
+    for name in ("permuted", "renamed"):
+        changed = _evaluate(name)
+        assert baseline["probabilities"].keys() == changed["probabilities"].keys()
+        for artist_id in baseline["probabilities"]:
+            assert (
+                max(
+                    abs(left - right)
+                    for left, right in zip(
+                        baseline["probabilities"][artist_id],
+                        changed["probabilities"][artist_id],
+                    )
+                )
+                <= 1e-10
             )
-            OBSERVED[label] = rows
-        transformed = OBSERVED[label]
-        compare_rows(transformed, sealed("hidden-a"))
-        for actual, reference in zip(transformed, baseline, strict=True):
-            for column in set(SCHEMA) - FLOAT_COLUMNS:
-                assert actual[column] == reference[column]
 
 
-def test_destination_replacement_and_byte_determinism():
-    """Replace stale output and emit byte-identical repeated certificates."""
-    run_root = ROOT / "determinism"
-    if run_root.exists():
-        shutil.rmtree(run_root)
-    run_root.mkdir(mode=0o700)
-    data_root = run_root / "input"
-    shutil.copytree(FIXTURES["hidden-b"], data_root)
-    output = run_root / "results.csv"
-    output.write_text("stale-tail\n" * 20, encoding="utf-8")
-    first_run = sandbox_run(
-        run_root,
-        ["/app/run.sh", str(data_root), str(output)],
-    )
-    assert first_run.returncode == 0, first_run.stderr
-    first = output.read_bytes()
-    second_run = sandbox_run(
-        run_root,
-        ["/app/run.sh", str(data_root), str(output)],
-    )
-    assert second_run.returncode == 0, second_run.stderr
-    second = output.read_bytes()
-    assert first == second
-    assert b"stale-tail" not in second
-    compare_rows(read_csv(output), sealed("hidden-b"))
-
-
-def invalid_duplicate_event(data_root: Path) -> None:
-    rows = read_csv(data_root / "records.csv")
-    rows.append(dict(rows[0]))
-    write_csv(data_root / "records.csv", rows)
-
-
-def invalid_probability(data_root: Path) -> None:
-    rows = read_csv(data_root / "records.csv")
-    rows[0]["behavior_prob"] = "0"
-    write_csv(data_root / "records.csv", rows)
-
-
-def invalid_missing_header(data_root: Path) -> None:
-    rows = read_csv(data_root / "cases.csv")
-    for row in rows:
-        del row["stability_limit"]
-    write_csv(data_root / "cases.csv", rows)
-
-
-def invalid_ridge(data_root: Path) -> None:
-    rows = read_csv(data_root / "cases.csv")
-    rows[0]["ridge"] = "0"
-    write_csv(data_root / "cases.csv", rows)
-
-
-def invalid_horizon(data_root: Path) -> None:
-    rows = read_csv(data_root / "cases.csv")
-    rows[0]["history_horizon"] = "2.5"
-    write_csv(data_root / "cases.csv", rows)
-
-
-def invalid_policy_coverage(data_root: Path) -> None:
-    rows = read_csv(data_root / "records.csv")
-    case_id = rows[0]["case_id"]
-    rows = [
-        row
-        for row in rows
-        if not (
-            row["case_id"] == case_id
-            and row["policy_id"] == "P0"
-            and row["cluster"] == "3"
+def test_tag_neighborhood_is_load_bearing():
+    """Thinning disclosed tag evidence changes enough hidden probabilities."""
+    baseline = _evaluate("ordered")
+    changed = _evaluate("ordered", require_quality=False, mutation=_thin_tag_edges)
+    moved = sum(
+        max(
+            abs(left - right)
+            for left, right in zip(
+                baseline["probabilities"][artist_id],
+                changed["probabilities"][artist_id],
+            )
         )
-    ]
-    write_csv(data_root / "records.csv", rows)
+        > 1e-6
+        for artist_id in baseline["probabilities"]
+    )
+    assert moved >= 15
 
 
-def invalid_group_after_deletion(data_root: Path) -> None:
-    rows = read_csv(data_root / "records.csv")
-    case_id = rows[0]["case_id"]
-    for row in rows:
-        if (
-            row["case_id"] == case_id
-            and row["policy_id"] == "P0"
-            and row["cluster"] != "0"
-        ):
-            row["group"] = "0"
-    write_csv(data_root / "records.csv", rows)
-
-
-def invalid_case_relation(data_root: Path) -> None:
-    rows = read_csv(data_root / "records.csv")
-    rows[0]["case_id"] = "orphan-case"
-    write_csv(data_root / "records.csv", rows)
-
-
-def invalid_nonfinite(data_root: Path) -> None:
-    rows = read_csv(data_root / "records.csv")
-    rows[0]["reward"] = "NaN"
-    write_csv(data_root / "records.csv", rows)
-
-
-def invalid_identifier(data_root: Path) -> None:
-    rows = read_csv(data_root / "records.csv")
-    rows[0]["policy_id"] = "policé"
-    write_csv(data_root / "records.csv", rows)
-
-
-def invalid_pair_budget(data_root: Path) -> None:
-    rows = read_csv(data_root / "cases.csv")
-    rows[0]["pair_budget"] = "-0.1"
-    write_csv(data_root / "cases.csv", rows)
-
-
-def invalid_budget(data_root: Path) -> None:
-    rows = read_csv(data_root / "cases.csv")
-    rows[0]["budget"] = "-0.1"
-    write_csv(data_root / "cases.csv", rows)
-
-
-def invalid_interaction_limit(data_root: Path) -> None:
-    rows = read_csv(data_root / "cases.csv")
-    rows[0]["interaction_limit"] = "-0.1"
-    write_csv(data_root / "cases.csv", rows)
-
-
-def invalid_switch_gain(data_root: Path) -> None:
-    rows = read_csv(data_root / "cases.csv")
-    rows[0]["switch_gain"] = "-0.1"
-    write_csv(data_root / "cases.csv", rows)
-
-
-def invalid_dispersion_penalty(data_root: Path) -> None:
-    rows = read_csv(data_root / "cases.csv")
-    rows[0]["dispersion_penalty"] = "-0.1"
-    write_csv(data_root / "cases.csv", rows)
-
-
-def invalid_dispersion_limit(data_root: Path) -> None:
-    rows = read_csv(data_root / "cases.csv")
-    rows[0]["dispersion_limit"] = "-0.1"
-    write_csv(data_root / "cases.csv", rows)
-
-
-def invalid_concentration(data_root: Path) -> None:
-    rows = read_csv(data_root / "cases.csv")
-    rows[0]["max_concentration"] = "0.2"
-    write_csv(data_root / "cases.csv", rows)
-
-
-def invalid_mixture_units(data_root: Path) -> None:
-    rows = read_csv(data_root / "cases.csv")
-    rows[0]["mixture_units"] = "6.5"
-    write_csv(data_root / "cases.csv", rows)
-
-
-def invalid_policy_count(data_root: Path) -> None:
-    rows = read_csv(data_root / "records.csv")
-    case_id = rows[0]["case_id"]
-    rows = [
-        row
-        for row in rows
-        if not (row["case_id"] == case_id and row["policy_id"] == "P3")
-    ]
-    write_csv(data_root / "records.csv", rows)
-
-
-def invalid_pair_group_after_deletion(data_root: Path) -> None:
-    rows = read_csv(data_root / "records.csv")
-    case_id = rows[0]["case_id"]
-    for row in rows:
-        if (
-            row["case_id"] == case_id
-            and row["policy_id"] == "P0"
-            and row["cluster"] in {"0", "1"}
-        ):
-            row["group"] = "0"
-    write_csv(data_root / "records.csv", rows)
+def test_predictions_are_byte_reproducible():
+    """Two isolated runs over the same hidden bundle are byte-identical."""
+    assert _evaluate("ordered")["raw"] == _evaluate("ordered")["raw"]
 
 
 @pytest.mark.parametrize(
-    ("label", "mutate"),
+    "mutation",
+    [_append_unknown_artist_edge, _append_unknown_tag_edge, _append_duplicate_edge],
+)
+def test_malformed_bipartite_edges_are_rejected(mutation):
+    """Unknown endpoints and duplicate bipartite edges fail without output."""
+    _assert_invalid(mutation)
+
+
+@pytest.mark.parametrize(
+    "mutation",
     [
-        ("duplicate-event", invalid_duplicate_event),
-        ("zero-probability", invalid_probability),
-        ("missing-header", invalid_missing_header),
-        ("zero-ridge", invalid_ridge),
-        ("fractional-horizon", invalid_horizon),
-        ("policy-coverage", invalid_policy_coverage),
-        ("group-after-deletion", invalid_group_after_deletion),
-        ("case-relation", invalid_case_relation),
-        ("nonfinite", invalid_nonfinite),
-        ("identifier", invalid_identifier),
-        ("negative-budget", invalid_budget),
-        ("negative-pair-budget", invalid_pair_budget),
-        ("negative-interaction-limit", invalid_interaction_limit),
-        ("negative-switch-gain", invalid_switch_gain),
-        ("negative-dispersion-penalty", invalid_dispersion_penalty),
-        ("negative-dispersion-limit", invalid_dispersion_limit),
-        ("low-concentration", invalid_concentration),
-        ("fractional-mixture-units", invalid_mixture_units),
-        ("policy-count", invalid_policy_count),
-        ("pair-group-after-deletion", invalid_pair_group_after_deletion),
+        _duplicate_artist,
+        _duplicate_tag,
+        _unknown_query,
+        _duplicate_query,
+        _overlap_split,
+        _remove_training_class,
+        _remove_query_edges,
     ],
 )
-def test_malformed_bundle_is_rejected_without_replacing_output(label, mutate):
-    """Reject each documented contract violation and preserve prior output."""
-    sentinel = f"do-not-replace-{label}\n".encode()
-    _, output, completed = run_bundle(
-        f"invalid-{label}",
-        FIXTURES["public"],
-        "public",
-        mutate,
-        expect_success=False,
-        stale_output=sentinel,
-    )
-    assert completed.returncode != 0
-    assert output.read_bytes() == sentinel
-
-
-def test_documented_default_paths():
-    """Honor the documented no-argument data and destination paths."""
-    run_root = ROOT / "defaults"
-    if run_root.exists():
-        shutil.rmtree(run_root)
-    run_root.mkdir(mode=0o700)
-    output_root = Path("/app/outputs")
-    output_root.mkdir(parents=True, exist_ok=True)
-    os.chown(output_root, CANDIDATE_UID, CANDIDATE_GID)
-    os.chmod(output_root, 0o700)
-    output = output_root / "results.csv"
-    output.unlink(missing_ok=True)
-    completed = sandbox_run(
-        run_root,
-        ["/app/run.sh"],
-        extra_writes=(output_root,),
-    )
-    assert completed.returncode == 0, completed.stderr
-    compare_rows(read_csv(output), sealed("public"))
+def test_malformed_nodes_tags_and_splits_are_rejected(mutation):
+    """Invalid node, tag, class, and split relations fail without predictions."""
+    _assert_invalid(mutation)

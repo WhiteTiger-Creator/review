@@ -1,17 +1,11 @@
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
-
+FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
+RUN apt-get update && apt-get install -y --no-install-recommends asciinema python3 python3-pip python3-venv tmux util-linux \
+    && ln -s /usr/local/cargo/bin/rustc /usr/local/bin/rustc \
+    && ln -s /usr/local/cargo/bin/cargo /usr/local/bin/cargo \
+    && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt /tmp/requirements.txt
+RUN python3 -m venv /opt/verifier-venv && /opt/verifier-venv/bin/pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt
 WORKDIR /app
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends r-base-core tmux asciinema && \
-    rm -rf /var/lib/apt/lists/*
-
-COPY requirements.lock /tmp/requirements.lock
-RUN python -m pip install --no-cache-dir --require-hashes -r /tmp/requirements.lock && \
-    rm /tmp/requirements.lock
-
-COPY docs/ /app/docs/
-COPY data/ /app/data/
-COPY estimate.R /app/estimate.R
-COPY --chmod=0755 run.sh /app/run.sh
-RUN mkdir -p /app/outputs
+COPY analysis.rs /app/analysis.rs
+COPY docs /app/docs
+COPY data /app/data
