@@ -1,0 +1,10 @@
+{
+  "scenario_id": "s05_linux",
+  "tags": [
+    "linux"
+  ],
+  "roots": [
+    "corp.example/build/root"
+  ],
+  "ceiling": 6
+}

@@ -1,0 +1,8 @@
+{
+  "scenario_id": "s03_base_global",
+  "tags": [],
+  "roots": [
+    "corp.example/build/root"
+  ],
+  "ceiling": 7
+}

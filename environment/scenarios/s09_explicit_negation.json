@@ -1,0 +1,11 @@
+{
+  "scenario_id": "s09_explicit_negation",
+  "tags": [
+    "!linux",
+    "!integration"
+  ],
+  "roots": [
+    "corp.example/build/root"
+  ],
+  "ceiling": 6
+}

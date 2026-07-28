@@ -1,0 +1,10 @@
+{
+  "scenario_id": "s06_integration_tight",
+  "tags": [
+    "integration"
+  ],
+  "roots": [
+    "corp.example/build/root"
+  ],
+  "ceiling": 9
+}

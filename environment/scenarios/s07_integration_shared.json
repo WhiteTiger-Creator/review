@@ -1,0 +1,10 @@
+{
+  "scenario_id": "s07_integration_shared",
+  "tags": [
+    "integration"
+  ],
+  "roots": [
+    "corp.example/build/root"
+  ],
+  "ceiling": 10
+}
