@@ -1,30 +1,32 @@
+# Task configuration schema version
 version = "2.0"
 
+# Task metadata (author, difficulty, categorization)
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "machine-learning"
-tags = ["machine-learning", "inference", "frozen-checkpoint", "nowcasting", "feature-embeddings", "held-out-evaluation"]
-languages = ["go"]
-codebase_size = "small"
-number_of_milestones = 0
+category = "security"
 subcategories = ["tool_specific"]
-expert_time_estimate_min = 240
-junior_time_estimate_min = 600
+number_of_milestones = 0
+codebase_size = "minimal"
+languages = [ "go", "bash", "python" ]
+tags = [ "compliance", "security-posture", "mesh-policy", "signatures", "gateway-logs", "json" ]
+expert_time_estimate_min = 90
+junior_time_estimate_min = 180
 
-[agent]
-timeout_sec = 1800
-
+# Verifier: runs the test script to check task completion
 [verifier]
-timeout_sec = 900
+timeout_sec = 450.0
 
+# Agent: limits how long the agent can run when attempting the task
+[agent]
+timeout_sec = 900.0
+
+# Sandbox environment limits
 [environment]
 allow_internet = false
-build_timeout_sec = 600
+build_timeout_sec = 600.0
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-
-[reference_pattern]
-justification_if_none = "No promoted reference task in docs/reference_tasks/index.json matches Go bed-occupancy effect-lattice invariant proof logs; agent brief reports none promoted."

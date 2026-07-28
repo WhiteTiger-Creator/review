@@ -1,7 +1,24 @@
-Offline ward-census occupancy nowcasting under `/app/environment` is a machine-learning evaluation task: reconstruct scoring from a frozen occupancy checkpoint over ward feature-vector embeddings, measure held-out adversarial generalization on clock-discontinuity arms, and emit occupancy-conservation digests for every held-out arm. Stay offline. Library and module-level model-evaluation behavior must be correct, not only a CLI wrapper or a static JSON write.
+Night shift blocked a mesh config promotion because the security posture reconciler at `/app/cmd/meshgate` is not producing a compliant `/app/output/posture.json`. The reconciler replays signed unit streams from `/app/data` against the mesh policy at `/app/spec/mesh_policy.json` and must report security posture per the normative contracts in `/app/spec/mesh_stream_protocol.md` and `/app/spec/posture_schema.md`.
 
-Success is `/app/output/invariant_proof_log.json`. Required top-level keys (exact names): schema must be occ-proof-v1; slice must be the integer 3 (pin-lock slice id); seed must be the unsigned integer seed of hold_rot_a (4242); metrics must include hold_rot_a and hold_clk_b from `/app/environment/data/xtra_clk.toml`. Metrics rows are sorted by ascending arm name and each reports arm, score_tag, lat_hex, jmp_hex, a_cnt, b_cnt, z_lim, unit_key, and cite. cite equals score_tag. Every row satisfies a_cnt + b_cnt == z_lim. Empty metrics mean pack, row, lattice, jump, cite-seal, re-dot, part-cache, run-epoch, or tip agreement disagreed.
+Bring it into compliance with the security baseline. Treat both spec files as authoritative — every behavior the verifier checks must be derivable from them without reverse-engineering hidden reference logic.
 
-The evaluation entrypoint accepts -root (default `/app/environment`) and -out (default `/app/output/invariant_proof_log.json`). Acceptance re-runs that entrypoint under pytest before checking fields. Fresh evaluation must clear warm-shadow and scored-row residue, then rewrite the proof log through the model-scoring pipeline; consecutive identical runs must be byte-identical (truncate then write). Treat a stale `/app/environment/data/part_cache.bin` or `/app/environment/data/run_epoch.bin` (wrong stamp, including sentinel stamps) as invalid and rematerialize pin packing from `/app/environment/data/pin_s.lock` before scoring either arm. Repair the model-evaluation libraries under `/app/environment` so frozen-checkpoint inference, held-out lattice aggregation, clock-discontinuity rebinding, and proof-log emission match the packing and digest rules in `/app/environment/docs/eval_contract.md` and the in-tree scoring helpers. Hand-written JSON that skips the pipeline is invalid.
+## Required behaviors (summary)
 
-Binary layouts for `/app/environment/fixtures/feat_blob.bin`, `/app/environment/weights/w_blob.bin`, `/app/environment/data/pin_s.lock`, partition cache, and run epoch are documented in that contract. Score tags, lattice digests, cite-authority seals, unit keys, and jump digests must match those helpers and packing rules: pin-lock identity order for scoring, write-capable rows only for lattice occupancy, pin-order cite authority (not a lex shortcut), and durable tip-journal agreement across score → fold → rebind → emit before proof-log flush. A successful held-out emit must leave durable tip-journal recovery state at `/app/environment/data/.tip_snap` where `gen` counts committed tip generations, and must rematerialize run epoch so its stamp equals the feature-pack stamp.
+**Output:** Write `/app/output/posture.json` with top-level fields `recoverable`, `gateways`, and `drift_events`. All list fields must serialize as JSON arrays (`[]`), never `null`.
+
+**Stream processing:** Validate records in the priority order documented in `mesh_stream_protocol.md`. Signature payloads use `gateway_id|seq|ts|unit_id|op|metric|val|offset` with four-decimal float formatting for `val` and `offset`.
+
+**Calibration:** `adjusted_val = raw_val + active_offset`. Each applied `TUNE` **replaces** the active offset (default `0.0`); offsets do not accumulate. Staged `TUNE` ops inside batches follow batch commit ordering — see the worked examples in `mesh_stream_protocol.md`.
+
+**Batch transactions:** Stage `TELEMETRY` and `TUNE` while a batch is open; apply on `BATCH_COMMIT` in chronological order. Abort discards staged state.
+
+**Recoverability:** Gateways with `invalid_seq`, `duplicate_seq`, or `bad_signature` are unrecoverable and omit unit output. When global `recoverable` is `false`, skip all policy evaluation.
+
+**Policy drift:**
+- `binding_breach` — evaluated **per gateway** for each bound pair; emit one policy-wide event (`gateway_id: ""`, `seq: 0`) per violating gateway, without deduplication. See the worked example in `posture_schema.md`.
+- `site_forbidden` — active unit on a gateway outside its home-site list.
+- `sync_skew` — cross-gateway reference-average delta strictly greater than `0.05` for a sync metric present on at least two gateways.
+
+**Drift events:** Use the exact `reason` labels and `detail` string formats from `posture_schema.md`, including `bad_signature`, `binding_breach`, `site_forbidden`, and `sync_skew`.
+
+Default paths are fine; keep support for `--data-root`/`--data`, `--policy`, and `--output`.
