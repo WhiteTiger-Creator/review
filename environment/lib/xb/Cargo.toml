@@ -1,7 +1,0 @@
-[package]
-name = "xb"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-cartograph_core = { path = "../carto" }
