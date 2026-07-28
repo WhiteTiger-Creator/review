@@ -1,0 +1,8 @@
+{
+  "scenario_id": "s02_base_cache",
+  "tags": [],
+  "roots": [
+    "corp.example/build/root"
+  ],
+  "ceiling": 6
+}

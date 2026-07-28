@@ -1,0 +1,8 @@
+{
+  "scenario_id": "s04_base_wide",
+  "tags": [],
+  "roots": [
+    "corp.example/build/root"
+  ],
+  "ceiling": 9
+}

@@ -1,0 +1,8 @@
+{
+  "scenario_id": "s11_replace_chain",
+  "tags": [],
+  "roots": [
+    "legacy.example/shim/client"
+  ],
+  "ceiling": 2
+}

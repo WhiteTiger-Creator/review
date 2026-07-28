@@ -1,0 +1,10 @@
+{
+  "scenario_id": "s10_cgo",
+  "tags": [
+    "cgo"
+  ],
+  "roots": [
+    "corp.example/build/root"
+  ],
+  "ceiling": 7
+}
