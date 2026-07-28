@@ -1,22 +1,9 @@
-Certify TrustLoom's TL-ALS-CONF-1 implicit-feedback collaborative filter on the spare-parts pick co-occurrence logs under `/app/data`. The trainer under `/opt/trustloom` still runs an outdated ALS path, so fitted factors, query scores, holdout ranking metrics, remassed stride folds, and fit diagnostics miss the shipping card on confidence locality and ceiling, item residual blend, ridge jitter, update order, conditional fade, packing, polarity alignment, degree-damped scoring, and train-item ranking masks.
+Node 0352 runs a Java numerical barrier-margin pipeline for case 352 annex packs. `/app/exec/diff_run` should write `/app/output/diff_replay_dossier.json`, but the current build disagrees with the published contracts on direct training packs, held permute arms, and stress draw waves.
 
-Authoritative docs (read in order; later wins on conflict):
-1. `/app/model-card/trustloom-spec.txt`
-2. every file under `/app/model-card/errata/` sorted by filename
+Repair the Java sources under `/app/environment` so a rebuilt `diff_run` passes all contract checks. Core obligations live in `/app/environment/app/docs/k4_surface.md`. Pack-specific binding overrides (margin bases, wave multipliers, trace visit order) are in `/app/environment/app/docs/binding_profiles.md`.
 
-`/app/docs/als-handbook.md` section 3.1 Final applies only when it does not conflict with those. Ignore handbook drafts, `/app/notes/`, and any sklearn / Vowpal notes.
+Fixture data under `/app/environment/app/data/` includes training and held packs. The reference table defines cue_hashes computed as the unsigned byte-sum of each cluster cue modulo 1009, aligned to row_keys. Stress fixtures define per-wave draws that must list arm id, cluster id, and weight for importance sampling.
 
-Implement the full TL-ALS-CONF-1 training and evaluation recipe from that chain in `/opt/trustloom`. Grading rebuilds `/opt/trustloom` from source before scoring.
+Output layout is defined in `/app/environment/schemas/q8_report.schema.json`. The dossier must populate case_id, run_mode, witness_rows, barrier_margins, replay_deltas, merge_token, and replay_epoch. Witness rows must align each cluster margin with the barrier vector. Replay deltas must record stepwise margin changes computed as the delta from the prior step on the same cluster. Merge token must be the idempotent digest over sorted witness refs, case id, and run mode; see `k4_surface.md` section 6 for the pipe-delimited serialization format and worked example. Lattice narrowing at boundary clusters, stress fork carryover, replay journal resume semantics, and fork replay framing are defined in `k4_surface.md` sections 2, 5, and 8 and `binding_profiles.md`. Held mode without `--permute` may split lattice narrowing order from trace framing order when the pack defines `permute_order`.
 
-Required run (exit 0):
-
-`/opt/trustloom/bin/trustloom --interactions /app/data/interactions.csv --queries /app/data/queries.csv --holdout /app/data/holdout.csv --out /var/lib/trustloom`
-
-Required artifacts (all produced by the single command above):
-- `/var/lib/trustloom/model.json` — packed user/item factors
-- `/var/lib/trustloom/scores.json` — query scores
-- `/var/lib/trustloom/metrics.json` — holdout ranking metrics
-- `/var/lib/trustloom/diagnostics.json` — fit diagnostics
-- `/var/lib/trustloom/folds.json` — remassed stride-fold MAP checks
-
-All five must satisfy the full normative chain for the bundled inputs and for other contract-conforming inputs of the same shape.
+The normal `diff_run` pipeline must regenerate `/app/output/diff_replay_dossier.json`; static or manual dossier writes are insufficient. Run `make -C /app/environment` before invoking `/app/exec/diff_run`. Operator notes: `/app/environment/app/docs/operators.md`.
