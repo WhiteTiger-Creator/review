@@ -1,31 +1,25 @@
-Calibrated purchase-probability estimation under a seasonal distribution shift
+An indie dungeon crawl studio runs terminal playtest campaigns over procedurally generated undercroft levels. The working simulator under /app already builds deterministic maps from seeds and exposes a playfield graph for route inspection. The studio still needs a fairness playtest planner that searches candidate seeds until simultaneous reachability, pacing, treasure-balance, and threat-curve invariants hold for each campaign, then publishes durable playtest artifacts through a staging snapshot.
 
-This is a supervised machine-learning task: train a probabilistic classifier on
-labeled browsing sessions and use it to predict calibrated purchase probabilities
-for unlabeled sessions that come from a different, shifted distribution. It is a
-domain-adaptation and probability-calibration problem, not a lookup or aggregation.
+Implement the undercroft-fairness CLI capability so operators can run a multi-campaign playtest tick that materializes:
 
-The labeled training sessions (the off-season "source" regime) and the sessions
-you must score (the peak-season "target" regime) come from different
-distributions; purchase behaviour differs between the regimes. Every source
-session is labeled. In the target regime only a small labeled pilot is provided;
-the remaining target sessions have a blank outcome and are the ones you must
-score.
+- /app/state/seed-hunt-staging.json
+- /app/output/seed-ledger.json
+- /app/output/route-atlas.json
+- /app/output/fairness-seal.json
+- /app/state/playtest-journal.jsonl
 
-The dataset at /app/environment/data/online_shoppers.csv holds 12330 e-commerce
-sessions: a stable row_id, ten numeric engagement features, six categorical
-context features, a domain indicator, and a binary purchase outcome. The data
-directory's notes and summaries document the columns and the split; derive any
-distributional quantities you need from the data itself.
+Invoke the planner as:
 
-Your predictions are graded on both discrimination and calibration, within
-engagement bands and overall, against withheld outcomes and a reference model
-refit on the active data. The verifier re-fits and re-scores on several
-deterministically perturbed resamples of the data, so every reported quantity
-must be derived from the data you read, never hardcoded.
+/app/bin/undercroft-fairness playtest --campaigns /app/fixtures/campaigns --ledger /app/output/seed-ledger.json --atlas /app/output/route-atlas.json --seal /app/output/fairness-seal.json --journal /app/state/playtest-journal.jsonl
 
-A starting template is provided at /app/environment/analysis_template.R. Write
-your solution as /app/environment/analysis.R -- train your model and report the
-per-session probabilities and the summary statistics exactly as specified in
-/app/environment/contracts/output_contract.md. The verifier runs Rscript
-/app/environment/analysis.R.
+Contracts governing map generation, win-condition style route checks, pacing gaps along the critical path, treasure density bands, threat budgets, seed search windows, staging-then-export publish rules, and seal digests live under:
+
+- /app/docs/playtest-workflow.md
+- /app/docs/cartograph-contract.md
+- /app/docs/reachability-pacing-contract.md
+- /app/docs/treasure-threat-contract.md
+- /app/docs/seed-search-contract.md
+- /app/docs/staging-export-contract.md
+- /app/docs/artifact-seal-contract.md
+
+Campaign JSON profiles under /app/fixtures/campaigns define board size, entity counts, invariant thresholds, and each campaign search_origin plus search_limit. Outputs must be deterministic for identical campaign inputs. Rebuild with /app/scripts/build.sh before grading runs.

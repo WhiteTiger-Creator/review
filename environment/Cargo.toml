@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = [
+    "lib/rng",
+    "lib/carto",
+    "lib/reach",
+    "lib/xa",
+    "lib/xb",
+    "lib/xc",
+    "lib/xd",
+    "lib/xe",
+    "tools/undercroft_fairness",
+]
