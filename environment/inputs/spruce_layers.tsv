@@ -1,4 +1,0 @@
-plot	depth	temp	moisture	clay	input	f_input
-spruce	5	4.8	0.725	0.266	3.31	1.024
-spruce	20	3.4	0.75	0.332	1	1.0145
-spruce	50	1.7	0.782	0.408	0.295	1.004
