@@ -1,8 +1,0 @@
-# relay service commissioning corpus HRH-2026.07-R11
-# order<TAB>document<TAB>authority
-01	relay-operations-handbook.md	request roles, alias intervals, catalog snapshot policy, deterministic publication
-02	socket-allocation-review.md	exact-path chronology, errno meaning, authoritative socket inventory, allocation priority
-03	route-allocation-register.md	family precedence, cohort selection, directives, dependency closure, route provenance
-04	capacity-planning-notes.md	descriptor budget, connection and backlog arithmetic, body adjustments, tier selection
-05	maintenance-window-governance.md	maintenance order, event chronology, weighted acknowledgments, service slot, window plan
-06	commissioning-ledger-minutes.md	staging, prior-generation preservation, canonical publication, ledger reconciliation

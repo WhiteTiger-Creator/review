@@ -1,0 +1,15 @@
+task_shape: constrained_build
+category_profile: security_db_remediation
+
+coverage:
+  kms_patch: true
+  rejected_restore_control: true
+  access_evidence_join: true
+  policy_line_preservation: true
+  contradictory_policy_abort: true
+  certificate_validation_remediated: true
+  idempotent_sql: true
+  source_db_immutable: true
+  metamorphic_evidence: true
+  exposure_containment_search: true
+  held_out_exposure_mutations: true

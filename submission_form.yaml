@@ -1,0 +1,107 @@
+# Snorkel TB2 submission form answers. NOT part of the zip.
+
+difficulty_explanation: |
+  This is harder than a normal certificate-path task because the on-disk trust store is
+  incomplete after migration dedup and the rules that decide what to put back interact
+  rather than stack. The agent repairs a regressed Go utility where a standing distrust
+  warrant only counts when its window covers the evaluation time, it carries enough
+  endorsements, nobody countermanded it, and its issuing authority still has standing.
+  Two of those are traps. An endorsement counts only if that signer held the custodian
+  role at the moment it signed, which sits right beside a sibling rule that is evaluated
+  at eval_time instead, so the natural generalisation is the wrong one. And authority
+  standing is not the literal distrust_name table but its closure over the subordinate
+  graph, which is not a tree and contains a cross certification cycle, so a one level
+  check under reports and a plain recursive walk never returns.
+  On top of that sits a search. An incident names three subjects, two that must stop
+  validating and one that must not, and the utility has to work out the smallest set of
+  authority names whose distrust achieves that, taking the set that sorts first when
+  several tie on size. This is where the task stops being a reading exercise. The two
+  contained subjects each hang off a cross signed authority, so the cascade sets of the
+  candidates overlap without nesting and the answer is not a subtree. There is exactly
+  one single name that would contain both, and it is forbidden because it carries the
+  preserved subject down with it, so the tempting cheap answer is wrong. Four size two
+  sets satisfy the constraints, which means finding a working answer is not enough and
+  ordering has to be settled deliberatly. The set that wins pairs one ancestor with one
+  direct issuer, so neither of the two obvious heuristics reaches it: distrusting each
+  contained subject's own issuer gives a different pair, and so does treating distrust
+  as stopping at the name. Each of those wrong approaches lands on its own distinct
+  answer, which is what lets the checks tell them apart.
+  I measured the coupling instead of guessing at it. With every other repair in place,
+  reverting only the closure to a single level fails 15 of 101 checks across five
+  artifacts, dropping only the signing time rule fails 10, dropping the cascade half of
+  tainted_members fails 6, and replacing the search with the per issuer heuristic fails
+  6. Fully unpatched the project fails 30 of 101.
+
+solution_explanation: |
+  I repaired the shipped Go project under trust-remediator by fixing distributed
+  regressions in warrant handling, exposure containment, policy round trip, access
+  evidence join, and certificate validation. Policy bounds stay the first gate so
+  contradictory settings cannot partially change trust state. Each warrant is then judged
+  on its own against the store as the migration left it, which keeps the outcome
+  independant of the order rows come back from SQLite. Endorsements are counted per
+  distinct custodian and only where the signature falls inside that custodians own term,
+  countermands are honored, and issuer standing is taken from a closure over the
+  subordinate graph rather than the raw name rows. That closure carries a visited set,
+  since two of the authorities cross certify each other and a walk without one does not
+  terminate. It is seeded from post migration distrust plus the containment set, so
+  honoring a warrant can never widen it and the result stays order free.
+  The containment itself I solved by search rather than by rule. Each subject in the
+  incident is reduced to its live paths, meaning anchored, sound on their own merits, and
+  not already cut by the store as the warrants left it. Candidate sets of authority names
+  are then walked smallest first, and within a size in name order, cascading each
+  candidate before asking whether it reaches every live path of the contained subjects
+  while leaving the preserved one a route. The first set that satisfies both is by
+  construction the smallest and the first among equals, so no tie breaking is bolted on
+  afterwards. Those names join remediation.sql under a seperate source from the warrant
+  rows and go into the receipt, and because they are in force the contained subjects come
+  out revoked and the preserved one accepted. Around that the journal and database access
+  records are joined on their evidence key, trust_store.db is copied and patched, unknown
+  policy structures are carried through untouched, and the receipt digest covers the SQL
+  and TSV artifacts together.
+
+verification_explanation: |
+  The checks run the rebuilt binary on the shipped incident and on temporary variants built
+  during the run. Its worth noting each warrant condition gets its own case with both
+  outcomes: a clean warrant that must be honored, and warrants that must stay inert because
+  they lapsed, were countermanded, were endorsed twice by the same custodian, were signed by
+  an observer or by nobody on the roster, or came from an issuer that is unknown or already
+  distrusted. The custodian term rule gets four cases: one inside the term that must be
+  honored, one signed before the term opened, one signed after it closed, and one where
+  both signers are custodians at eval_time but only one was when it signed, which fails
+  only for an implementation that picked the wrong timestamp. The cascade gets a case at
+  each depth, a direct child, a grandchild that a single level check clears, and one only
+  reachable through the cross certification cycle, plus a clean branch that must still be
+  able to authorise so the rule cannot be satisfied by distrusting everything.
+  The containment is checked as a search result and not just as a string. One case proves
+  no smaller set works by trying every smaller combination, another collects every set that
+  ties on size, requires there to be more than one so the ordering is genuinely under test,
+  and pins the reported answer to the first of them. A third finds the single names that
+  would contain everything and requires each to break preservation, which is what makes the
+  cheap answer illegal rather than merely unchosen. Three more re derive the answer under a
+  deliberatly broken rule, once distrusting each contained subject's issuer, once with
+  distrust not cascading, and once with preservation ignored, and require each to differ
+  from the real one. The reported set also has to be authorities rather than leaves, sorted
+  and distinct, present in the patch under its own source, present in the patched store, and
+  consistent with the decisions written for every subject.
+  Beyond that, one case reinserts the same warrants in reverse order and requires an
+  identical patch, which pins the order free reading of the rules. Others permute journal
+  lines, add unknown policy sections, drop one side of an access join, apply remediation.sql
+  twice, and confirm the source DB is untouched. An independant Python reference reads the
+  SQLite, SQL, TSV, policy and receipt files directly rather than trusting the tools own
+  book keeping, and re derives both the closure and the containment search itself instead of
+  reusing the binarys answer. A contradictory policy has to fail without leaving partial DB
+  or patch output. Oracle is 101 of 101 with reward 1 in the container; fully unpatched the
+  project fails 30.
+
+prompt_check:
+  not_excessive_requirements: true
+  natural_and_human: true
+  no_unnecessary_hints: true
+  does_not_reveal_solution: true
+
+canonical_base_image: "Yes"
+used_task_inspiration: "No"
+time_to_complete_min: 240
+
+send_to_reviewer: true
+generate_rubric: true

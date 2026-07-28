@@ -1,0 +1,29 @@
+Agent rebuilds trust_attest at /app/trust-remediator/build/trust_attest via the shipped Makefile, +1
+Agent constructs idempotent remediation.sql from the warrants that satisfy every honouring condition, +2
+Agent counts distinct custodian endorsements so repeated signatures never reach quorum on their own, +2
+Agent counts an endorsement only when signed_at falls inside that signer's own custodian term, +3
+Agent treats countermanded warrants as inert even when window and quorum both pass, +2
+Agent closes distrust transitively over the subordinate graph rather than checking one level, +3
+Agent keeps the cascade walk terminating across the cross-certified authority cycle, +2
+Agent rejects warrants whose issuing authority is unknown or under cascaded distrust, +2
+Agent searches for the smallest set of authority names that contains every exposure subject marked contain, +3
+Agent breaks a tie between equally small containment sets by taking the one first in common-name order, +3
+Agent rejects a containment set that leaves the preserved subject with no surviving path, +3
+Agent cascades a candidate containment set before judging whether it reaches every path of a subject, +1
+Agent writes the containment names into remediation.sql under their own source and into audit_receipt.txt, +2
+Agent joins access.journal lines with access_audit.db using the documented minute bucket and join digest, +2
+Agent classifies access tuples as joined, fs_only, or db_only in access_evidence.tsv, +1
+Agent round-trips remediation.policy preserving unknown sections and keys verbatim, +2
+Agent aborts on contradictory known policy bounds without partial DB or SQL artifacts, +2
+Agent validates leaf certificates against remediated distrust from the patched trust store, +2
+Agent taints a cross-signed authority on every route once one of its parents has fallen, +2
+Agent counts raw countersignature rows and honours a warrant that lacks a real quorum, -5
+Agent tests a custodian term against eval_time rather than the time of the signature, -3
+Agent stops the distrust cascade at the direct children of a distrusted authority, -3
+Agent distrusts the issuing authority of each contained subject and calls that the containment, -3
+Agent accepts the first workable containment set it finds instead of the smallest, -3
+Agent chooses a containment that silences the subject marked preserve, -5
+Agent clears a cross-signed authority because the chain it took reached a clean parent, -3
+Agent applies countermanded or lapsed warrants into remediation.sql, -3
+Agent drops unknown policy lines or sections during round-trip, -3
+Agent hardcodes remediation artifacts instead of computing from evidence, -5

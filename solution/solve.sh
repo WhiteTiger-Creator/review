@@ -1,543 +1,1685 @@
 #!/bin/bash
 set -euo pipefail
-umask 027
 
-cd /app
-for command in awk bash chown grep install jq python3 runuser sha256sum sort tail tr wc; do
-  command -v "$command" >/dev/null 2>&1 || {
-    echo "missing required runtime command: $command" >&2
-    exit 127
-  }
-done
-bash /app/scripts/initialize-service-instance
+cd /app/trust-remediator
+mkdir -p build /app/output
 
-work="$(mktemp -d /tmp/harbor-service-commissioning.XXXXXX)"
-trap 'rm -rf "$work"' EXIT
-catalog="$work/catalog.tsv"
-schedule_catalog="$work/maintenance-window.tsv"
-/app/bin/catalog-query --batch-file /app/share/service-catalog.batch > "$catalog"
-HARBOR_CATALOG_DB=/opt/harbor/maintenance-window.db /app/bin/catalog-query --batch-file /app/share/maintenance-window.batch > "$schedule_catalog"
+mkdir -p internal/authority
+cat > internal/authority/cascade.go <<'GOEOF'
+// Package authority derives cascaded distrust over the subordinate graph that
+// the certificates under authorities/ describe.
+package authority
 
-table() {
-  awk -v name="$1" '$0 == "@result " name {inside=1; next} inside && $0 == "@end" {exit} inside {print}' "$catalog"
+import (
+	"crypto/x509"
+	"encoding/pem"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
+// Edges maps the common name of an issuing authority to the common names it
+// brought into existence. Self-signed roots contribute nothing.
+func Edges(dataDir string) map[string][]string {
+	out := map[string][]string{}
+	dir := filepath.Join(dataDir, "authorities")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return out
+	}
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".pem") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		block, _ := pem.Decode(raw)
+		if block == nil {
+			continue
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			continue
+		}
+		subject := cert.Subject.CommonName
+		issuer := cert.Issuer.CommonName
+		if subject == issuer {
+			continue
+		}
+		out[issuer] = append(out[issuer], subject)
+	}
+	return out
 }
-ctable() {
-  awk -v name="$1" '$0 == "@result " name {inside=1; next} inside && $0 == "@end" {exit} inside {print}' "$schedule_catalog"
+
+// Names returns every authority common name in the incident bundle, sorted.
+func Names(dataDir string) []string {
+	seen := map[string]bool{}
+	dir := filepath.Join(dataDir, "authorities")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".pem") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		block, _ := pem.Decode(raw)
+		if block == nil {
+			continue
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			continue
+		}
+		seen[cert.Subject.CommonName] = true
+	}
+	out := make([]string, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
 }
 
-# Resolve the commissioned service identity from the scheduled request set.
-alias_name="$(awk -F': ' 'tolower($1)=="x-harbor-site-alias" {gsub("\r", "", $2); print $2; exit}' /app/fixtures/requests/status-replay.http)"
-segment="$(awk -F': ' 'tolower($1)=="x-harbor-segment" {gsub("\r", "", $2); print $2; exit}' /app/fixtures/requests/status-replay.http)"
-replay_mode="$(awk -F': ' 'tolower($1)=="x-replay-mode" {gsub("\r", "", $2); print $2; exit}' /app/fixtures/requests/status-replay.http)"
-epoch="$(awk -F= '$1=="sealed_at" {print $2}' /app/records/window.meta)"
-handbook_revision="$(awk -F= '$1=="handbook_revision" {print $2}' /app/records/window.meta)"
-site_key="$(table site_alias | awk -F'\t' -v a="$alias_name" -v e="$epoch" 'NR>1 && $1==a && $6==0 && $3<=e && e<=$4 {if ($5+0>rank) {rank=$5+0; site=$2}} END{print site}')"
-[ -n "$site_key" ]
-ctx="$(table deployment_context | awk -F'\t' -v s="$site_key" 'NR>1 && $1==s && $2==1 {print; exit}')"
-IFS=$'\t' read -r _ _ custody platform transport service_class service_account service_group generation window_epoch root_class route_cohort policy_epoch <<<"$ctx"
-
-# Select the deployable Unix socket from policy and sealed operating records.
-selected_socket_id=""
-selected_socket_path=""
-selected_socket_mode=""
-best_priority=-1
-while IFS=$'\t' read -r candidate_id candidate_site path_template namespace purpose ownership mode token priority effective_from effective_to disabled; do
-  [ "$candidate_id" = "candidate_id" ] && continue
-  [ "$candidate_site" = "$site_key" ] || continue
-  [ "$disabled" = "0" ] || continue
-  [[ "$effective_from" > "$window_epoch" || "$effective_to" < "$window_epoch" ]] && continue
-  allowed="$(table socket_policy | awk -F'\t' -v r="$root_class" -v t="$transport" -v n="$namespace" -v p="$purpose" -v o="$ownership" 'NR>1 && $1==r && $2==t && $3==n && $4==p && $5==o {print $6; exit}')"
-  [ "$allowed" = "1" ] || continue
-  path="${path_template//\{root\}//app}"
-  last_line="$(grep -F "\"$path\"" /app/records/socket-allocation-events.txt | tail -n 1 || true)"
-  [ -n "$last_line" ] || continue
-  [[ "$last_line" == *"EACCES"* || "$last_line" == *"EADDRINUSE"* ]] && continue
-  if awk '/^# snapshot=after/{after=1; next} after && index($0,p){found=1} END{exit !found}' p="$path" /app/records/socket-occupancy-snapshot.txt; then
-    continue
-  fi
-  if (( priority > best_priority )); then
-    best_priority=$priority
-    selected_socket_id="$candidate_id"
-    selected_socket_path="$path"
-    selected_socket_mode="$mode"
-  fi
-done < <(table socket_candidate)
-[ -n "$selected_socket_id" ]
-
-# Select the active route family under the published precedence rules.
-family="$(table route_family_rule | awk -F'\t' -v c="$custody" -v p="$platform" -v t="$transport" -v i="$service_class" -v s="$segment" -v r="$replay_mode" -v e="$window_epoch" '
-  NR>1 && $14==0 && $12<=e && e<=$13 && $2==c && $3==p && $4==t && ($5==i || $5=="*") && $6==s && $7==r {
-    if ($9+0>spec || ($9+0==spec && $10>source) || ($9+0==spec && $10==source && $11+0>rank)) {spec=$9+0; source=$10; rank=$11+0; family=$8; rule=$1}
-  } END{print family "\t" rule}')"
-IFS=$'\t' read -r family_code family_rule <<<"$family"
-[ -n "$family_code" ]
-
-# Assemble the active route cohort for service installation.
-declare -A route_for key_epoch key_rank decision_code
-while IFS=$'\t' read -r route_id route_site family_value cohort selection method path upstream auth_code timeout_code active effective_from effective_to source_epoch precedence; do
-  [ "$route_id" = "route_id" ] && continue
-  [ "$route_site" = "$site_key" ] && [ "$family_value" = "$family_code" ] && [ "$cohort" = "$route_cohort" ] || continue
-  [ "$selection" = "base" ] && [ "$active" = "1" ] || continue
-  [[ "$effective_from" > "$window_epoch" || "$effective_to" < "$window_epoch" ]] && continue
-  key="$method $path"
-  if [ -z "${route_for[$key]:-}" ] || [[ "$source_epoch" > "${key_epoch[$key]}" ]] || { [[ "$source_epoch" = "${key_epoch[$key]}" ]] && (( precedence > key_rank[$key] )); }; then
-    route_for[$key]="$route_id"
-    key_epoch[$key]="$source_epoch"
-    key_rank[$key]="$precedence"
-    decision_code[$route_id]="selected"
-  fi
-done < <(table route_candidate)
-
-replacement_count=0
-withdraw_count=0
-require_count=0
-while IFS=$'\t' read -r target replacement; do
-  [ -n "$target" ] || continue
-  for key in "${!route_for[@]}"; do
-    if [ "${route_for[$key]}" = "$target" ]; then route_for[$key]="$replacement"; fi
-  done
-  unset "decision_code[$target]"
-  decision_code[$replacement]="replaced"
-  replacement_count=$((replacement_count+1))
-done < <(table route_directive | awk -F'\t' -v s="$site_key" -v f="$family_code" -v e="$window_epoch" 'NR>1 && $2==s && $3==f && $4=="replace" && $11==0 && $9<=e && e<=$10 {print $5 "\t" $6}')
-while IFS= read -r target; do
-  [ -n "$target" ] || continue
-  for key in "${!route_for[@]}"; do
-    if [ "${route_for[$key]}" = "$target" ]; then unset "route_for[$key]"; fi
-  done
-  unset "decision_code[$target]"
-  withdraw_count=$((withdraw_count+1))
-done < <(table route_directive | awk -F'\t' -v s="$site_key" -v f="$family_code" -v e="$window_epoch" 'NR>1 && $2==s && $3==f && $4=="withdraw" && $11==0 && $9<=e && e<=$10 {print $5}')
-while IFS= read -r target; do
-  [ -n "$target" ] || continue
-  row="$(table route_candidate | awk -F'\t' -v id="$target" 'NR>1 && $1==id {print; exit}')"
-  IFS=$'\t' read -r _ _ _ _ _ method path _ _ _ _ _ _ _ _ _ <<<"$row"
-  route_for["$method $path"]="$target"
-  decision_code[$target]="required"
-  require_count=$((require_count+1))
-done < <(table route_directive | awk -F'\t' -v s="$site_key" -v f="$family_code" -v e="$window_epoch" 'NR>1 && $2==s && $3==f && $4=="require" && $11==0 && $9<=e && e<=$10 {print $5}')
-
-# Complete the route dependency closure required by the service contract.
-changed=1
-while [ "$changed" = 1 ]; do
-  changed=0
-  for key in "${!route_for[@]}"; do
-    rid="${route_for[$key]}"
-    while IFS=$'\t' read -r owner required; do
-      [ "$owner" = "route_id" ] && continue
-      [ "$owner" = "$rid" ] || continue
-      present=0
-      for existing in "${route_for[@]}"; do [ "$existing" = "$required" ] && present=1; done
-      if [ "$present" = 0 ]; then
-        row="$(table route_candidate | awk -F'\t' -v id="$required" 'NR>1 && $1==id {print; exit}')"
-        IFS=$'\t' read -r _ _ _ _ _ method path _ _ _ _ _ _ _ _ _ <<<"$row"
-        route_for["$method $path"]="$required"
-        decision_code[$required]="required"
-        changed=1
-      fi
-    done < <(table route_dependency)
-  done
-done
-
-routes_tmp="$work/routes.map"
-printf 'method\texternal_path\tupstream\tauth_mode\ttimeout_ms\tsource_route_id\n' > "$routes_tmp"
-routes_jsonl="$work/routes.jsonl"
-: > "$routes_jsonl"
-mapfile -t sorted_route_keys < <(printf '%s\n' "${!route_for[@]}" | sort)
-for key in "${sorted_route_keys[@]}"; do
-  rid="${route_for[$key]}"
-  row="$(table route_candidate | awk -F'\t' -v id="$rid" 'NR>1 && $1==id {print; exit}')"
-  IFS=$'\t' read -r _ _ _ cohort _ method path upstream auth_code timeout_code _ _ _ _ _ <<<"$row"
-  auth_name="$(table auth_mode | awk -F'\t' -v code="$auth_code" 'NR>1 && $1==code {print $2; exit}')"
-  timeout_ms="$(table timeout_band | awk -F'\t' -v code="$timeout_code" 'NR>1 && $1==code {print $2; exit}')"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$method" "$path" "$upstream" "$auth_name" "$timeout_ms" "$rid" >> "$routes_tmp"
-  jq -cn --arg method "$method" --arg path "$path" --arg upstream "$upstream" --arg auth "$auth_name" --argjson timeout "$timeout_ms" --arg source "$rid" --arg cohort "$cohort" --arg decision "${decision_code[$rid]}" '{method:$method,external_path:$path,upstream:$upstream,auth_mode:$auth,timeout_ms:$timeout,source_route_id:$source,cohort_code:$cohort,decision_code:$decision}' >> "$routes_jsonl"
-done
-route_count="${#route_for[@]}"
-
-# Calculate service capacity and request-envelope settings after route closure.
-profile="$(table limit_candidate | awk -F'\t' -v s="$site_key" -v c="$custody" -v p="$platform" -v i="$service_class" -v e="$window_epoch" 'NR>1 && $2==s && $3==c && $4==p && $5==i && $20==0 && $18<=e && e<=$19 {if ($17+0>rank){rank=$17+0; printrow=$0}} END{print printrow}')"
-IFS=$'\t' read -r profile_id _ _ _ _ fd_soft reserve worker_cost route_cost listener_cost audit_cost backlog_floor backlog_cap min_tier headroom_num headroom_den _ _ _ _ <<<"$profile"
-reserve_add=0
-route_cost_add=0
-body_add=0
-for trigger in CUSTODY MULTI_REQUEST ROUTE_REPLACEMENT; do
-  adj="$(table limit_adjustment | awk -F'\t' -v s="$site_key" -v t="$trigger" -v e="$window_epoch" 'NR>1 && $2==s && $3==t && $10==0 && $8<=e && e<=$9 {if ($7+0>rank){rank=$7+0; row=$0}} END{print row}')"
-  [ -n "$adj" ] || continue
-  IFS=$'\t' read -r _ _ _ add_reserve add_route add_body _ _ _ _ <<<"$adj"
-  reserve_add=$((reserve_add+add_reserve))
-  route_cost_add=$((route_cost_add+add_route))
-  body_add=$((body_add+add_body))
-done
-reserved_files=$((reserve+reserve_add))
-effective_route_cost=$((route_cost+route_cost_add))
-numerator=$((fd_soft-reserved_files-listener_cost-audit_cost-route_count*effective_route_cost))
-max_connections=$((numerator/worker_cost))
-listen_backlog=1
-while (( listen_backlog < max_connections )); do listen_backlog=$((listen_backlog*2)); done
-(( listen_backlog < backlog_floor )) && listen_backlog=$backlog_floor
-(( listen_backlog <= backlog_cap ))
-
-max_body=0
-while IFS=$'\t' read -r role request_path; do
-  [[ "$role" = \#* || -z "$role" ]] && continue
-  content_length="$(awk -F': ' 'tolower($1)=="content-length" {gsub("\r", "", $2); print $2; exit}' "$request_path")"
-  content_length="${content_length:-0}"
-  (( content_length > max_body )) && max_body=$content_length
-done < /app/fixtures/requests/replay-set.manifest
-needed=$(( ( (max_body+body_add)*headroom_num + headroom_den - 1 ) / headroom_den ))
-min_ordinal="$(table body_tier | awk -F'\t' -v code="$min_tier" 'NR>1 && $1==code {print $3; exit}')"
-body_selection="$(table body_tier | awk -F'\t' -v n="$needed" -v m="$min_ordinal" 'NR>1 && $3>=m && $2>=n {print $1 "\t" $2; exit}')"
-IFS=$'\t' read -r selected_body_tier request_body_limit <<<"$body_selection"
-[ -n "$request_body_limit" ]
-
-# Reconcile the independent maintenance-window authority plane.
-window_plan_source="$work/window_plan-source.json"
-python3 - "$schedule_catalog" "$epoch" "$alias_name" "$service_class" "$family_code" "$selected_socket_id" "$selected_body_tier" > "$window_plan_source" <<'PYAUTH'
-import csv
-import json
-import sys
-from collections import defaultdict
-from pathlib import Path
-
-path, sealed_at, alias_name, service_class, family_code, socket_id, body_tier = sys.argv[1:]
-blocks = {}
-name = None
-rows = []
-for line in Path(path).read_text(encoding="utf-8").splitlines():
-    if line.startswith("@result "):
-        name = line.split(" ", 1)[1]
-        rows = []
-    elif line == "@end":
-        header, *body = rows
-        blocks[name] = [dict(zip(header.split("\t"), row.split("\t"), strict=True)) for row in body]
-        name = None
-    elif name is not None:
-        rows.append(line)
-meta = {row["key"]: row["value"] for row in blocks["schedule_meta"]}
-eligible = [
-    row for row in blocks["maintenance_order"]
-    if row["disabled"] == "0"
-    and row["state"] == "SCHEDULED"
-    and row["site_alias"] == alias_name
-    and row["service_class"] == service_class
-    and row["family_code"] == family_code
-    and row["not_before"] <= sealed_at <= row["not_after"]
-]
-if not eligible:
-    raise SystemExit("no eligible maintenance order")
-eligible.sort(key=lambda row: (row["source_epoch"], int(row["precedence_rank"]), row["order_id"]), reverse=True)
-order = eligible[0]
-if len(eligible) > 1 and eligible[1]["source_epoch"] == order["source_epoch"] and eligible[1]["precedence_rank"] == order["precedence_rank"]:
-    raise SystemExit("ambiguous maintenance order")
-roles = {row["role_code"]: row for row in blocks["ack_role"]}
-latest = {}
-for event in blocks["ack_event"]:
-    if event["order_id"] != order["order_id"] or event["event_epoch"] > sealed_at:
-        continue
-    key = (event["operator_id"], event["role_code"])
-    current = latest.get(key)
-    if current is None or (event["event_epoch"], int(event["precedence_rank"]), event["event_id"]) > (current["event_epoch"], int(current["precedence_rank"]), current["event_id"]):
-        latest[key] = event
-acknowledged = []
-for event in latest.values():
-    if event["event_kind"] not in {"acknowledge", "restore"}:
-        continue
-    role = roles[event["role_code"]]
-    acknowledged.append({
-        "work_group": role["work_group"],
-        "operator_id": event["operator_id"],
-        "role_code": event["role_code"],
-        "weight": int(role["ack_weight"]),
-        "state": event["event_kind"],
-        "event_id": event["event_id"],
-        "event_epoch": event["event_epoch"],
-    })
-by_group = defaultdict(list)
-for record in acknowledged:
-    by_group[record["work_group"]].append(record)
-selected = []
-rejected = []
-for group, records in by_group.items():
-    records.sort(key=lambda row: (-row["weight"], row["operator_id"]))
-    best_weight = records[0]["weight"]
-    best = max((row for row in records if row["weight"] == best_weight), key=lambda row: (row["event_epoch"], tuple(-ord(c) for c in row["operator_id"])))
-    selected.append(best)
-    rejected.extend(row for row in records if row is not best)
-selected.sort(key=lambda row: (row["work_group"], row["operator_id"]))
-observed_weight = sum(row["weight"] for row in selected)
-required = int(order["ack_weight_required"])
-if observed_weight < required or len(selected) < 2:
-    raise SystemExit("maintenance acknowledgment weight not met")
-slots = [
-    row for row in blocks["service_slot"]
-    if row["disabled"] == "0"
-    and row["order_id"] == order["order_id"]
-    and row["socket_candidate_id"] == socket_id
-    and row["body_tier_code"] == body_tier
-    and row["effective_from"] <= sealed_at <= row["effective_to"]
-]
-if not slots:
-    raise SystemExit("no eligible service slot")
-slots.sort(key=lambda row: (row["source_epoch"], int(row["precedence_rank"]), row["slot_id"]), reverse=True)
-slot = slots[0]
-if len(slots) > 1 and slots[1]["source_epoch"] == slot["source_epoch"] and slots[1]["precedence_rank"] == slot["precedence_rank"]:
-    raise SystemExit("ambiguous service slot")
-for row in selected:
-    row.pop("event_epoch")
-for row in rejected:
-    row.pop("event_epoch")
-json.dump({
-    "schedule_generation": int(meta["schedule_generation"]),
-    "order_id": order["order_id"],
-    "ack_weight_required": required,
-    "ack_weight_observed": observed_weight,
-    "slot_id": slot["slot_id"],
-    "service_lane": slot["service_lane"],
-    "acknowledgments": selected,
-    "rejected_same_group": rejected,
-}, sys.stdout, separators=(",", ":"))
-PYAUTH
-schedule_generation="$(jq -r .schedule_generation "$window_plan_source")"
-order_id="$(jq -r .order_id "$window_plan_source")"
-ack_weight_required="$(jq -r .ack_weight_required "$window_plan_source")"
-ack_weight_observed="$(jq -r .ack_weight_observed "$window_plan_source")"
-slot_id="$(jq -r .slot_id "$window_plan_source")"
-service_lane="$(jq -r .service_lane "$window_plan_source")"
-readiness_digest="$(jq -r '.acknowledgments[] | [.work_group,.operator_id,.role_code,(.weight|tostring),.state,.event_id] | join("|")' "$window_plan_source" | sha256sum | awk '{print $1}')"
-
-relay_tmp="$work/relay.conf"
-limits_tmp="$work/limits.conf"
-cat > "$relay_tmp" <<EOF
-site_key=$site_key
-socket_path=$selected_socket_path
-socket_mode=$selected_socket_mode
-socket_owner=$service_account
-socket_group=$service_group
-listen_backlog=$listen_backlog
-route_map=/app/etc/harbor-relay/routes.map
-limits_file=/app/etc/harbor-relay/limits.conf
-audit_db=/app/var/commissioning-ledger.db
-catalog_generation=$generation
-EOF
-cat > "$limits_tmp" <<EOF
-open_files_soft=$fd_soft
-reserved_files=$reserved_files
-max_connections=$max_connections
-request_body_limit=$request_body_limit
-EOF
-install -m 0640 "$relay_tmp" /app/etc/harbor-relay/relay.conf
-install -m 0640 "$limits_tmp" /app/etc/harbor-relay/limits.conf
-install -m 0640 "$routes_tmp" /app/etc/harbor-relay/routes.map
-unit_tmp="$work/harbor-relay.service"
-cat > "$unit_tmp" <<EOF
-[Unit]
-Description=Harbor Relay local commissioning service
-After=local-fs.target
-
-[Service]
-Type=simple
-User=$service_account
-Group=$service_group
-ExecStart=/app/bin/harbor-relay --config /app/etc/harbor-relay/relay.conf
-LimitNOFILE=$fd_soft
-UMask=0007
-Restart=no
-
-[Install]
-WantedBy=multi-user.target
-EOF
-install -m 0644 "$unit_tmp" /etc/systemd/system/harbor-relay.service
-chown root:$service_group /app/etc/harbor-relay/relay.conf /app/etc/harbor-relay/limits.conf /app/etc/harbor-relay/routes.map
-chown root:root /etc/systemd/system/harbor-relay.service
-chown $service_account:$service_group /app/run/harbor-relay /app/var
-chmod 0750 /app/run/harbor-relay /app/var
-chmod g-s /app/run/harbor-relay /app/var
-
-relay_sha="$(sha256sum /app/etc/harbor-relay/relay.conf | awk '{print $1}')"
-limits_sha="$(sha256sum /app/etc/harbor-relay/limits.conf | awk '{print $1}')"
-routes_sha="$(sha256sum /app/etc/harbor-relay/routes.map | awk '{print $1}')"
-unit_sha="$(sha256sum /etc/systemd/system/harbor-relay.service | awk '{print $1}')"
-unit_bytes="$(wc -c < /etc/systemd/system/harbor-relay.service | tr -d ' ')"
-catalog_sha="$(sha256sum "$catalog" | awk '{print $1}')"
-catalog_bytes="$(wc -c < "$catalog" | tr -d ' ')"
-schedule_sha="$(sha256sum "$schedule_catalog" | awk '{print $1}')"
-schedule_bytes="$(wc -c < "$schedule_catalog" | tr -d ' ')"
-request_hashes=()
-request_hashes+=("$(sha256sum /app/fixtures/requests/replay-set.manifest | awk '{print $1}')")
-while IFS=$'\t' read -r role request_path; do
-  [[ "$role" = \#* || -z "$role" ]] && continue
-  request_hashes+=("$(sha256sum "$request_path" | awk '{print $1}')")
-done < /app/fixtures/requests/replay-set.manifest
-request_set_sha="$(printf '%s\n' "${request_hashes[@]}" | sha256sum | awk '{print $1}')"
-record_set_sha="$(for path in /app/records/window.meta /app/records/socket-allocation-events.txt /app/records/socket-occupancy-snapshot.txt; do sha256sum "$path" | awk '{print $1}'; done | sha256sum | awk '{print $1}')"
-run_id="$(printf '%s' "$site_key|$handbook_revision|$generation|$schedule_generation|$request_set_sha|$record_set_sha|$catalog_sha|$schedule_sha|$readiness_digest|$relay_sha|$limits_sha|$routes_sha|$unit_sha" | sha256sum | cut -c1-24)"
-launch_token="$(printf '%s' "$order_id|$slot_id|$readiness_digest|$run_id" | sha256sum | cut -c1-24)"
-acknowledgments_json="$(jq -c .acknowledgments "$window_plan_source")"
-window_plan_json="$(jq -cn --arg ticket "$order_id" --argjson generation "$schedule_generation" --arg activation "$slot_id" --arg lane "$service_lane" --argjson required "$ack_weight_required" --argjson observed "$ack_weight_observed" --argjson acknowledgments "$acknowledgments_json" --arg digest "$readiness_digest" --arg token "$launch_token" '{order_id:$ticket,schedule_generation:$generation,slot_id:$activation,service_lane:$lane,ack_weight_required:$required,ack_weight_observed:$observed,acknowledgments:$acknowledgments,readiness_digest:$digest,launch_token:$token}')"
-printf '%s\n' "$window_plan_json" > /app/var/window-plan.json
-chmod 0640 /app/var/window-plan.json
-chown $service_account:$service_group /app/var/window-plan.json
-window_plan_sha="$(sha256sum /app/var/window-plan.json | awk '{print $1}')"
-window_plan_bytes="$(wc -c < /app/var/window-plan.json | tr -d ' ')"
-
-assertions_jsonl="$work/assertions.jsonl"
-cat > "$assertions_jsonl" <<EOF
-{"name":"catalog-generation","passed":1,"observed":"$generation","rule_ref":"CAT-2.7"}
-{"name":"identity-alias","passed":1,"observed":"$alias_name->$site_key","rule_ref":"ID-4.9"}
-{"name":"socket-last-evidence","passed":1,"observed":"$selected_socket_id:ENOENT","rule_ref":"SOCK-8.12"}
-{"name":"route-family","passed":1,"observed":"$family_code","rule_ref":"ROUTE-11.6"}
-{"name":"directive-closure","passed":1,"observed":"replace=$replacement_count,withdraw=$withdraw_count,require=$require_count","rule_ref":"ROUTE-13.8"}
-{"name":"dependency-closure","passed":1,"observed":"$route_count routes","rule_ref":"ROUTE-14.4"}
-{"name":"fd-budget","passed":1,"observed":"$max_connections","rule_ref":"LIM-17.5"}
-{"name":"body-envelope","passed":1,"observed":"$request_body_limit","rule_ref":"LIM-19.3"}
-{"name":"publication-digests","passed":1,"observed":"$run_id","rule_ref":"PUB-23.7"}
-{"name":"relay-validation","passed":1,"observed":"ok","rule_ref":"PUB-24.2"}
-{"name":"schedule-generation","passed":1,"observed":"$schedule_generation","rule_ref":"MW-1.3"}
-{"name":"order-selection","passed":1,"observed":"$order_id","rule_ref":"MW-3.8"}
-{"name":"acknowledgment-state","passed":1,"observed":"2 effective","rule_ref":"MW-5.4"}
-{"name":"acknowledgment-quorum","passed":1,"observed":"$ack_weight_observed/$ack_weight_required","rule_ref":"MW-6.9"}
-{"name":"slot-selection","passed":1,"observed":"$slot_id","rule_ref":"MW-8.2"}
-EOF
-
-inputs_jsonl="$work/inputs.jsonl"
-: > "$inputs_jsonl"
-add_input() {
-  local kind="$1" path="$2" digest bytes
-  digest="$(sha256sum "$path" | awk '{print $1}')"
-  bytes="$(wc -c < "$path" | tr -d ' ')"
-  jq -cn --arg kind "$kind" --arg path "$path" --arg sha "$digest" --argjson bytes "$bytes" '{kind:$kind,path:$path,sha256:$sha,bytes:$bytes}' >> "$inputs_jsonl"
+// Set returns every common name reachable from the seed names by following
+// subordinate edges to exhaustion. The frontier carries a visited set because
+// cross-certified authorities can point at each other, so a walk that does not
+// remember where it has been will not terminate.
+func Set(dataDir string, seedNames []string) map[string]bool {
+	edges := Edges(dataDir)
+	out := map[string]bool{}
+	var frontier []string
+	for _, seed := range seedNames {
+		if !out[seed] {
+			out[seed] = true
+			frontier = append(frontier, seed)
+		}
+	}
+	for len(frontier) > 0 {
+		cur := frontier[len(frontier)-1]
+		frontier = frontier[:len(frontier)-1]
+		for _, child := range edges[cur] {
+			if out[child] {
+				continue
+			}
+			out[child] = true
+			frontier = append(frontier, child)
+		}
+	}
+	return out
 }
-add_input window-meta /app/records/window.meta
-jq -cn --arg kind catalog-batch-result --arg path /app/share/service-catalog.batch --arg sha "$catalog_sha" --argjson bytes "$catalog_bytes" '{kind:$kind,path:$path,sha256:$sha,bytes:$bytes}' >> "$inputs_jsonl"
-jq -cn --arg kind maintenance-window-batch-result --arg path /app/share/maintenance-window.batch --arg sha "$schedule_sha" --argjson bytes "$schedule_bytes" '{kind:$kind,path:$path,sha256:$sha,bytes:$bytes}' >> "$inputs_jsonl"
-add_input socket-inventory /app/records/socket-occupancy-snapshot.txt
-add_input request-manifest /app/fixtures/requests/replay-set.manifest
-while IFS=$'\t' read -r role request_path; do
-  [[ "$role" = \#* || -z "$role" ]] && continue
-  add_input "request:$role" "$request_path"
-done < /app/fixtures/requests/replay-set.manifest
-add_input socket-open-trace /app/records/socket-allocation-events.txt
-sort -t'"' -k4,4 -k8,8 "$inputs_jsonl" -o "$inputs_jsonl"
+GOEOF
 
-relay_bytes="$(wc -c < /app/etc/harbor-relay/relay.conf | tr -d ' ')"
-limits_bytes="$(wc -c < /app/etc/harbor-relay/limits.conf | tr -d ' ')"
-routes_bytes="$(wc -c < /app/etc/harbor-relay/routes.map | tr -d ' ')"
-zero="$(printf '0%.0s' {1..64})"
+cat > internal/warrant/patch.go <<'GOEOF'
+package warrant
 
-# Create the deterministic service-deployment audit database with SQL.
-audit_sql="$work/audit.sql"
-cat > "$audit_sql" <<EOF
-PRAGMA journal_mode=OFF;
-PRAGMA synchronous=OFF;
-PRAGMA page_size=4096;
-BEGIN;
-CREATE TABLE commissioning_run(run_id TEXT PRIMARY KEY,site_key TEXT NOT NULL,handbook_revision TEXT NOT NULL,catalog_generation INTEGER NOT NULL CHECK(catalog_generation>0),schedule_generation INTEGER NOT NULL CHECK(schedule_generation>0),request_set_sha256 TEXT NOT NULL CHECK(length(request_set_sha256)=64),record_set_sha256 TEXT NOT NULL CHECK(length(record_set_sha256)=64),catalog_snapshot_sha256 TEXT NOT NULL CHECK(length(catalog_snapshot_sha256)=64),schedule_snapshot_sha256 TEXT NOT NULL CHECK(length(schedule_snapshot_sha256)=64),readiness_digest TEXT NOT NULL CHECK(length(readiness_digest)=64),status TEXT NOT NULL CHECK(status='commissioned'));
-CREATE TABLE input_artifact(kind TEXT NOT NULL,path TEXT NOT NULL,sha256 TEXT NOT NULL CHECK(length(sha256)=64),bytes INTEGER NOT NULL CHECK(bytes>=0),PRIMARY KEY(kind,path));
-CREATE TABLE configuration(key TEXT PRIMARY KEY,value TEXT NOT NULL,source_code TEXT NOT NULL CHECK(source_code IN ('CTX','ALIAS','SOCK','LIMIT','ROUTE','META','PATH')));
-CREATE TABLE route(method TEXT NOT NULL,external_path TEXT NOT NULL,upstream TEXT NOT NULL,auth_mode TEXT NOT NULL,timeout_ms INTEGER NOT NULL CHECK(timeout_ms>0),source_route_id TEXT NOT NULL,cohort_code TEXT NOT NULL,decision_code TEXT NOT NULL CHECK(decision_code IN ('selected','replaced','required')),PRIMARY KEY(method,external_path));
-CREATE TABLE decision(sequence INTEGER PRIMARY KEY CHECK(sequence>0),domain TEXT NOT NULL,subject TEXT NOT NULL,outcome TEXT NOT NULL CHECK(outcome IN ('selected','rejected','replaced','withdrawn','required','calculated','validated')),rule_ref TEXT NOT NULL,evidence TEXT NOT NULL);
-CREATE TABLE assertion(name TEXT PRIMARY KEY,passed INTEGER NOT NULL CHECK(passed IN (0,1)),observed TEXT NOT NULL,rule_ref TEXT NOT NULL);
-CREATE TABLE window_plan(order_id TEXT PRIMARY KEY,schedule_generation INTEGER NOT NULL CHECK(schedule_generation>0),slot_id TEXT NOT NULL,service_lane TEXT NOT NULL,ack_weight_required INTEGER NOT NULL CHECK(ack_weight_required>0),ack_weight_observed INTEGER NOT NULL CHECK(ack_weight_observed>=ack_weight_required),readiness_digest TEXT NOT NULL CHECK(length(readiness_digest)=64),launch_token TEXT NOT NULL CHECK(length(launch_token)=24));
-CREATE TABLE acknowledgment(work_group TEXT NOT NULL,operator_id TEXT NOT NULL,role_code TEXT NOT NULL,weight INTEGER NOT NULL CHECK(weight>0),state TEXT NOT NULL CHECK(state IN ('acknowledge','restore')),event_id TEXT NOT NULL,PRIMARY KEY(work_group,operator_id,role_code));
-CREATE TABLE publication_file(path TEXT PRIMARY KEY,sha256 TEXT NOT NULL CHECK(length(sha256)=64),bytes INTEGER NOT NULL CHECK(bytes>=0),mode_text TEXT NOT NULL CHECK(mode_text IN ('0640','0600','0644')));
-INSERT INTO commissioning_run VALUES('$run_id','$site_key','$handbook_revision',$generation,$schedule_generation,'$request_set_sha','$record_set_sha','$catalog_sha','$schedule_sha','$readiness_digest','commissioned');
-EOF
-while IFS= read -r row; do
-  kind="$(jq -r .kind <<<"$row")"; path="$(jq -r .path <<<"$row")"; sha="$(jq -r .sha256 <<<"$row")"; bytes="$(jq -r .bytes <<<"$row")"
-  printf "INSERT INTO input_artifact VALUES('%s','%s','%s',%s);\n" "$kind" "$path" "$sha" "$bytes" >> "$audit_sql"
-done < "$inputs_jsonl"
-cat >> "$audit_sql" <<EOF
-INSERT INTO configuration VALUES('site_key','$site_key','ALIAS');
-INSERT INTO configuration VALUES('socket_path','$selected_socket_path','SOCK');
-INSERT INTO configuration VALUES('socket_mode','$selected_socket_mode','SOCK');
-INSERT INTO configuration VALUES('socket_owner','$service_account','CTX');
-INSERT INTO configuration VALUES('socket_group','$service_group','CTX');
-INSERT INTO configuration VALUES('listen_backlog','$listen_backlog','LIMIT');
-INSERT INTO configuration VALUES('route_map','/app/etc/harbor-relay/routes.map','PATH');
-INSERT INTO configuration VALUES('limits_file','/app/etc/harbor-relay/limits.conf','PATH');
-INSERT INTO configuration VALUES('audit_db','/app/var/commissioning-ledger.db','PATH');
-INSERT INTO configuration VALUES('catalog_generation','$generation','META');
-INSERT INTO configuration VALUES('open_files_soft','$fd_soft','LIMIT');
-INSERT INTO configuration VALUES('reserved_files','$reserved_files','LIMIT');
-INSERT INTO configuration VALUES('max_connections','$max_connections','LIMIT');
-INSERT INTO configuration VALUES('request_body_limit','$request_body_limit','LIMIT');
-EOF
-while IFS= read -r row; do
-  method="$(jq -r .method <<<"$row")"; path="$(jq -r .external_path <<<"$row")"; upstream="$(jq -r .upstream <<<"$row")"; auth="$(jq -r .auth_mode <<<"$row")"; timeout="$(jq -r .timeout_ms <<<"$row")"; source="$(jq -r .source_route_id <<<"$row")"; cohort="$(jq -r .cohort_code <<<"$row")"; decision="$(jq -r .decision_code <<<"$row")"
-  printf "INSERT INTO route VALUES('%s','%s','%s','%s',%s,'%s','%s','%s');\n" "$method" "$path" "$upstream" "$auth" "$timeout" "$source" "$cohort" "$decision" >> "$audit_sql"
-done < "$routes_jsonl"
-cat >> "$audit_sql" <<EOF
-INSERT INTO decision VALUES(1,'identity','$alias_name','selected','ID-4.9','$alias_name->$site_key');
-INSERT INTO decision VALUES(2,'socket','sock-control','rejected','SOCK-8.12','policy');
-INSERT INTO decision VALUES(3,'socket','sock-data','rejected','SOCK-8.12','last=EACCES');
-INSERT INTO decision VALUES(4,'socket','sock-legacy','rejected','SOCK-8.12','policy');
-INSERT INTO decision VALUES(5,'socket','sock-metrics','rejected','SOCK-8.12','policy');
-INSERT INTO decision VALUES(6,'socket','sock-tcp','rejected','SOCK-8.12','occupied');
-INSERT INTO decision VALUES(7,'socket','$selected_socket_id','selected','SOCK-8.12','$selected_socket_path:ENOENT');
-INSERT INTO decision VALUES(8,'route-family','$family_rule','selected','ROUTE-11.6','$family_code');
-INSERT INTO decision VALUES(9,'route-directive','dir-capability-require','required','ROUTE-13.8','rt-203');
-INSERT INTO decision VALUES(10,'route-directive','dir-manifest-replace','replaced','ROUTE-13.8','rt-202->rt-204');
-INSERT INTO decision VALUES(11,'route-directive','dir-auxiliary-withdraw','withdrawn','ROUTE-13.8','rt-205');
-INSERT INTO decision VALUES(12,'route-closure','$family_code','validated','ROUTE-14.4','$route_count routes');
-INSERT INTO decision VALUES(13,'limits','$profile_id','calculated','LIM-17.5','connections=$max_connections');
-INSERT INTO decision VALUES(14,'limits','body-envelope','calculated','LIM-19.3','needed=$needed,tier=$request_body_limit');
-INSERT INTO decision VALUES(15,'maintenance-window','$order_id','selected','MW-3.8','$alias_name|$service_class|$family_code');
-INSERT INTO decision VALUES(16,'maintenance-window','alice.ops','selected','MW-5.4','OPS|acknowledge|ev-a1');
-INSERT INTO decision VALUES(17,'maintenance-window','bob.net','selected','MW-5.4','NETWORK|restore|ev-b3');
-INSERT INTO decision VALUES(18,'maintenance-window','carol.sre','rejected','MW-6.9','lower-weight-same-group');
-INSERT INTO decision VALUES(19,'maintenance-window','$order_id','calculated','MW-6.9','weight=$ack_weight_observed/$ack_weight_required');
-INSERT INTO decision VALUES(20,'maintenance-window','$slot_id','selected','MW-8.2','$selected_socket_id|$selected_body_tier|$service_lane');
-INSERT INTO window_plan VALUES('$order_id',$schedule_generation,'$slot_id','$service_lane',$ack_weight_required,$ack_weight_observed,'$readiness_digest','$launch_token');
-EOF
-while IFS= read -r row; do
-  group="$(jq -r .work_group <<<"$row")"; acknowledger="$(jq -r .operator_id <<<"$row")"; role="$(jq -r .role_code <<<"$row")"; weight="$(jq -r .weight <<<"$row")"; state="$(jq -r .state <<<"$row")"; event_id="$(jq -r .event_id <<<"$row")"
-  printf "INSERT INTO acknowledgment VALUES('%s','%s','%s',%s,'%s','%s');\n" "$group" "$acknowledger" "$role" "$weight" "$state" "$event_id" >> "$audit_sql"
-done < <(jq -c '.acknowledgments[]' "$window_plan_source")
-while IFS= read -r row; do
-  name="$(jq -r .name <<<"$row")"; passed="$(jq -r .passed <<<"$row")"; observed="$(jq -r .observed <<<"$row")"; rule="$(jq -r .rule_ref <<<"$row")"
-  printf "INSERT INTO assertion VALUES('%s',%s,'%s','%s');\n" "$name" "$passed" "$observed" "$rule" >> "$audit_sql"
-done < "$assertions_jsonl"
-cat >> "$audit_sql" <<EOF
-INSERT INTO publication_file VALUES('/app/etc/harbor-relay/relay.conf','$relay_sha',$relay_bytes,'0640');
-INSERT INTO publication_file VALUES('/app/etc/harbor-relay/limits.conf','$limits_sha',$limits_bytes,'0640');
-INSERT INTO publication_file VALUES('/app/etc/harbor-relay/routes.map','$routes_sha',$routes_bytes,'0640');
-INSERT INTO publication_file VALUES('/app/var/window-plan.json','$window_plan_sha',$window_plan_bytes,'0640');
-INSERT INTO publication_file VALUES('/etc/systemd/system/harbor-relay.service','$unit_sha',$unit_bytes,'0644');
-INSERT INTO publication_file VALUES('/app/var/commissioning-ledger.db','$zero',0,'0600');
-INSERT INTO publication_file VALUES('/app/var/commissioning-manifest.json','$zero',0,'0640');
-COMMIT;
-VACUUM;
-EOF
-audit_stage="$work/commissioning-ledger.db"
-rm -f "$audit_stage" /app/var/commissioning-ledger.db
-python3 - "$audit_stage" "$audit_sql" <<'PYSQLITE'
-import sqlite3
-import sys
-from pathlib import Path
+import (
+	"crypto/x509"
+	"encoding/pem"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 
-database = Path(sys.argv[1])
-script = Path(sys.argv[2]).read_text(encoding="utf-8")
-connection = sqlite3.connect(database)
-try:
-    connection.executescript(script)
-    connection.commit()
-finally:
-    connection.close()
-PYSQLITE
-install -m 0600 "$audit_stage" /app/var/commissioning-ledger.db
-chown $service_account:$service_group /app/var/commissioning-ledger.db
+	"trustremediator/internal/attest"
+	"trustremediator/internal/authority"
+)
 
-configuration_json="$(jq -cn --arg site "$site_key" --arg socket "$selected_socket_path" --arg mode "$selected_socket_mode" --arg owner "$service_account" --arg group "$service_group" --arg backlog "$listen_backlog" --arg generation "$generation" --arg fd "$fd_soft" --arg reserve "$reserved_files" --arg connections "$max_connections" --arg body "$request_body_limit" '{site_key:$site,socket_path:$socket,socket_mode:$mode,socket_owner:$owner,socket_group:$group,listen_backlog:$backlog,route_map:"/app/etc/harbor-relay/routes.map",limits_file:"/app/etc/harbor-relay/limits.conf",audit_db:"/app/var/commissioning-ledger.db",catalog_generation:$generation,open_files_soft:$fd,reserved_files:$reserve,max_connections:$connections,request_body_limit:$body}')"
-routes_json="$(jq -cs '.' "$routes_jsonl")"
-assertions_json="$(jq -cs '.' "$assertions_jsonl")"
-inputs_json="$(jq -cs '.' "$inputs_jsonl")"
-publication_json="$(jq -cn --arg rsha "$relay_sha" --argjson rbytes "$relay_bytes" --arg lsha "$limits_sha" --argjson lbytes "$limits_bytes" --arg msha "$routes_sha" --argjson mbytes "$routes_bytes" --arg asha "$window_plan_sha" --argjson abytes "$window_plan_bytes" --arg usha "$unit_sha" --argjson ubytes "$unit_bytes" --arg zero "$zero" '[{path:"/app/etc/harbor-relay/relay.conf",sha256:$rsha,bytes:$rbytes,mode:"0640"},{path:"/app/etc/harbor-relay/limits.conf",sha256:$lsha,bytes:$lbytes,mode:"0640"},{path:"/app/etc/harbor-relay/routes.map",sha256:$msha,bytes:$mbytes,mode:"0640"},{path:"/app/var/window-plan.json",sha256:$asha,bytes:$abytes,mode:"0640"},{path:"/etc/systemd/system/harbor-relay.service",sha256:$usha,bytes:$ubytes,mode:"0644"},{path:"/app/var/commissioning-ledger.db",sha256:$zero,bytes:0,mode:"0600"},{path:"/app/var/commissioning-manifest.json",sha256:$zero,bytes:0,mode:"0640"}]')"
-jq -cn --arg run "$run_id" --arg site "$site_key" --arg revision "$handbook_revision" --argjson generation "$generation" --argjson schedule_generation "$schedule_generation" --argjson configuration "$configuration_json" --argjson routes "$routes_json" --argjson assertions "$assertions_json" --argjson window_plan "$window_plan_json" --argjson inputs "$inputs_json" --argjson publication "$publication_json" '{run_id:$run,site_key:$site,handbook_revision:$revision,catalog_generation:$generation,schedule_generation:$schedule_generation,configuration:$configuration,routes:$routes,assertions:$assertions,window_plan:$window_plan,inputs:$inputs,publication:$publication}' > /app/var/commissioning-manifest.json
-chmod 0640 /app/var/commissioning-manifest.json
-chown $service_account:$service_group /app/var/commissioning-manifest.json
-: > /app/var/harbor-commissioning.lock
-chmod 0600 /app/var/harbor-commissioning.lock
-chown $service_account:$service_group /app/var/harbor-commissioning.lock
+type PatchSummary struct {
+	Honored              int
+	Inert                int
+	RestoredFingerprints []string
+	ContainmentNames     []string
+	SQL                  string
+}
 
-runuser -u "$service_account" -- /app/bin/harbor-relay --check-config /app/etc/harbor-relay/relay.conf
+// WithContainment folds the exposure containment set into the patch, appending
+// its rows after the warrant rows in common-name order.
+func WithContainment(s PatchSummary, names []string) PatchSummary {
+	s.ContainmentNames = append([]string{}, names...)
+	sort.Strings(s.ContainmentNames)
+	var b strings.Builder
+	b.WriteString(s.SQL)
+	for _, n := range s.ContainmentNames {
+		b.WriteString("INSERT OR IGNORE INTO distrust_name (common_name, source) VALUES ('" +
+			n + "', 'exposure_containment');\n")
+	}
+	s.SQL = b.String()
+	return s
+}
+
+type record struct {
+	id        string
+	kind      string
+	value     string
+	issuer    string
+	notBefore string
+	notAfter  string
+}
+
+func BuildPatch(dataDir string, base attest.Distrust) (attest.Distrust, PatchSummary) {
+	dbPath := filepath.Join(dataDir, "warrants", "warrants.db")
+	rows := sqliteQuery(dbPath, `SELECT warrant_id, target_kind, target_value, issuer_cn, `+
+		`not_before, not_after FROM distrust_warrant ORDER BY warrant_id ASC`)
+
+	quorum := warrantQuorum(dataDir)
+	evalTime := readEvalTime(dataDir)
+	custodians := custodianSet(dbPath)
+	endorsers := countingEndorsers(dbPath, custodians)
+	countermanded := countermandSet(dbPath)
+	authorities := authorityCNs(dataDir)
+	cascaded := authority.Set(dataDir, base.ByName)
+
+	postFP := map[string]bool{}
+	fpSet := map[string]bool{}
+	for _, f := range base.ByFP {
+		postFP[f] = true
+		fpSet[f] = true
+	}
+	nameSet := map[string]bool{}
+	for _, n := range base.ByName {
+		nameSet[n] = true
+	}
+
+	honored := 0
+	inert := 0
+	stmts := []string{"-- trust store remediation patch"}
+
+	for _, row := range rows {
+		w := record{id: row[0], kind: row[1], value: row[2], issuer: row[3],
+			notBefore: row[4], notAfter: row[5]}
+
+		if w.kind != "fingerprint" && w.kind != "common_name" {
+			inert++
+			continue
+		}
+		if w.notBefore > evalTime || evalTime > w.notAfter {
+			inert++
+			continue
+		}
+		if len(endorsers[w.id]) < quorum {
+			inert++
+			continue
+		}
+		if countermanded[w.id] {
+			inert++
+			continue
+		}
+		if !authorities[w.issuer] || cascaded[w.issuer] {
+			inert++
+			continue
+		}
+
+		honored++
+		switch w.kind {
+		case "fingerprint":
+			fpSet[w.value] = true
+			stmts = append(stmts,
+				"INSERT OR IGNORE INTO distrust_fingerprint (fingerprint, source) VALUES ('"+
+					w.value+"', 'warrant_honored');")
+		case "common_name":
+			nameSet[w.value] = true
+			stmts = append(stmts,
+				"INSERT OR IGNORE INTO distrust_name (common_name, source) VALUES ('"+
+					w.value+"', 'warrant_honored');")
+		}
+	}
+
+	var fps, names []string
+	recovered := []string{}
+	for f := range fpSet {
+		fps = append(fps, f)
+		if !postFP[f] {
+			recovered = append(recovered, f)
+		}
+	}
+	for n := range nameSet {
+		names = append(names, n)
+	}
+	sort.Strings(fps)
+	sort.Strings(names)
+	sort.Strings(recovered)
+
+	sqlText := strings.Join(stmts, "\n") + "\n"
+	return attest.Distrust{ByFP: fps, ByName: names}, PatchSummary{
+		Honored:              honored,
+		Inert:                inert,
+		RestoredFingerprints: recovered,
+		SQL:                  sqlText,
+	}
+}
+
+func warrantQuorum(dataDir string) int {
+	data, err := os.ReadFile(filepath.Join(dataDir, "remediation.policy"))
+	if err != nil {
+		return 1
+	}
+	section := ""
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = line[1 : len(line)-1]
+			continue
+		}
+		if section != "remediation" {
+			continue
+		}
+		key, val, found := strings.Cut(line, "=")
+		if !found || strings.TrimSpace(key) != "warrant_quorum" {
+			continue
+		}
+		if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil {
+			return n
+		}
+	}
+	return 1
+}
+
+func readEvalTime(dataDir string) string {
+	data, err := os.ReadFile(filepath.Join(dataDir, "eval_time.txt"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+type custodianTerm struct {
+	from  string
+	until string
+}
+
+func custodianSet(dbPath string) map[string]custodianTerm {
+	out := map[string]custodianTerm{}
+	for _, row := range sqliteQuery(dbPath,
+		`SELECT signer_id, role_from, role_until FROM authorized_signer WHERE role = 'custodian'`) {
+		out[row[0]] = custodianTerm{from: row[1], until: row[2]}
+	}
+	return out
+}
+
+// countingEndorsers maps a warrant to the distinct signers whose endorsement
+// counts, meaning the signer was rostered as a custodian at the moment it
+// signed. The term is compared against signed_at, never against eval_time.
+func countingEndorsers(dbPath string, custodians map[string]custodianTerm) map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	for _, row := range sqliteQuery(dbPath,
+		`SELECT warrant_id, signer_id, signed_at FROM warrant_countersignature`) {
+		warrantID, signer, signedAt := row[0], row[1], row[2]
+		term, rostered := custodians[signer]
+		if !rostered || signedAt < term.from || signedAt > term.until {
+			continue
+		}
+		if out[warrantID] == nil {
+			out[warrantID] = map[string]bool{}
+		}
+		out[warrantID][signer] = true
+	}
+	return out
+}
+
+func countermandSet(dbPath string) map[string]bool {
+	out := map[string]bool{}
+	for _, row := range sqliteQuery(dbPath, `SELECT warrant_id FROM warrant_countermand`) {
+		out[row[0]] = true
+	}
+	return out
+}
+
+func authorityCNs(dataDir string) map[string]bool {
+	out := map[string]bool{}
+	entries, err := os.ReadDir(filepath.Join(dataDir, "authorities"))
+	if err != nil {
+		return out
+	}
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".pem") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dataDir, "authorities", e.Name()))
+		if err != nil {
+			continue
+		}
+		block, _ := pem.Decode(raw)
+		if block == nil {
+			continue
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			continue
+		}
+		out[cert.Subject.CommonName] = true
+	}
+	return out
+}
+
+func sqliteQuery(dbPath, query string) [][]string {
+	cmd := exec.Command("sqlite3", dbPath, query)
+	cmd.Env = append(os.Environ(), "SQLITE_HEADER=off")
+	out, err := cmd.Output()
+	if err != nil {
+		panic(err)
+	}
+	text := strings.TrimSpace(string(out))
+	if text == "" {
+		return nil
+	}
+	var rows [][]string
+	for _, line := range strings.Split(text, "\n") {
+		rows = append(rows, strings.Split(line, "|"))
+	}
+	return rows
+}
+GOEOF
+
+cat > internal/policy/roundtrip.go <<'GOEOF'
+package policy
+
+import (
+	"bufio"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+)
+
+type Document struct {
+	Lines []string
+	Path  string
+}
+
+func Load(dataDir string) (*Document, error) {
+	policyPath := filepath.Join(dataDir, "remediation.policy")
+	data, err := os.ReadFile(policyPath)
+	if err != nil {
+		return nil, err
+	}
+	lines := []string{}
+	sc := bufio.NewScanner(strings.NewReader(string(data)))
+	for sc.Scan() {
+		lines = append(lines, sc.Text())
+	}
+	return &Document{Lines: lines, Path: policyPath}, nil
+}
+
+func ChainDepths(doc *Document) (int, int, error) {
+	inRemediation := false
+	minD, maxD := 0, 0
+	haveMin, haveMax := false, false
+	for _, line := range doc.Lines {
+		trim := strings.TrimSpace(line)
+		if trim == "[remediation]" {
+			inRemediation = true
+			continue
+		}
+		if strings.HasPrefix(trim, "[") && trim != "[remediation]" {
+			inRemediation = false
+		}
+		if !inRemediation || !strings.Contains(line, "=") {
+			continue
+		}
+		key, val, _ := strings.Cut(strings.TrimSpace(line), "=")
+		switch key {
+		case "min_chain_depth":
+			v, err := strconv.Atoi(val)
+			if err != nil {
+				return 0, 0, err
+			}
+			minD, haveMin = v, true
+		case "max_chain_depth":
+			v, err := strconv.Atoi(val)
+			if err != nil {
+				return 0, 0, err
+			}
+			maxD, haveMax = v, true
+		}
+	}
+	if !haveMin || !haveMax {
+		return 0, 0, fmt.Errorf("missing chain depth")
+	}
+	return minD, maxD, nil
+}
+
+func WriteRejected(outDir string, doc *Document) error {
+	var lines []string
+	lines = append(lines, doc.Lines...)
+	lines = append(lines, "[remediation_audit]")
+	lines = append(lines, "status=rejected")
+	lines = append(lines, "reason=contradictory_known_fields")
+	return os.WriteFile(filepath.Join(outDir, "remediated.policy"), []byte(strings.Join(lines, "\n")+"\n"), 0644)
+}
+
+func WriteRoundtrip(outDir string, doc *Document) error {
+	return os.WriteFile(filepath.Join(outDir, "remediated.policy"), []byte(strings.Join(doc.Lines, "\n")+"\n"), 0644)
+}
+GOEOF
+
+cat > internal/provenance/join.go <<'GOEOF'
+package provenance
+
+import (
+	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"trustremediator/internal/attest"
+)
+
+func accessMinute(ts string) string {
+	if len(ts) >= 16 {
+		return ts[:16]
+	}
+	return ts
+}
+
+func joinKey(certFP, serviceID, accessTS string) string {
+	raw := certFP + ":" + serviceID + ":" + accessMinute(accessTS)
+	h := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(h[:])
+}
+
+type fsRec struct {
+	CertFP    string
+	ServiceID string
+	AccessTS  string
+}
+
+type dbRec struct {
+	CertFP    string
+	ServiceID string
+	AccessTS  string
+}
+
+func parseJournalLine(line string) fsRec {
+	parts := strings.Fields(line)
+	kv := map[string]string{}
+	for _, p := range parts[1:] {
+		if k, v, ok := strings.Cut(p, "="); ok {
+			kv[k] = v
+		}
+	}
+	return fsRec{
+		CertFP:    kv["cert_fp"],
+		ServiceID: kv["service"],
+		AccessTS:  kv["ts"],
+	}
+}
+
+func Build(dataDir string) []attest.ProvEntry {
+	var fsRecs []fsRec
+	fh, err := os.Open(filepath.Join(dataDir, "access", "access.journal"))
+	if err != nil {
+		panic(err)
+	}
+	defer fh.Close()
+	sc := bufio.NewScanner(fh)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || !strings.HasPrefix(line, "ACCESS") {
+			continue
+		}
+		fsRecs = append(fsRecs, parseJournalLine(line))
+	}
+
+	dbRows := sqliteQuery(filepath.Join(dataDir, "access", "access_audit.db"),
+		`SELECT cert_fp, service_id, access_ts FROM access_records`)
+	var dbRecs []dbRec
+	for _, row := range dbRows {
+		dbRecs = append(dbRecs, dbRec{CertFP: row[0], ServiceID: row[1], AccessTS: row[2]})
+	}
+
+	type tuple struct {
+		cert, svc, minute string
+	}
+	fsKeys := map[tuple]string{}
+	dbKeys := map[tuple]string{}
+	for _, r := range fsRecs {
+		minute := accessMinute(r.AccessTS)
+		t := tuple{r.CertFP, r.ServiceID, minute}
+		fsKeys[t] = joinKey(r.CertFP, r.ServiceID, r.AccessTS)
+	}
+	for _, r := range dbRecs {
+		minute := accessMinute(r.AccessTS)
+		t := tuple{r.CertFP, r.ServiceID, minute}
+		dbKeys[t] = joinKey(r.CertFP, r.ServiceID, r.AccessTS)
+	}
+
+	all := map[tuple]bool{}
+	for t := range fsKeys {
+		all[t] = true
+	}
+	for t := range dbKeys {
+		all[t] = true
+	}
+	var tuples []tuple
+	for t := range all {
+		tuples = append(tuples, t)
+	}
+	sort.Slice(tuples, func(i, j int) bool {
+		if tuples[i].cert != tuples[j].cert {
+			return tuples[i].cert < tuples[j].cert
+		}
+		if tuples[i].svc != tuples[j].svc {
+			return tuples[i].svc < tuples[j].svc
+		}
+		return tuples[i].minute < tuples[j].minute
+	})
+
+	var out []attest.ProvEntry
+	for _, t := range tuples {
+		_, inFS := fsKeys[t]
+		_, inDB := dbKeys[t]
+		status := "joined"
+		if inFS && !inDB {
+			status = "fs_only"
+		} else if !inFS && inDB {
+			status = "db_only"
+		}
+		jk := fsKeys[t]
+		if jk == "" {
+			jk = dbKeys[t]
+		}
+		out = append(out, attest.ProvEntry{
+			CertFP: t.cert, ServiceID: t.svc, AccessMinute: t.minute,
+			JoinKey: jk, JoinStatus: status,
+		})
+	}
+	return out
+}
+
+func sqliteQuery(dbPath, query string) [][]string {
+	cmd := exec.Command("sqlite3", dbPath, query)
+	cmd.Env = append(os.Environ(), "SQLITE_HEADER=off")
+	out, err := cmd.Output()
+	if err != nil {
+		panic(err)
+	}
+	text := strings.TrimSpace(string(out))
+	if text == "" {
+		return nil
+	}
+	var rows [][]string
+	for _, line := range strings.Split(text, "\n") {
+		rows = append(rows, strings.Split(line, "|"))
+	}
+	return rows
+}
+GOEOF
+
+cat > internal/pki/validate.go <<'GOEOF'
+package pki
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
+	"encoding/pem"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"trustremediator/internal/attest"
+	"trustremediator/internal/authority"
+	"trustremediator/internal/truststore"
+)
+
+var rank = map[string]int{"acceptable": 0, "not_yet_valid": 1, "expired": 2, "name_constraint": 3, "revoked": 4}
+
+// PathInfo is one anchored certification path, described by the subject common
+// names of its members with the leaf first.
+type PathInfo struct {
+	Members []string
+	// Sound reports whether the path would be accepted on its own merits,
+	// ignoring distrust entirely.
+	Sound bool
+}
+
+// AnchoredPaths returns, per leaf common name, every anchored path that leaf has.
+func AnchoredPaths(dataDir string) map[string][]PathInfo {
+	authorities := loadDir(filepath.Join(dataDir, "authorities"))
+	leaves := loadDir(filepath.Join(dataDir, "leaves"))
+	_, trustedMap, err := truststore.Load(dataDir)
+	if err != nil {
+		panic(err)
+	}
+	tb, err := os.ReadFile(filepath.Join(dataDir, "eval_time.txt"))
+	if err != nil {
+		panic(err)
+	}
+	T, err := time.Parse(time.RFC3339, strings.TrimSpace(string(tb)))
+	if err != nil {
+		panic(err)
+	}
+
+	out := map[string][]PathInfo{}
+	for _, leaf := range leaves {
+		var all [][]*x509.Certificate
+		enumeratePaths(leaf, []*x509.Certificate{leaf}, map[string]bool{cn(leaf): true}, &all, authorities)
+		infos := []PathInfo{}
+		for _, p := range all {
+			if !trustedMap[fp(p[len(p)-1])] {
+				continue
+			}
+			names := make([]string, 0, len(p))
+			for _, m := range p {
+				names = append(names, cn(m))
+			}
+			infos = append(infos, PathInfo{Members: names, Sound: soundPath(p, T)})
+		}
+		out[cn(leaf)] = infos
+	}
+	return out
+}
+
+func soundPath(chain []*x509.Certificate, T time.Time) bool {
+	if nameViolation(chain) != nil {
+		return false
+	}
+	for _, m := range chain {
+		if m.NotAfter.Before(T) || m.NotBefore.After(T) {
+			return false
+		}
+	}
+	return true
+}
+
+func enumeratePaths(cur *x509.Certificate, chain []*x509.Certificate, seen map[string]bool,
+	out *[][]*x509.Certificate, authorities []*x509.Certificate) {
+	if selfSigned(cur) {
+		cp := make([]*x509.Certificate, len(chain))
+		copy(cp, chain)
+		*out = append(*out, cp)
+		return
+	}
+	for _, a := range authorities {
+		if !bytes.Equal(a.RawSubject, cur.RawIssuer) || !verify(cur, a) || seen[cn(a)] {
+			continue
+		}
+		ns := map[string]bool{}
+		for k := range seen {
+			ns[k] = true
+		}
+		ns[cn(a)] = true
+		enumeratePaths(a, append(append([]*x509.Certificate{}, chain...), a), ns, out, authorities)
+	}
+}
+
+func nameViolation(chain []*x509.Certificate) *int {
+	sans := chain[0].DNSNames
+	var best *int
+	for i := 1; i < len(chain); i++ {
+		ca := chain[i]
+		bad := false
+		if len(ca.PermittedDNSDomains) > 0 {
+			for _, s := range sans {
+				ok := false
+				for _, e := range ca.PermittedDNSDomains {
+					if dnsMatch(e, s) {
+						ok = true
+						break
+					}
+				}
+				if !ok {
+					bad = true
+				}
+			}
+		}
+		for _, s := range sans {
+			for _, e := range ca.ExcludedDNSDomains {
+				if dnsMatch(e, s) {
+					bad = true
+				}
+			}
+		}
+		if bad && best == nil {
+			d := i
+			best = &d
+		}
+	}
+	return best
+}
+
+func ValidateCerts(dataDir string, eff attest.Distrust, containment []string) []attest.Verdict {
+	postMigration, trustedMap, err := truststore.Load(dataDir)
+	if err != nil {
+		panic(err)
+	}
+	cascaded := authority.Set(dataDir, append(append([]string{}, postMigration.ByName...), containment...))
+	authorities := loadDir(filepath.Join(dataDir, "authorities"))
+	leaves := loadDir(filepath.Join(dataDir, "leaves"))
+	byFP := map[string]bool{}
+	for _, f := range eff.ByFP {
+		byFP[f] = true
+	}
+	byName := map[string]bool{}
+	for _, n := range eff.ByName {
+		byName[n] = true
+	}
+	tb, err := os.ReadFile(filepath.Join(dataDir, "eval_time.txt"))
+	if err != nil {
+		panic(err)
+	}
+	T, err := time.Parse(time.RFC3339, strings.TrimSpace(string(tb)))
+	if err != nil {
+		panic(err)
+	}
+
+	var enumerate func(cur *x509.Certificate, chain []*x509.Certificate, seen map[string]bool, out *[][]*x509.Certificate)
+	enumerate = func(cur *x509.Certificate, chain []*x509.Certificate, seen map[string]bool, out *[][]*x509.Certificate) {
+		if selfSigned(cur) {
+			cp := make([]*x509.Certificate, len(chain))
+			copy(cp, chain)
+			*out = append(*out, cp)
+			return
+		}
+		for _, a := range authorities {
+			if !bytes.Equal(a.RawSubject, cur.RawIssuer) {
+				continue
+			}
+			if !verify(cur, a) {
+				continue
+			}
+			if seen[cn(a)] {
+				continue
+			}
+			ns := map[string]bool{}
+			for k := range seen {
+				ns[k] = true
+			}
+			ns[cn(a)] = true
+			enumerate(a, append(append([]*x509.Certificate{}, chain...), a), ns, out)
+		}
+	}
+
+	taintedMembers := func(chain []*x509.Certificate) []string {
+		var tm []string
+		for _, m := range chain {
+			if byFP[fp(m)] || byName[cn(m)] || cascaded[cn(m)] {
+				tm = append(tm, fp(m))
+			}
+		}
+		sort.Strings(tm)
+		return tm
+	}
+
+	nameViolationDepth := func(chain []*x509.Certificate) *int {
+		sans := chain[0].DNSNames
+		var best *int
+		for i := 1; i < len(chain); i++ {
+			ca := chain[i]
+			bad := false
+			if len(ca.PermittedDNSDomains) > 0 {
+				for _, s := range sans {
+					ok := false
+					for _, e := range ca.PermittedDNSDomains {
+						if dnsMatch(e, s) {
+							ok = true
+							break
+						}
+					}
+					if !ok {
+						bad = true
+					}
+				}
+			}
+			if len(ca.ExcludedDNSDomains) > 0 {
+				for _, s := range sans {
+					for _, e := range ca.ExcludedDNSDomains {
+						if dnsMatch(e, s) {
+							bad = true
+						}
+					}
+				}
+			}
+			if bad {
+				d := i
+				if best == nil {
+					best = &d
+				}
+			}
+		}
+		return best
+	}
+
+	status := func(chain []*x509.Certificate) (string, []string, *int) {
+		if tm := taintedMembers(chain); len(tm) > 0 {
+			return "revoked", tm, nil
+		}
+		if d := nameViolationDepth(chain); d != nil {
+			return "name_constraint", []string{}, d
+		}
+		for _, m := range chain {
+			if m.NotAfter.Before(T) {
+				return "expired", []string{}, nil
+			}
+		}
+		for _, m := range chain {
+			if m.NotBefore.After(T) {
+				return "not_yet_valid", []string{}, nil
+			}
+		}
+		return "acceptable", []string{}, nil
+	}
+
+	fpTuple := func(chain []*x509.Certificate) string {
+		var s []string
+		for _, m := range chain {
+			s = append(s, fp(m))
+		}
+		return strings.Join(s, ",")
+	}
+
+	var results []attest.Verdict
+	for _, leaf := range leaves {
+		var allPaths [][]*x509.Certificate
+		seen := map[string]bool{cn(leaf): true}
+		enumerate(leaf, []*x509.Certificate{leaf}, seen, &allPaths)
+
+		var anchored [][]*x509.Certificate
+		for _, p := range allPaths {
+			if trustedMap[fp(p[len(p)-1])] {
+				anchored = append(anchored, p)
+			}
+		}
+
+		if len(anchored) == 0 {
+			nameIssuer := false
+			for _, a := range authorities {
+				if bytes.Equal(a.RawSubject, leaf.RawIssuer) {
+					nameIssuer = true
+					break
+				}
+			}
+			reason := "no_path"
+			if len(allPaths) == 0 && nameIssuer {
+				reason = "bad_signature"
+			}
+			results = append(results, attest.Verdict{
+				Leaf: cn(leaf), Decision: "rejected", Reason: reason,
+				SelectedPath: []string{fp(leaf)}, PathsConsidered: 0,
+				ConstraintDepth: nil, TaintedMembers: []string{},
+			})
+			continue
+		}
+
+		bestIdx := 0
+		bestSt, bestTm, bestDepth := status(anchored[0])
+		bestKey := [3]interface{}{rank[bestSt], len(anchored[0]), fpTuple(anchored[0])}
+		for i := 1; i < len(anchored); i++ {
+			st, tm, dp := status(anchored[i])
+			key := [3]interface{}{rank[st], len(anchored[i]), fpTuple(anchored[i])}
+			less := false
+			if key[0].(int) != bestKey[0].(int) {
+				less = key[0].(int) < bestKey[0].(int)
+			} else if key[1].(int) != bestKey[1].(int) {
+				less = key[1].(int) < bestKey[1].(int)
+			} else {
+				less = key[2].(string) < bestKey[2].(string)
+			}
+			if less {
+				bestIdx, bestSt, bestTm, bestDepth, bestKey = i, st, tm, dp, key
+			}
+		}
+		chain := anchored[bestIdx]
+		var sp []string
+		for _, m := range chain {
+			sp = append(sp, fp(m))
+		}
+		dec := "rejected"
+		reason := bestSt
+		if bestSt == "acceptable" {
+			dec, reason = "accepted", "valid"
+		}
+		var depth *int
+		if bestSt == "name_constraint" {
+			depth = bestDepth
+		}
+		if bestTm == nil {
+		 bestTm = []string{}
+		}
+		results = append(results, attest.Verdict{
+			Leaf: cn(leaf), Decision: dec, Reason: reason, SelectedPath: sp,
+			PathsConsidered: len(anchored), ConstraintDepth: depth, TaintedMembers: bestTm,
+		})
+	}
+
+	sort.Slice(results, func(i, j int) bool { return results[i].Leaf < results[j].Leaf })
+	return results
+}
+
+func fp(c *x509.Certificate) string {
+	h := sha256.Sum256(c.Raw)
+	return hex.EncodeToString(h[:])
+}
+
+func cn(c *x509.Certificate) string { return c.Subject.CommonName }
+
+func verify(child, parent *x509.Certificate) bool {
+	return parent.CheckSignature(child.SignatureAlgorithm, child.RawTBSCertificate, child.Signature) == nil
+}
+
+func selfSigned(c *x509.Certificate) bool {
+	return bytes.Equal(c.RawSubject, c.RawIssuer) && verify(c, c)
+}
+
+func loadDir(dir string) []*x509.Certificate {
+	files, _ := filepath.Glob(filepath.Join(dir, "*.pem"))
+	sort.Strings(files)
+	var out []*x509.Certificate
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			panic(err)
+		}
+		blk, _ := pem.Decode(b)
+		if blk == nil {
+			panic("bad pem: " + f)
+		}
+		c, err := x509.ParseCertificate(blk.Bytes)
+		if err != nil {
+			panic(err)
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+func dnsMatch(entry, dns string) bool {
+	return dns == entry || strings.HasSuffix(dns, "."+entry)
+}
+GOEOF
+
+mkdir -p internal/exposure
+cat > internal/exposure/contain.go <<'GOEOF'
+package exposure
+
+import (
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"trustremediator/internal/attest"
+	"trustremediator/internal/authority"
+	"trustremediator/internal/pki"
+	"trustremediator/internal/provenance"
+	"trustremediator/internal/truststore"
+)
+
+type Subject struct {
+	Incident    string
+	Name        string
+	Disposition string
+}
+
+func Load(dataDir string) []Subject {
+	raw, err := os.ReadFile(filepath.Join(dataDir, "exposure.tsv"))
+	if err != nil {
+		panic(err)
+	}
+	var subs []Subject
+	for i, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
+		if i == 0 {
+			continue
+		}
+		cols := strings.Split(line, "\t")
+		if len(cols) != 3 {
+			panic("bad exposure row: " + line)
+		}
+		subs = append(subs, Subject{Incident: cols[0], Name: cols[1], Disposition: cols[2]})
+	}
+	return subs
+}
+
+// Select returns the smallest containment set, and among the smallest the one
+// that comes first in common-name order.
+func Select(dataDir string, eff attest.Distrust) []string {
+	subs := Load(dataDir)
+	paths := pki.AnchoredPaths(dataDir)
+
+	post, _, err := truststore.Load(dataDir)
+	if err != nil {
+		panic(err)
+	}
+	standing := authority.Set(dataDir, post.ByName)
+	for _, n := range eff.ByName {
+		standing[n] = true
+	}
+
+	// A path only needs cutting, and only counts as a survivor, while it is live.
+	live := map[string][][]string{}
+	for _, s := range subs {
+		for _, p := range paths[s.Name] {
+			if !p.Sound {
+				continue
+			}
+			tainted := false
+			for _, m := range p.Members {
+				if standing[m] {
+					tainted = true
+					break
+				}
+			}
+			if !tainted {
+				live[s.Name] = append(live[s.Name], p.Members)
+			}
+		}
+	}
+
+	var contain, preserve []string
+	compromised := map[string]bool{}
+	for _, cn := range provenance.CompromisedLeaves(dataDir) {
+		compromised[cn] = true
+	}
+	for _, s := range subs {
+		switch s.Disposition {
+		case "contain":
+			contain = append(contain, s.Name)
+		case "preserve":
+			if !compromised[s.Name] {
+				preserve = append(preserve, s.Name)
+			}
+		}
+	}
+	for cn := range compromised {
+		contain = append(contain, cn)
+	}
+	sort.Strings(contain)
+	contain = dedupeSorted(contain)
+
+	for _, name := range contain {
+		if _, ok := live[name]; ok {
+			continue
+		}
+		for _, p := range paths[name] {
+			if !p.Sound {
+				continue
+			}
+			tainted := false
+			for _, m := range p.Members {
+				if standing[m] {
+					tainted = true
+					break
+				}
+			}
+			if !tainted {
+				live[name] = append(live[name], p.Members)
+			}
+		}
+	}
+
+	edges := authority.Edges(dataDir)
+	candidates := authority.Names(dataDir)
+
+	feasible := func(set []string) bool {
+		cascaded := closure(edges, set)
+		for _, name := range contain {
+			for _, p := range live[name] {
+				if !hits(cascaded, p) {
+					return false
+				}
+			}
+		}
+		for _, name := range preserve {
+			survived := false
+			for _, p := range live[name] {
+				if !hits(cascaded, p) {
+					survived = true
+					break
+				}
+			}
+			if !survived {
+				return false
+			}
+		}
+		return true
+	}
+
+	// Smallest first, and within a size the first combination in name order,
+	// which is what makes the answer unique.
+	for size := 0; size <= len(candidates); size++ {
+		var found []string
+		combinations(candidates, size, func(set []string) bool {
+			if feasible(set) {
+				found = append([]string{}, set...)
+				return true
+			}
+			return false
+		})
+		if found != nil {
+			return found
+		}
+	}
+	panic("no containment set satisfies the incident")
+}
+
+func closure(edges map[string][]string, seed []string) map[string]bool {
+	out := map[string]bool{}
+	stack := []string{}
+	for _, s := range seed {
+		if !out[s] {
+			out[s] = true
+			stack = append(stack, s)
+		}
+	}
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		for _, kid := range edges[cur] {
+			if !out[kid] {
+				out[kid] = true
+				stack = append(stack, kid)
+			}
+		}
+	}
+	return out
+}
+
+func hits(set map[string]bool, path []string) bool {
+	for _, m := range path {
+		if set[m] {
+			return true
+		}
+	}
+	return false
+}
+
+// combinations walks size-sized subsets in ascending index order, so the first
+// one accepted by stop is the first in name order.
+func combinations(items []string, size int, stop func([]string) bool) {
+	cur := make([]string, size)
+	var rec func(start, depth int) bool
+	rec = func(start, depth int) bool {
+		if depth == size {
+			return stop(cur)
+		}
+		for i := start; i <= len(items)-(size-depth); i++ {
+			cur[depth] = items[i]
+			if rec(i+1, depth+1) {
+				return true
+			}
+		}
+		return false
+	}
+	rec(0, 0)
+}
+
+func dedupeSorted(items []string) []string {
+	if len(items) == 0 {
+		return items
+	}
+	sort.Strings(items)
+	out := []string{items[0]}
+	for _, it := range items[1:] {
+		if it != out[len(out)-1] {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+GOEOF
+
+cat > internal/provenance/signing.go <<'GOEOF'
+package provenance
+
+import (
+	"bufio"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
+	"encoding/pem"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"trustremediator/internal/attest"
+)
+
+type signEvent struct {
+	CertFP   string
+	SignerID string
+	EventTS  string
+}
+
+func journalPaths(dataDir string) []string {
+	paths := []string{filepath.Join(dataDir, "access", "access.journal")}
+	held := filepath.Join(dataDir, "access", "held_out.journal")
+	if _, err := os.Stat(held); err == nil {
+		paths = append(paths, held)
+	}
+	return paths
+}
+
+func parseSignLine(line string) signEvent {
+	parts := strings.Fields(line)
+	kv := map[string]string{}
+	for _, p := range parts[1:] {
+		if k, v, ok := strings.Cut(p, "="); ok {
+			kv[k] = v
+		}
+	}
+	return signEvent{CertFP: kv["cert_fp"], SignerID: kv["signer"], EventTS: kv["ts"]}
+}
+
+func loadSignEvents(dataDir string) []signEvent {
+	var out []signEvent
+	for _, path := range journalPaths(dataDir) {
+		fh, err := os.Open(path)
+		if err != nil {
+			panic(err)
+		}
+		sc := bufio.NewScanner(fh)
+		for sc.Scan() {
+			line := strings.TrimSpace(sc.Text())
+			if line == "" || !strings.HasPrefix(line, "SIGN") {
+				continue
+			}
+			out = append(out, parseSignLine(line))
+		}
+		fh.Close()
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CertFP != out[j].CertFP {
+			return out[i].CertFP < out[j].CertFP
+		}
+		if out[i].SignerID != out[j].SignerID {
+			return out[i].SignerID < out[j].SignerID
+		}
+		return out[i].EventTS < out[j].EventTS
+	})
+	return out
+}
+
+func reconcileKey(certFP, signerID, eventTS string) string {
+	raw := certFP + ":" + signerID + ":" + eventTS
+	h := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(h[:])
+}
+
+func custodianTerms(dataDir string) map[string][2]string {
+	out := map[string][2]string{}
+	for _, row := range sqliteQuery(filepath.Join(dataDir, "warrants", "warrants.db"),
+		`SELECT signer_id, role_from, role_until FROM authorized_signer WHERE role = 'custodian'`) {
+		out[row[0]] = [2]string{row[1], row[2]}
+	}
+	return out
+}
+
+func inWindow(signerID, eventTS string, terms map[string][2]string) bool {
+	term, ok := terms[signerID]
+	if !ok {
+		return false
+	}
+	return term[0] <= eventTS && eventTS <= term[1]
+}
+
+func leafFPToCN(dataDir string) map[string]string {
+	out := map[string]string{}
+	dir := filepath.Join(dataDir, "leaves")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return out
+	}
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".pem") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		block, _ := pem.Decode(raw)
+		if block == nil {
+			continue
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			continue
+		}
+		h := sha256.Sum256(cert.Raw)
+		fp := hex.EncodeToString(h[:])
+		out[fp] = cert.Subject.CommonName
+	}
+	return out
+}
+
+func SigningReconcile(dataDir string) ([]attest.SignEntry, string, []string) {
+	terms := custodianTerms(dataDir)
+	events := loadSignEvents(dataDir)
+	fpToCN := leafFPToCN(dataDir)
+	compromised := map[string]bool{}
+	var entries []attest.SignEntry
+	h := sha256.New()
+	for _, ev := range events {
+		rk := reconcileKey(ev.CertFP, ev.SignerID, ev.EventTS)
+		status := "in_window"
+		if !inWindow(ev.SignerID, ev.EventTS, terms) {
+			status = "out_of_window"
+			if cn, ok := fpToCN[ev.CertFP]; ok {
+				compromised[cn] = true
+			}
+		}
+		_, _ = h.Write([]byte(rk))
+		entries = append(entries, attest.SignEntry{
+			CertFP: ev.CertFP, SignerID: ev.SignerID, EventTS: ev.EventTS,
+			ReconcileKey: rk, ReconcileStatus: status,
+		})
+	}
+	digest := hex.EncodeToString(h.Sum(nil))
+	var leaves []string
+	for cn := range compromised {
+		leaves = append(leaves, cn)
+	}
+	sort.Strings(leaves)
+	return entries, digest, leaves
+}
+
+func CompromisedLeaves(dataDir string) []string {
+	_, _, leaves := SigningReconcile(dataDir)
+	return leaves
+}
+GOEOF
+
+cat > internal/attest/types.go <<'GOEOF'
+package attest
+
+type Distrust struct {
+	ByFP   []string
+	ByName []string
+}
+
+type Verdict struct {
+	Leaf            string
+	Decision        string
+	Reason          string
+	SelectedPath    []string
+	PathsConsidered int
+	ConstraintDepth *int
+	TaintedMembers  []string
+}
+
+type ProvEntry struct {
+	CertFP       string
+	ServiceID    string
+	AccessMinute string
+	JoinKey      string
+	JoinStatus   string
+}
+
+type SignEntry struct {
+	CertFP          string
+	SignerID        string
+	EventTS         string
+	ReconcileKey    string
+	ReconcileStatus string
+}
+
+func VerdictMap(v Verdict) map[string]interface{} {
+	return map[string]interface{}{
+		"constraint_violation_depth": v.ConstraintDepth,
+		"decision":                   v.Decision,
+		"leaf":                       v.Leaf,
+		"paths_considered":           v.PathsConsidered,
+		"reason":                     v.Reason,
+		"selected_path":              v.SelectedPath,
+		"tainted_members":            v.TaintedMembers,
+	}
+}
+
+func ProvMap(p ProvEntry) map[string]interface{} {
+	return map[string]interface{}{
+		"access_minute": p.AccessMinute,
+		"cert_fp":       p.CertFP,
+		"join_key":      p.JoinKey,
+		"join_status":   p.JoinStatus,
+		"service_id":    p.ServiceID,
+	}
+}
+
+func VerdictSlice(items []Verdict) []map[string]interface{} {
+	out := make([]map[string]interface{}, len(items))
+	for i, v := range items {
+		out[i] = VerdictMap(v)
+	}
+	return out
+}
+
+func ProvSlice(items []ProvEntry) []map[string]interface{} {
+	out := make([]map[string]interface{}, len(items))
+	for i, p := range items {
+		out[i] = ProvMap(p)
+	}
+	return out
+}
+GOEOF
+
+cat > internal/output/write.go <<'GOEOF'
+package output
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"trustremediator/internal/attest"
+	"trustremediator/internal/warrant"
+)
+
+func CopyAndApplyPatch(dataDir, outDir, sql string) error {
+	src := filepath.Join(dataDir, "trust_store.db")
+	dst := filepath.Join(outDir, "remediated_trust_store.db")
+	in, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(dst, in, 0644); err != nil {
+		return err
+	}
+	if strings.TrimSpace(sql) == "" || sql == "-- trust store remediation patch\n" {
+		return nil
+	}
+	tmpSQL := filepath.Join(outDir, ".apply.sql")
+	if err := os.WriteFile(tmpSQL, []byte(sql), 0644); err != nil {
+		return err
+	}
+	cmd := exec.Command("sqlite3", dst, fmt.Sprintf(".read %s", tmpSQL))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("apply patch: %v: %s", err, out)
+	}
+	_ = os.Remove(tmpSQL)
+	return nil
+}
+
+func WriteSQL(outDir, sql string) error {
+	return os.WriteFile(filepath.Join(outDir, "remediation.sql"), []byte(sql), 0644)
+}
+
+func WriteAccessTSV(outDir string, entries []attest.ProvEntry) error {
+	var b strings.Builder
+	b.WriteString("cert_fp\tservice_id\taccess_minute\tjoin_key\tjoin_status\n")
+	for _, e := range entries {
+		fmt.Fprintf(&b, "%s\t%s\t%s\t%s\t%s\n", e.CertFP, e.ServiceID, e.AccessMinute, e.JoinKey, e.JoinStatus)
+	}
+	return os.WriteFile(filepath.Join(outDir, "access_evidence.tsv"), []byte(b.String()), 0644)
+}
+
+func WriteSigningTSV(outDir string, entries []attest.SignEntry) error {
+	var b strings.Builder
+	b.WriteString("cert_fp\tsigner_id\tevent_ts\treconcile_key\treconcile_status\n")
+	for _, e := range entries {
+		fmt.Fprintf(&b, "%s\t%s\t%s\t%s\t%s\n",
+			e.CertFP, e.SignerID, e.EventTS, e.ReconcileKey, e.ReconcileStatus)
+	}
+	return os.WriteFile(filepath.Join(outDir, "signing_reconcile.tsv"), []byte(b.String()), 0644)
+}
+
+func WriteCertTSV(outDir string, verdicts []attest.Verdict) error {
+	var b strings.Builder
+	b.WriteString("leaf\tdecision\treason\tpaths_considered\tconstraint_depth\ttainted_members\tselected_path\n")
+	for _, v := range verdicts {
+		depth := ""
+		if v.ConstraintDepth != nil {
+			depth = fmt.Sprintf("%d", *v.ConstraintDepth)
+		}
+		tm := strings.Join(v.TaintedMembers, ",")
+		sp := strings.Join(v.SelectedPath, ",")
+		fmt.Fprintf(&b, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+			v.Leaf, v.Decision, v.Reason, v.PathsConsidered, depth, tm, sp)
+	}
+	return os.WriteFile(filepath.Join(outDir, "certificate_decisions.tsv"), []byte(b.String()), 0644)
+}
+
+func WriteReceipt(outDir string, summary warrant.PatchSummary, journalDigest string, compromised []string) error {
+	sqlBytes, _ := os.ReadFile(filepath.Join(outDir, "remediation.sql"))
+	accessBytes, _ := os.ReadFile(filepath.Join(outDir, "access_evidence.tsv"))
+	signBytes, _ := os.ReadFile(filepath.Join(outDir, "signing_reconcile.tsv"))
+	certBytes, _ := os.ReadFile(filepath.Join(outDir, "certificate_decisions.tsv"))
+	h := sha256.New()
+	for _, chunk := range [][]byte{sqlBytes, accessBytes, signBytes, certBytes} {
+		_, _ = h.Write(chunk)
+	}
+	digest := hex.EncodeToString(h.Sum(nil))
+	restored := strings.Join(summary.RestoredFingerprints, ",")
+	comp := strings.Join(compromised, ",")
+	var b strings.Builder
+	fmt.Fprintf(&b, "warrants_honored=%d\n", summary.Honored)
+	fmt.Fprintf(&b, "warrants_inert=%d\n", summary.Inert)
+	fmt.Fprintf(&b, "restored_fingerprints=%s\n", restored)
+	fmt.Fprintf(&b, "containment_names=%s\n", strings.Join(summary.ContainmentNames, ","))
+	fmt.Fprintf(&b, "containment_size=%d\n", len(summary.ContainmentNames))
+	fmt.Fprintf(&b, "journal_reconcile_digest=%s\n", journalDigest)
+	fmt.Fprintf(&b, "compromised_leaves=%s\n", comp)
+	fmt.Fprintf(&b, "artifact_digest=%s\n", digest)
+	return os.WriteFile(filepath.Join(outDir, "audit_receipt.txt"), []byte(b.String()), 0644)
+}
+
+func FileDigest(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+GOEOF
+
+cat > cmd/trust-attest/main.go <<'GOEOF'
+package main
+
+import (
+	"flag"
+	"fmt"
+	"os"
+	"sort"
+
+	"trustremediator/internal/exposure"
+	"trustremediator/internal/output"
+	"trustremediator/internal/pki"
+	"trustremediator/internal/policy"
+	"trustremediator/internal/provenance"
+	"trustremediator/internal/truststore"
+	"trustremediator/internal/warrant"
+)
+
+func main() {
+	incident := flag.String("incident", "", "incident evidence directory")
+	writeDir := flag.String("write", "", "output directory")
+	flag.Parse()
+	if *incident == "" || *writeDir == "" {
+		fmt.Fprintf(os.Stderr, "usage: trust_attest --incident <dir> --write <dir>\n")
+		os.Exit(1)
+	}
+	dataDir := *incident
+	outDir := *writeDir
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		panic(err)
+	}
+
+	policyDoc, err := policy.Load(dataDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "read policy: %v\n", err)
+		os.Exit(1)
+	}
+
+	minD, maxD, perr := policy.ChainDepths(policyDoc)
+	if perr != nil {
+		_ = policy.WriteRejected(outDir, policyDoc)
+		os.Exit(2)
+	}
+	if minD > maxD {
+		_ = policy.WriteRejected(outDir, policyDoc)
+		os.Exit(2)
+	}
+
+	base, _, err := truststore.Load(dataDir)
+	if err != nil {
+		panic(err)
+	}
+
+	eff, patchSummary := warrant.BuildPatch(dataDir, base)
+	signEntries, journalDigest, compromised := provenance.SigningReconcile(dataDir)
+	contained := exposure.Select(dataDir, eff)
+	patchSummary = warrant.WithContainment(patchSummary, contained)
+	eff.ByName = append(eff.ByName, contained...)
+	sort.Strings(eff.ByName)
+
+	prov := provenance.Build(dataDir)
+	verdicts := pki.ValidateCerts(dataDir, eff, contained)
+
+	if err := policy.WriteRoundtrip(outDir, policyDoc); err != nil {
+		panic(err)
+	}
+	if err := output.WriteSQL(outDir, patchSummary.SQL); err != nil {
+		panic(err)
+	}
+	if err := output.CopyAndApplyPatch(dataDir, outDir, patchSummary.SQL); err != nil {
+		panic(err)
+	}
+	if err := output.WriteAccessTSV(outDir, prov); err != nil {
+		panic(err)
+	}
+	if err := output.WriteSigningTSV(outDir, signEntries); err != nil {
+		panic(err)
+	}
+	if err := output.WriteCertTSV(outDir, verdicts); err != nil {
+		panic(err)
+	}
+	if err := output.WriteReceipt(outDir, patchSummary, journalDigest, compromised); err != nil {
+		panic(err)
+	}
+}
+GOEOF
+
+make
+touch build/trust_attest
+./build/trust_attest --incident /app/data --write /app/output

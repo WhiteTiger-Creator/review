@@ -5,12 +5,12 @@ author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
 category = "system-administration"
-subcategories = ["long_context", "tool_specific", "api_integration", "db_interaction"]
+subcategories = ["db_interaction"]
 number_of_milestones = 0
 codebase_size = "small"
-languages = ["bash", "sql", "python"]
-tags = ["systemd", "unix-sockets", "sqlite", "maintenance-window", "service-accounts", "configuration-management"]
-expert_time_estimate_min = 240
+languages = ["go", "bash"]
+tags = ["distrust-warrants", "trust-store", "provenance", "x509", "policy-roundtrip"]
+expert_time_estimate_min = 180
 junior_time_estimate_min = 480
 
 [verifier]
@@ -20,11 +20,8 @@ timeout_sec = 600.0
 timeout_sec = 1800.0
 
 [environment]
-build_timeout_sec = 900.0
-docker_flags = []
+allow_internet = true
+build_timeout_sec = 1200.0
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-gpus = 0
-gpu_types = []
-allow_internet = false

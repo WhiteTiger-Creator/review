@@ -1,21 +1,27 @@
 #!/bin/bash
-set -uo pipefail
-
 mkdir -p /logs/verifier
 echo 0 > /logs/verifier/reward.txt
+echo '{"version":"1.0.0","results":{"tool":{"name":"pytest"},"summary":{"tests":0,"passed":0,"failed":0,"skipped":0},"tests":[]}}' > /logs/verifier/ctrf.json
+ensure_files() {
+    if [ ! -f /logs/verifier/ctrf.json ]; then
+        echo '{"version":"1.0.0","results":{"tool":{"name":"pytest"},"summary":{"tests":0,"passed":0,"failed":0,"skipped":0},"tests":[]}}' > /logs/verifier/ctrf.json
+    fi
+    if [ ! -f /logs/verifier/reward.txt ]; then
+        echo 0 > /logs/verifier/reward.txt
+    fi
+}
+trap ensure_files EXIT
 
-TEST_DIR="${TEST_DIR:-/tests}"
 if [ "$PWD" = "/" ]; then
-  echo "Warning: verifier started at /; switching to $TEST_DIR"
+    echo "Error: No working directory set." >&2
+    exit 1
 fi
 
-cd "$TEST_DIR"
-PYTHONSAFEPATH=1 PYTHONNOUSERSITE=1 PYTHONPATH=/opt/harbor-verifier \
-  python3 -m pytest -p harbor_ctrf_plugin --ctrf /logs/verifier/ctrf.json "$TEST_DIR/test_outputs.py" -rA
-rc=$?
+set +e
+python3 -m pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
 
-if [ "$rc" -eq 0 ]; then
-  echo 1 > /logs/verifier/reward.txt
+if [ $? -eq 0 ]; then
+    echo 1 > /logs/verifier/reward.txt
 else
-  echo 0 > /logs/verifier/reward.txt
+    echo 0 > /logs/verifier/reward.txt
 fi
