@@ -1,156 +1,48 @@
 #!/usr/bin/env bash
+# Oracle: install known-good skykingdom binary + sources. Prefer the
+# prebuilt linux/amd64 artifact so platform allow_internet=false cannot
+# break a Go toolchain download (G-025).
 set -euo pipefail
-export PATH="/usr/local/go/bin:${PATH}"
-APP=/app/environment
 
-python3 <<'PY'
-from pathlib import Path
+APP_ROOT="${APP_ROOT:-/app/skykingdom}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FILES_DIR="${SCRIPT_DIR}/files"
+BIN_OUT="${APP_ROOT}/skykingdom"
+PREBUILT="${FILES_DIR}/skykingdom.linux-amd64"
 
-app = Path("/app/environment")
+export PATH="/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+export GOPROXY=off
+export GOSUMDB=off
+export GOTELEMETRY=off
+export GOTOOLCHAIN=local
+export CGO_ENABLED=0
 
-def replace_once(path: Path, old: str, new: str) -> None:
-    text = path.read_text(encoding="utf-8")
-    if old not in text:
-        raise SystemExit(f"missing snippet in {path}: {old[:80]!r}")
-    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+mkdir -p "${APP_ROOT}"
 
-def replace_all(path: Path, old: str, new: str) -> None:
-    text = path.read_text(encoding="utf-8")
-    if old not in text:
-        raise SystemExit(f"missing snippet in {path}: {old[:80]!r}")
-    path.write_text(text.replace(old, new), encoding="utf-8")
+# Refresh authoritative sources so verifier rebuilds stay correct.
+# Preserve normative docs/scenarios already present in the image.
+cp -f "${FILES_DIR}/go.mod" "${APP_ROOT}/go.mod"
+cp -f "${FILES_DIR}/"*.go "${APP_ROOT}/"
 
-ingest = app / "internal/graph/load.go"
-replace_once(
-    ingest,
-    "\tgraphDirected := !strings.EqualFold(doc.Graph.EdgeDefault, \"undirected\")",
-    "\tfieldByID := make(map[string]string, len(doc.Keys))\n\tfor _, key := range doc.Keys {\n\t\tif key.ID != \"\" && key.AttrName != \"\" {\n\t\t\tfieldByID[key.ID] = key.AttrName\n\t\t}\n\t}\n\n\tgraphDirected := !strings.EqualFold(doc.Graph.EdgeDefault, \"undirected\")",
-)
-replace_all(ingest, "\t\t\tattrName := data.Key", "\t\t\tattrName := fieldByID[data.Key]")
-replace_once(
-    ingest,
-    '\t\tcollapseKey := src + "|" + tgt',
-    '\t\tcollapseKey := fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s", edge.ID, src, tgt, edge.Environment, edge.Method, edge.Path, edge.AuthzScope)',
-)
-ingest_text = ingest.read_text(encoding="utf-8")
-if '"fmt"' not in ingest_text:
-    ingest.write_text(
-        ingest_text.replace(
-            "import (\n\t\"encoding/xml\"",
-            "import (\n\t\"encoding/xml\"\n\t\"fmt\"",
-            1,
-        ),
-        encoding="utf-8",
-    )
-replace_once(
-    app / "internal/precedence/authz.go",
-    "func (l *Legacy) Resolve(e EdgeRef) (audiences []string, deny bool) {\n\tif len(l.GlobalAudiences) > 0 {\n\t\treturn l.GlobalAudiences, false\n\t}\n\tfor _, r := range l.EdgeRules {",
-    "func (l *Legacy) Resolve(e EdgeRef) (audiences []string, deny bool) {\n\tfor _, r := range l.EdgeRules {",
-)
-replace_once(
-    app / "internal/dossier/dossier.go",
-    "\t\tstatus := strings.ToLower(record.Status)\n\t\tif _, ok := allowed[status]; !ok && status != \"accepted\" && status != \"amended\" {",
-    "\t\tstatus := strings.ToLower(record.Status)\n\t\tif status == \"superseded\" || status == \"proposed\" || status == \"rejected\" {\n\t\t\tcontinue\n\t\t}\n\t\tif _, ok := allowed[status]; !ok && status != \"accepted\" && status != \"amended\" {",
-)
-replace_once(
-    app / "internal/dossier/dossier.go",
-    "\t\tif prior, ok := active[bucket]; ok {\n\t\t\tif record.Effective.After(prior.Effective) {\n\t\t\t\tactive[bucket] = record\n\t\t\t}\n\t\t} else {",
-    "\t\tif prior, ok := active[bucket]; ok {\n\t\t\tif !compatible(prior, record) {\n\t\t\t\treturn nil, fmt.Errorf(\"conflicting authoritative decisions for %s\", bucket)\n\t\t\t}\n\t\t\tif rankScope(record.Scope, authority.ScopeOrder) > rankScope(prior.Scope, authority.ScopeOrder) {\n\t\t\t\tactive[bucket] = record\n\t\t\t} else if rankScope(record.Scope, authority.ScopeOrder) == rankScope(prior.Scope, authority.ScopeOrder) && record.Effective.After(prior.Effective) {\n\t\t\t\tactive[bucket] = record\n\t\t\t}\n\t\t} else {",
-)
-helper = '''
+if [[ -f "${PREBUILT}" ]]; then
+  cp -f "${PREBUILT}" "${BIN_OUT}"
+  chmod 755 "${BIN_OUT}"
+else
+  cd "${APP_ROOT}"
+  go build -o "${BIN_OUT}" .
+  chmod 755 "${BIN_OUT}"
+fi
 
-func rankScope(scope string, order []string) int {
-\tfor i, candidate := range order {
-\t\tif candidate == scope {
-\t\t\treturn i
-\t\t}
-\t}
-\treturn len(order)
-}
+test -x "${BIN_OUT}"
 
-func compatible(left, right Decision) bool {
-\tif len(left.Audiences) > 0 && len(right.Audiences) > 0 && !sameAudienceList(left.Audiences, right.Audiences) {
-\t\treturn false
-\t}
-\tif left.Issuer != "" && right.Issuer != "" && left.Issuer != right.Issuer {
-\t\treturn false
-\t}
-\treturn true
-}
+# Smoke: eval without args should fail (usage / non-zero).
+set +e
+"${BIN_OUT}" >/tmp/skykingdom-smoke.out 2>/tmp/skykingdom-smoke.err
+rc=$?
+set -e
+if [[ "${rc}" -eq 0 ]]; then
+  echo "oracle smoke failed: expected non-zero exit without args" >&2
+  exit 1
+fi
 
-func sameAudienceList(left, right []string) bool {
-\tif len(left) != len(right) {
-\t\treturn false
-\t}
-\tfor i := range left {
-\t\tif left[i] != right[i] {
-\t\t\treturn false
-\t\t}
-\t}
-\treturn true
-}
-'''
-corpus = app / "internal/dossier/dossier.go"
-text = corpus.read_text(encoding="utf-8")
-if "func rankScope(" not in text:
-    corpus.write_text(text.replace("func scopeBucket(record Decision)", helper + "func scopeBucket(record Decision)", 1), encoding="utf-8")
-replace_once(
-    app / "internal/federation/discovery.go",
-    '\tdisc.Issuer = "https://hardcoded.example.com"\n\tdisc.JWKSURI = cfg.JWKSFetch\n\tdisc.FetchURL = cfg.DiscoveryFetch',
-    "\tdisc.FetchURL = cfg.DiscoveryFetch",
-)
-replace_once(
-    app / "internal/federation/discovery.go",
-    "\t\tseenKID[k.KID] = struct{}{}",
-    '''\t\tif _, dup := seenKID[k.KID]; dup {
-\t\t\treturn nil, nil, fmt.Errorf("duplicate kid %s", k.KID)
-\t\t}
-\t\tseenKID[k.KID] = struct{}{}
-\t\tif _, ok := allowedKTY[k.KTY]; !ok {
-\t\t\tcontinue
-\t\t}
-\t\tif k.Use == "enc" {
-\t\t\tcontinue
-\t\t}
-\t\tif len(k.Ops) > 0 {
-\t\t\tok := false
-\t\t\tfor _, op := range k.Ops {
-\t\t\t\tif op == "verify" {
-\t\t\t\t\tok = true
-\t\t\t\t}
-\t\t\t}
-\t\t\tif !ok {
-\t\t\t\tcontinue
-\t\t\t}
-\t\t}
-\t\tif strings.HasPrefix(k.ALG, "HS") || k.ALG == "NONE" {
-\t\t\tcontinue
-\t\t}''',
-)
-replace_once(
-    app / "internal/trail/writer.go",
-    "_, err = tx.Exec(`INSERT OR REPLACE INTO discovery_snapshot(id, run_id, issuer, jwks_uri, fetch_url, semantic_url) VALUES (1,?,?,?,?,?)`,",
-    "_, err = tx.Exec(`INSERT INTO discovery_snapshot(run_id, issuer, jwks_uri, fetch_url, semantic_url) VALUES (?,?,?,?,?)`,",
-)
-replace_once(
-    app / "internal/trail/sql/002_recursive_assertions.sql",
-    "WHERE ge.denied = 0 AND pe.edge_key IS NULL;",
-    "WHERE ge.denied = 0 AND (pe.edge_key IS NULL OR pe.action != 'allow');",
-)
-replace_once(
-    app / "internal/app/config.go",
-    'RuntimeDir:        getenv("MIGRATOR_RUNTIME", "/tmp/migrator-runtime"),',
-    'RuntimeDir:        getenv("MIGRATOR_RUNTIME", "/app/environment/.runtime"),',
-)
-replace_once(
-    app / "internal/app/run.go",
-    "\tif err := error(nil); err != nil {",
-    "\tif err := writer.RunRecursiveChecks(runID); err != nil {",
-)
-PY
-
-cd "$APP"
-mkdir -p bin
-CGO_ENABLED=0 go build -o bin/migrate-policy ./cmd/policy-migrator
-"$APP/bin/reset-state"
-"$APP/bin/migrate-policy"
+echo "oracle installed ${BIN_OUT}"

@@ -1,31 +1,5 @@
-# Restore OIDC gateway trust after mTLS policy migration failure
+You are implementing Sky Kingdom Fleet Campaign, an offline deterministic turn-based campaign simulator under /app/skykingdom. Floating kingdoms contest islands with air fleets, supply lines, weather, research, and diplomacy. Win by satisfying the scenario victory condition before the turn limit. This is a terminal strategy game with published multi-document rules. It is not berth-tide composition, not creature heredity arenas, and not disaster-clearance adjudication.
 
-An offline security migration service under `/app/environment` converts a legacy mutual-TLS service call graph, authorization YAML, and security decision corpus into an OIDC gateway policy bundle plus SQLite audit evidence. A partial cutover left trust-boundary enforcement broken: unsafe JWKS material can be accepted, semantic issuer URLs are replaced with hardcoded values, transport fixture hosts leak into policy, parallel edges collapse, dossier authority is ignored, explicit denies are bypassed, and recursive coverage checks are skipped.
+Build the Go module so go build -o /app/skykingdom/skykingdom . from /app/skykingdom produces the campaign binary. Normative rules live in /app/skykingdom/FLEET_RULES.md, /app/skykingdom/COMBAT_RULES.md, /app/skykingdom/WEATHER_SYSTEM.md, /app/skykingdom/SUPPLY_LOGISTICS.md, /app/skykingdom/TECHNOLOGY_TREE.md, /app/skykingdom/DIPLOMACY_RULES.md, /app/skykingdom/TERRITORY_CONTROL.md, /app/skykingdom/CAMPAIGN_RULES.md, /app/skykingdom/SCENARIO_SCHEMA.md, and /app/skykingdom/API_SPEC.md. Operator summary and authority ranking are in /app/docs/operator-guide.md, /app/docs/authority.md, and /app/docs/module-index.md. validateScenario must reject any scenario whose undirected island graph is not fully connected, and must reject illegal weather ids, as required by /app/skykingdom/SCENARIO_SCHEMA.md and /app/skykingdom/WEATHER_SYSTEM.md. Read /app/skykingdom/API_SPEC.md in full for Game object shape, exact MAP/STATUS/FLEET/ISLAND render lines, command acknowledgements, and validateGame kind:id strings.
 
-Recover gateway trust by repairing verifier logic under `/app/environment`. Static output writes or verifier edits are insufficient; the migrator binary must regenerate policy and audit artifacts through the normal pipeline.
-
-After `/app/environment/bin/reset-state`, this command must exit zero from working directory `/app`:
-
-```bash
-/app/environment/bin/migrate-policy
-```
-
-Inputs live under `/app/environment/input` and `/app/environment/dossier`. Identity-provider metadata must be obtained through the configured offline transport. Effective policy must record semantic issuer URLs from bundled discovery documents, not loopback fixture hosts.
-
-## Trust and security requirements
-
-- Retire all mTLS-only certificate fields (`client_cert_subject`, `ca_bundle`, `serial_number`, `mtls_trust_bundle`) from emitted gateway policy.
-- JWKS ingestion must reject symmetric algorithms, `none`, encryption-only keys, and keys without verify operations.
-- Policy issuers must match bundled semantic discovery URLs; hardcoded or transport-derived issuer values are invalid.
-- Parallel graph edges with distinct environment, method, path, or authz_scope must remain distinct in policy output.
-- Dossier authority rules under `/data/dossier-authority` govern which decision statuses and scopes are authoritative.
-- Superseded and proposed dossier entries must not override accepted or amended audience decisions.
-- Explicit deny edges such as `api-gateway` to `payment-service` must remain `action: deny`.
-- Retired service `admin-api` must not appear with `action: allow`.
-- Recursive audit view `coverage_gaps` must be empty and `latest_complete_run.status` must be `COMPLETE`.
-- Re-running migration must be idempotent and produce byte-identical `/output/gateway-policy.yaml`.
-- Protected trees under `/data/canonical`, `/data/oidc-contracts`, and `/data/dossier-authority` must remain unchanged.
-
-Write `/output/gateway-policy.yaml`, `/output/migration-summary.json`, and `/output/migration-audit.db`. The migration-contract at `/app/environment/docs/migration-contract.md` documents required `schema_version`, issuers, edges, edge `action`, `jwks_uri`, `run_id`, `edge_count`, and `status` fields.
-
-Grading uses Python's `sqlite3` module against `/output/migration-audit.db` and PyYAML against `/output/gateway-policy.yaml`, running `python3 -m pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py` after reset. Do not modify `/tests`.
+The binary must support interactive play (skykingdom play followed by a scenario JSON path) and the documented JSON eval surface (skykingdom eval). Eval must stay silent except for one JSON response object per request on stdout. There is no randomness: every mechanic is pure and deterministic. Live game collections kingdoms, islands, fleets, captains, and diplomacy must be JSON objects keyed by id as shown in /app/skykingdom/API_SPEC.md Game object shape. Packages under /app/skykingdom/decoy, /app/skykingdom/ingest, /app/skykingdom/export, /app/skykingdom/staging, and /app/skykingdom/support are non-authoritative stubs and must not replace the normative rule documents. Gameplay commands: MAP, STATUS, FLEET, ISLAND, MOVE, REFUEL, CLASH, RESEARCH, TREATY, FORTIFY, ENDTURN, REBOOT, and EXIT. Commands are case-insensitive; kingdom, fleet, island, captain, and tech IDs are case-sensitive. Successful state-changing moves append to history and return the exact success acknowledgement strings listed in /app/skykingdom/API_SPEC.md Command outputs (for example MOVE returns Moved, EXIT returns Exiting). Rejected moves begin with Rejected command: and must leave the full live campaign unchanged. When state is won or lost, mutating commands except REBOOT are rejected. REBOOT restores a fresh campaign from the same scenario object with empty history. MOVE must enforce the per-kingdom stacking limit in /app/skykingdom/FLEET_RULES.md. ENDTURN must apply unsupplied readiness penalties from /app/skykingdom/SUPPLY_LOGISTICS.md. replayRun must reproduce ordinary play. Bundled scenarios are samples only; any legal scenario-schema input must simulate correctly.
