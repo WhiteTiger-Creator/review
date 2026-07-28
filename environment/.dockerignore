@@ -6,13 +6,9 @@
 **/.mypy_cache/
 **/.ruff_cache/
 **/node_modules/
-**/target/
 **/dist/
-**/build/
-**/.venv/
-**/venv/
+**/*.o
+**/*.so
 .env
-*.log
 solution/
 tests/
-output_contract.toml
