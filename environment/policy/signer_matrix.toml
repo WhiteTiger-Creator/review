@@ -1,0 +1,13 @@
+[[principals]]
+id = "rel_a"
+fingerprint = "1111111111111111"
+formats = ["openpgp-v4"]
+
+[[principals]]
+id = "rel_b"
+fingerprint = "2222222222222222"
+formats = ["openpgp-v4-transitional"]
+
+[[transition]]
+from = "rel_a"
+to = "rel_b"

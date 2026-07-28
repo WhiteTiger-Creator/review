@@ -1,14 +1,13 @@
-GO  ?= go
-BIN := bin/slate
+ENV_ROOT ?= /app/environment
+BUILD := $(ENV_ROOT)/build
 
-.PHONY: all clean vet
+.PHONY: build compile fixtures
+build: compile
+	@mkdir -p $(BUILD)
+	@cd $(ENV_ROOT) && go build -o /app/admit-repo ./cmd/admit-repo
 
-all:
-	@mkdir -p bin
-	$(GO) build -o $(BIN) ./cmd/console
+compile:
+	@cd $(ENV_ROOT) && go mod tidy && go build ./...
 
-vet:
-	$(GO) vet ./...
-
-clean:
-	rm -rf bin
+fixtures:
+	@bash $(ENV_ROOT)/scripts/build_fixtures.sh

@@ -1,5 +1,0 @@
-# sealed: pinned cobalt
-project tidefall
-require birchwood ^1.1.0
-override cobalt 1.1.0
-allow-yanked true

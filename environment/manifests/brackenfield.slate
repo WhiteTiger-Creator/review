@@ -1,4 +1,0 @@
-# A pin whose own release drags in a further edge that collides elsewhere.
-project brackenfield
-require schist ^5.0.0
-override dolomite 2.8.0
