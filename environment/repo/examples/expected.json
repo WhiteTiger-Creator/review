@@ -1,0 +1,1233 @@
+[
+ {
+  "id": "e0001",
+  "scored": true,
+  "han": 1,
+  "fu": 40,
+  "yaku": [
+   "Tanyao"
+  ],
+  "payment": {
+   "main": 1300,
+   "additional": 0,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 3000,
+   "total": 4300
+  }
+ },
+ {
+  "id": "e0002",
+  "scored": true,
+  "han": 1,
+  "fu": 40,
+  "yaku": [
+   "Iipeiko"
+  ],
+  "payment": {
+   "main": 1300,
+   "additional": 0,
+   "mainBonus": 1500,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 2800
+  }
+ },
+ {
+  "id": "e0003",
+  "scored": true,
+  "han": 4,
+  "fu": 40,
+  "yaku": [
+   "Dora 3",
+   "Menzen Tsumo"
+  ],
+  "payment": {
+   "main": 4000,
+   "additional": 2000,
+   "mainBonus": 100,
+   "additionalBonus": 100,
+   "riichiSticks": 0,
+   "total": 8300
+  }
+ },
+ {
+  "id": "e0004",
+  "scored": false
+ },
+ {
+  "id": "e0005",
+  "scored": true,
+  "han": 1,
+  "fu": 30,
+  "yaku": [
+   "Menzen Tsumo"
+  ],
+  "payment": {
+   "main": 500,
+   "additional": 500,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 3000,
+   "total": 4500
+  }
+ },
+ {
+  "id": "e0006",
+  "scored": false
+ },
+ {
+  "id": "e0007",
+  "scored": true,
+  "han": 6,
+  "fu": 40,
+  "yaku": [
+   "Dora 2",
+   "Honitsu",
+   "Iipeiko"
+  ],
+  "payment": {
+   "main": 12000,
+   "additional": 0,
+   "mainBonus": 300,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 12300
+  }
+ },
+ {
+  "id": "e0008",
+  "scored": true,
+  "han": 1,
+  "fu": 50,
+  "yaku": [
+   "Iipeiko"
+  ],
+  "payment": {
+   "main": 1600,
+   "additional": 0,
+   "mainBonus": 1500,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 3100
+  }
+ },
+ {
+  "id": "e0009",
+  "scored": false
+ },
+ {
+  "id": "e0010",
+  "scored": true,
+  "han": 2,
+  "fu": 40,
+  "yaku": [
+   "Menzen Tsumo",
+   "Yakuhai (wind of round)"
+  ],
+  "payment": {
+   "main": 1300,
+   "additional": 1300,
+   "mainBonus": 500,
+   "additionalBonus": 500,
+   "riichiSticks": 0,
+   "total": 5400
+  }
+ },
+ {
+  "id": "e0011",
+  "scored": true,
+  "han": 1,
+  "fu": 30,
+  "yaku": [
+   "Menzen Tsumo"
+  ],
+  "payment": {
+   "main": 500,
+   "additional": 300,
+   "mainBonus": 100,
+   "additionalBonus": 100,
+   "riichiSticks": 0,
+   "total": 1400
+  }
+ },
+ {
+  "id": "e0012",
+  "scored": true,
+  "han": 1,
+  "fu": 30,
+  "yaku": [
+   "Menzen Tsumo"
+  ],
+  "payment": {
+   "main": 500,
+   "additional": 300,
+   "mainBonus": 200,
+   "additionalBonus": 200,
+   "riichiSticks": 1000,
+   "total": 2700
+  }
+ },
+ {
+  "id": "e0013",
+  "scored": true,
+  "han": 2,
+  "fu": 20,
+  "yaku": [
+   "Menzen Tsumo",
+   "Pinfu"
+  ],
+  "payment": {
+   "main": 700,
+   "additional": 400,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 1500
+  }
+ },
+ {
+  "id": "e0014",
+  "scored": true,
+  "han": 3,
+  "fu": 20,
+  "yaku": [
+   "Menzen Tsumo",
+   "Pinfu",
+   "Tanyao"
+  ],
+  "payment": {
+   "main": 1300,
+   "additional": 700,
+   "mainBonus": 200,
+   "additionalBonus": 200,
+   "riichiSticks": 0,
+   "total": 3300
+  }
+ },
+ {
+  "id": "e0015",
+  "scored": true,
+  "han": 3,
+  "fu": 30,
+  "yaku": [
+   "Dora 1",
+   "Iipeiko",
+   "Menzen Tsumo"
+  ],
+  "payment": {
+   "main": 2000,
+   "additional": 2000,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 3000,
+   "total": 9000
+  }
+ },
+ {
+  "id": "e0016",
+  "scored": true,
+  "han": 4,
+  "fu": 20,
+  "yaku": [
+   "Menzen Tsumo",
+   "Pinfu",
+   "Sanshoku Doujun"
+  ],
+  "payment": {
+   "main": 2600,
+   "additional": 1300,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 5200
+  }
+ },
+ {
+  "id": "e0017",
+  "scored": true,
+  "han": 3,
+  "fu": 20,
+  "yaku": [
+   "Menzen Tsumo",
+   "Pinfu",
+   "Tanyao"
+  ],
+  "payment": {
+   "main": 1300,
+   "additional": 700,
+   "mainBonus": 100,
+   "additionalBonus": 100,
+   "riichiSticks": 1000,
+   "total": 4000
+  }
+ },
+ {
+  "id": "e0018",
+  "scored": false
+ },
+ {
+  "id": "e0019",
+  "scored": true,
+  "han": 1,
+  "fu": 40,
+  "yaku": [
+   "Tanyao"
+  ],
+  "payment": {
+   "main": 1300,
+   "additional": 0,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 3000,
+   "total": 4300
+  }
+ },
+ {
+  "id": "e0020",
+  "scored": false
+ },
+ {
+  "id": "e0021",
+  "scored": true,
+  "han": 5,
+  "fu": 50,
+  "yaku": [
+   "Dora 3",
+   "Sanshoku Doukou"
+  ],
+  "payment": {
+   "main": 4000,
+   "additional": 2000,
+   "mainBonus": 100,
+   "additionalBonus": 100,
+   "riichiSticks": 1000,
+   "total": 9300
+  }
+ },
+ {
+  "id": "e0022",
+  "scored": true,
+  "han": 4,
+  "fu": 50,
+  "yaku": [
+   "San Ankou",
+   "Toitoi"
+  ],
+  "payment": {
+   "main": 8000,
+   "additional": 0,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 1000,
+   "total": 9000
+  }
+ },
+ {
+  "id": "e0023",
+  "scored": true,
+  "han": 5,
+  "fu": 60,
+  "yaku": [
+   "San Ankou",
+   "Toitoi",
+   "Yakuhai (hatsu)"
+  ],
+  "payment": {
+   "main": 8000,
+   "additional": 0,
+   "mainBonus": 600,
+   "additionalBonus": 0,
+   "riichiSticks": 1000,
+   "total": 9600
+  }
+ },
+ {
+  "id": "e0024",
+  "scored": true,
+  "han": 7,
+  "fu": 60,
+  "yaku": [
+   "Honitsu",
+   "San Ankou",
+   "Toitoi"
+  ],
+  "payment": {
+   "main": 12000,
+   "additional": 0,
+   "mainBonus": 1500,
+   "additionalBonus": 0,
+   "riichiSticks": 3000,
+   "total": 16500
+  }
+ },
+ {
+  "id": "e0025",
+  "scored": true,
+  "han": 2,
+  "fu": 40,
+  "yaku": [
+   "Toitoi"
+  ],
+  "payment": {
+   "main": 2600,
+   "additional": 0,
+   "mainBonus": 600,
+   "additionalBonus": 0,
+   "riichiSticks": 1000,
+   "total": 4200
+  }
+ },
+ {
+  "id": "e0026",
+  "scored": true,
+  "han": 4,
+  "fu": 50,
+  "yaku": [
+   "San Ankou",
+   "Toitoi"
+  ],
+  "payment": {
+   "main": 4000,
+   "additional": 2000,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 8000
+  }
+ },
+ {
+  "id": "e0027",
+  "scored": true,
+  "han": 5,
+  "fu": 50,
+  "yaku": [
+   "San Ankou",
+   "Toitoi",
+   "Yakuhai (haku)"
+  ],
+  "payment": {
+   "main": 4000,
+   "additional": 2000,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 3000,
+   "total": 11000
+  }
+ },
+ {
+  "id": "e0028",
+  "scored": true,
+  "han": 26,
+  "fu": 50,
+  "yaku": [
+   "Suu Ankou Tanki"
+  ],
+  "payment": {
+   "main": 96000,
+   "additional": 0,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 96000
+  }
+ },
+ {
+  "id": "e0029",
+  "scored": true,
+  "han": 26,
+  "fu": 60,
+  "yaku": [
+   "Suu Ankou Tanki"
+  ],
+  "payment": {
+   "main": 64000,
+   "additional": 0,
+   "mainBonus": 300,
+   "additionalBonus": 0,
+   "riichiSticks": 1000,
+   "total": 65300
+  }
+ },
+ {
+  "id": "e0030",
+  "scored": true,
+  "han": 26,
+  "fu": 50,
+  "yaku": [
+   "Suu Ankou Tanki"
+  ],
+  "payment": {
+   "main": 32000,
+   "additional": 16000,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 3000,
+   "total": 67000
+  }
+ },
+ {
+  "id": "e0031",
+  "scored": true,
+  "han": 4,
+  "fu": 25,
+  "yaku": [
+   "Chiitoitsu",
+   "Menzen Tsumo",
+   "Riichi"
+  ],
+  "payment": {
+   "main": 3200,
+   "additional": 1600,
+   "mainBonus": 100,
+   "additionalBonus": 100,
+   "riichiSticks": 1000,
+   "total": 7700
+  }
+ },
+ {
+  "id": "e0032",
+  "scored": true,
+  "han": 6,
+  "fu": 25,
+  "yaku": [
+   "Chiitoitsu",
+   "Dora 2",
+   "Menzen Tsumo",
+   "Tanyao"
+  ],
+  "payment": {
+   "main": 6000,
+   "additional": 3000,
+   "mainBonus": 300,
+   "additionalBonus": 300,
+   "riichiSticks": 1000,
+   "total": 13900
+  }
+ },
+ {
+  "id": "e0033",
+  "scored": true,
+  "han": 3,
+  "fu": 25,
+  "yaku": [
+   "Chiitoitsu",
+   "Riichi"
+  ],
+  "payment": {
+   "main": 3200,
+   "additional": 0,
+   "mainBonus": 300,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 3500
+  }
+ },
+ {
+  "id": "e0034",
+  "scored": true,
+  "han": 26,
+  "fu": 0,
+  "yaku": [
+   "Kokushi Musou Juusanmen Matchi"
+  ],
+  "payment": {
+   "main": 64000,
+   "additional": 0,
+   "mainBonus": 600,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 64600
+  }
+ },
+ {
+  "id": "e0035",
+  "scored": false
+ },
+ {
+  "id": "e0036",
+  "scored": true,
+  "han": 5,
+  "fu": 50,
+  "yaku": [
+   "San Ankou",
+   "Toitoi",
+   "Yakuhai (chun)"
+  ],
+  "payment": {
+   "main": 4000,
+   "additional": 2000,
+   "mainBonus": 500,
+   "additionalBonus": 500,
+   "riichiSticks": 0,
+   "total": 9500
+  }
+ },
+ {
+  "id": "e0037",
+  "scored": true,
+  "han": 5,
+  "fu": 30,
+  "yaku": [
+   "Chinitsu"
+  ],
+  "payment": {
+   "main": 12000,
+   "additional": 0,
+   "mainBonus": 1500,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 13500
+  }
+ },
+ {
+  "id": "e0038",
+  "scored": true,
+  "han": 5,
+  "fu": 40,
+  "yaku": [
+   "Chantai",
+   "Honitsu",
+   "Yakuhai (hatsu)",
+   "Yakuhai (wind of round)"
+  ],
+  "payment": {
+   "main": 4000,
+   "additional": 2000,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 8000
+  }
+ },
+ {
+  "id": "e0039",
+  "scored": true,
+  "han": 2,
+  "fu": 30,
+  "yaku": [
+   "Chantai",
+   "Yakuhai (chun)"
+  ],
+  "payment": {
+   "main": 2000,
+   "additional": 0,
+   "mainBonus": 1500,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 3500
+  }
+ },
+ {
+  "id": "e0040",
+  "scored": true,
+  "han": 3,
+  "fu": 50,
+  "yaku": [
+   "Junchan"
+  ],
+  "payment": {
+   "main": 6400,
+   "additional": 0,
+   "mainBonus": 300,
+   "additionalBonus": 0,
+   "riichiSticks": 3000,
+   "total": 9700
+  }
+ },
+ {
+  "id": "e0041",
+  "scored": true,
+  "han": 7,
+  "fu": 60,
+  "yaku": [
+   "Dora 3",
+   "San Ankou",
+   "Toitoi"
+  ],
+  "payment": {
+   "main": 12000,
+   "additional": 0,
+   "mainBonus": 600,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 12600
+  }
+ },
+ {
+  "id": "e0042",
+  "scored": true,
+  "han": 2,
+  "fu": 60,
+  "yaku": [
+   "Menzen Tsumo",
+   "Yakuhai (wind of place)"
+  ],
+  "payment": {
+   "main": 2000,
+   "additional": 1000,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 4000
+  }
+ },
+ {
+  "id": "e0043",
+  "scored": false
+ },
+ {
+  "id": "e0044",
+  "scored": true,
+  "han": 2,
+  "fu": 70,
+  "yaku": [
+   "Dora 1",
+   "Yakuhai (wind of round)"
+  ],
+  "payment": {
+   "main": 2300,
+   "additional": 2300,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 6900
+  }
+ },
+ {
+  "id": "e0045",
+  "scored": true,
+  "han": 1,
+  "fu": 60,
+  "yaku": [
+   "Menzen Tsumo"
+  ],
+  "payment": {
+   "main": 1000,
+   "additional": 500,
+   "mainBonus": 200,
+   "additionalBonus": 200,
+   "riichiSticks": 0,
+   "total": 2600
+  }
+ },
+ {
+  "id": "e0046",
+  "scored": false
+ },
+ {
+  "id": "e0047",
+  "scored": true,
+  "han": 13,
+  "fu": 40,
+  "yaku": [
+   "Daisangen"
+  ],
+  "payment": {
+   "main": 32000,
+   "additional": 0,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 1000,
+   "total": 33000
+  }
+ },
+ {
+  "id": "e0048",
+  "scored": true,
+  "han": 26,
+  "fu": 50,
+  "yaku": [
+   "Dai Suushii"
+  ],
+  "payment": {
+   "main": 32000,
+   "additional": 32000,
+   "mainBonus": 500,
+   "additionalBonus": 500,
+   "riichiSticks": 3000,
+   "total": 100500
+  }
+ },
+ {
+  "id": "e0049",
+  "scored": true,
+  "han": 5,
+  "fu": 50,
+  "yaku": [
+   "San Ankou",
+   "Toitoi",
+   "Yakuhai (hatsu)"
+  ],
+  "payment": {
+   "main": 8000,
+   "additional": 0,
+   "mainBonus": 300,
+   "additionalBonus": 0,
+   "riichiSticks": 3000,
+   "total": 11300
+  }
+ },
+ {
+  "id": "e0050",
+  "scored": true,
+  "han": 13,
+  "fu": 50,
+  "yaku": [
+   "Ryuuiisou"
+  ],
+  "payment": {
+   "main": 32000,
+   "additional": 0,
+   "mainBonus": 1500,
+   "additionalBonus": 0,
+   "riichiSticks": 1000,
+   "total": 34500
+  }
+ },
+ {
+  "id": "e0051",
+  "scored": true,
+  "han": 4,
+  "fu": 30,
+  "yaku": [
+   "Dora 3",
+   "Sanshoku Doujun"
+  ],
+  "payment": {
+   "main": 7700,
+   "additional": 0,
+   "mainBonus": 600,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 8300
+  }
+ },
+ {
+  "id": "e0052",
+  "scored": true,
+  "han": 3,
+  "fu": 30,
+  "yaku": [
+   "Dora 1",
+   "Sanshoku Doujun",
+   "Yakuhai (hatsu)"
+  ],
+  "payment": {
+   "main": 5800,
+   "additional": 0,
+   "mainBonus": 600,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 6400
+  }
+ },
+ {
+  "id": "e0053",
+  "scored": true,
+  "han": 6,
+  "fu": 30,
+  "yaku": [
+   "Dora 2",
+   "Menzen Tsumo",
+   "Sanshoku Doujun",
+   "Tanyao"
+  ],
+  "payment": {
+   "main": 6000,
+   "additional": 6000,
+   "mainBonus": 200,
+   "additionalBonus": 200,
+   "riichiSticks": 0,
+   "total": 18600
+  }
+ },
+ {
+  "id": "e0054",
+  "scored": true,
+  "han": 1,
+  "fu": 30,
+  "yaku": [
+   "Ittsu"
+  ],
+  "payment": {
+   "main": 1000,
+   "additional": 0,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 1000
+  }
+ },
+ {
+  "id": "e0055",
+  "scored": true,
+  "han": 3,
+  "fu": 40,
+  "yaku": [
+   "Dora 2",
+   "Ittsu"
+  ],
+  "payment": {
+   "main": 2600,
+   "additional": 1300,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 3000,
+   "total": 8200
+  }
+ },
+ {
+  "id": "e0056",
+  "scored": true,
+  "han": 3,
+  "fu": 30,
+  "yaku": [
+   "Dora 2",
+   "Ittsu"
+  ],
+  "payment": {
+   "main": 3900,
+   "additional": 0,
+   "mainBonus": 600,
+   "additionalBonus": 0,
+   "riichiSticks": 3000,
+   "total": 7500
+  }
+ },
+ {
+  "id": "e0057",
+  "scored": true,
+  "han": 4,
+  "fu": 40,
+  "yaku": [
+   "Sanshoku Doukou",
+   "Toitoi"
+  ],
+  "payment": {
+   "main": 8000,
+   "additional": 0,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 8000
+  }
+ },
+ {
+  "id": "e0058",
+  "scored": false
+ },
+ {
+  "id": "e0059",
+  "scored": true,
+  "han": 1,
+  "fu": 40,
+  "yaku": [
+   "Yakuhai (wind of round)"
+  ],
+  "payment": {
+   "main": 1300,
+   "additional": 0,
+   "mainBonus": 300,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 1600
+  }
+ },
+ {
+  "id": "e0060",
+  "scored": true,
+  "han": 2,
+  "fu": 40,
+  "yaku": [
+   "Toitoi"
+  ],
+  "payment": {
+   "main": 2600,
+   "additional": 0,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 1000,
+   "total": 3600
+  }
+ },
+ {
+  "id": "e0061",
+  "scored": false
+ },
+ {
+  "id": "e0062",
+  "scored": false
+ },
+ {
+  "id": "e0063",
+  "scored": false
+ },
+ {
+  "id": "e0064",
+  "scored": false
+ },
+ {
+  "id": "e0065",
+  "scored": true,
+  "han": 2,
+  "fu": 30,
+  "yaku": [
+   "Pinfu",
+   "Riichi"
+  ],
+  "payment": {
+   "main": 2900,
+   "additional": 0,
+   "mainBonus": 600,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 3500
+  }
+ },
+ {
+  "id": "e0066",
+  "scored": true,
+  "han": 1,
+  "fu": 60,
+  "yaku": [
+   "Rinshan Kaihou"
+  ],
+  "payment": {
+   "main": 1000,
+   "additional": 500,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 3000,
+   "total": 5000
+  }
+ },
+ {
+  "id": "e0067",
+  "scored": true,
+  "han": 1,
+  "fu": 40,
+  "yaku": [
+   "Chankan"
+  ],
+  "payment": {
+   "main": 2000,
+   "additional": 0,
+   "mainBonus": 600,
+   "additionalBonus": 0,
+   "riichiSticks": 3000,
+   "total": 5600
+  }
+ },
+ {
+  "id": "e0068",
+  "scored": true,
+  "han": 1,
+  "fu": 30,
+  "yaku": [
+   "Haitei Raoyue"
+  ],
+  "payment": {
+   "main": 500,
+   "additional": 500,
+   "mainBonus": 200,
+   "additionalBonus": 200,
+   "riichiSticks": 0,
+   "total": 2100
+  }
+ },
+ {
+  "id": "e0069",
+  "scored": true,
+  "han": 1,
+  "fu": 40,
+  "yaku": [
+   "Houtei Raoyui"
+  ],
+  "payment": {
+   "main": 1300,
+   "additional": 0,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 1300
+  }
+ },
+ {
+  "id": "e0070",
+  "scored": true,
+  "han": 2,
+  "fu": 40,
+  "yaku": [
+   "Double Riichi"
+  ],
+  "payment": {
+   "main": 3900,
+   "additional": 0,
+   "mainBonus": 1500,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 5400
+  }
+ },
+ {
+  "id": "e0071",
+  "scored": false
+ },
+ {
+  "id": "e0072",
+  "scored": false
+ },
+ {
+  "id": "e0073",
+  "scored": true,
+  "han": 3,
+  "fu": 30,
+  "yaku": [
+   "Dora 1",
+   "Iipeiko",
+   "Menzen Tsumo"
+  ],
+  "payment": {
+   "main": 2000,
+   "additional": 2000,
+   "mainBonus": 300,
+   "additionalBonus": 300,
+   "riichiSticks": 2000,
+   "total": 8900
+  }
+ },
+ {
+  "id": "e0074",
+  "scored": false
+ },
+ {
+  "id": "e0075",
+  "scored": true,
+  "han": 2,
+  "fu": 40,
+  "yaku": [
+   "Yakuhai (chun)",
+   "Yakuhai (wind of place)"
+  ],
+  "payment": {
+   "main": 1300,
+   "additional": 700,
+   "mainBonus": 400,
+   "additionalBonus": 400,
+   "riichiSticks": 1000,
+   "total": 4900
+  }
+ },
+ {
+  "id": "e0076",
+  "scored": false
+ },
+ {
+  "id": "e0077",
+  "scored": true,
+  "han": 6,
+  "fu": 30,
+  "yaku": [
+   "Honitsu",
+   "Shou Sangen",
+   "Yakuhai (chun)",
+   "Yakuhai (hatsu)"
+  ],
+  "payment": {
+   "main": 12000,
+   "additional": 0,
+   "mainBonus": 300,
+   "additionalBonus": 0,
+   "riichiSticks": 1000,
+   "total": 13300
+  }
+ },
+ {
+  "id": "e0078",
+  "scored": true,
+  "han": 13,
+  "fu": 40,
+  "yaku": [
+   "Shousuushii"
+  ],
+  "payment": {
+   "main": 32000,
+   "additional": 0,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 3000,
+   "total": 35000
+  }
+ },
+ {
+  "id": "e0079",
+  "scored": true,
+  "han": 13,
+  "fu": 100,
+  "yaku": [
+   "Suu Kantsu"
+  ],
+  "payment": {
+   "main": 32000,
+   "additional": 0,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 1000,
+   "total": 33000
+  }
+ },
+ {
+  "id": "e0080",
+  "scored": true,
+  "han": 13,
+  "fu": 60,
+  "yaku": [
+   "Suu Ankou"
+  ],
+  "payment": {
+   "main": 16000,
+   "additional": 16000,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 48000
+  }
+ },
+ {
+  "id": "e0081",
+  "scored": true,
+  "han": 3,
+  "fu": 40,
+  "yaku": [
+   "Ippatsu",
+   "Riichi",
+   "Yakuhai (wind of place)"
+  ],
+  "payment": {
+   "main": 5200,
+   "additional": 0,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 3000,
+   "total": 8200
+  }
+ },
+ {
+  "id": "e0082",
+  "scored": true,
+  "han": 13,
+  "fu": 40,
+  "yaku": [
+   "Chuuren Poutou"
+  ],
+  "payment": {
+   "main": 16000,
+   "additional": 16000,
+   "mainBonus": 0,
+   "additionalBonus": 0,
+   "riichiSticks": 0,
+   "total": 48000
+  }
+ }
+]

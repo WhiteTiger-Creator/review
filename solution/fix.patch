@@ -1,0 +1,1221 @@
+diff -ruN a/internal/settle/settle.go b/internal/settle/settle.go
+--- a/internal/settle/settle.go	2026-07-25 10:48:29
++++ b/internal/settle/settle.go	2026-07-25 10:48:29
+@@ -2,13 +2,1213 @@
+ package settle
+ 
+ import (
+-	"errors"
++	"fmt"
++	"sort"
+ 
+ 	"scoreboard/handsettle/internal/table"
++	"scoreboard/handsettle/internal/tiles"
+ )
+ 
+-// Settle works out the settlement of one finished hand: its han and fu, the yaku it
+-// holds and what the winner collects.
++type meld struct {
++	kind  string
++	tiles []int
++	open  bool
++}
++
++type award struct {
++	name    string
++	open    int
++	closed  int
++	yakuman bool
++}
++
++var (
++	menzenTsumo = award{"Menzen Tsumo", 0, 1, false}
++	riichi      = award{"Riichi", 0, 1, false}
++	doubleRii   = award{"Double Riichi", 0, 2, false}
++	ippatsu     = award{"Ippatsu", 0, 1, false}
++	chankan     = award{"Chankan", 1, 1, false}
++	rinshan     = award{"Rinshan Kaihou", 1, 1, false}
++	haitei      = award{"Haitei Raoyue", 1, 1, false}
++	houtei      = award{"Houtei Raoyui", 1, 1, false}
++	pinfu       = award{"Pinfu", 0, 1, false}
++	tanyao      = award{"Tanyao", 1, 1, false}
++	iipeiko     = award{"Iipeiko", 0, 1, false}
++	haku        = award{"Yakuhai (haku)", 1, 1, false}
++	hatsu       = award{"Yakuhai (hatsu)", 1, 1, false}
++	chun        = award{"Yakuhai (chun)", 1, 1, false}
++	windPlace   = award{"Yakuhai (wind of place)", 1, 1, false}
++	windRound   = award{"Yakuhai (wind of round)", 1, 1, false}
++	chiitoitsu  = award{"Chiitoitsu", 0, 2, false}
++	chantai     = award{"Chantai", 1, 2, false}
++	ittsu       = award{"Ittsu", 1, 2, false}
++	sanshoku    = award{"Sanshoku Doujun", 1, 2, false}
++	toitoi      = award{"Toitoi", 2, 2, false}
++	sanankou    = award{"San Ankou", 2, 2, false}
++	sanDouko    = award{"Sanshoku Doukou", 2, 2, false}
++	sanKantsu   = award{"San Kantsu", 2, 2, false}
++	honroutou   = award{"Honroutou", 2, 2, false}
++	shosangen   = award{"Shou Sangen", 2, 2, false}
++	honitsu     = award{"Honitsu", 2, 3, false}
++	junchan     = award{"Junchan", 2, 3, false}
++	ryanpeiko   = award{"Ryanpeikou", 0, 3, false}
++	chinitsu    = award{"Chinitsu", 5, 6, false}
++
++	kokushi      = award{"Kokushi Musou", 0, 13, true}
++	kokushi13    = award{"Kokushi Musou Juusanmen Matchi", 0, 26, true}
++	chuuren      = award{"Chuuren Poutou", 0, 13, true}
++	chuuren9     = award{"Daburu Chuuren Poutou", 0, 26, true}
++	suuankou     = award{"Suu Ankou", 0, 13, true}
++	suuankouTank = award{"Suu Ankou Tanki", 0, 26, true}
++	daisangen    = award{"Daisangen", 13, 13, true}
++	shosuushi    = award{"Shousuushii", 13, 13, true}
++	daisuushi    = award{"Dai Suushii", 26, 26, true}
++	chinroutou   = award{"Chinroutou", 13, 13, true}
++	ryuuiisou    = award{"Ryuuiisou", 13, 13, true}
++	tsuuiisou    = award{"Tsuu Iisou", 13, 13, true}
++	suukantsu    = award{"Suu Kantsu", 13, 13, true}
++	tenhou       = award{"Tenhou", 0, 13, true}
++	chiihou      = award{"Chiihou", 0, 13, true}
++)
++
++var windIndex = map[string]int{
++	"east": tiles.East, "south": tiles.South, "west": tiles.West, "north": tiles.North,
++}
++
++var greenTiles = map[int]bool{19: true, 20: true, 21: true, 23: true, 25: true, tiles.Green: true}
++
++// Settle scores one hand.
+ func Settle(h table.Hand) (table.Result, error) {
+-	return table.Result{}, errors.New("hand settlement is not implemented yet")
++	group, err := tiles.Parse(h.Tiles)
++	if err != nil {
++		return table.Result{}, err
++	}
++	seat, ok := windIndex[h.SeatWind]
++	if !ok {
++		return table.Result{}, fmt.Errorf("hand %s: bad seat wind %q", h.ID, h.SeatWind)
++	}
++	round, ok := windIndex[h.RoundWind]
++	if !ok {
++		return table.Result{}, fmt.Errorf("hand %s: bad round wind %q", h.ID, h.RoundWind)
++	}
++	winTile, _, err := tiles.ParseTile(h.WinTile)
++	if err != nil {
++		return table.Result{}, err
++	}
++
++	var melds []meld
++	for _, m := range h.Melds {
++		mg, err := tiles.Parse(m.Tiles)
++		if err != nil {
++			return table.Result{}, err
++		}
++		melds = append(melds, meld{kind: m.Type, tiles: mg.Indices(), open: m.Open})
++	}
++	var indicators []int
++	for _, d := range h.DoraIndicators {
++		t, _, err := tiles.ParseTile(d)
++		if err != nil {
++			return table.Result{}, err
++		}
++		indicators = append(indicators, t)
++	}
++
++	var openedSets [][]int
++	isOpen := false
++	for _, m := range melds {
++		if m.open {
++			openedSets = append(openedSets, m.tiles)
++			isOpen = true
++		}
++	}
++	selfDraw := h.SelfDraw()
++	dealer := seat == tiles.East
++	valued := []int{tiles.White, tiles.Green, tiles.Red, seat, round}
++
++	type candidate struct {
++		han, fu, fuSum int
++		yaku           []string
++		scored         bool
++		payment        table.Payment
++	}
++	var candidates []candidate
++
++	for _, hand := range divide(group.Counts, melds) {
++		sevenPairs := len(hand) == 7
++		if sevenPairs && isOpen {
++			continue
++		}
++		for _, winGroup := range winGroups(hand, openedSets, winTile) {
++			details, fu := handFu(hand, winTile, winGroup, melds, valued, selfDraw, isOpen)
++			var list []award
++			isPinfu := len(details) == 1 && !sevenPairs && !isOpen
++
++			pons := filter(hand, isPonOrKan)
++			chis := filter(hand, isChi)
++
++			if selfDraw && !isOpen {
++				list = append(list, menzenTsumo)
++			}
++			if isPinfu {
++				list = append(list, pinfu)
++			}
++			if sevenPairs {
++				list = append(list, chiitoitsu)
++			}
++			if allSimples(hand) {
++				list = append(list, tanyao)
++			}
++			if h.Riichi && !h.DoubleRiichi {
++				list = append(list, riichi)
++			}
++			if h.DoubleRiichi {
++				list = append(list, doubleRii)
++			}
++			if h.Ippatsu {
++				list = append(list, ippatsu)
++			}
++			if h.Rinshan {
++				list = append(list, rinshan)
++			}
++			if h.Chankan {
++				list = append(list, chankan)
++			}
++			if h.Haitei {
++				list = append(list, haitei)
++			}
++			if h.Houtei {
++				list = append(list, houtei)
++			}
++			if h.Tenhou {
++				list = append(list, tenhou)
++			}
++			if h.Chiihou {
++				list = append(list, chiihou)
++			}
++			if oneSuitOnly(hand, true) {
++				list = append(list, honitsu)
++			}
++			if oneSuitOnly(hand, false) {
++				list = append(list, chinitsu)
++			}
++			if allOf(hand, tiles.IsHonour) {
++				list = append(list, tsuuiisou)
++			}
++			if allOf(hand, func(t int) bool { return tiles.IsHonour(t) || tiles.IsTerminal(t) }) {
++				list = append(list, honroutou)
++			}
++			if allOf(hand, tiles.IsTerminal) {
++				list = append(list, chinroutou)
++			}
++			if allOf(hand, func(t int) bool { return greenTiles[t] }) {
++				list = append(list, ryuuiisou)
++			}
++			if len(chis) > 0 {
++				if isChantai(hand) {
++					list = append(list, chantai)
++				}
++				if isJunchan(hand) {
++					list = append(list, junchan)
++				}
++				if isIttsu(chis) {
++					list = append(list, ittsu)
++				}
++				if !isOpen {
++					if identicalRunMembers(chis) == 4 {
++						list = append(list, ryanpeiko)
++					} else if identicalRuns(chis) >= 2 {
++						list = append(list, iipeiko)
++					}
++				}
++				if isSanshoku(chis) {
++					list = append(list, sanshoku)
++				}
++			}
++			if len(pons) > 0 {
++				if len(pons) == 4 {
++					list = append(list, toitoi)
++				}
++				if concealedTriplets(hand, winTile, openedSets, selfDraw) == 3 {
++					list = append(list, sanankou)
++				}
++				if isSanshokuDouko(pons) {
++					list = append(list, sanDouko)
++				}
++				if dragonSets(hand) == 3 && hasDragonPair(hand) {
++					list = append(list, shosangen)
++				}
++				if hasSet(hand, tiles.White) {
++					list = append(list, haku)
++				}
++				if hasSet(hand, tiles.Green) {
++					list = append(list, hatsu)
++				}
++				if hasSet(hand, tiles.Red) {
++					list = append(list, chun)
++				}
++				if hasSet(hand, seat) {
++					list = append(list, windPlace)
++				}
++				if hasSet(hand, round) {
++					list = append(list, windRound)
++				}
++				if countSets(hand, []int{tiles.White, tiles.Green, tiles.Red}) == 3 {
++					list = append(list, daisangen)
++				}
++				windPons := countSets(hand, []int{tiles.East, tiles.South, tiles.West, tiles.North})
++				if windPons == 3 && hasWindPair(hand) {
++					list = append(list, shosuushi)
++				}
++				if windPons == 4 {
++					list = append(list, daisuushi)
++				}
++				if len(melds) == 0 && isChuuren(hand) {
++					if group.Counts[winTile] == 2 || group.Counts[winTile] == 4 {
++						list = append(list, chuuren9)
++					} else {
++						list = append(list, chuuren)
++					}
++				}
++				if !isOpen && concealedForSuuankou(hand, winTile, selfDraw) == 4 {
++					if group.Counts[winTile] == 2 {
++						list = append(list, suuankouTank)
++					} else {
++						list = append(list, suuankou)
++					}
++				}
++				if quads(melds) == 3 {
++					list = append(list, sanKantsu)
++				}
++				if quads(melds) == 4 {
++					list = append(list, suukantsu)
++				}
++			}
++
++			var limits []award
++			for _, a := range list {
++				if a.yakuman {
++					limits = append(limits, a)
++				}
++			}
++			if len(limits) > 0 {
++				list = limits
++			}
++
++			han := 0
++			for _, a := range list {
++				if isOpen && a.open != 0 {
++					han += a.open
++				} else {
++					han += a.closed
++				}
++			}
++			scored := han > 0
++			names := make([]string, 0, len(list)+2)
++			for _, a := range list {
++				names = append(names, a.name)
++			}
++			if len(limits) == 0 {
++				doraCount := 0
++				for tile, n := range group.Counts {
++					for _, ind := range indicators {
++						if isDora(tile, ind) {
++							doraCount += n
++						}
++					}
++				}
++				if doraCount > 0 {
++					names = append(names, fmt.Sprintf("Dora %d", doraCount))
++					han += doraCount
++				}
++				if len(group.Reds) > 0 {
++					names = append(names, fmt.Sprintf("Aka Dora %d", len(group.Reds)))
++					han += len(group.Reds)
++				}
++			}
++
++			sum := 0
++			for _, d := range details {
++				sum += d
++			}
++			c := candidate{han: han, fu: fu, fuSum: sum, yaku: names, scored: scored}
++			if c.scored {
++				c.payment = payout(han, fu, selfDraw, dealer, h.Honba, h.RiichiSticks, len(limits) > 0)
++			}
++			candidates = append(candidates, c)
++		}
++	}
++
++	if !isOpen && isThirteenOrphans(group.Counts) {
++		var list []award
++		if group.Counts[winTile] == 2 {
++			list = append(list, kokushi13)
++		} else {
++			list = append(list, kokushi)
++		}
++		if h.Tenhou {
++			list = append(list, tenhou)
++		}
++		if h.Chiihou {
++			list = append(list, chiihou)
++		}
++		han := 0
++		names := make([]string, 0, len(list))
++		for _, a := range list {
++			han += a.closed
++			names = append(names, a.name)
++		}
++		c := candidate{han: han, fu: 0, fuSum: 0, yaku: names, scored: true}
++		c.payment = payout(han, 0, selfDraw, dealer, h.Honba, h.RiichiSticks, true)
++		candidates = append(candidates, c)
++	}
++
++	if len(candidates) == 0 {
++		return table.Result{}, fmt.Errorf("hand %s: not a winning hand", h.ID)
++	}
++
++	sort.SliceStable(candidates, func(i, j int) bool {
++		if candidates[i].han != candidates[j].han {
++			return candidates[i].han > candidates[j].han
++		}
++		return candidates[i].fu > candidates[j].fu
++	})
++	top := candidates[0]
++	var tied []candidate
++	for _, c := range candidates {
++		if c.han == top.han && c.fu == top.fu {
++			tied = append(tied, c)
++		}
++	}
++	sort.SliceStable(tied, func(i, j int) bool { return tied[i].fuSum > tied[j].fuSum })
++	chosen := tied[0]
++
++	out := table.Result{ID: h.ID, Yaku: []string{}}
++	if !chosen.scored {
++		return out, nil
++	}
++	names := append([]string(nil), chosen.yaku...)
++	sort.Strings(names)
++	out.Scored = true
++	out.Han = chosen.han
++	out.Fu = chosen.fu
++	out.Yaku = names
++	p := chosen.payment
++	out.Payment = &p
++	return out, nil
++}
++
++// ------------------------------------------------------------------ shapes ----
++
++func isChi(s []int) bool {
++	return len(s) == 3 && s[0]+1 == s[1] && s[1]+1 == s[2] && !tiles.IsHonour(s[2])
++}
++
++func isPon(s []int) bool { return len(s) == 3 && s[0] == s[1] && s[1] == s[2] }
++
++func isKan(s []int) bool { return len(s) == 4 }
++
++func isPonOrKan(s []int) bool { return isPon(s) || isKan(s) }
++
++func isPair(s []int) bool { return len(s) == 2 }
++
++func filter(hand [][]int, pred func([]int) bool) [][]int {
++	var out [][]int
++	for _, s := range hand {
++		if pred(s) {
++			out = append(out, s)
++		}
++	}
++	return out
++}
++
++func sameSet(a, b []int) bool {
++	if len(a) != len(b) {
++		return false
++	}
++	for i := range a {
++		if a[i] != b[i] {
++			return false
++		}
++	}
++	return true
++}
++
++func allTiles(hand [][]int) []int {
++	var out []int
++	for _, s := range hand {
++		out = append(out, s...)
++	}
++	return out
++}
++
++func allOf(hand [][]int, pred func(int) bool) bool {
++	for _, t := range allTiles(hand) {
++		if !pred(t) {
++			return false
++		}
++	}
++	return true
++}
++
++func allSimples(hand [][]int) bool {
++	return allOf(hand, func(t int) bool { return !tiles.IsHonour(t) && !tiles.IsTerminal(t) })
++}
++
++func oneSuitOnly(hand [][]int, withHonours bool) bool {
++	suits := map[int]bool{}
++	honours := 0
++	for _, s := range hand {
++		if tiles.IsHonour(s[0]) {
++			honours++
++			continue
++		}
++		suits[tiles.Suit(s[0])] = true
++	}
++	if len(suits) != 1 {
++		return false
++	}
++	if withHonours {
++		return honours != 0
++	}
++	return honours == 0
++}
++
++func isChantai(hand [][]int) bool {
++	terminalSets, honourSets, chi := 0, 0, 0
++	for _, s := range hand {
++		if isChi(s) {
++			chi++
++		}
++		if anyOf(s, tiles.IsTerminal) {
++			terminalSets++
++		}
++		if anyOf(s, tiles.IsHonour) {
++			honourSets++
++		}
++	}
++	if chi == 0 {
++		return false
++	}
++	return terminalSets+honourSets == 5 && terminalSets != 0 && honourSets != 0
++}
++
++func isJunchan(hand [][]int) bool {
++	terminalSets, chi := 0, 0
++	for _, s := range hand {
++		if isChi(s) {
++			chi++
++		}
++		if anyOf(s, tiles.IsTerminal) {
++			terminalSets++
++		}
++	}
++	return chi != 0 && terminalSets == 5
++}
++
++func anyOf(set []int, pred func(int) bool) bool {
++	for _, t := range set {
++		if pred(t) {
++			return true
++		}
++	}
++	return false
++}
++
++func isIttsu(chis [][]int) bool {
++	if len(chis) < 3 {
++		return false
++	}
++	for suit := 0; suit < 3; suit++ {
++		starts := map[int]bool{}
++		for _, s := range chis {
++			if tiles.Suit(s[0]) == suit {
++				starts[tiles.Rank(s[0])] = true
++			}
++		}
++		if starts[0] && starts[3] && starts[6] {
++			return true
++		}
++	}
++	return false
++}
++
++func isSanshoku(chis [][]int) bool {
++	for _, a := range chis {
++		for _, b := range chis {
++			for _, c := range chis {
++				if tiles.Suit(a[0]) == 0 && tiles.Suit(b[0]) == 1 && tiles.Suit(c[0]) == 2 &&
++					tiles.Rank(a[0]) == tiles.Rank(b[0]) && tiles.Rank(b[0]) == tiles.Rank(c[0]) {
++					return true
++				}
++			}
++		}
++	}
++	return false
++}
++
++func isSanshokuDouko(pons [][]int) bool {
++	if len(pons) < 3 {
++		return false
++	}
++	for _, a := range pons {
++		for _, b := range pons {
++			for _, c := range pons {
++				if tiles.Suit(a[0]) == 0 && tiles.Suit(b[0]) == 1 && tiles.Suit(c[0]) == 2 &&
++					tiles.Rank(a[0]) == tiles.Rank(b[0]) && tiles.Rank(b[0]) == tiles.Rank(c[0]) {
++					return true
++				}
++			}
++		}
++	}
++	return false
++}
++
++func identicalRuns(chis [][]int) int {
++	best := 0
++	for _, a := range chis {
++		n := 0
++		for _, b := range chis {
++			if sameSet(a, b) {
++				n++
++			}
++		}
++		if n > best {
++			best = n
++		}
++	}
++	return best
++}
++
++// identicalRunMembers counts runs that appear at least twice in the hand.
++func identicalRunMembers(chis [][]int) int {
++	n := 0
++	for _, a := range chis {
++		count := 0
++		for _, b := range chis {
++			if sameSet(a, b) {
++				count++
++			}
++		}
++		if count >= 2 {
++			n++
++		}
++	}
++	return n
++}
++
++func hasSet(hand [][]int, tile int) bool {
++	n := 0
++	for _, s := range hand {
++		if isPonOrKan(s) && s[0] == tile {
++			n++
++		}
++	}
++	return n == 1
++}
++
++func countSets(hand [][]int, group []int) int {
++	n := 0
++	for _, s := range hand {
++		if !isPonOrKan(s) {
++			continue
++		}
++		for _, t := range group {
++			if s[0] == t {
++				n++
++			}
++		}
++	}
++	return n
++}
++
++func dragonSets(hand [][]int) int {
++	n := 0
++	for _, s := range hand {
++		if (isPair(s) || isPonOrKan(s)) && (s[0] == tiles.White || s[0] == tiles.Green || s[0] == tiles.Red) {
++			n++
++		}
++	}
++	return n
++}
++
++func hasDragonPair(hand [][]int) bool {
++	for _, s := range hand {
++		if isPair(s) && (s[0] == tiles.White || s[0] == tiles.Green || s[0] == tiles.Red) {
++			return true
++		}
++	}
++	return false
++}
++
++func hasWindPair(hand [][]int) bool {
++	for _, s := range hand {
++		if isPair(s) && s[0] >= tiles.East && s[0] <= tiles.North {
++			return true
++		}
++	}
++	return false
++}
++
++func quads(melds []meld) int {
++	n := 0
++	for _, m := range melds {
++		if m.kind == "kan" {
++			n++
++		}
++	}
++	return n
++}
++
++func concealedTriplets(hand [][]int, winTile int, openedSets [][]int, selfDraw bool) int {
++	opened := copySets(openedSets)
++	var winChis [][]int
++	for _, s := range hand {
++		if isChi(s) && contains(s, winTile) && !inSets(opened, s) {
++			winChis = append(winChis, s)
++		}
++	}
++	closed := 0
++	for _, s := range hand {
++		if !isPonOrKan(s) {
++			continue
++		}
++		if inSets(opened, s) {
++			continue
++		}
++		if contains(s, winTile) && !selfDraw && len(winChis) == 0 {
++			continue
++		}
++		closed++
++	}
++	return closed
++}
++
++func concealedForSuuankou(hand [][]int, winTile int, selfDraw bool) int {
++	n := 0
++	for _, s := range hand {
++		if isPonOrKan(s) && contains(s, winTile) && !selfDraw {
++			continue
++		}
++		if isPonOrKan(s) {
++			n++
++		}
++	}
++	return n
++}
++
++func isChuuren(hand [][]int) bool {
++	if !oneSuitOnly(hand, false) {
++		return false
++	}
++	ranks := map[int]int{}
++	for _, t := range allTiles(hand) {
++		ranks[tiles.Rank(t)]++
++	}
++	if ranks[0] < 3 || ranks[8] < 3 {
++		return false
++	}
++	left := map[int]int{}
++	for k, v := range ranks {
++		left[k] = v
++	}
++	left[0] -= 2
++	left[8] -= 2
++	for r := 0; r < 9; r++ {
++		if left[r] > 0 {
++			left[r]--
++		}
++	}
++	total := 0
++	for _, v := range left {
++		total += v
++	}
++	return total == 1
++}
++
++func isThirteenOrphans(counts [tiles.Count]int) bool {
++	product := 1
++	for _, t := range append(append([]int{}, tiles.Terminals...), tiles.Honours...) {
++		product *= counts[t]
++	}
++	return product == 2
++}
++
++func contains(set []int, tile int) bool {
++	for _, t := range set {
++		if t == tile {
++			return true
++		}
++	}
++	return false
++}
++
++func indexOf(set []int, tile int) int {
++	for i, t := range set {
++		if t == tile {
++			return i
++		}
++	}
++	return -1
++}
++
++func copySets(in [][]int) [][]int {
++	out := make([][]int, len(in))
++	for i, s := range in {
++		out[i] = append([]int(nil), s...)
++	}
++	return out
++}
++
++// inSets reports membership and removes nothing.
++func inSets(sets [][]int, set []int) bool {
++	for _, s := range sets {
++		if sameSet(s, set) {
++			return true
++		}
++	}
++	return false
++}
++
++// ---------------------------------------------------------------- win group ---
++
++func winGroups(hand [][]int, openedSets [][]int, winTile int) [][]int {
++	remaining := copySets(openedSets)
++	var closed [][]int
++	for _, s := range hand {
++		matched := -1
++		for i, o := range remaining {
++			if sameSet(o, s) {
++				matched = i
++				break
++			}
++		}
++		if matched >= 0 {
++			remaining = append(remaining[:matched], remaining[matched+1:]...)
++			continue
++		}
++		closed = append(closed, s)
++	}
++	var out [][]int
++	for _, s := range closed {
++		if contains(s, winTile) && !inSets(out, s) {
++			out = append(out, s)
++		}
++	}
++	return out
++}
++
++// --------------------------------------------------------------------- fu -----
++
++func handFu(hand [][]int, winTile int, winGroup []int, melds []meld, valued []int,
++	selfDraw, isOpen bool) ([]int, int) {
++	if len(hand) == 7 {
++		return []int{25}, 25
++	}
++	var details []int
++	var pair []int
++	for _, s := range hand {
++		if isPair(s) {
++			pair = s
++			break
++		}
++	}
++
++	openChis := [][]int{}
++	for _, m := range melds {
++		if m.kind == "chi" {
++			openChis = append(openChis, m.tiles)
++		}
++	}
++	var notOpenChi [][]int
++	remaining := copySets(openChis)
++	for _, s := range hand {
++		matched := -1
++		for i, o := range remaining {
++			if sameSet(o, s) {
++				matched = i
++				break
++			}
++		}
++		if matched >= 0 {
++			remaining = append(remaining[:matched], remaining[matched+1:]...)
++			continue
++		}
++		notOpenChi = append(notOpenChi, s)
++	}
++
++	if inSets(notOpenChi, winGroup) {
++		rank := tiles.Rank(winTile)
++		if anyOf(winGroup, tiles.IsTerminal) {
++			if rank == 2 && indexOf(winGroup, winTile) == 2 {
++				details = append(details, 2)
++			} else if rank == 6 && indexOf(winGroup, winTile) == 0 {
++				details = append(details, 2)
++			}
++		}
++		if indexOf(winGroup, winTile) == 1 {
++			details = append(details, 2)
++		}
++	}
++
++	valuedCount := 0
++	for _, v := range valued {
++		if v == pair[0] {
++			valuedCount++
++		}
++	}
++	if valuedCount == 1 {
++		details = append(details, 2)
++	}
++	if valuedCount == 2 {
++		details = append(details, 4)
++	}
++
++	if isPair(winGroup) {
++		details = append(details, 2)
++	}
++
++	for _, s := range hand {
++		if !isPonOrKan(s) {
++			continue
++		}
++		var owner *meld
++		for i := range melds {
++			if sameSet(melds[i].tiles, s) {
++				owner = &melds[i]
++				break
++			}
++		}
++		wasOpen := owner != nil && owner.open
++		isQuad := owner != nil && owner.kind == "kan"
++		strong := tiles.IsTerminal(s[0]) || tiles.IsHonour(s[0])
++		if !selfDraw && sameSet(s, winGroup) {
++			wasOpen = true
++		}
++		switch {
++		case strong && isQuad && wasOpen:
++			details = append(details, 16)
++		case strong && isQuad:
++			details = append(details, 32)
++		case strong && wasOpen:
++			details = append(details, 4)
++		case strong:
++			details = append(details, 8)
++		case isQuad && wasOpen:
++			details = append(details, 8)
++		case isQuad:
++			details = append(details, 16)
++		case wasOpen:
++			details = append(details, 2)
++		default:
++			details = append(details, 4)
++		}
++	}
++
++	if selfDraw && len(details) > 0 {
++		details = append(details, 2)
++	}
++	if isOpen && len(details) == 0 {
++		details = append(details, 2)
++	}
++	if isOpen || selfDraw {
++		details = append(details, 20)
++	} else {
++		details = append(details, 30)
++	}
++	sum := 0
++	for _, d := range details {
++		sum += d
++	}
++	return details, (sum + 9) / 10 * 10
++}
++
++// ------------------------------------------------------------------- dora -----
++
++func isDora(tile, indicator int) bool {
++	if tile < tiles.East {
++		d := indicator
++		switch d {
++		case 8:
++			d = -1
++		case 17:
++			d = 8
++		case 26:
++			d = 17
++		}
++		return tile == d+1
++	}
++	if indicator < tiles.East {
++		return false
++	}
++	d := indicator - tiles.East
++	t := tile - tiles.East
++	if d == 3 {
++		d = -1
++	}
++	if d == 6 {
++		d = 3
++	}
++	return t == d+1
++}
++
++// ------------------------------------------------------------------ payout ----
++
++func payout(han, fu int, selfDraw, dealer bool, honba, sticks int, isLimit bool) table.Payment {
++	var rounded, doubleRounded, fourRounded, sixRounded int
++	if han >= 13 && !isLimit {
++		han = 13
++	}
++	if han >= 5 {
++		switch {
++		case han >= 78:
++			rounded = 48000
++		case han >= 65:
++			rounded = 40000
++		case han >= 52:
++			rounded = 32000
++		case han >= 39:
++			rounded = 24000
++		case han >= 26:
++			rounded = 16000
++		case han >= 13:
++			rounded = 8000
++		case han >= 11:
++			rounded = 6000
++		case han >= 8:
++			rounded = 4000
++		case han >= 6:
++			rounded = 3000
++		default:
++			rounded = 2000
++		}
++		doubleRounded = rounded * 2
++		fourRounded = doubleRounded * 2
++		sixRounded = doubleRounded * 3
++	} else {
++		base := fu << (2 + han)
++		rounded = ceil100(base)
++		doubleRounded = ceil100(2 * base)
++		fourRounded = ceil100(4 * base)
++		sixRounded = ceil100(6 * base)
++		if rounded > 2000 {
++			rounded = 2000
++			doubleRounded = rounded * 2
++			fourRounded = doubleRounded * 2
++			sixRounded = doubleRounded * 3
++		}
++	}
++
++	var p table.Payment
++	if selfDraw {
++		p.Main = doubleRounded
++		p.MainBonus = 100 * honba
++		p.AdditionalBonus = p.MainBonus
++		if dealer {
++			p.Additional = p.Main
++		} else {
++			p.Additional = rounded
++		}
++	} else {
++		p.Additional = 0
++		p.AdditionalBonus = 0
++		p.MainBonus = 300 * honba
++		if dealer {
++			p.Main = sixRounded
++		} else {
++			p.Main = fourRounded
++		}
++	}
++	p.RiichiSticks = 1000 * sticks
++	p.Total = (p.Main + p.MainBonus) + 2*(p.Additional+p.AdditionalBonus) + p.RiichiSticks
++	return p
++}
++
++func ceil100(n int) int { return (n + 99) / 100 * 100 }
++
++// ---------------------------------------------------------------- dividing ----
++
++func divide(counts [tiles.Count]int, melds []meld) [][][]int {
++	closed := counts
++	for _, m := range melds {
++		for _, t := range m.tiles {
++			closed[t]--
++		}
++	}
++	var pairIndices []int
++	for t := 0; t < tiles.Count; t++ {
++		if tiles.IsHonour(t) {
++			if closed[t] == 2 {
++				pairIndices = append(pairIndices, t)
++			}
++			continue
++		}
++		if closed[t] >= 2 {
++			pairIndices = append(pairIndices, t)
++		}
++	}
++
++	var hands [][][]int
++	for _, pair := range pairIndices {
++		local := closed
++		local[pair] -= 2
++		options := [][][][]int{}
++		ok := true
++		for suit := 0; suit < 3; suit++ {
++			var cnt [9]int
++			total := 0
++			for r := 0; r < 9; r++ {
++				cnt[r] = local[suit*9+r]
++				total += cnt[r]
++			}
++			if total == 0 {
++				continue
++			}
++			parts := suitPartitions(cnt, suit*9)
++			if len(parts) == 0 {
++				ok = false
++				break
++			}
++			options = append(options, parts)
++		}
++		if !ok {
++			continue
++		}
++		var honourSets [][]int
++		for _, t := range tiles.Honours {
++			switch local[t] {
++			case 0:
++			case 3:
++				honourSets = append(honourSets, []int{t, t, t})
++			default:
++				ok = false
++			}
++		}
++		if !ok {
++			continue
++		}
++
++		base := [][]int{{pair, pair}}
++		base = append(base, honourSets...)
++		for _, m := range melds {
++			base = append(base, m.tiles)
++		}
++		for _, combo := range product(options) {
++			hand := append(copySets(base), copySets(combo)...)
++			if len(hand) != 5 {
++				continue
++			}
++			sortHand(hand)
++			if !hasHand(hands, hand) {
++				hands = append(hands, hand)
++			}
++		}
++	}
++
++	if len(pairIndices) == 7 {
++		var hand [][]int
++		for _, t := range pairIndices {
++			hand = append(hand, []int{t, t})
++		}
++		hands = append(hands, hand)
++	}
++
++	sort.SliceStable(hands, func(i, j int) bool { return handLess(hands[i], hands[j]) })
++	return hands
++}
++
++func suitPartitions(cnt [9]int, base int) [][][]int {
++	total := 0
++	for _, c := range cnt {
++		total += c
++	}
++	if total%3 != 0 {
++		return nil
++	}
++	if total == 0 {
++		return [][][]int{{}}
++	}
++	first := -1
++	for r := 0; r < 9; r++ {
++		if cnt[r] > 0 {
++			first = r
++			break
++		}
++	}
++	var out [][][]int
++	if cnt[first] >= 3 {
++		next := cnt
++		next[first] -= 3
++		for _, rest := range suitPartitions(next, base) {
++			set := []int{base + first, base + first, base + first}
++			out = append(out, append([][]int{set}, rest...))
++		}
++	}
++	if first <= 6 && cnt[first] > 0 && cnt[first+1] > 0 && cnt[first+2] > 0 {
++		next := cnt
++		next[first]--
++		next[first+1]--
++		next[first+2]--
++		for _, rest := range suitPartitions(next, base) {
++			set := []int{base + first, base + first + 1, base + first + 2}
++			out = append(out, append([][]int{set}, rest...))
++		}
++	}
++	return out
++}
++
++func product(options [][][][]int) [][][]int {
++	result := [][][]int{{}}
++	for _, group := range options {
++		var next [][][]int
++		for _, prefix := range result {
++			for _, choice := range group {
++				combined := append(copySets(prefix), copySets(choice)...)
++				next = append(next, combined)
++			}
++		}
++		result = next
++	}
++	return result
++}
++
++func sortHand(hand [][]int) {
++	sort.SliceStable(hand, func(i, j int) bool {
++		if hand[i][0] != hand[j][0] {
++			return hand[i][0] < hand[j][0]
++		}
++		return len(hand[i]) < len(hand[j])
++	})
++}
++
++func handLess(a, b [][]int) bool {
++	for i := 0; i < len(a) && i < len(b); i++ {
++		for j := 0; j < len(a[i]) && j < len(b[i]); j++ {
++			if a[i][j] != b[i][j] {
++				return a[i][j] < b[i][j]
++			}
++		}
++		if len(a[i]) != len(b[i]) {
++			return len(a[i]) < len(b[i])
++		}
++	}
++	return len(a) < len(b)
++}
++
++func hasHand(hands [][][]int, hand [][]int) bool {
++	for _, h := range hands {
++		if len(h) != len(hand) {
++			continue
++		}
++		same := true
++		for i := range h {
++			if !sameSet(h[i], hand[i]) {
++				same = false
++				break
++			}
++		}
++		if same {
++			return true
++		}
++	}
++	return false
+ }

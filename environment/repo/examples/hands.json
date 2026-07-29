@@ -1,0 +1,2261 @@
+[
+ {
+  "id": "e0001",
+  "hand": "222555p44455667s",
+  "melds": [],
+  "winTile": "6s",
+  "win": "ron",
+  "seatWind": "south",
+  "roundWind": "east",
+  "doraIndicators": [],
+  "honba": 0,
+  "riichiSticks": 3,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0002",
+  "hand": "789m445566p45556s",
+  "melds": [],
+  "winTile": "5p",
+  "win": "ron",
+  "seatWind": "north",
+  "roundWind": "east",
+  "doraIndicators": [
+   "4z"
+  ],
+  "honba": 5,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0003",
+  "hand": "234999m23444777p",
+  "melds": [],
+  "winTile": "4m",
+  "win": "tsumo",
+  "seatWind": "north",
+  "roundWind": "east",
+  "doraIndicators": [
+   "6z",
+   "7m",
+   "8m"
+  ],
+  "honba": 1,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0004",
+  "hand": "444789m78999p111s",
+  "melds": [],
+  "winTile": "4m",
+  "win": "ron",
+  "seatWind": "west",
+  "roundWind": "south",
+  "doraIndicators": [],
+  "honba": 0,
+  "riichiSticks": 3,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0005",
+  "hand": "99m234444678p678s",
+  "melds": [],
+  "winTile": "7p",
+  "win": "tsumo",
+  "seatWind": "east",
+  "roundWind": "south",
+  "doraIndicators": [
+   "5z",
+   "1z"
+  ],
+  "honba": 0,
+  "riichiSticks": 3,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0006",
+  "hand": "456777789m567s11z",
+  "melds": [
+   {
+    "type": "chi",
+    "tiles": "567s",
+    "open": true
+   }
+  ],
+  "winTile": "7m",
+  "win": "tsumo",
+  "seatWind": "west",
+  "roundWind": "south",
+  "doraIndicators": [
+   "9p"
+  ],
+  "honba": 0,
+  "riichiSticks": 3,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0007",
+  "hand": "234567778899m77z",
+  "melds": [],
+  "winTile": "6m",
+  "win": "ron",
+  "seatWind": "north",
+  "roundWind": "south",
+  "doraIndicators": [
+   "2m",
+   "5m"
+  ],
+  "honba": 1,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0008",
+  "hand": "111p11556677999s",
+  "melds": [],
+  "winTile": "9s",
+  "win": "ron",
+  "seatWind": "south",
+  "roundWind": "south",
+  "doraIndicators": [],
+  "honba": 5,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0009",
+  "hand": "22345999m789p789s",
+  "melds": [],
+  "winTile": "8p",
+  "win": "ron",
+  "seatWind": "south",
+  "roundWind": "south",
+  "doraIndicators": [
+   "1s",
+   "6m"
+  ],
+  "honba": 2,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0010",
+  "hand": "678m34588p222444z",
+  "melds": [],
+  "winTile": "4z",
+  "win": "tsumo",
+  "seatWind": "east",
+  "roundWind": "south",
+  "doraIndicators": [
+   "5p"
+  ],
+  "honba": 5,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0011",
+  "hand": "234456m456666s11z",
+  "melds": [],
+  "winTile": "6s",
+  "win": "tsumo",
+  "seatWind": "north",
+  "roundWind": "east",
+  "doraIndicators": [],
+  "honba": 1,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0012",
+  "hand": "333567m88p123456s",
+  "melds": [],
+  "winTile": "3m",
+  "win": "tsumo",
+  "seatWind": "north",
+  "roundWind": "south",
+  "doraIndicators": [
+   "3z"
+  ],
+  "honba": 2,
+  "riichiSticks": 1,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0013",
+  "hand": "677889m22234789p",
+  "melds": [],
+  "winTile": "8m",
+  "win": "tsumo",
+  "seatWind": "south",
+  "roundWind": "east",
+  "doraIndicators": [],
+  "honba": 0,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0014",
+  "hand": "66m345567p234456s",
+  "melds": [],
+  "winTile": "5p",
+  "win": "tsumo",
+  "seatWind": "south",
+  "roundWind": "south",
+  "doraIndicators": [
+   "2z"
+  ],
+  "honba": 2,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0015",
+  "hand": "123667788p123s44z",
+  "melds": [],
+  "winTile": "3p",
+  "win": "tsumo",
+  "seatWind": "east",
+  "roundWind": "south",
+  "doraIndicators": [
+   "9p"
+  ],
+  "honba": 0,
+  "riichiSticks": 3,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0016",
+  "hand": "567m12355567p567s",
+  "melds": [],
+  "winTile": "5m",
+  "win": "tsumo",
+  "seatWind": "north",
+  "roundWind": "south",
+  "doraIndicators": [],
+  "honba": 0,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0017",
+  "hand": "567m44567p456678s",
+  "melds": [],
+  "winTile": "6s",
+  "win": "tsumo",
+  "seatWind": "north",
+  "roundWind": "east",
+  "doraIndicators": [],
+  "honba": 1,
+  "riichiSticks": 1,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0018",
+  "hand": "22678m677889p234s",
+  "melds": [],
+  "winTile": "3s",
+  "win": "ron",
+  "seatWind": "east",
+  "roundWind": "south",
+  "doraIndicators": [],
+  "honba": 0,
+  "riichiSticks": 1,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0019",
+  "hand": "555m44477p566778s",
+  "melds": [],
+  "winTile": "7p",
+  "win": "ron",
+  "seatWind": "north",
+  "roundWind": "south",
+  "doraIndicators": [
+   "2p"
+  ],
+  "honba": 0,
+  "riichiSticks": 3,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0020",
+  "hand": "333777789m777s66z",
+  "melds": [
+   {
+    "type": "pon",
+    "tiles": "777s",
+    "open": true
+   },
+   {
+    "type": "chi",
+    "tiles": "789m",
+    "open": true
+   },
+   {
+    "type": "pon",
+    "tiles": "777m",
+    "open": true
+   }
+  ],
+  "winTile": "6z",
+  "win": "tsumo",
+  "seatWind": "west",
+  "roundWind": "south",
+  "doraIndicators": [
+   "6m"
+  ],
+  "honba": 0,
+  "riichiSticks": 1,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0021",
+  "hand": "999m678999p999s77z",
+  "melds": [
+   {
+    "type": "pon",
+    "tiles": "999s",
+    "open": true
+   },
+   {
+    "type": "pon",
+    "tiles": "999m",
+    "open": true
+   },
+   {
+    "type": "chi",
+    "tiles": "678p",
+    "open": true
+   }
+  ],
+  "winTile": "7z",
+  "win": "tsumo",
+  "seatWind": "west",
+  "roundWind": "east",
+  "doraIndicators": [
+   "8s"
+  ],
+  "honba": 1,
+  "riichiSticks": 1,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0022",
+  "hand": "333999m11133355p",
+  "melds": [],
+  "winTile": "9m",
+  "win": "ron",
+  "seatWind": "west",
+  "roundWind": "south",
+  "doraIndicators": [],
+  "honba": 0,
+  "riichiSticks": 1,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0023",
+  "hand": "555p333s11166677z",
+  "melds": [],
+  "winTile": "3s",
+  "win": "ron",
+  "seatWind": "north",
+  "roundWind": "south",
+  "doraIndicators": [],
+  "honba": 2,
+  "riichiSticks": 1,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0024",
+  "hand": "33444888p111333z",
+  "melds": [],
+  "winTile": "4p",
+  "win": "ron",
+  "seatWind": "north",
+  "roundWind": "south",
+  "doraIndicators": [
+   "2s"
+  ],
+  "honba": 5,
+  "riichiSticks": 3,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0025",
+  "hand": "333m666888p777s11z",
+  "melds": [
+   {
+    "type": "pon",
+    "tiles": "777s",
+    "open": true
+   }
+  ],
+  "winTile": "6p",
+  "win": "ron",
+  "seatWind": "south",
+  "roundWind": "south",
+  "doraIndicators": [
+   "6p"
+  ],
+  "honba": 2,
+  "riichiSticks": 1,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0026",
+  "hand": "11999m999p444s222z",
+  "melds": [
+   {
+    "type": "pon",
+    "tiles": "444s",
+    "open": true
+   }
+  ],
+  "winTile": "9m",
+  "win": "tsumo",
+  "seatWind": "west",
+  "roundWind": "east",
+  "doraIndicators": [],
+  "honba": 0,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0027",
+  "hand": "888p66777s444555z",
+  "melds": [
+   {
+    "type": "pon",
+    "tiles": "777s",
+    "open": true
+   }
+  ],
+  "winTile": "4z",
+  "win": "tsumo",
+  "seatWind": "south",
+  "roundWind": "east",
+  "doraIndicators": [],
+  "honba": 0,
+  "riichiSticks": 3,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0028",
+  "hand": "333444666p33888s",
+  "melds": [],
+  "winTile": "3s",
+  "win": "ron",
+  "seatWind": "east",
+  "roundWind": "east",
+  "doraIndicators": [
+   "4z",
+   "5s"
+  ],
+  "honba": 0,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0029",
+  "hand": "55599m777p222444z",
+  "melds": [],
+  "winTile": "9m",
+  "win": "ron",
+  "seatWind": "north",
+  "roundWind": "east",
+  "doraIndicators": [],
+  "honba": 1,
+  "riichiSticks": 1,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0030",
+  "hand": "111m22266688p444s",
+  "melds": [],
+  "winTile": "8p",
+  "win": "tsumo",
+  "seatWind": "west",
+  "roundWind": "south",
+  "doraIndicators": [],
+  "honba": 0,
+  "riichiSticks": 3,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0031",
+  "hand": "11445577p6688s22z",
+  "melds": [],
+  "winTile": "1p",
+  "win": "tsumo",
+  "seatWind": "north",
+  "roundWind": "east",
+  "doraIndicators": [
+   "8m"
+  ],
+  "honba": 1,
+  "riichiSticks": 1,
+  "riichi": true,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0032",
+  "hand": "2288m5577p556677s",
+  "melds": [],
+  "winTile": "6s",
+  "win": "tsumo",
+  "seatWind": "north",
+  "roundWind": "east",
+  "doraIndicators": [
+   "6s"
+  ],
+  "honba": 3,
+  "riichiSticks": 1,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0033",
+  "hand": "1166m22p4466s2233z",
+  "melds": [],
+  "winTile": "2z",
+  "win": "ron",
+  "seatWind": "north",
+  "roundWind": "east",
+  "doraIndicators": [
+   "3z",
+   "9s"
+  ],
+  "honba": 1,
+  "riichiSticks": 0,
+  "riichi": true,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0034",
+  "hand": "19m19p119s1234567z",
+  "melds": [],
+  "winTile": "1s",
+  "win": "ron",
+  "seatWind": "west",
+  "roundWind": "east",
+  "doraIndicators": [],
+  "honba": 2,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0035",
+  "hand": "233445677889m55s",
+  "melds": [
+   {
+    "type": "chi",
+    "tiles": "345m",
+    "open": true
+   }
+  ],
+  "winTile": "7m",
+  "win": "ron",
+  "seatWind": "north",
+  "roundWind": "south",
+  "doraIndicators": [
+   "5p",
+   "6p",
+   "6m"
+  ],
+  "honba": 5,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0036",
+  "hand": "222444p33s111777z",
+  "melds": [
+   {
+    "type": "pon",
+    "tiles": "222p",
+    "open": true
+   }
+  ],
+  "winTile": "4p",
+  "win": "tsumo",
+  "seatWind": "west",
+  "roundWind": "south",
+  "doraIndicators": [
+   "1s"
+  ],
+  "honba": 5,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0037",
+  "hand": "11333566778999s",
+  "melds": [
+   {
+    "type": "chi",
+    "tiles": "678s",
+    "open": true
+   },
+   {
+    "type": "pon",
+    "tiles": "999s",
+    "open": true
+   },
+   {
+    "type": "chi",
+    "tiles": "567s",
+    "open": true
+   }
+  ],
+  "winTile": "3s",
+  "win": "ron",
+  "seatWind": "east",
+  "roundWind": "south",
+  "doraIndicators": [],
+  "honba": 5,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0038",
+  "hand": "123999s11144666z",
+  "melds": [
+   {
+    "type": "chi",
+    "tiles": "123s",
+    "open": true
+   },
+   {
+    "type": "pon",
+    "tiles": "666z",
+    "open": true
+   },
+   {
+    "type": "pon",
+    "tiles": "999s",
+    "open": true
+   }
+  ],
+  "winTile": "1z",
+  "win": "tsumo",
+  "seatWind": "south",
+  "roundWind": "east",
+  "doraIndicators": [
+   "7z"
+  ],
+  "honba": 0,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0039",
+  "hand": "789m789p11999s777z",
+  "melds": [
+   {
+    "type": "pon",
+    "tiles": "777z",
+    "open": true
+   },
+   {
+    "type": "chi",
+    "tiles": "789p",
+    "open": true
+   },
+   {
+    "type": "pon",
+    "tiles": "999s",
+    "open": true
+   }
+  ],
+  "winTile": "8m",
+  "win": "ron",
+  "seatWind": "west",
+  "roundWind": "south",
+  "doraIndicators": [],
+  "honba": 5,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0040",
+  "hand": "123m11999p111123s",
+  "melds": [],
+  "winTile": "1s",
+  "win": "ron",
+  "seatWind": "west",
+  "roundWind": "east",
+  "doraIndicators": [
+   "5s",
+   "2p"
+  ],
+  "honba": 1,
+  "riichiSticks": 3,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0041",
+  "hand": "111m77p111s222333z",
+  "melds": [],
+  "winTile": "1s",
+  "win": "ron",
+  "seatWind": "north",
+  "roundWind": "east",
+  "doraIndicators": [
+   "2z"
+  ],
+  "honba": 2,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0042",
+  "hand": "11777m123567s3333z",
+  "melds": [
+   {
+    "type": "kan",
+    "tiles": "3333z",
+    "open": false
+   }
+  ],
+  "winTile": "7m",
+  "win": "tsumo",
+  "seatWind": "west",
+  "roundWind": "east",
+  "doraIndicators": [],
+  "honba": 0,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0043",
+  "hand": "111123m22p6666s444z",
+  "melds": [
+   {
+    "type": "pon",
+    "tiles": "111m",
+    "open": true
+   },
+   {
+    "type": "chi",
+    "tiles": "123m",
+    "open": true
+   },
+   {
+    "type": "kan",
+    "tiles": "6666s",
+    "open": true
+   }
+  ],
+  "winTile": "4z",
+  "win": "tsumo",
+  "seatWind": "south",
+  "roundWind": "south",
+  "doraIndicators": [
+   "4z"
+  ],
+  "honba": 1,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0044",
+  "hand": "3333456m234s222277z",
+  "melds": [
+   {
+    "type": "chi",
+    "tiles": "456m",
+    "open": true
+   },
+   {
+    "type": "kan",
+    "tiles": "3333m",
+    "open": true
+   },
+   {
+    "type": "kan",
+    "tiles": "2222z",
+    "open": false
+   }
+  ],
+  "winTile": "3s",
+  "win": "tsumo",
+  "seatWind": "east",
+  "roundWind": "south",
+  "doraIndicators": [
+   "1s"
+  ],
+  "honba": 0,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0045",
+  "hand": "9999m234567p567s66z",
+  "melds": [
+   {
+    "type": "kan",
+    "tiles": "9999m",
+    "open": false
+   }
+  ],
+  "winTile": "7p",
+  "win": "tsumo",
+  "seatWind": "south",
+  "roundWind": "east",
+  "doraIndicators": [],
+  "honba": 2,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0046",
+  "hand": "123666m33p999s333z",
+  "melds": [
+   {
+    "type": "pon",
+    "tiles": "333z",
+    "open": true
+   },
+   {
+    "type": "pon",
+    "tiles": "999s",
+    "open": true
+   },
+   {
+    "type": "chi",
+    "tiles": "123m",
+    "open": true
+   }
+  ],
+  "winTile": "6m",
+  "win": "ron",
+  "seatWind": "east",
+  "roundWind": "south",
+  "doraIndicators": [
+   "2s",
+   "6z",
+   "2z"
+  ],
+  "honba": 1,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0047",
+  "hand": "33377m555666777z",
+  "melds": [
+   {
+    "type": "pon",
+    "tiles": "777z",
+    "open": true
+   },
+   {
+    "type": "pon",
+    "tiles": "333m",
+    "open": true
+   },
+   {
+    "type": "pon",
+    "tiles": "555z",
+    "open": true
+   }
+  ],
+  "winTile": "6z",
+  "win": "ron",
+  "seatWind": "south",
+  "roundWind": "east",
+  "doraIndicators": [
+   "1m"
+  ],
+  "honba": 0,
+  "riichiSticks": 1,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0048",
+  "hand": "77s111222333444z",
+  "melds": [
+   {
+    "type": "pon",
+    "tiles": "333z",
+    "open": true
+   }
+  ],
+  "winTile": "4z",
+  "win": "tsumo",
+  "seatWind": "east",
+  "roundWind": "east",
+  "doraIndicators": [
+   "6z",
+   "3p"
+  ],
+  "honba": 5,
+  "riichiSticks": 3,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0049",
+  "hand": "88p333666888s666z",
+  "melds": [],
+  "winTile": "3s",
+  "win": "ron",
+  "seatWind": "north",
+  "roundWind": "east",
+  "doraIndicators": [],
+  "honba": 1,
+  "riichiSticks": 3,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0050",
+  "hand": "22223333444466s",
+  "melds": [],
+  "winTile": "2s",
+  "win": "ron",
+  "seatWind": "west",
+  "roundWind": "south",
+  "doraIndicators": [
+   "6m",
+   "8s"
+  ],
+  "honba": 5,
+  "riichiSticks": 1,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0051",
+  "hand": "123m12355777p123s",
+  "melds": [
+   {
+    "type": "pon",
+    "tiles": "777p",
+    "open": true
+   }
+  ],
+  "winTile": "3p",
+  "win": "ron",
+  "seatWind": "south",
+  "roundWind": "east",
+  "doraIndicators": [
+   "6p",
+   "8p",
+   "7p"
+  ],
+  "honba": 2,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0052",
+  "hand": "345m345p34566s666z",
+  "melds": [
+   {
+    "type": "chi",
+    "tiles": "345s",
+    "open": true
+   }
+  ],
+  "winTile": "6z",
+  "win": "ron",
+  "seatWind": "east",
+  "roundWind": "east",
+  "doraIndicators": [
+   "1m",
+   "8s",
+   "3p"
+  ],
+  "honba": 2,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0053",
+  "hand": "567m22333567p567s",
+  "melds": [],
+  "winTile": "7m",
+  "win": "tsumo",
+  "seatWind": "east",
+  "roundWind": "east",
+  "doraIndicators": [
+   "1p",
+   "3s"
+  ],
+  "honba": 2,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0054",
+  "hand": "345m123456789p55z",
+  "melds": [
+   {
+    "type": "chi",
+    "tiles": "456p",
+    "open": true
+   }
+  ],
+  "winTile": "9p",
+  "win": "ron",
+  "seatWind": "south",
+  "roundWind": "east",
+  "doraIndicators": [],
+  "honba": 0,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0055",
+  "hand": "123456789m66p333z",
+  "melds": [
+   {
+    "type": "chi",
+    "tiles": "789m",
+    "open": true
+   }
+  ],
+  "winTile": "5m",
+  "win": "tsumo",
+  "seatWind": "north",
+  "roundWind": "south",
+  "doraIndicators": [
+   "9s",
+   "4m",
+   "2m"
+  ],
+  "honba": 0,
+  "riichiSticks": 3,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0056",
+  "hand": "88m123344556789p",
+  "melds": [
+   {
+    "type": "chi",
+    "tiles": "123p",
+    "open": true
+   },
+   {
+    "type": "chi",
+    "tiles": "345p",
+    "open": true
+   }
+  ],
+  "winTile": "6p",
+  "win": "ron",
+  "seatWind": "south",
+  "roundWind": "east",
+  "doraIndicators": [
+   "2p"
+  ],
+  "honba": 2,
+  "riichiSticks": 3,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0057",
+  "hand": "66677m666p666s222z",
+  "melds": [
+   {
+    "type": "pon",
+    "tiles": "666s",
+    "open": true
+   }
+  ],
+  "winTile": "6m",
+  "win": "ron",
+  "seatWind": "west",
+  "roundWind": "east",
+  "doraIndicators": [
+   "2m"
+  ],
+  "honba": 0,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0058",
+  "hand": "033346m33p012346s",
+  "melds": [
+   {
+    "type": "chi",
+    "tiles": "456s",
+    "open": true
+   }
+  ],
+  "winTile": "3m",
+  "win": "ron",
+  "seatWind": "west",
+  "roundWind": "south",
+  "doraIndicators": [
+   "4p",
+   "3s",
+   "9m",
+   "7p"
+  ],
+  "honba": 1,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0059",
+  "hand": "234678p66s111222z",
+  "melds": [
+   {
+    "type": "chi",
+    "tiles": "678p",
+    "open": true
+   }
+  ],
+  "winTile": "3p",
+  "win": "ron",
+  "seatWind": "north",
+  "roundWind": "south",
+  "doraIndicators": [
+   "2z",
+   "8m",
+   "1m",
+   "6s"
+  ],
+  "honba": 1,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0060",
+  "hand": "99m111222p666888s",
+  "melds": [
+   {
+    "type": "pon",
+    "tiles": "222p",
+    "open": true
+   },
+   {
+    "type": "pon",
+    "tiles": "888s",
+    "open": true
+   }
+  ],
+  "winTile": "6s",
+  "win": "ron",
+  "seatWind": "west",
+  "roundWind": "south",
+  "doraIndicators": [
+   "4s",
+   "8s",
+   "7m",
+   "4s"
+  ],
+  "honba": 0,
+  "riichiSticks": 1,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0061",
+  "hand": "666m11p023344678s",
+  "melds": [],
+  "winTile": "4s",
+  "win": "ron",
+  "seatWind": "east",
+  "roundWind": "south",
+  "doraIndicators": [
+   "5z"
+  ],
+  "honba": 0,
+  "riichiSticks": 3,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0062",
+  "hand": "11234m044467p111z",
+  "melds": [
+   {
+    "type": "chi",
+    "tiles": "234m",
+    "open": true
+   }
+  ],
+  "winTile": "1z",
+  "win": "ron",
+  "seatWind": "north",
+  "roundWind": "south",
+  "doraIndicators": [
+   "4p"
+  ],
+  "honba": 1,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0063",
+  "hand": "003344m11133678p",
+  "melds": [
+   {
+    "type": "chi",
+    "tiles": "345m",
+    "open": true
+   }
+  ],
+  "winTile": "1p",
+  "win": "tsumo",
+  "seatWind": "east",
+  "roundWind": "south",
+  "doraIndicators": [
+   "1p"
+  ],
+  "honba": 1,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0064",
+  "hand": "122334m456p77789s",
+  "melds": [
+   {
+    "type": "chi",
+    "tiles": "789s",
+    "open": true
+   },
+   {
+    "type": "chi",
+    "tiles": "456p",
+    "open": true
+   }
+  ],
+  "winTile": "2m",
+  "win": "tsumo",
+  "seatWind": "south",
+  "roundWind": "east",
+  "doraIndicators": [
+   "2z",
+   "9m",
+   "6z"
+  ],
+  "honba": 0,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0065",
+  "hand": "23344566p123456s",
+  "melds": [],
+  "winTile": "4p",
+  "win": "ron",
+  "seatWind": "east",
+  "roundWind": "south",
+  "doraIndicators": [],
+  "honba": 2,
+  "riichiSticks": 0,
+  "riichi": true,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0066",
+  "hand": "444p3333789s113333z",
+  "melds": [
+   {
+    "type": "kan",
+    "tiles": "3333s",
+    "open": true
+   },
+   {
+    "type": "kan",
+    "tiles": "3333z",
+    "open": true
+   },
+   {
+    "type": "pon",
+    "tiles": "444p",
+    "open": true
+   }
+  ],
+  "winTile": "8s",
+  "win": "tsumo",
+  "seatWind": "south",
+  "roundWind": "east",
+  "doraIndicators": [],
+  "honba": 0,
+  "riichiSticks": 3,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": true,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0067",
+  "hand": "111777p56666777s",
+  "melds": [
+   {
+    "type": "pon",
+    "tiles": "111p",
+    "open": true
+   }
+  ],
+  "winTile": "6s",
+  "win": "ron",
+  "seatWind": "east",
+  "roundWind": "south",
+  "doraIndicators": [],
+  "honba": 2,
+  "riichiSticks": 3,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": true,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0068",
+  "hand": "789m345p566667s11z",
+  "melds": [
+   {
+    "type": "pon",
+    "tiles": "666s",
+    "open": true
+   },
+   {
+    "type": "chi",
+    "tiles": "345p",
+    "open": true
+   }
+  ],
+  "winTile": "8m",
+  "win": "tsumo",
+  "seatWind": "east",
+  "roundWind": "south",
+  "doraIndicators": [],
+  "honba": 2,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": true,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0069",
+  "hand": "222m12233466p456s",
+  "melds": [],
+  "winTile": "4p",
+  "win": "ron",
+  "seatWind": "west",
+  "roundWind": "east",
+  "doraIndicators": [],
+  "honba": 0,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": true,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0070",
+  "hand": "123345567p55666s",
+  "melds": [],
+  "winTile": "5p",
+  "win": "ron",
+  "seatWind": "east",
+  "roundWind": "east",
+  "doraIndicators": [],
+  "honba": 5,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": true,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0071",
+  "hand": "45666678m123888p",
+  "melds": [],
+  "winTile": "5m",
+  "win": "ron",
+  "seatWind": "east",
+  "roundWind": "east",
+  "doraIndicators": [],
+  "honba": 3,
+  "riichiSticks": 2,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0072",
+  "hand": "66789m333p677778s",
+  "melds": [
+   {
+    "type": "pon",
+    "tiles": "333p",
+    "open": true
+   },
+   {
+    "type": "chi",
+    "tiles": "678s",
+    "open": true
+   }
+  ],
+  "winTile": "7s",
+  "win": "ron",
+  "seatWind": "east",
+  "roundWind": "east",
+  "doraIndicators": [
+   "9m",
+   "3p",
+   "4m"
+  ],
+  "honba": 3,
+  "riichiSticks": 2,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0073",
+  "hand": "344556m334455p11z",
+  "melds": [],
+  "winTile": "5m",
+  "win": "tsumo",
+  "seatWind": "east",
+  "roundWind": "east",
+  "doraIndicators": [
+   "8m",
+   "2m"
+  ],
+  "honba": 3,
+  "riichiSticks": 2,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0074",
+  "hand": "45699m333p567s444z",
+  "melds": [
+   {
+    "type": "chi",
+    "tiles": "567s",
+    "open": true
+   }
+  ],
+  "winTile": "6m",
+  "win": "ron",
+  "seatWind": "south",
+  "roundWind": "east",
+  "doraIndicators": [
+   "3s",
+   "6m"
+  ],
+  "honba": 4,
+  "riichiSticks": 1,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0075",
+  "hand": "22345m345s222777z",
+  "melds": [
+   {
+    "type": "pon",
+    "tiles": "777z",
+    "open": true
+   }
+  ],
+  "winTile": "2z",
+  "win": "tsumo",
+  "seatWind": "south",
+  "roundWind": "east",
+  "doraIndicators": [
+   "9s"
+  ],
+  "honba": 4,
+  "riichiSticks": 1,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0076",
+  "hand": "456m666p23344599s",
+  "melds": [
+   {
+    "type": "pon",
+    "tiles": "666p",
+    "open": true
+   }
+  ],
+  "winTile": "3s",
+  "win": "ron",
+  "seatWind": "south",
+  "roundWind": "east",
+  "doraIndicators": [],
+  "honba": 4,
+  "riichiSticks": 1,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0077",
+  "hand": "345678p55666777z",
+  "melds": [
+   {
+    "type": "pon",
+    "tiles": "777z",
+    "open": true
+   },
+   {
+    "type": "pon",
+    "tiles": "666z",
+    "open": true
+   }
+  ],
+  "winTile": "8p",
+  "win": "ron",
+  "seatWind": "west",
+  "roundWind": "south",
+  "doraIndicators": [
+   "1s"
+  ],
+  "honba": 1,
+  "riichiSticks": 1,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0078",
+  "hand": "678s11122233344z",
+  "melds": [
+   {
+    "type": "chi",
+    "tiles": "678s",
+    "open": true
+   },
+   {
+    "type": "pon",
+    "tiles": "222z",
+    "open": true
+   },
+   {
+    "type": "pon",
+    "tiles": "333z",
+    "open": true
+   }
+  ],
+  "winTile": "1z",
+  "win": "ron",
+  "seatWind": "west",
+  "roundWind": "east",
+  "doraIndicators": [
+   "5z"
+  ],
+  "honba": 0,
+  "riichiSticks": 3,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0079",
+  "hand": "3333m22227777p99s4444z",
+  "melds": [
+   {
+    "type": "kan",
+    "tiles": "2222p",
+    "open": true
+   },
+   {
+    "type": "kan",
+    "tiles": "7777p",
+    "open": false
+   },
+   {
+    "type": "kan",
+    "tiles": "3333m",
+    "open": false
+   },
+   {
+    "type": "kan",
+    "tiles": "4444z",
+    "open": false
+   }
+  ],
+  "winTile": "9s",
+  "win": "ron",
+  "seatWind": "west",
+  "roundWind": "east",
+  "doraIndicators": [
+   "4m"
+  ],
+  "honba": 0,
+  "riichiSticks": 1,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0080",
+  "hand": "11155m111p111999s",
+  "melds": [],
+  "winTile": "1m",
+  "win": "tsumo",
+  "seatWind": "east",
+  "roundWind": "south",
+  "doraIndicators": [
+   "4m",
+   "9p",
+   "3m"
+  ],
+  "honba": 0,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0081",
+  "hand": "123p12344477s444z",
+  "melds": [],
+  "winTile": "4s",
+  "win": "ron",
+  "seatWind": "north",
+  "roundWind": "east",
+  "doraIndicators": [
+   "6p"
+  ],
+  "honba": 0,
+  "riichiSticks": 3,
+  "riichi": true,
+  "ippatsu": true,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ },
+ {
+  "id": "e0082",
+  "hand": "11123456789999p",
+  "melds": [],
+  "winTile": "5p",
+  "win": "tsumo",
+  "seatWind": "east",
+  "roundWind": "east",
+  "doraIndicators": [],
+  "honba": 0,
+  "riichiSticks": 0,
+  "riichi": false,
+  "ippatsu": false,
+  "rinshan": false,
+  "chankan": false,
+  "haitei": false,
+  "houtei": false,
+  "doubleRiichi": false,
+  "tenhou": false,
+  "chiihou": false
+ }
+]

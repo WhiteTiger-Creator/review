@@ -1,38 +1,34 @@
-# syntax=docker/dockerfile:1
-FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
 
-ENV DEBIAN_FRONTEND=noninteractive
+ENV GOTOOLCHAIN=auto
+ENV GOFLAGS=-buildvcs=false
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-    asciinema \
-    build-essential \
-    ca-certificates \
-    python3 \
-    python3-pip \
-    python3-venv \
-    tmux \
- && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends \
+        tmux \
+        asciinema \
+        bash \
+        git \
+        patch \
+        ripgrep \
+        less \
+        nano \
+        python3 \
+        python3-pip \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY requirements-verifier.txt /tmp/requirements-verifier.txt
-RUN python3 -m venv /opt/verifier-venv \
- && /opt/verifier-venv/bin/pip install --no-cache-dir --require-hashes -r /tmp/requirements-verifier.txt \
- && rm -f /tmp/requirements-verifier.txt
+COPY requirements.lock /tmp/requirements.lock
+RUN python3 -m pip install --break-system-packages --require-hashes --no-deps -r /tmp/requirements.lock \
+    && rm /tmp/requirements.lock
+
+RUN ln -sf /usr/local/go/bin/go /usr/local/bin/go \
+    && ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
 
 WORKDIR /app
+COPY repo/ /app/
 
-COPY Cargo.toml ./
-COPY lib/ ./lib/
-COPY tools/ ./tools/
-COPY scripts/ ./scripts/
-COPY docs/ ./docs/
-COPY fixtures/ ./fixtures/
-
-RUN chmod +x /app/scripts/build.sh \
- && /app/scripts/build.sh \
- && mkdir -p /app/output /app/state /app/bin
-
-ENV PATH="/opt/verifier-venv/bin:/app/bin:/usr/local/cargo/bin:${PATH}"
-ENV CARGO_TARGET_DIR=/app/target
-ENV CARGO_HOME=/usr/local/cargo
-ENV RUSTUP_HOME=/usr/local/rustup
+RUN git init -q \
+    && git config user.email task@example.com \
+    && git config user.name task \
+    && git add -A \
+    && git commit -q -m "initial task state"
