@@ -1,8 +1,0 @@
-The journal describes work accepted before a process restart.
-
-None begins a new window.
-Flagged means the window already owns nobackfill.
-Reweighted means the accepted weight is already active and movement is next.
-Migrated means bytes already moved and bypasses new health, fullness, topology, reweight, and move decisions.
-A migrated restart emits epoch, optionally clears nobackfill only when owned, then publishes complete.
-Never repeat an accepted reweight or movement after restart.

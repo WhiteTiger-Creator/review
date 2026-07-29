@@ -1,6 +1,0 @@
-Backfill must preserve rack diversity for every affected placement group.
-
-The destination rack cannot duplicate any surviving replica rack.
-Host names do not replace rack checks.
-List order has no meaning.
-Renaming every consistent host, rack, and OSD identifier leaves the decision unchanged.
