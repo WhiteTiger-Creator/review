@@ -1,0 +1,10 @@
+#!/bin/bash
+set -euo pipefail
+install -m 0640 /app/fixtures/initial-config/relay.conf /app/etc/harbor-relay/relay.conf
+install -m 0640 /app/fixtures/initial-config/limits.conf /app/etc/harbor-relay/limits.conf
+install -m 0640 /app/fixtures/initial-config/routes.map /app/etc/harbor-relay/routes.map
+chown root:relay /app/etc/harbor-relay/relay.conf /app/etc/harbor-relay/limits.conf /app/etc/harbor-relay/routes.map
+rm -f /etc/systemd/system/harbor-relay.service
+rm -f /app/var/window-plan.json /app/var/commissioning-ledger.db /app/var/commissioning-manifest.json /app/var/harbor-commissioning.lock
+rm -f /app/etc/harbor-relay/*.tmp /app/etc/harbor-relay/*.bak /app/var/*.tmp /app/var/*.bak /app/var/*-journal /app/var/*-wal /app/var/*-shm
+rm -f /app/run/harbor-relay/*.sock

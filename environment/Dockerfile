@@ -1,33 +1,70 @@
-# Build context must be environment/ only (Harbor CONTEXT_DIR). Never build from task root.
-FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac AS builder
-WORKDIR /build
-COPY . /build/environment
-WORKDIR /build/environment
-RUN go build -o /build/out/wave_sched ./cmd/wave_sched && go build -o /build/out/epochctl ./cmd/epochctl
+FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
 
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
+ENV DEBIAN_FRONTEND=noninteractive \
+    LC_ALL=C.UTF-8 \
+    LANG=C.UTF-8 \
+    TERM=xterm-256color \
+    PATH=/app/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    PYTHONPATH=/opt/harbor-verifier
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        adduser \
+        asciinema \
+        bash \
+        ca-certificates \
+        coreutils \
+        curl \
+        gawk \
+        grep \
+        jq \
+        python3 \
+        python3-pytest \
+        sed \
+        sqlite3 \
+        tmux \
+        util-linux \
+    && rm -rf /var/lib/apt/lists/* \
+    && /usr/sbin/addgroup --system relay \
+    && /usr/sbin/adduser --system --ingroup relay --no-create-home --home /nonexistent --shell /usr/sbin/nologin relayops
+
+COPY harbor_ctrf_plugin.py /opt/harbor-verifier/harbor_ctrf_plugin.py
+COPY prebuilt/harbor-relay /app/bin/harbor-relay
+COPY prebuilt/catalog-query /app/bin/catalog-query
+COPY prebuilt/service-catalog.db /opt/harbor/service-catalog.db
+COPY prebuilt/maintenance-window.db /opt/harbor/maintenance-window.db
+COPY app/include/ /opt/harbor-platform-source/include/
+COPY app/src/ /opt/harbor-platform-source/src/
+COPY app/tools/ /opt/harbor-platform-source/tools/
+COPY app/docs/ /app/docs/
+COPY app/records/ /app/records/
+COPY app/fixtures/ /app/fixtures/
+COPY app/etc/ /app/etc/
+COPY app/share/ /app/share/
+COPY app/scripts/ /app/scripts/
+
+RUN install -m 0755 /app/bin/catalog-query /usr/local/bin/catalog-query \
+    && chmod 0755 /app/bin/harbor-relay /app/bin/catalog-query /app/scripts/initialize-service-instance /app/scripts/exercise-service \
+    && chmod 0444 /opt/harbor/service-catalog.db /opt/harbor/maintenance-window.db \
+    && find /opt/harbor-platform-source -type f -exec chmod 0444 {} + \
+    && find /app/docs /app/records /app/fixtures /app/share -type f -exec chmod 0444 {} + \
+    && test "$(sha256sum /app/fixtures/requests/arrival-replay.http | awk '{print $1}')" = "1952a39bd9edfe4868259d14675eb5219ef6f21afe4854ee3e91b0c8c4ea5795" \
+    && mkdir -p /app/run/harbor-relay /app/var /etc/systemd/system \
+    && chown relayops:relay /app/run/harbor-relay /app/var \
+    && chmod 0750 /app/run/harbor-relay /app/var \
+    && chmod g-s /app/run/harbor-relay /app/var \
+    && chown root:relay /app/etc/harbor-relay \
+    && chmod 0750 /app/etc/harbor-relay \
+    && tmux -V \
+    && asciinema --version \
+    && tmux -L harbor-runtime-smoke new-session -d -s smoke "sleep 30" \
+    && tmux -L harbor-runtime-smoke has-session -t smoke \
+    && tmux -L harbor-runtime-smoke kill-server \
+    && bash /app/scripts/initialize-service-instance \
+    && /app/bin/catalog-query --batch-file /app/share/service-catalog.batch > /tmp/service-catalog.snapshot \
+    && HARBOR_CATALOG_DB=/opt/harbor/maintenance-window.db /app/bin/catalog-query --batch-file /app/share/maintenance-window.batch > /tmp/maintenance-window.snapshot \
+    && sh -c '/app/bin/harbor-relay --help > /tmp/harbor-relay.help 2>&1; rc=$?; test "$rc" -eq 78' \
+    && rm -f /tmp/service-catalog.snapshot /tmp/maintenance-window.snapshot /tmp/harbor-relay.help \
+    && chown root:relay /app/etc/harbor-relay/relay.conf /app/etc/harbor-relay/limits.conf /app/etc/harbor-relay/routes.map
+
 WORKDIR /app
-
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential=12.9 golang-go=2:1.19~1 make=4.3-4.1 tmux=3.3a-3 asciinema=2.2.0-1 ca-certificates=20230311+deb12u1 \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN python3 -m venv /opt/verifier \
-    && /opt/verifier/bin/pip install --no-cache-dir pytest==8.4.1 pytest-json-ctrf==0.3.5
-ENV PATH=/opt/verifier/bin:${PATH}
-
-RUN mkdir -p /app/environment /app/output /app/environment/bin
-
-COPY . /app/environment
-COPY --from=builder /usr/local/go /usr/local/go
-COPY --from=builder /build/out/wave_sched /app/environment/bin/wave_sched
-COPY --from=builder /build/out/epochctl /app/environment/bin/epochctl
-ENV PATH=/usr/local/go/bin:/opt/verifier/bin:${PATH}
-
-RUN python3 /app/environment/scripts/gen_fixtures.py \
-    && echo -n 0 > /app/environment/pack/seed/.roll_scratch \
-    && echo -n 0 > /app/environment/pack/seed/.storm_gen \
-    && printf '%s\n' '{"token":0,"bound_gen":1,"storm_ok":true,"rev":1}' > /app/environment/pack/seed/.epoch_bus.json \
-    && cp /app/environment/pack/seed/token_seed.bin /app/environment/pack/seed/.anchor_staging \
-    && chmod +x /app/environment/scripts/*.sh /app/environment/phase/*.sh
-
-CMD ["python3", "-c", "print('Environment ready')"]
