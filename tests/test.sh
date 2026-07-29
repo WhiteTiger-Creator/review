@@ -5,6 +5,9 @@ if [ "$PWD" = "/" ]; then
     exit 1
 fi
 
+mkdir -p /logs/verifier
+echo 0 > /logs/verifier/reward.txt
+
 # Don't change anything below this line except the test file path or pytest flags.
 pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
 rc=$?

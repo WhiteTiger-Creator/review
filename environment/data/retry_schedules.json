@@ -1,7 +1,0 @@
-{
-  "steps": [
-    {"frame": "alpha", "epoch": 1, "transition_id": "retry-1"},
-    {"frame": "alpha", "epoch": 1, "transition_id": "retry-1"},
-    {"frame": "beta", "epoch": 2, "transition_id": "retry-2"}
-  ]
-}

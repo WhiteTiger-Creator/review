@@ -1,6 +1,0 @@
-#!/bin/sh
-set -e
-if [ "$1" = "observe" ]; then
-  shift
-fi
-exec /opt/k7probe/dy "$@"

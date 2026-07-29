@@ -1,0 +1,8 @@
+{
+  "N1": {"outer": "O1", "inner": "I1"},
+  "N1b": {"outer": "O1", "inner": "I1b"},
+  "N2": {"outer": "O2", "inner": "I2"},
+  "N2b": {"outer": "O2", "inner": "I2b"},
+  "N3": {"outer": "O3", "inner": "I3"},
+  "N3x": {"outer": "O3", "inner": "I3x"}
+}

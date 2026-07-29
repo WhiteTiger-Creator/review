@@ -1,542 +1,454 @@
-"""Held-out evaluation tests for k7_witness_report.json witness metrics."""
+"""Independent verifier for ferric HPO log archaeology emits."""
+
+from __future__ import annotations
 
 import hashlib
 import json
-import re
+import os
+import shutil
 import subprocess
-import tempfile
-from contextlib import contextmanager
+from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-ENV_ROOT = "/app/environment"
-OUT_PATH = "/app/output/k7_witness_report.json"
-ENV = Path(ENV_ROOT)
-K7_PROBE_PATH = "/opt/k7probe/dy"
-W7_BIN = "/app/environment/bin/w7"
-PACK = ENV / "bundle" / "k7" / "base.k7"
-PAD = ENV / "bundle" / "k7" / "var089.pad"
-WT_DIR = ENV / "data" / "wt_pair"
-RETRY_SCHEDULES = ENV / "data" / "retry_schedules.json"
-STAMP_RE = re.compile(r"stamp=([0-9a-f]{64})")
-TESTS = Path(__file__).resolve().parent
-SEALED_FOLD = json.loads(
-    (TESTS / "data" / "sealed_metric_fold.json").read_text(encoding="utf-8")
-)
-BUNDLE_SHA = json.loads(
-    (TESTS / "data" / "bundle_sha256.json").read_text(encoding="utf-8")
-)
+APP = Path("/app/environment")
+EMIT = Path("/app/emit")
+SHEET = EMIT / "rung_sheet.json"
+LEDGER = EMIT / "align_ledger.json"
+TOL = 1e-9
+
+SLAG = APP / "slag" / "src" / "slag_bind.rs"
+KILN = APP / "kiln" / "src" / "kiln_forge.rs"
 
 
-def tlv(tag: int, value: bytes) -> bytes:
-    return bytes([tag]) + len(value).to_bytes(2, "big") + value
+def near(a: float, b: float) -> bool:
+    return abs(float(a) - float(b)) <= TOL
 
 
-def frame(body: bytes) -> bytes:
-    return b"K7FR" + len(body).to_bytes(4, "big") + body
+def load_jsonl(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if line:
+            rows.append(json.loads(line))
+    return rows
 
 
-def write_pack(path: Path, entries: list[tuple[str, bytes]]) -> None:
-    buf = bytearray(b"K7PK")
-    buf.extend(len(entries).to_bytes(4, "big"))
-    for name, blob in entries:
-        nb = name.encode()
-        buf.extend(len(nb).to_bytes(4, "big"))
-        buf.extend(nb)
-        buf.extend(len(blob).to_bytes(4, "big"))
-        buf.extend(blob)
-    path.write_bytes(bytes(buf))
+def halt_flag(tag: str) -> bool:
+    t = tag.strip().lower()
+    return t in {"e", "cut", "halted"}
 
 
-@contextmanager
-def replace_file(path: Path, data: bytes):
-    original = path.read_bytes()
-    path.write_bytes(data)
-    try:
-        yield
-    finally:
-        path.write_bytes(original)
+def eta_expected(lr0: float, gamma: float, period: int, step: int) -> float:
+    p = period if period else 1
+    return lr0 * (gamma ** (step // p))
 
 
-@contextmanager
-def replace_witness_dir(files: dict[str, str]):
-    originals = {p.name: p.read_text() for p in WT_DIR.glob("*.json")}
-    for existing in WT_DIR.glob("*.json"):
-        existing.unlink()
-    for name, data in files.items():
-        (WT_DIR / name).write_text(data)
-    try:
-        yield
-    finally:
-        for existing in WT_DIR.glob("*.json"):
-            existing.unlink()
-        for name, data in originals.items():
-            (WT_DIR / name).write_text(data)
+def sha256_hex(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def pack_capture_names() -> list[str]:
-    data = PACK.read_bytes()
-    assert data[:4] == b"K7PK"
-    pos = 8
-    count = int.from_bytes(data[4:8], "big")
-    names: list[str] = []
-    for _ in range(count):
-        nl = int.from_bytes(data[pos : pos + 4], "big")
-        pos += 4
-        name = data[pos : pos + nl].decode()
-        pos += nl
-        bl = int.from_bytes(data[pos : pos + 4], "big")
-        pos += 4 + bl
-        names.append(name)
-    return sorted(names)
+def forge_score(
+    aid: str, lr0: float, gamma: float, period: int, bag: dict[str, Any], nest_outer: str
+) -> float:
+    s = f"{aid}|{lr0:.10f}|{gamma:.10f}|{period}|{bag['knob']}|{bag['salt']}|{nest_outer}"
+    dig = hashlib.sha256(s.encode("utf-8")).digest()
+    v = int.from_bytes(dig[:8], "big", signed=False)
+    return v / float((1 << 64) - 1)
 
 
-def capture_name(index: int) -> str:
-    return pack_capture_names()[index]
+def load_traces() -> list[dict[str, Any]]:
+    runs = APP / "data" / "runs"
+    paths = sorted(
+        p
+        for p in runs.glob("*.jsonl")
+        if p.name != "side_bag.jsonl"
+    )
+    rows: list[dict[str, Any]] = []
+    for p in paths:
+        rows.extend(load_jsonl(p))
+    return rows
 
 
-def sidecar_capture_key(path: Path) -> str | None:
-    stem = path.stem
-    m = re.match(r"^\d+-(.+)$", stem)
-    if m:
-        return m.group(1)
-    return None
+def load_side() -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for row in load_jsonl(APP / "data" / "runs" / "side_bag.jsonl"):
+        out[row["rid"]] = row
+    return out
 
 
-def witness_for_capture(capture: str) -> dict:
-    files = sorted((ENV / "data/wt_pair").glob("*.json"))
-    for path in files:
-        key = sidecar_capture_key(path)
-        if key is not None and key == capture:
-            return json.loads(path.read_text())[0]
-    idx = pack_capture_names().index(capture)
-    assert idx < len(files)
-    return json.loads(files[idx].read_text())[0]
-
-
-def frame_body(frame: bytes) -> bytes:
-    blen = int.from_bytes(frame[6:8], "big")
-    return frame[8 : 8 + blen]
-
-
-def top_level_tags(frame: bytes) -> list[int]:
-    return [tag for tag, _ in top_level_chunks(frame)]
-
-
-def top_level_chunks(frame: bytes) -> list[tuple[int, bytes]]:
-    body = frame_body(frame)
-    chunks: list[tuple[int, bytes]] = []
-    pos = 0
-    while pos + 3 <= len(body):
-        tag = body[pos]
-        ln = int.from_bytes(body[pos + 1 : pos + 3], "big")
-        pos += 3
-        if pos + ln > len(body):
-            break
-        value = body[pos : pos + ln]
-        pos += ln
-        if tag != 0x00:
-            chunks.append((tag, value))
-    return chunks
-
-
-def pack_get(name: str) -> bytes:
-    data = PACK.read_bytes()
-    assert data[:4] == b"K7PK"
-    pos = 8
-    count = int.from_bytes(data[4:8], "big")
-    for _ in range(count):
-        nl = int.from_bytes(data[pos : pos + 4], "big")
-        pos += 4
-        entry = data[pos : pos + nl].decode()
-        pos += nl
-        bl = int.from_bytes(data[pos : pos + 4], "big")
-        pos += 4
-        blob = data[pos : pos + bl]
-        pos += bl
-        if entry == name:
-            return blob
-    raise KeyError(name)
-
-
-def dy_observe(frame: bytes) -> dict:
-    with tempfile.NamedTemporaryFile(delete=False) as tf:
-        tf.write(frame)
-        path = tf.name
-    try:
-        proc = subprocess.run(
-            [K7_PROBE_PATH, "observe", "--chunk", path],
-            capture_output=True,
-            text=True,
-            check=True,
+def reconcile(
+    traces: list[dict[str, Any]], side: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for r in traces:
+        score = float(r["vis"])
+        from_side = False
+        s = side.get(r["rid"])
+        if s is not None and int(s["hid"]) == 1:
+            score = float(s["true_vis"])
+            from_side = True
+        out.append(
+            {
+                "rid": r["rid"],
+                "aid": r["aid"],
+                "step": int(r["step"]),
+                "eta": float(r["eta"]),
+                "score": score,
+                "halted": halt_flag(str(r["halt"])),
+                "from_side": from_side,
+                "nest": r["nest"],
+                "lr0": float(r["lr0"]),
+                "gamma": float(r["gamma"]),
+                "period": int(r["period"]),
+            }
         )
-        return json.loads(proc.stdout)
-    finally:
-        Path(path).unlink(missing_ok=True)
+    out.sort(key=lambda x: (x["aid"], x["step"], x["rid"]))
+    return out
 
 
-def run_emit() -> dict:
-    out = Path(OUT_PATH)
-    if out.exists():
-        out.unlink()
-    subprocess.run(
-        [W7_BIN, "emit", "--out", OUT_PATH],
-        check=True,
-        cwd=ENV_ROOT,
-    )
-    return json.loads(out.read_text())
-
-
-def stamp_from_rationale(text: str) -> str:
-    match = STAMP_RE.search(text)
-    assert match, f"missing stamp= digest in {text!r}"
-    return match.group(1)
-
-
-def pack_entry_count() -> int:
-    data = PACK.read_bytes()
-    return int.from_bytes(data[4:8], "big")
-
-
-def metric_fold_digest(doc: dict, pack_count: int) -> str:
-    parts: list[str] = []
-    lrows = sorted(
-        (ln for ln in doc["lines"] if ln["line_id"].startswith("L-")),
-        key=lambda ln: ln["line_id"],
-    )
-    for ln in lrows:
-        stamp = stamp_from_rationale(ln["rationale_text"])
-        parts.append(f"{ln['line_id']}|{ln['scope_code']}|{ln['timing_anchor']}|{stamp}")
-    rrows = sorted(
-        (ln for ln in doc["lines"] if ln["line_id"].startswith("R-")),
-        key=lambda ln: ln["line_id"],
-    )
-    for ln in rrows:
-        parts.append(f"{ln['line_id']}|{ln['transition_id']}")
-    parts.append(f"pack:{pack_count}")
-    payload = "\n".join(parts)
-    mask64 = (1 << 64) - 1
-    total = 0
-    for i, ch in enumerate(payload):
-        total = (total + ((i + 1) * ord(ch))) & mask64
-    return f"{total & 0xFFFFFFFF:08x}"
-
-
-def line_for(doc: dict, line_id: str) -> dict:
-    return next(ln for ln in doc["lines"] if ln["line_id"] == line_id)
-
-
-def line_for_capture(doc: dict, capture: str) -> dict:
-    return line_for(doc, f"L-{capture}")
-
-
-@pytest.fixture(scope="session")
-def built_w7() -> None:
-    w7_path = ENV / "bin" / "w7"
-    if not w7_path.is_file():
-        proc = subprocess.run(
-            ["make", "-C", ENV_ROOT, "build"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert w7_path.is_file()
-
-
-def test_r1_canon(built_w7: None) -> None:
-    """First pack capture: rationale stamp must match live probe canon_hex on the frame."""
-    capture = capture_name(0)
-    frame = pack_get(capture)
-    obs = dy_observe(frame)
-    doc = run_emit()
-    line = line_for_capture(doc, capture)
-    assert stamp_from_rationale(line["rationale_text"]) == obs["canon_hex"]
-
-
-def test_r2_part(built_w7: None) -> None:
-    """Partitioned frame delivery matches one-shot stamp in report rationale."""
-    capture = capture_name(1)
-    frame = pack_get(capture)
-    obs_full = dy_observe(frame)
-    half = len(frame) // 2
-    obs_part = dy_observe(frame[:half] + frame[half:])
-    assert obs_full["canon_hex"] == obs_part["canon_hex"]
-    doc = run_emit()
-    line = line_for_capture(doc, capture)
-    assert stamp_from_rationale(line["rationale_text"]) == obs_full["canon_hex"]
-
-
-def test_r3_alt(built_w7: None) -> None:
-    """Second pack row scope matches witness expectation."""
-    capture = capture_name(1)
-    doc = run_emit()
-    line = line_for_capture(doc, capture)
-    witness = witness_for_capture(capture)
-    assert line["scope_code"] == witness["scope_expect"]
-
-
-def test_r4_usage(built_w7: None) -> None:
-    """First pack row scope matches witness expectation."""
-    capture = capture_name(0)
-    doc = run_emit()
-    line = line_for_capture(doc, capture)
-    witness = witness_for_capture(capture)
-    assert line["scope_code"] == witness["scope_expect"]
-
-
-def test_r5_once(built_w7: None) -> None:
-    """Distinct retry transition ids each appear once among R- rows."""
-    doc = run_emit()
-    retry = [ln for ln in doc["lines"] if ln["line_id"].startswith("R-")]
-    assert len(retry) == 2
-
-
-def test_r6_dup(built_w7: None) -> None:
-    """Duplicate transition id in schedule appears once."""
-    doc = run_emit()
-    sched = json.loads((ENV / "data/retry_schedules.json").read_text())
-    tid = sched["steps"][0]["transition_id"]
-    ids = [ln["transition_id"] for ln in doc["lines"] if ln["line_id"].startswith("R-")]
-    assert sum(1 for x in ids if x == tid) == 1
-
-
-def test_r7_anchor(built_w7: None) -> None:
-    """Timing anchor uses min(ds_inception, cert_not_before) from COLS.md."""
-    doc = run_emit()
-    first = capture_name(0)
-    wf = witness_for_capture(first)
-    first_line = line_for_capture(doc, first)
-    assert first_line["timing_anchor"] == min(wf["ds_inception"], wf["cert_not_before"])
-    second = capture_name(1)
-    ws = witness_for_capture(second)
-    second_line = line_for_capture(doc, second)
-    assert second_line["timing_anchor"] == min(ws["ds_inception"], ws["cert_not_before"])
-
-
-def test_r8_wt(built_w7: None) -> None:
-    """Witness tables produce one report line per pack entry."""
-    doc = run_emit()
-    pack_lines = [ln for ln in doc["lines"] if ln["line_id"].startswith("L-")]
-    data = PACK.read_bytes()
-    count = (data[4] << 24) | (data[5] << 16) | (data[6] << 8) | data[7]
-    assert len(pack_lines) == count
-
-
-def test_r9_pad(built_w7: None) -> None:
-    """Padded capture lane: filler bytes must not change the canonical stamp vs dy observe."""
-    frame = PAD.read_bytes()
-    obs = dy_observe(frame)
-    doc = run_emit()
-    line = line_for_capture(doc, capture_name(1))
-    assert stamp_from_rationale(line["rationale_text"]) == obs["canon_hex"]
-
-
-def test_r10_iface(built_w7: None) -> None:
-    """w7 CLI help documents the emit subcommand agents use for witness-metrics JSON."""
-    proc = subprocess.run(
-        [W7_BIN],
-        capture_output=True,
-        text=True,
-        cwd=ENV_ROOT,
-        check=False,
-    )
-    assert "emit" in proc.stdout
-
-
-def test_r11_gamma_scope(built_w7: None) -> None:
-    """Third pack row scope matches its witness sidecar."""
-    capture = capture_name(2)
-    doc = run_emit()
-    line = line_for_capture(doc, capture)
-    witness = witness_for_capture(capture)
-    assert line["scope_code"] == witness["scope_expect"]
-
-
-def test_r12_gamma_anchor(built_w7: None) -> None:
-    """Third pack row timing anchor uses min witness fields."""
-    capture = capture_name(2)
-    doc = run_emit()
-    line = line_for_capture(doc, capture)
-    witness = witness_for_capture(capture)
-    assert line["timing_anchor"] == min(witness["ds_inception"], witness["cert_not_before"])
-
-
-def test_r13_gamma_stamp(built_w7: None) -> None:
-    """Third pack row rationale embeds exact instrument stamp for its frame."""
-    capture = capture_name(2)
-    frame = pack_get(capture)
-    obs = dy_observe(frame)
-    doc = run_emit()
-    line = line_for_capture(doc, capture)
-    assert stamp_from_rationale(line["rationale_text"]) == obs["canon_hex"]
-
-
-def test_r14_retry_second(built_w7: None) -> None:
-    """Second scheduled transition id appears among retry rows."""
-    doc = run_emit()
-    sched = json.loads((ENV / "data/retry_schedules.json").read_text())
-    tid2 = sched["steps"][2]["transition_id"]
-    ids = {ln["transition_id"] for ln in doc["lines"] if ln["line_id"].startswith("R-")}
-    assert tid2 in ids
-
-
-def test_r15_sidecar_order(built_w7: None) -> None:
-    """Renamed wt_pair files with numeric prefixes still join the matching capture by name."""
-    capture = capture_name(2)
-    doc = run_emit()
-    line = line_for_capture(doc, capture)
-    witness = witness_for_capture(capture)
-    assert line["scope_code"] == witness["scope_expect"]
-    assert line["timing_anchor"] == min(witness["ds_inception"], witness["cert_not_before"])
-
-
-def test_r17_gamma_last_alt_ssh(built_w7: None) -> None:
-    """When DNS and SSH alternates stack, last wire-order alternate sets scope."""
-    capture = capture_name(2)
-    doc = run_emit()
-    line = line_for_capture(doc, capture)
-    witness = witness_for_capture(capture)
-    tags = top_level_tags(pack_get(capture))
-    assert tags[0] != tags[-1]
-    assert line["scope_code"] == witness["scope_expect"]
-
-
-def test_r18_altpack(built_w7: None) -> None:
-    """Synthetic four-entry pack with prefixed sidecars: joins witnesses by capture name (not
-    positional index), preserves scope, timing_anchor, and instrument-coupled stamps for novel
-    rows including a suffixed alternate capture."""
-    first = capture_name(0)
-    second = capture_name(1)
-    third = capture_name(2)
-    extra = f"{third}-alt"
-    first_blob = pack_get(first)
-    second_blob = pack_get(second)
-    third_blob = pack_get(third)
-    second_chunks = top_level_chunks(second_blob)
-    dns_value = next(value for tag, value in second_chunks if tag == 0x10)
-    ssh_value = next(value for tag, value in second_chunks if tag == 0x11)
-    usage_value = next(value for tag, value in second_chunks if tag == 0x20)
-    extra_body = tlv(0x11, ssh_value)
-    extra_body += tlv(0x10, dns_value)
-    extra_body += tlv(0x20, usage_value)
-    extra_blob = frame(extra_body)
-    pack_rows = [
-        (third, third_blob),
-        (extra, extra_blob),
-        (second, second_blob),
-        (first, first_blob),
-    ]
-    witness_files = {
-        f"10-{first}.json": json.dumps(
-            [{"cert_not_before": 205, "ds_inception": 95, "scope_expect": "ssh"}]
-        ),
-        f"20-{second}.json": json.dumps(
-            [{"cert_not_before": 190, "ds_inception": 160, "scope_expect": "ssh"}]
-        ),
-        f"30-{third}.json": json.dumps(
-            [{"cert_not_before": 255, "ds_inception": 310, "scope_expect": "ssh"}]
-        ),
-        f"40-{extra}.json": json.dumps(
-            [{"cert_not_before": 340, "ds_inception": 410, "scope_expect": "dns"}]
-        ),
-    }
-    with replace_file(
-        PACK,
-        b"",
-    ):
-        write_pack(PACK, pack_rows)
-        with replace_witness_dir(witness_files):
-            doc = run_emit()
-    line_ids = {line["line_id"] for line in doc["lines"]}
-    assert {f"L-{name}" for name, _ in pack_rows} <= line_ids
-    extra_line = line_for_capture(doc, extra)
-    extra_witness = json.loads(witness_files[f"40-{extra}.json"])[0]
-    assert extra_line["scope_code"] == extra_witness["scope_expect"]
-    assert extra_line["timing_anchor"] == min(
-        extra_witness["ds_inception"], extra_witness["cert_not_before"]
-    )
-    assert stamp_from_rationale(extra_line["rationale_text"]) == dy_observe(extra_blob)["canon_hex"]
-    first_line = line_for_capture(doc, first)
-    first_witness = json.loads(witness_files[f"10-{first}.json"])[0]
-    third_line = line_for_capture(doc, third)
-    third_witness = json.loads(witness_files[f"30-{third}.json"])[0]
-    assert first_line["timing_anchor"] == min(
-        first_witness["ds_inception"], first_witness["cert_not_before"]
-    )
-    assert third_line["timing_anchor"] == min(
-        third_witness["ds_inception"], third_witness["cert_not_before"]
-    )
-
-
-def test_r19_retry_tid_canonical(built_w7: None) -> None:
-    """Retry rows dedupe by transition_id even if schedule repeats across epochs."""
-    shared_id = f"retry-{capture_name(0)}"
-    unique_id = f"retry-{capture_name(2)}"
-    sched = {
-        "steps": [
-            {"frame": capture_name(0), "epoch": 1, "transition_id": shared_id},
-            {"frame": capture_name(1), "epoch": 2, "transition_id": shared_id},
-            {"frame": capture_name(2), "epoch": 3, "transition_id": unique_id},
+def bind(
+    sift: list[dict[str, Any]],
+    grid: dict[str, Any],
+    nest: dict[str, Any],
+) -> dict[str, Any]:
+    by_aid: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for r in sift:
+        by_aid[r["aid"]].append(r)
+    arms: list[dict[str, Any]] = []
+    cases: list[dict[str, Any]] = []
+    ended_aids: set[str] = set()
+    triples = grid["triples"]
+    for aid, rows in by_aid.items():
+        outer_counts: dict[str, int] = defaultdict(int)
+        for r in rows:
+            e = nest.get(r["nest"])
+            if e:
+                outer_counts[e["outer"]] += 1
+        if not outer_counts:
+            continue
+        mode_outer = min(outer_counts.items(), key=lambda kv: (-kv[1], kv[0]))[0]
+        kept = [
+            r
+            for r in rows
+            if nest.get(r["nest"]) and nest[r["nest"]]["outer"] == mode_outer
         ]
+        if not kept:
+            continue
+        kept.sort(key=lambda x: (x["step"], x["rid"]))
+        lr0 = kept[0]["lr0"]
+        gamma = kept[0]["gamma"]
+        period = kept[0]["period"]
+        if any(
+            not near(r["lr0"], lr0) or not near(r["gamma"], gamma) or r["period"] != period
+            for r in kept
+        ):
+            continue
+        if not any(
+            near(t["lr0"], lr0) and near(t["gamma"], gamma) and int(t["period"]) == period
+            for t in triples
+        ):
+            continue
+        if any(not near(r["eta"], eta_expected(lr0, gamma, period, r["step"])) for r in kept):
+            continue
+        p = period if period else 1
+        rung_total = sum(r["score"] for r in kept if r["step"] % p == 0)
+        ended = bool(kept[-1]["halted"])
+        cases.extend(kept)
+        arms.append(
+            {
+                "aid": aid,
+                "rung_total": rung_total,
+                "lr0": lr0,
+                "gamma": gamma,
+                "period": period,
+                "nest_outer": mode_outer,
+            }
+        )
+        if ended:
+            ended_aids.add(aid)
+    arms.sort(key=lambda a: a["aid"])
+    cases.sort(key=lambda c: c["rid"])
+    eligible = [a for a in arms if a["aid"] not in ended_aids]
+    best_aid = ""
+    if eligible:
+        eligible.sort(key=lambda a: (-a["rung_total"], a["aid"]))
+        best_aid = eligible[0]["aid"]
+    return {"arms": arms, "best_aid": best_aid, "cases": cases, "nest": nest}
+
+
+def sheet_digest(arms: list[dict[str, Any]]) -> str:
+    blob = ""
+    for a in sorted(arms, key=lambda x: x["aid"]):
+        blob += (
+            f"aid={a['aid']};rung={a['rung_total']:.10f};lr0={a['lr0']:.10f};"
+            f"gamma={a['gamma']:.10f};period={a['period']};outer={a['nest_outer']}\n"
+        )
+    return sha256_hex(blob)
+
+
+def ledger_digest(cases: list[dict[str, Any]], nest: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+    led: list[dict[str, Any]] = []
+    for r in sorted(cases, key=lambda x: x["rid"]):
+        e = nest.get(r["nest"], {"outer": "", "inner": ""})
+        led.append(
+            {
+                "rid": r["rid"],
+                "aid": r["aid"],
+                "score_used": r["score"],
+                "from_side": r["from_side"],
+                "nest_outer": e["outer"],
+                "nest_inner": e["inner"],
+                "halted": r["halted"],
+            }
+        )
+    blob = ""
+    for c in led:
+        blob += (
+            f"rid={c['rid']};score={c['score_used']:.10f};"
+            f"side={1 if c['from_side'] else 0};outer={c['nest_outer']};"
+            f"inner={c['nest_inner']};halt={1 if c['halted'] else 0}\n"
+        )
+    return sha256_hex(blob), led
+
+
+def expected_artifacts(
+    nest_path: Path | None = None, grid_path: Path | None = None
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    nest = json.loads((nest_path or APP / "data" / "nests" / "nest_map.json").read_text())
+    grid = json.loads((grid_path or APP / "data" / "grids" / "grid_pub.json").read_text())
+    bag = json.loads((APP / "data" / "bags" / "forge_bag.json").read_text())
+    sift = reconcile(load_traces(), load_side())
+    bound = bind(sift, grid, nest)
+    arms = [
+        {
+            "aid": a["aid"],
+            "rung_total": a["rung_total"],
+            "lr0": a["lr0"],
+            "gamma": a["gamma"],
+            "period": a["period"],
+            "nest_outer": a["nest_outer"],
+        }
+        for a in bound["arms"]
+    ]
+    dig_s = sheet_digest(arms)
+    dig_l, led_cases = ledger_digest(bound["cases"], nest)
+    best = next((a for a in bound["arms"] if a["aid"] == bound["best_aid"]), None)
+    if best is None:
+        score = 0.0
+        nest_outer = ""
+    else:
+        score = forge_score(
+            best["aid"], best["lr0"], best["gamma"], best["period"], bag, best["nest_outer"]
+        )
+        nest_outer = best["nest_outer"]
+    sheet = {
+        "version": 1,
+        "arms": arms,
+        "best_aid": bound["best_aid"],
+        "sheet_digest": dig_s,
     }
-    with replace_file(RETRY_SCHEDULES, bytes(json.dumps(sched), "utf-8")):
-        doc = run_emit()
-    ids = [ln["transition_id"] for ln in doc["lines"] if ln["line_id"].startswith("R-")]
-    assert ids.count(shared_id) == 1
-    assert ids.count(unique_id) == 1
+    ledger = {
+        "version": 1,
+        "cases": led_cases,
+        "ledger_digest": dig_l,
+        "forge": {
+            "bag_id": bag["bag_id"],
+            "aid": bound["best_aid"],
+            "score": score,
+            "nest_outer": nest_outer,
+        },
+    }
+    return sheet, ledger
 
 
-def test_r20_metric_fold_sealed(built_w7: None) -> None:
-    """metric_fold must match verifier-sealed cascade on the canonical pack."""
-    doc = run_emit()
-    assert doc.get("metric_fold") == SEALED_FOLD["metric_fold"]
+def run_drv(env: dict[str, str] | None = None) -> None:
+    EMIT.mkdir(parents=True, exist_ok=True)
+    for p in (SHEET, LEDGER):
+        if p.exists():
+            p.unlink()
+    cmd_env = dict(os.environ)
+    if env:
+        cmd_env.update(env)
+    subprocess.run(
+        [str(APP / "run_ferric_drv")],
+        check=True,
+        cwd=str(APP),
+        env=cmd_env,
+    )
 
 
-def test_r21_metric_fold_recomputes(built_w7: None) -> None:
-    """metric_fold must bind L-rows, R-rows, and pack entry count."""
-    doc = run_emit()
-    expect = metric_fold_digest(doc, pack_entry_count())
-    assert doc.get("metric_fold") == expect
+def read_emits() -> tuple[dict[str, Any], dict[str, Any]]:
+    return json.loads(SHEET.read_text()), json.loads(LEDGER.read_text())
 
 
-def test_r22_metric_fold_stable_on_repeat_emit(built_w7: None) -> None:
-    """Repeated emit on unchanged inputs must reproduce the same metric_fold."""
-    first = run_emit()
-    second = run_emit()
-    assert first["metric_fold"] == second["metric_fold"]
-    assert first["metric_fold"] == metric_fold_digest(second, pack_entry_count())
+def cargo_build() -> None:
+    subprocess.run(
+        ["cargo", "build", "--release", "--bin", "ferric_drv"],
+        check=True,
+        cwd=str(APP),
+        env={**os.environ, "CARGO_TARGET_DIR": "/tmp/ferric-target"},
+    )
 
 
-def test_k7_bundle_bytes_immutable(built_w7: None) -> None:
-    """Sealed pack bytes under bundle/k7 must not be edited to pass evaluation."""
-    for rel, expect in BUNDLE_SHA.items():
-        path = ENV / rel
-        assert path.is_file(), rel
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        assert digest == expect, f"{rel} sha256 mismatch"
+@pytest.fixture(scope="module", autouse=True)
+def _ensure_build() -> None:
+    # Rebuild in case oracle or ablations changed sources.
+    cargo_build()
 
 
-def test_k7_l_rows_lex_sorted(built_w7: None) -> None:
-    """L-* rows must follow lexicographic capture order per MODEL.contract."""
-    doc = run_emit()
-    l_ids = [ln["line_id"] for ln in doc["lines"] if ln["line_id"].startswith("L-")]
-    captures = [lid[2:] for lid in l_ids]
-    assert captures == sorted(captures)
-    assert captures == sorted(pack_capture_names())
+def test_h7_c01_shape() -> None:
+    """Emit schemas and best_aid match recomputed contract."""
+    run_drv()
+    sheet, ledger = read_emits()
+    exp_s, _exp_l = expected_artifacts()
+    assert sheet["version"] == 1
+    assert ledger["version"] == 1
+    assert isinstance(sheet["arms"], list) and sheet["arms"]
+    assert isinstance(ledger["cases"], list) and ledger["cases"]
+    assert "sheet_digest" in sheet and "ledger_digest" in ledger
+    assert "forge" in ledger
+    assert sheet["best_aid"] == exp_s["best_aid"]
+    assert {a["aid"] for a in sheet["arms"]} == {a["aid"] for a in exp_s["arms"]}
 
 
-def test_k7_full_pack_instrument_witness_coupling(built_w7: None) -> None:
-    """Every pack capture: scope, anchor, and stamp must agree with sidecar and dy."""
-    doc = run_emit()
-    for capture in pack_capture_names():
-        frame = pack_get(capture)
-        obs = dy_observe(frame)
-        line = line_for_capture(doc, capture)
-        witness = witness_for_capture(capture)
-        assert line["scope_code"] == witness["scope_expect"], capture
-        assert line["timing_anchor"] == min(
-            witness["ds_inception"], witness["cert_not_before"]
-        ), capture
-        assert stamp_from_rationale(line["rationale_text"]) == obs["canon_hex"], capture
+def test_h7_c02_twin() -> None:
+    """Twin runs agree on sheet/ledger digests and forge score."""
+    run_drv()
+    s1, l1 = read_emits()
+    run_drv()
+    s2, l2 = read_emits()
+    assert s1["sheet_digest"] == s2["sheet_digest"]
+    assert l1["ledger_digest"] == l2["ledger_digest"]
+    assert near(l1["forge"]["score"], l2["forge"]["score"])
+    exp_s, exp_l = expected_artifacts()
+    assert s1["sheet_digest"] == exp_s["sheet_digest"]
+    assert l1["ledger_digest"] == exp_l["ledger_digest"]
+    assert near(l1["forge"]["score"], exp_l["forge"]["score"])
+
+
+def test_h7_c03_nestmap() -> None:
+    """Nestmap outer lineage changes held-out rung totals."""
+    run_drv()
+    sheet, _ledger = read_emits()
+    exp_s, _exp_l = expected_artifacts()
+    # Public nestmap excludes N3x from a3 outer mode.
+    a3 = next(a for a in sheet["arms"] if a["aid"] == "a3")
+    exp_a3 = next(a for a in exp_s["arms"] if a["aid"] == "a3")
+    assert a3["nest_outer"] == exp_a3["nest_outer"]
+    assert near(a3["rung_total"], exp_a3["rung_total"])
+    # Held-out nestmap merges N3x into the mode outer and must change a3 rung total.
+    hold_s, _ = expected_artifacts(nest_path=APP / "data" / "nests" / "nest_hold.json")
+    hold_a3 = next(a for a in hold_s["arms"] if a["aid"] == "a3")
+    assert not near(hold_a3["rung_total"], a3["rung_total"])
+    nest_override = APP / "data" / "nests" / "nest_hold.json"
+    key = "FERRIC" + "_" + "NEST"
+    run_drv(env={key: str(nest_override)})
+    sheet2, _ = read_emits()
+    a3b = next(a for a in sheet2["arms"] if a["aid"] == "a3")
+    assert near(a3b["rung_total"], hold_a3["rung_total"])
+
+
+def test_h7_c04_rungsem() -> None:
+    """LR rung totals and eta law match the published schedule contract."""
+    run_drv()
+    sheet, _ = read_emits()
+    exp_s, _ = expected_artifacts()
+    for a in sheet["arms"]:
+        e = next(x for x in exp_s["arms"] if x["aid"] == a["aid"])
+        assert near(a["rung_total"], e["rung_total"])
+        assert near(a["lr0"], e["lr0"])
+        assert near(a["gamma"], e["gamma"])
+        assert int(a["period"]) == int(e["period"])
+        # Spot-check eta law on public traces for this aid.
+        for row in load_traces():
+            if row["aid"] != a["aid"]:
+                continue
+            expect = eta_expected(a["lr0"], a["gamma"], int(a["period"]), int(row["step"]))
+            assert near(float(row["eta"]), expect)
+
+
+def test_h7_c05_sidehide() -> None:
+    """Sidecar hid scores are recovered; summary peaks do not win."""
+    run_drv()
+    _, ledger = read_emits()
+    _, exp_l = expected_artifacts()
+    side_cases = [c for c in ledger["cases"] if c["from_side"]]
+    assert side_cases, "sidecar recovery must mark from_side cases"
+    by_rid = {c["rid"]: c for c in ledger["cases"]}
+    for rid, srow in load_side().items():
+        if int(srow["hid"]) != 1:
+            continue
+        assert rid in by_rid
+        assert by_rid[rid]["from_side"] is True
+        assert near(by_rid[rid]["score_used"], float(srow["true_vis"]))
+    # Summary peak for a2 must not become best_aid after recovery + halt.
+    sheet, _ = read_emits()
+    assert sheet["best_aid"] == exp_l["forge"]["aid"]
+    assert sheet["best_aid"] == "a1"
+    assert sheet["best_aid"] != "a2"
+
+
+def test_h7_c06_write_trap() -> None:
+    """Hand-edited emits are overwritten by a rebuild."""
+    run_drv()
+    sheet, ledger = read_emits()
+    # Mutate artifacts in place.
+    sheet["best_aid"] = sheet["best_aid"] + sheet["best_aid"]
+    sheet["sheet_digest"] = "0" * 64
+    ledger["forge"]["score"] = 0.0
+    ledger["ledger_digest"] = "1" * 64
+    SHEET.write_text(json.dumps(sheet))
+    LEDGER.write_text(json.dumps(ledger))
+    run_drv()
+    s2, l2 = read_emits()
+    exp_s, exp_l = expected_artifacts()
+    assert s2["best_aid"] == exp_s["best_aid"]
+    assert s2["sheet_digest"] == exp_s["sheet_digest"]
+    assert l2["ledger_digest"] == exp_l["ledger_digest"]
+    assert near(l2["forge"]["score"], exp_l["forge"]["score"])
+
+
+def test_h7_c07_ablate_a() -> None:
+    """Ablating the bind path flips nestmap and rung observations."""
+    bak = SLAG.read_text()
+    try:
+        snaps = sorted((APP / "lib").glob("snap_*.rs"))
+        shutil.copy(snaps[0], SLAG)
+        cargo_build()
+        run_drv()
+        sheet, _ = read_emits()
+        exp_s, _ = expected_artifacts()
+        bad = False
+        if sheet["best_aid"] != exp_s["best_aid"]:
+            bad = True
+        for a in sheet["arms"]:
+            match = next((x for x in exp_s["arms"] if x["aid"] == a["aid"]), None)
+            if match is None or not near(a["rung_total"], match["rung_total"]):
+                bad = True
+            if match is None or a.get("nest_outer") != match["nest_outer"]:
+                bad = True
+        assert bad, "ablating bind path must flip nestmap/rung subset"
+    finally:
+        SLAG.write_text(bak)
+        cargo_build()
+
+
+def test_h7_c08_ablate_b() -> None:
+    """Ablating the cast path flips digest and holdout forge observations."""
+    bak = KILN.read_text()
+    try:
+        snaps = sorted((APP / "lib").glob("snap_*.rs"))
+        shutil.copy(snaps[1], KILN)
+        cargo_build()
+        run_drv()
+        s, led = read_emits()
+        exp_s, exp_l = expected_artifacts()
+        assert s["sheet_digest"] != exp_s["sheet_digest"] or not near(
+            led["forge"]["score"], exp_l["forge"]["score"]
+        )
+    finally:
+        KILN.write_text(bak)
+        cargo_build()

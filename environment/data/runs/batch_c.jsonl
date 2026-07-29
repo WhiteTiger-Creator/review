@@ -1,0 +1,4 @@
+{"rid":"r2c","aid":"a2","step":4,"eta":0.025,"vis":0.91,"halt":"E","nest":"N2b","lr0":0.1,"gamma":0.5,"period":2}
+{"rid":"r1d","aid":"a1","step":1,"eta":0.05,"vis":0.71,"halt":"ok","nest":"N1","lr0":0.05,"gamma":0.8,"period":2}
+{"rid":"r2d","aid":"a2","step":1,"eta":0.1,"vis":0.89,"halt":"ok","nest":"N2","lr0":0.1,"gamma":0.5,"period":2}
+{"rid":"r3c","aid":"a3","step":1,"eta":0.2,"vis":0.52,"halt":"done","nest":"N3","lr0":0.2,"gamma":0.5,"period":2}
