@@ -1,9 +1,0 @@
-# Deprecated stub — not authoritative. Active floors live under profiles/.
-run_id = "yinsh-legacy"
-row_length = 4
-rings_to_win = 2
-rings_start = 5
-flip_enabled = 0
-leave_marker = 0
-win_points = 2
-draw_points = 0

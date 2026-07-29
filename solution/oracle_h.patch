@@ -1,0 +1,76 @@
+--- a/m6/y4/DutyLatch.java
++++ b/m6/y4/DutyLatch.java
+@@ -1,59 +1,28 @@
+ package m6.y4;
+ 
+-import java.nio.charset.StandardCharsets;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
+ 
+ /** Pad/arm stamp rotate widths with annex-epoch latch. */
+ public final class DutyLatch {
+   public int stampRotate(String arm, int pad, int epoch, Path side) throws Exception {
+-    Path soft = side == null ? null : side.resolve("stamp.soft");
+-    if (soft != null && Files.isRegularFile(soft)) {
+-      String text = Files.readString(soft, StandardCharsets.UTF_8).trim();
+-      if (!text.isEmpty()) {
+-        return Integer.parseInt(text);
+-      }
++    if (side != null) {
++      Files.deleteIfExists(side.resolve("duty.cache"));
++      Files.deleteIfExists(side.resolve("stamp.soft"));
+     }
+-    Path cache = side == null ? null : side.resolve("duty.cache");
+-    if (cache != null && Files.isRegularFile(cache)) {
+-      for (String line : Files.readAllLines(cache, StandardCharsets.UTF_8)) {
+-        if (line.isBlank() || !line.contains("=")) {
+-          continue;
+-        }
+-        int eq = line.indexOf('=');
+-        String key = line.substring(0, eq).trim();
+-        int val = Integer.parseInt(line.substring(eq + 1).trim());
+-        String want = arm + ":" + pad;
+-        if (want.equals(key)) {
+-          return val;
+-        }
+-      }
+-    }
+-    int width;
+     if (!"hold".equals(arm)) {
+-      width = pad;
+-    } else {
+-      int base;
+-      if (pad == 1) {
+-        base = 3;
+-      } else if (pad == 2) {
+-        base = 5;
+-      } else if (pad == 3) {
+-        base = 7;
+-      } else {
+-        base = 11;
+-      }
+-      width = base + (epoch % 4);
++      return 1;
+     }
+-    if (cache != null) {
+-      Files.createDirectories(side);
+-      StringBuilder sb = new StringBuilder();
+-      if (Files.isRegularFile(cache)) {
+-        sb.append(Files.readString(cache, StandardCharsets.UTF_8));
+-      }
+-      sb.append(arm).append(':').append(pad).append('=').append(width).append('\n');
+-      Files.writeString(cache, sb.toString(), StandardCharsets.UTF_8);
++    int base;
++    if (pad == 1) {
++      base = 3;
++    } else if (pad == 2) {
++      base = 5;
++    } else if (pad == 3) {
++      base = 7;
++    } else {
++      base = 11;
+     }
+-    return width;
++    return base + (epoch % 5);
+   }
+ }

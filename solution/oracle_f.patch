@@ -1,0 +1,10 @@
+--- a/t3/k1/SeedBind.java
++++ b/t3/k1/SeedBind.java
+@@ -3,6 +3,6 @@
+ /** Binds the pipeline seed to the annex magic before hop walks. */
+ public final class SeedBind {
+   public int bind(int pipeSeed, int magic) {
+-    return pipeSeed ^ (magic & 0xffff);
++    return pipeSeed ^ (magic & 0xffffff);
+   }
+ }

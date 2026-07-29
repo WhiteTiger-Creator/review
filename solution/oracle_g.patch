@@ -1,0 +1,10 @@
+--- a/q9/w2/SealRing.java
++++ b/q9/w2/SealRing.java
+@@ -21,6 +21,7 @@
+     acc ^= ((long) epoch) << 16;
+     acc ^= DUTY;
+     acc ^= Long.rotateLeft(holdMesh, 3 + (epoch % 5));
++    acc ^= Long.rotateLeft(foldMesh, 2 + (epoch % 7));
+     return acc;
+   }
+ }

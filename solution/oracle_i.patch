@@ -1,0 +1,42 @@
+--- a/w8/z3/JrnGate.java
++++ b/w8/z3/JrnGate.java
+@@ -3,6 +3,8 @@
+ import java.nio.charset.StandardCharsets;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
++import java.util.Comparator;
++import java.util.stream.Stream;
+ 
+ /** Side journal under output/side/jrn for operator seal and epoch snaps. */
+ public final class JrnGate {
+@@ -15,7 +17,17 @@
+     if (!Files.isDirectory(d)) {
+       return;
+     }
+-    // Keeps snaps so operator sketches survive a hop refresh.
++    try (Stream<Path> walk = Files.walk(d)) {
++      walk.sorted(Comparator.reverseOrder())
++          .forEach(
++              p -> {
++                try {
++                  Files.deleteIfExists(p);
++                } catch (Exception ignored) {
++                  // best-effort purge before live regeneration
++                }
++              });
++    }
+   }
+ 
+   public void commit(Path side, int epoch, long mesh, long seal) throws Exception {
+@@ -23,9 +35,9 @@
+     Files.createDirectories(d);
+     Files.writeString(d.resolve("epoch.snap"), Integer.toString(epoch), StandardCharsets.UTF_8);
+     Files.writeString(
+-        d.resolve("seal.hint"), Long.toUnsignedString(seal), StandardCharsets.UTF_8);
+-    Files.writeString(
+         d.resolve("mesh.snap"), Long.toUnsignedString(mesh), StandardCharsets.UTF_8);
++    Files.writeString(
++        d.resolve("seal.note"), Long.toUnsignedString(seal), StandardCharsets.UTF_8);
+   }
+ 
+   public Long loadSealHint(Path side) throws Exception {

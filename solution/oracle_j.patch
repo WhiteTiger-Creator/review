@@ -1,0 +1,17 @@
+--- a/w8/z3/EpochTap.java
++++ b/w8/z3/EpochTap.java
+@@ -4,12 +4,9 @@
+ 
+ /** Resolves the annex epoch used for stamp latch and seal binding. */
+ public final class EpochTap {
+-  private final JrnGate gate = new JrnGate();
+-
+   public int effective(int manifestEpoch, Path side) throws Exception {
+-    Integer snap = gate.loadEpochSnap(side);
+-    if (snap != null) {
+-      return snap;
++    if (side == null) {
++      return manifestEpoch;
+     }
+     return manifestEpoch;
+   }

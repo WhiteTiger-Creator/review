@@ -1,0 +1,13 @@
+--- a/p7/u3/EqFold.java
++++ b/p7/u3/EqFold.java
+@@ -25,7 +25,9 @@
+     long padMix =
+         (((long) row.pad) * 0xA5A5L)
+             ^ ((long) (epoch & 0xff))
+-            ^ (((long) row.pad) << 16);
++            ^ (((long) row.pad) << 16)
++            ^ (((long) (epoch % 3)) << 24)
++            ^ ((((long) (epoch & 0xff)) << 8) | ((long) (row.pad & 0xff)));
+     return (rot ^ (long) row.hi ^ padMix) & 0xffffffffffffL;
+   }
+ }

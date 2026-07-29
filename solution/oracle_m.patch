@@ -1,0 +1,61 @@
+--- a/tools/uxr/Main.java
++++ b/tools/uxr/Main.java
+@@ -4,6 +4,7 @@
+ import java.nio.file.Files;
+ import java.nio.file.Path;
+ import java.util.ArrayList;
++import java.util.Comparator;
+ import java.util.List;
+ import m6.y4.DutyLatch;
+ import m6.y4.DutyPlot;
+@@ -45,10 +46,6 @@
+ 
+     DutyLatch latch = new DutyLatch();
+     List<RowDto> emit = new ArrayList<>();
+-    long trainMesh = 0L;
+-    long holdMesh = 0L;
+-    long foldMesh = 0L;
+-    long stamp = 0L;
+     for (int i = 0; i < rows.size(); i++) {
+       VecRow row = rows.get(i);
+       long tag = tags.get(i)[0];
+@@ -58,21 +55,31 @@
+       long armBit = row.arm == 0 ? 0L : 1L;
+       long join = hk ^ tag ^ sp ^ armBit;
+       if (row.arm != 0) {
+-        join ^= (long) (epoch & 0xff);
++        join ^=
++            (((((long) (epoch & 0xff)) << 8) | ((long) (row.pad & 0xff)))
++                ^ (((long) (epoch % 3)) << 16));
+       }
+       String arm = row.arm == 0 ? "train" : "hold";
+       emit.add(new RowDto(row.id, hopKey, tag, sp, hex16(join), arm, row.pad));
+-      if (row.arm == 0) {
+-        trainMesh ^= hk;
+-      } else {
++    }
++    emit.sort(Comparator.comparing(r -> r.rowId));
++    long trainMesh = 0L;
++    long holdMesh = 0L;
++    long foldMesh = 0L;
++    long stamp = 0L;
++    for (RowDto r : emit) {
++      long hk = Long.parseUnsignedLong(r.hopKey, 16);
++      if ("hold".equals(r.arm)) {
+         holdMesh ^= hk;
+-        foldMesh ^= tag;
++        foldMesh ^= r.foldTag;
++      } else {
++        trainMesh ^= hk;
+       }
+-      int rot = latch.stampRotate(arm, row.pad, epoch, side);
+-      stamp ^= Long.rotateLeft(hk, rot) ^ tag ^ sp;
++      int rot = latch.stampRotate(r.arm, r.pad, epoch, side);
++      stamp ^= Long.rotateLeft(hk, rot) ^ r.foldTag ^ r.spanU64;
+     }
+     stamp ^= 0x631A31C0L;
+-    long mesh = Long.rotateLeft(trainMesh, epoch % 3) ^ holdMesh;
++    long mesh = Long.rotateLeft(trainMesh ^ holdMesh, 1 + (epoch % 3));
+     long replay = new SealRing().seal(mesh, stamp, epoch, holdMesh, foldMesh, side);
+     new SealPlot().sketch(side, mesh);
+     RunEmit.go(out, emit, replay, epoch, side);
