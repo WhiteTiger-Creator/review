@@ -1,7 +1,31 @@
-Eight plots each contribute a short depth ordered set of carbon, respiration and radiocarbon measurements, and one model with three shared parameters has to be learned from all of them together, a base decomposition rate k0, a carbon use efficiency cue, and a vertical mixing strength v. Every plot also carries a nuisance effect of its own, input_scale, shrunk toward one by a penalty weight shared across plots. That weight is the hyperparameter of the fit, selected by cross validation over the candidate weights the database offers rather than picked by hand, with every measurement already assigned to a fold. Awk is the working language, the calculation belongs in /app/src/invert.awk, and the provided /app/bin/soilfit runs it over the tables it exports from a plot database and feeds the resulting rows back in. Everything the model needs is read from that SQLite database, its input tables come back unchanged, and rows arrive in any order, so nothing may lean on fixed plot names or a fixed order.
+Calibrated purchase-probability estimation under a seasonal distribution shift
 
-For a plot taken in depth order, a layer decomposes with a modifier e = exp(0.069314718(temp - 10)) moisture moisture_scale oxygen_scale (1 - 0.35 clay), so its decay is d = k0 e. The layer balance B carries d plus the mixing v on the diagonal for each adjacent layer and -v off diagonal between neighbors. The carbon profile C satisfies B C = input_scale input, the radiocarbon Q satisfies (B + log(2)/5730 I) Q = input_scale input f_input, and the age moment H satisfies B H = C. Predicted carbon is C, predicted respiration is (1 - cue) d C, predicted fraction modern is Q/C, and predicted mean age is H/C.
+This is a supervised machine-learning task: train a probabilistic classifier on
+labeled browsing sessions and use it to predict calibrated purchase probabilities
+for unlabeled sessions that come from a different, shifted distribution. It is a
+domain-adaptation and probability-calibration problem, not a lookup or aggregation.
 
-Given a penalty weight and a set of training rows, the criterion sums each training measurement's squared residual over its supplied uncertainty across carbon, respiration and fraction modern, plus weight times (input_scale - 1)^2 for every plot, and each plot's input_scale is the bounded value that minimizes its own contribution over its training rows alone. The held out loss of a fold is that same standardized squared residual sum over the withheld rows only, taken at the parameters and plot effects the remaining rows produced, and a candidate weight scores the total across every fold. The chosen weight is the one scoring smallest, the smaller weight taking a tie, and the reported fit is the criterion minimum over the bounded parameter box at the chosen weight with every row training. The 95 percent interval for each of k0, cue and v reaches to where the criterion, reoptimized over the other two, rises to its minimum plus 3.841459.
+The labeled training sessions (the off-season "source" regime) and the sessions
+you must score (the peak-season "target" regime) come from different
+distributions; purchase behaviour differs between the regimes. Every source
+session is labeled. In the target regime only a small labeled pilot is provided;
+the remaining target sessions have a blank outcome and are the ones you must
+score.
 
-The finished database then carries five result tables. One fit_summary row holds k0, cue, v, penalty and objective, and cv_scores holds one row per candidate with weight, heldout_loss and train_loss, the latter the criterion minimum at that weight over all rows. The fit_limits table holds one row per parameter with parameter, lower and upper, plot_fit one row per plot with plot and input_scale, and profile one row per plot and depth with plot, depth, carbon_hat, respiration_hat, f14c_hat and mean_age. Parameters and interval endpoints land within 0.5 percent of an independent fit, objectives and losses within 0.02 or 0.5 percent, and effects and predictions within 0.05 percent of what the reported fit implies. A missing database or table, mismatched plot depths, nonpositive uncertainties, an empty candidate set or a nonpositive candidate, fewer than two distinct folds, or a singular system leaves any existing tables in place and finishes with a nonzero status, while a clean run over /app/data/soil.sqlite leaves the filled database as the final state.
+The dataset at /app/environment/data/online_shoppers.csv holds 12330 e-commerce
+sessions: a stable row_id, ten numeric engagement features, six categorical
+context features, a domain indicator, and a binary purchase outcome. The data
+directory's notes and summaries document the columns and the split; derive any
+distributional quantities you need from the data itself.
+
+Your predictions are graded on both discrimination and calibration, within
+engagement bands and overall, against withheld outcomes and a reference model
+refit on the active data. The verifier re-fits and re-scores on several
+deterministically perturbed resamples of the data, so every reported quantity
+must be derived from the data you read, never hardcoded.
+
+A starting template is provided at /app/environment/analysis_template.R. Write
+your solution as /app/environment/analysis.R -- train your model and report the
+per-session probabilities and the summary statistics exactly as specified in
+/app/environment/contracts/output_contract.md. The verifier runs Rscript
+/app/environment/analysis.R.

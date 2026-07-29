@@ -1,14 +1,98 @@
 #!/bin/bash
-# Verifier dependencies are installed in environment/Dockerfile.
-mkdir -p /logs/verifier
-echo 0 > /logs/verifier/reward.txt
-if [ "$PWD" = "/" ]; then
-  echo "Error: No working directory set."
-  exit 1
-fi
-python -m pytest -o cache_dir=/tmp/pytest_cache --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
+set -uo pipefail
 
-if [ $? -eq 0 ]; then
+if [ "$PWD" = "/" ]; then
+    mkdir -p /logs/verifier
+    echo 0 > /logs/verifier/reward.txt
+    exit 1
+fi
+
+mkdir -p /logs/verifier
+STATUS=0
+DATA_FILE="/app/environment/data/online_shoppers.csv"
+BASELINE_DIR="/tmp/public_snapshot"
+
+restore_public_data() {
+    if [ -f "$BASELINE_DIR/online_shoppers.csv" ]; then
+        cp "$BASELINE_DIR/online_shoppers.csv" "$DATA_FILE" 2>/dev/null || true
+        chmod a+r "$DATA_FILE" 2>/dev/null || true
+    fi
+}
+
+run_candidate() {
+    chmod 600 /tests/labels.csv 2>/dev/null || true
+    # Keep the grading-only Python/sklearn venv unreachable by the candidate user.
+    chmod 700 /opt/test-venv 2>/dev/null || true
+    chmod 777 /app/environment 2>/dev/null || true
+    chmod a+r /app/environment/analysis.R 2>/dev/null || true
+    chmod -R a+rX /app/environment/data 2>/dev/null || true
+    rm -rf /app/environment/outputs
+    mkdir -p /app/environment/outputs
+    chmod 777 /app/environment/outputs
+    su -s /bin/sh nobody -c "cd /app/environment && HOME=/tmp TMPDIR=/tmp PATH=/usr/bin:/bin Rscript /app/environment/analysis.R" || true
+}
+
+run_pytest() {
+    /opt/test-venv/bin/python -m pytest \
+        --ctrf /logs/verifier/ctrf.json -q -rA -p no:cacheprovider \
+        /tests/test_outputs.py
+}
+
+trap restore_public_data EXIT
+
+rm -rf "$BASELINE_DIR"
+mkdir -p "$BASELINE_DIR" || STATUS=1
+chmod 700 "$BASELINE_DIR" 2>/dev/null || true
+cp "$DATA_FILE" "$BASELINE_DIR/online_shoppers.csv" || STATUS=1
+chmod 600 "$BASELINE_DIR"/* 2>/dev/null || true
+
+run_candidate
+run_pytest
+rc=$?
+[ "$rc" -ne 0 ] && STATUS=1
+
+if [ "$STATUS" -eq 0 ]; then
+    /opt/test-venv/bin/python /tests/generate_stage2_data.py || STATUS=1
+fi
+
+if [ "$STATUS" -eq 0 ]; then
+    run_candidate
+    run_pytest
+    rc=$?
+    [ "$rc" -ne 0 ] && STATUS=1
+fi
+
+restore_public_data
+
+if [ "$STATUS" -eq 0 ]; then
+    /opt/test-venv/bin/python /tests/generate_hidden_data.py || STATUS=1
+fi
+
+if [ "$STATUS" -eq 0 ]; then
+    run_candidate
+    run_pytest
+    rc=$?
+    [ "$rc" -ne 0 ] && STATUS=1
+fi
+
+restore_public_data
+
+if [ "$STATUS" -eq 0 ]; then
+    /opt/test-venv/bin/python /tests/generate_stage4_data.py || STATUS=1
+fi
+
+if [ "$STATUS" -eq 0 ]; then
+    run_candidate
+    run_pytest
+    rc=$?
+    [ "$rc" -ne 0 ] && STATUS=1
+fi
+
+restore_public_data
+
+test "$STATUS" -eq 0
+rc=$?
+if [ "$rc" -eq 0 ]; then
     echo 1 > /logs/verifier/reward.txt
 else
     echo 0 > /logs/verifier/reward.txt

@@ -1,7 +1,10 @@
 .git
 .gitignore
+.env
+*.log
 **/__pycache__/
 **/*.pyc
+**/*.pyo
 **/.pytest_cache/
 **/.mypy_cache/
 **/.ruff_cache/
@@ -10,7 +13,7 @@
 **/dist/
 **/build/
 **/.venv/
-.env
-*.log
+**/venv/
+**/.DS_Store
 solution/
 tests/

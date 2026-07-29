@@ -1,628 +1,282 @@
-"""Behavioral verification for the penalized hierarchical profile fit."""
+"""Verifier for the calibrated purchase-intent task.
 
-from __future__ import annotations
+Grades the agent's held-out probabilities against a reference model refit on the
+active data file, globally and within each engagement band (low ProductRelated
+<= 7, med 8..20, high >= 21), on discrimination (ROC-AUC, PR-AUC), Brier score,
+and calibration-in-the-large (per band and overall). Held-out labels live in
+/tests/labels.csv, never in the agent-visible data.
+"""
 
-import math
-import pathlib
-import shutil
-import sqlite3
-import subprocess
+import json
+import os
+from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
-import scipy.optimize
+from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
 
-DATABASE = pathlib.Path("/app/data/soil.sqlite")
-COMMAND = pathlib.Path("/app/bin/soilfit")
-PARAMETERS = ("k0", "cue", "v")
-INPUT_TABLES = ("layers", "forcing", "observations", "bounds", "penalty_grid")
-OUTPUT_TABLES = ("fit_summary", "cv_scores", "fit_limits", "plot_fit", "profile")
-LAMBDA14 = math.log(2.0) / 5730.0
-THRESHOLD = 3.841459
+OUT = Path(os.environ.get("AGENT_OUTPUT_DIR", "/app/environment/outputs"))
+DATA = Path(os.environ.get("RAW_DATA_DIR", "/app/environment/data"))
+LABELS = Path(os.environ.get("LABELS_PATH", "/tests/labels.csv"))
+SRC = Path(os.environ.get("AGENT_SOURCE", "/app/environment/analysis.R"))
+
+DATAFILE = "online_shoppers.csv"
+NUMS = [
+    "Administrative",
+    "Administrative_Duration",
+    "Informational",
+    "Informational_Duration",
+    "ProductRelated",
+    "ProductRelated_Duration",
+    "BounceRates",
+    "ExitRates",
+    "PageValues",
+    "SpecialDay",
+]
+CATS = [
+    "OperatingSystems",
+    "Browser",
+    "Region",
+    "TrafficType",
+    "VisitorType",
+    "Weekend",
+]
+BAND_NAMES = ["low", "med", "high"]
+# Global discrimination bar. The reference is a gradient-boosted model; a plain
+# base-R glm tops out ~0.02 ROC-AUC below it, so this tolerance requires the agent
+# to match the boosted reference's ranking (a from-scratch boosted/ensemble model
+# in base R), not just fit a logistic regression.
+AUC_TOL = 0.015
+PR_TOL = 0.060
+BRIER_MULT = 1.00
+BAND_AUC_TOL = 0.060
+# Band calibration-in-the-large tolerance. The only labeled window on the target
+# regime is the 600-row pilot; a band there holds ~130-320 labeled rows, so the
+# band purchase rate carries roughly 0.03-0.04 of sampling noise as an estimate of
+# the held-out band rate, and the deterministically subsampled variant widens that
+# gap to ~0.07 in the med band. The tolerance must clear that irreducible
+# proxy-vs-held-out gap so a sound shift-adapted fit passes on every variant, while
+# staying well under the >=0.10 low/high-band miss that a mis-adapted fit incurs.
+CAL_TOL = 0.09
+# Overall (global) calibration-in-the-large tolerance: the mean prediction over
+# all unscored rows must track the overall held-out purchase rate. Looser than a
+# single band because it aggregates the whole test set.
+GLOBAL_CAL_TOL = 0.04
 
 
-def rows(database: pathlib.Path, query: str) -> list[tuple]:
-    """return query rows from a database."""
-    with sqlite3.connect(database) as connection:
-        return connection.execute(query).fetchall()
+def _bands(pr):
+    p = np.asarray(pr, dtype=float)
+    return np.where(p >= 21, "high", np.where(p >= 8, "med", "low"))
 
 
-def snapshot_inputs(database: pathlib.Path) -> dict[str, list[tuple]]:
-    """capture all input values in deterministic primary-key order."""
-    order = {
-        "layers": "plot, depth",
-        "forcing": "plot",
-        "observations": "plot, depth",
-        "bounds": "parameter",
-        "penalty_grid": "weight",
-    }
-    return {
-        table: rows(database, f"SELECT * FROM {table} ORDER BY {order[table]}")
-        for table in INPUT_TABLES
-    }
+@pytest.fixture(scope="module")
+def labels():
+    d = pd.read_csv(LABELS)
+    return dict(zip(d["row_id"].astype(int), d["target"].astype(int), strict=False))
 
 
-def snapshot_outputs(database: pathlib.Path) -> dict[str, list[tuple]]:
-    """capture every generated table for atomic failure checks."""
-    return {
-        table: rows(database, f"SELECT * FROM {table} ORDER BY rowid")
-        for table in OUTPUT_TABLES
-    }
+@pytest.fixture(scope="module")
+def preds():
+    return pd.read_csv(OUT / "predictions.csv")
 
 
-def load_problem(database: pathlib.Path) -> tuple[dict, dict, list[float]]:
-    """load model inputs without relying on generated output tables."""
-    problem: dict[str, dict] = {}
-    with sqlite3.connect(database) as connection:
-        bounds = {
-            name: (float(lower), float(upper))
-            for name, lower, upper in connection.execute(
-                "SELECT parameter, lower, upper FROM bounds",
-            )
+@pytest.fixture(scope="module")
+def metrics():
+    return json.loads((OUT / "metrics.json").read_text())
+
+
+@pytest.fixture(scope="module")
+def oracle(labels):
+    df = pd.read_csv(DATA / DATAFILE)
+    assert "row_id" in df.columns, "row_id column missing from data file"
+    lab = df["target"].notna()
+    train = df.loc[lab].reset_index(drop=True)
+    test = df.loc[~lab].reset_index(drop=True)
+    ytr = train["target"].astype(int).to_numpy()
+    y_true = np.array([labels[int(r)] for r in test["row_id"]])
+    cols = [(c, False) for c in NUMS] + [(c, True) for c in CATS]
+    Xtr = np.empty((len(train), len(cols)))
+    Xte = np.empty((len(test), len(cols)))
+    mask = []
+    for j, (c, is_cat) in enumerate(cols):
+        if is_cat:
+            levels = sorted(df[c].astype(str).unique())
+            m = {v: i for i, v in enumerate(levels)}
+            Xtr[:, j] = train[c].astype(str).map(m).to_numpy()
+            Xte[:, j] = test[c].astype(str).map(m).to_numpy()
+        else:
+            Xtr[:, j] = train[c].astype(float).to_numpy()
+            Xte[:, j] = test[c].astype(float).to_numpy()
+        mask.append(is_cat)
+    fm = HistGradientBoostingClassifier(
+        random_state=42,
+        max_iter=300,
+        learning_rate=0.08,
+        categorical_features=mask,
+    ).fit(Xtr, ytr)
+    pte = fm.predict_proba(Xte)[:, 1]
+    band = _bands(test["ProductRelated"])
+    per_band = {}
+    for g in BAND_NAMES:
+        m = band == g
+        per_band[g] = {
+            "auc": roc_auc_score(y_true[m], pte[m]),
+            "brier": brier_score_loss(y_true[m], pte[m]),
+            "base_rate": float(y_true[m].mean()),
+            "n": int(m.sum()),
         }
-        weights = sorted(
-            float(weight)
-            for (weight,) in connection.execute("SELECT weight FROM penalty_grid")
-        )
-        for plot, moisture_scale, oxygen_scale in connection.execute(
-            "SELECT plot, moisture_scale, oxygen_scale FROM forcing",
-        ):
-            problem[str(plot)] = {
-                "moisture_scale": float(moisture_scale),
-                "oxygen_scale": float(oxygen_scale),
-            }
-        for record in connection.execute(
-            "SELECT plot, depth, temp, moisture, clay, input, f_input "
-            "FROM layers ORDER BY plot, depth",
-        ):
-            plot = str(record[0])
-            problem[plot].setdefault("layers", []).append(
-                np.asarray(record[1:], dtype=float),
-            )
-        for record in connection.execute(
-            "SELECT plot, depth, carbon, respiration, f14c, sigma_c, sigma_r, "
-            "sigma_f, fold FROM observations ORDER BY plot, depth",
-        ):
-            plot = str(record[0])
-            problem[plot].setdefault("observations", []).append(
-                np.asarray(record[1:8], dtype=float),
-            )
-            problem[plot].setdefault("folds", []).append(int(record[8]))
-    for plot in problem.values():
-        plot["layers"] = np.vstack(plot["layers"])
-        plot["observations"] = np.vstack(plot["observations"])
-        plot["folds"] = np.asarray(plot["folds"], dtype=int)
-    return problem, bounds, weights
-
-
-def forward_plot(
-    plot: dict, parameters: np.ndarray, input_scale: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """independently solve carbon, respiration, isotope, and age balances."""
-    k0, cue, mixing = parameters
-    layer = plot["layers"]
-    modifier = (
-        np.exp(0.069314718 * (layer[:, 1] - 10.0))
-        * layer[:, 2]
-        * plot["moisture_scale"]
-        * plot["oxygen_scale"]
-        * (1.0 - 0.35 * layer[:, 3])
-    )
-    decay = k0 * modifier
-    count = len(layer)
-    balance = np.diag(decay)
-    for index in range(count - 1):
-        balance[index, index] += mixing
-        balance[index + 1, index + 1] += mixing
-        balance[index, index + 1] -= mixing
-        balance[index + 1, index] -= mixing
-    carbon = np.linalg.solve(balance, input_scale * layer[:, 4])
-    isotope = np.linalg.solve(
-        balance + LAMBDA14 * np.eye(count),
-        input_scale * layer[:, 4] * layer[:, 5],
-    )
-    age_moment = np.linalg.solve(balance, carbon)
-    respiration = (1.0 - cue) * decay * carbon
-    return carbon, respiration, isotope / carbon, age_moment / carbon
-
-
-def plot_effect(
-    plot: dict,
-    bounds: dict,
-    parameters: np.ndarray,
-    weight: float,
-    mask: np.ndarray,
-) -> float:
-    """profile one plot effect in closed form over the training rows."""
-    carbon, respiration, _, _ = forward_plot(plot, parameters, 1.0)
-    observed = plot["observations"]
-    numerator = weight
-    denominator = weight
-    numerator += np.sum((carbon * observed[:, 1] / observed[:, 4] ** 2)[mask])
-    numerator += np.sum((respiration * observed[:, 2] / observed[:, 5] ** 2)[mask])
-    denominator += np.sum((carbon**2 / observed[:, 4] ** 2)[mask])
-    denominator += np.sum((respiration**2 / observed[:, 5] ** 2)[mask])
-    return float(np.clip(numerator / denominator, *bounds["input_scale"]))
-
-
-def residual_sum(
-    plot: dict, parameters: np.ndarray, input_scale: float, mask: np.ndarray,
-) -> float:
-    """standardized squared misfit over a chosen row subset."""
-    carbon, respiration, f14c, _ = forward_plot(plot, parameters, input_scale)
-    observed = plot["observations"]
-    total = np.sum((((carbon - observed[:, 1]) / observed[:, 4]) ** 2)[mask])
-    total += np.sum((((respiration - observed[:, 2]) / observed[:, 5]) ** 2)[mask])
-    total += np.sum((((f14c - observed[:, 3]) / observed[:, 6]) ** 2)[mask])
-    return float(total)
-
-
-def training_masks(problem: dict, holdout: int | None) -> dict[str, np.ndarray]:
-    """rows kept for training once one fold is withheld."""
-    if holdout is None:
-        return {
-            name: np.ones(len(plot["folds"]), dtype=bool)
-            for name, plot in problem.items()
-        }
-    return {name: plot["folds"] != holdout for name, plot in problem.items()}
-
-
-def objective_value(
-    problem: dict,
-    bounds: dict,
-    parameters: np.ndarray,
-    weight: float,
-    masks: dict[str, np.ndarray],
-) -> float:
-    """penalized training criterion at one parameter triple."""
-    total = 0.0
-    for name, plot in problem.items():
-        effect = plot_effect(plot, bounds, parameters, weight, masks[name])
-        total += weight * (effect - 1.0) ** 2
-        total += residual_sum(plot, parameters, effect, masks[name])
-    return total
-
-
-def minimize_criterion(
-    problem: dict, bounds: dict, weight: float, masks: dict[str, np.ndarray],
-) -> tuple[np.ndarray, float]:
-    """search the parameter box with an independent simplex solver."""
-    box = [bounds[name] for name in PARAMETERS]
-    starts = [
-        np.asarray([low + share * (high - low) for low, high in box])
-        for share in (0.25, 0.5, 0.75)
-    ]
-    results = [
-        scipy.optimize.minimize(
-            lambda point: objective_value(problem, bounds, point, weight, masks),
-            start,
-            method="Nelder-Mead",
-            bounds=box,
-            options={"xatol": 1e-11, "fatol": 1e-10, "maxiter": 5000},
-        )
-        for start in starts
-    ]
-    best = min(results, key=lambda item: item.fun)
-    assert best.success, best.message
-    return np.asarray(best.x), float(best.fun)
-
-
-def cross_validate(
-    problem: dict, bounds: dict, weights: list[float],
-) -> dict[float, dict]:
-    """score every candidate weight on withheld rows and on all rows."""
-    folds = sorted({int(fold) for plot in problem.values() for fold in plot["folds"]})
-    curve: dict[float, dict] = {}
-    for weight in weights:
-        held = 0.0
-        for fold in folds:
-            masks = training_masks(problem, fold)
-            parameters, _ = minimize_criterion(problem, bounds, weight, masks)
-            for name, plot in problem.items():
-                effect = plot_effect(plot, bounds, parameters, weight, masks[name])
-                held += residual_sum(plot, parameters, effect, plot["folds"] == fold)
-        full = training_masks(problem, None)
-        estimate, train = minimize_criterion(problem, bounds, weight, full)
-        curve[weight] = {
-            "heldout": held,
-            "train": train,
-            "estimate": estimate,
-        }
-    return curve
-
-
-def choose_weight(curve: dict[float, dict]) -> float:
-    """smallest weight among those with the lowest withheld loss."""
-    best = min(sorted(curve), key=lambda weight: curve[weight]["heldout"])
-    return float(best)
-
-
-def profile_minimum(
-    problem: dict,
-    bounds: dict,
-    weight: float,
-    estimate: np.ndarray,
-    index: int,
-    value: float,
-) -> float:
-    """minimize the criterion with one parameter pinned."""
-    free = [position for position in range(3) if position != index]
-    box = [bounds[name] for name in PARAMETERS]
-    masks = training_masks(problem, None)
-
-    def reduced(point: np.ndarray) -> float:
-        parameters = estimate.copy()
-        parameters[index] = value
-        parameters[free] = point
-        return objective_value(problem, bounds, parameters, weight, masks)
-
-    result = scipy.optimize.minimize(
-        reduced,
-        estimate[free],
-        method="Nelder-Mead",
-        bounds=[box[position] for position in free],
-        options={"xatol": 2e-10, "fatol": 1e-9, "maxiter": 3000},
-    )
-    assert result.success, result.message
-    return float(result.fun)
-
-
-def reference_fit(database: pathlib.Path, *, limits: bool = True) -> dict:
-    """rebuild the selection, the fit, and its interval endpoints independently."""
-    problem, bounds, weights = load_problem(database)
-    curve = cross_validate(problem, bounds, weights)
-    weight = choose_weight(curve)
-    estimate = curve[weight]["estimate"]
-    minimum = curve[weight]["train"]
-    reference = {
-        "problem": problem,
-        "bounds": bounds,
-        "weights": weights,
-        "curve": curve,
-        "weight": weight,
-        "estimate": estimate,
-        "objective": minimum,
-        "effects": {
-            name: plot_effect(
-                plot, bounds, estimate, weight, training_masks(problem, None)[name],
-            )
-            for name, plot in problem.items()
-        },
-    }
-    if not limits:
-        return reference
-    target = minimum + THRESHOLD
-    endpoints: dict[str, tuple[float, float]] = {}
-    for index, name in enumerate(PARAMETERS):
-        found = []
-        for edge in bounds[name]:
-            if profile_minimum(
-                problem, bounds, weight, estimate, index, edge,
-            ) <= target:
-                found.append(edge)
-                continue
-            root = scipy.optimize.root_scalar(
-                lambda value, index=index: profile_minimum(
-                    problem, bounds, weight, estimate, index, value,
-                ) - target,
-                bracket=sorted((edge, estimate[index])),
-                xtol=1e-10,
-            )
-            assert root.converged
-            found.append(float(root.root))
-        endpoints[name] = (found[0], found[1])
-    reference["limits"] = endpoints
-    return reference
-
-
-def run_command(database: pathlib.Path) -> subprocess.CompletedProcess:
-    """invoke the provided runner on one database."""
-    return subprocess.run(
-        [str(COMMAND), str(database)], capture_output=True, text=True, check=False,
-    )
-
-
-def reported_fit(database: pathlib.Path) -> dict:
-    """read the single reported summary row."""
-    result = rows(
-        database, "SELECT k0, cue, v, penalty, objective FROM fit_summary",
-    )
-    assert len(result) == 1
-    values = [float(item) for item in result[0]]
+    n_pilot = int((train["domain"].astype(str) == "target").sum())
     return {
-        "estimate": np.asarray(values[:3]),
-        "penalty": values[3],
-        "objective": values[4],
+        "n_train": int(lab.sum()),
+        "n_pilot": n_pilot,
+        "n_test": int((~lab).sum()),
+        "test_ids": {int(r) for r in test["row_id"]},
+        "auc": roc_auc_score(y_true, pte),
+        "ap": average_precision_score(y_true, pte),
+        "brier": brier_score_loss(y_true, pte),
+        "per_band": per_band,
+        "bands": dict(zip(test["row_id"].astype(int), band, strict=False)),
     }
 
 
-@pytest.fixture(scope="session")
-def baseline() -> dict:
-    """regenerate baseline outputs so every assertion exercises the runner."""
-    before = snapshot_inputs(DATABASE)
-    with sqlite3.connect(DATABASE) as connection:
-        for table in OUTPUT_TABLES:
-            connection.execute(f"DROP TABLE IF EXISTS {table}")
-    completed = run_command(DATABASE)
-    assert completed.returncode == 0, completed.stderr
-    return {"inputs": before, "reference": reference_fit(DATABASE)}
+@pytest.fixture(scope="module")
+def merged(preds, labels, oracle):
+    m = preds.copy()
+    m["row_id"] = m["row_id"].astype(int)
+    m["target"] = m["row_id"].map(labels)
+    m["band"] = m["row_id"].map(oracle["bands"])
+    return m.dropna(subset=["target"])
 
 
-def test_result_tables_are_regenerated_with_documented_fields(baseline: dict) -> None:
-    """the runner creates each result table with its named fields and row count."""
-    del baseline
-    expected_columns = {
-        "fit_summary": {"k0", "cue", "v", "penalty", "objective"},
-        "cv_scores": {"weight", "heldout_loss", "train_loss"},
-        "fit_limits": {"parameter", "lower", "upper"},
-        "plot_fit": {"plot", "input_scale"},
-        "profile": {
-            "plot",
-            "depth",
-            "carbon_hat",
-            "respiration_hat",
-            "f14c_hat",
-            "mean_age",
-        },
-    }
-    expected_counts = {
-        "fit_summary": 1,
-        "cv_scores": 5,
-        "fit_limits": 3,
-        "plot_fit": 8,
-        "profile": 24,
-    }
-    with sqlite3.connect(DATABASE) as connection:
-        for table, names in expected_columns.items():
-            columns = {
-                row[1] for row in connection.execute(f"PRAGMA table_info({table})")
-            }
-            assert columns == names
-        for table, count in expected_counts.items():
-            found = connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            assert found == count
+class TestArtifacts:
+    def test_predictions_exist(self):
+        assert (OUT / "predictions.csv").is_file()
+
+    def test_metrics_schema(self, metrics):
+        expected = {
+            "n_train",
+            "n_pilot",
+            "n_test",
+            "n_test_low",
+            "n_test_med",
+            "n_test_high",
+            "n_bands",
+        }
+        assert set(metrics) == expected
+        for k, v in metrics.items():
+            assert isinstance(v, str), f"metrics value {k} must be a quoted string"
+
+    def test_n_bands(self, metrics):
+        assert int(metrics["n_bands"]) == len(BAND_NAMES)
 
 
-def test_cross_validation_curve_matches_an_independent_refit(baseline: dict) -> None:
-    """every candidate weight reports the withheld and full-data losses it earns."""
-    reference = baseline["reference"]
-    reported = {
-        float(weight): (float(heldout), float(train))
-        for weight, heldout, train in rows(
-            DATABASE, "SELECT weight, heldout_loss, train_loss FROM cv_scores",
-        )
-    }
-    assert sorted(reported) == pytest.approx(reference["weights"])
-    for weight, scores in reference["curve"].items():
-        assert reported[weight][0] == pytest.approx(
-            scores["heldout"], rel=0.005, abs=0.02,
-        )
-        assert reported[weight][1] == pytest.approx(
-            scores["train"], rel=0.005, abs=0.02,
+class TestCoverage:
+    def test_covers_every_test_row(self, preds, oracle):
+        got = set(preds["row_id"].astype(int))
+        assert got == oracle["test_ids"], (
+            "predictions must cover exactly the unscored rows"
         )
 
-
-def test_selected_penalty_minimizes_the_withheld_loss(baseline: dict) -> None:
-    """the reported penalty is the candidate with the lowest cross validated loss."""
-    reference = baseline["reference"]
-    reported = reported_fit(DATABASE)
-    assert reported["penalty"] == pytest.approx(reference["weight"], rel=1e-9)
-    losses = {
-        float(weight): float(loss)
-        for weight, loss in rows(DATABASE, "SELECT weight, heldout_loss FROM cv_scores")
-    }
-    lowest = min(sorted(losses), key=lambda weight: losses[weight])
-    assert lowest == pytest.approx(reported["penalty"], rel=1e-9)
-
-
-def test_parameters_minimize_the_penalized_criterion(baseline: dict) -> None:
-    """the reported triple and objective agree with an independent global search."""
-    reference = baseline["reference"]
-    reported = reported_fit(DATABASE)
-    assert np.allclose(
-        reported["estimate"], reference["estimate"], rtol=0.005, atol=2e-7,
-    )
-    assert reported["objective"] == pytest.approx(
-        reference["objective"], rel=0.005, abs=0.02,
-    )
-    replay = objective_value(
-        reference["problem"],
-        reference["bounds"],
-        reported["estimate"],
-        reported["penalty"],
-        training_masks(reference["problem"], None),
-    )
-    assert replay == pytest.approx(reported["objective"], abs=0.02)
-
-
-def test_plot_effects_are_penalized_optima(baseline: dict) -> None:
-    """each plot effect is the shrunken optimum implied by the reported fit."""
-    reference = baseline["reference"]
-    reported = reported_fit(DATABASE)
-    effects = dict(rows(DATABASE, "SELECT plot, input_scale FROM plot_fit"))
-    assert set(effects) == set(reference["problem"])
-    masks = training_masks(reference["problem"], None)
-    for name, plot in reference["problem"].items():
-        expected = plot_effect(
-            plot, reference["bounds"], reported["estimate"], reported["penalty"],
-            masks[name],
+    def test_schema_sorted_unique(self, preds):
+        assert list(preds.columns) == ["row_id", "pred_proba"], (
+            "predictions.csv must have exactly the columns row_id,pred_proba "
+            "(no extra or renamed columns)"
         )
-        assert float(effects[name]) == pytest.approx(expected, rel=5e-4, abs=1e-7)
+        ids = preds["row_id"].astype(int).tolist()
+        assert ids == sorted(ids), "predictions not sorted by row_id"
+        assert len(ids) == len(set(ids)), "duplicate row_id"
 
+    def test_proba_in_unit_interval(self, preds):
+        p = preds["pred_proba"].to_numpy(dtype=float)
+        assert np.isfinite(p).all() and (p >= 0).all() and (p <= 1).all()
 
-def test_carbon_respiration_and_radiocarbon_predictions_replay(
-    baseline: dict,
-) -> None:
-    """profile rows reproduce all three balances at the reported fit."""
-    reference = baseline["reference"]
-    reported = reported_fit(DATABASE)
-    effects = dict(rows(DATABASE, "SELECT plot, input_scale FROM plot_fit"))
-    predicted = {
-        (plot, float(depth)): np.asarray((carbon, respiration, f14c), dtype=float)
-        for plot, depth, carbon, respiration, f14c in rows(
-            DATABASE,
-            "SELECT plot, depth, carbon_hat, respiration_hat, f14c_hat FROM profile",
-        )
-    }
-    for name, plot in reference["problem"].items():
-        expected = forward_plot(
-            plot, reported["estimate"], float(effects[name]),
-        )
-        for index, depth in enumerate(plot["layers"][:, 0]):
-            values = np.asarray(
-                (expected[0][index], expected[1][index], expected[2][index]),
-            )
-            assert np.allclose(
-                predicted[(name, float(depth))], values, rtol=5e-4, atol=2e-8,
+    def test_n_train_reported(self, metrics, oracle):
+        assert int(metrics["n_train"]) == oracle["n_train"]
+
+    def test_n_pilot_reported(self, metrics, oracle):
+        assert int(metrics["n_pilot"]) == oracle["n_pilot"]
+
+    def test_n_test_reported(self, metrics, oracle):
+        assert int(metrics["n_test"]) == oracle["n_test"]
+
+    def test_band_counts_reported(self, metrics, oracle):
+        for key, band in [
+            ("n_test_low", "low"),
+            ("n_test_med", "med"),
+            ("n_test_high", "high"),
+        ]:
+            assert int(metrics[key]) == oracle["per_band"][band]["n"], (
+                f"{key} does not match the unscored count in the {band} band"
             )
 
-
-def test_mean_age_solves_the_first_moment_balance(baseline: dict) -> None:
-    """reported residence times match independently solved age moments."""
-    reference = baseline["reference"]
-    reported = reported_fit(DATABASE)
-    effects = dict(rows(DATABASE, "SELECT plot, input_scale FROM plot_fit"))
-    ages = dict(rows(DATABASE, "SELECT plot || ':' || depth, mean_age FROM profile"))
-    for name, plot in reference["problem"].items():
-        expected = forward_plot(plot, reported["estimate"], float(effects[name]))[3]
-        for index, depth in enumerate(plot["layers"][:, 0]):
-            key = f"{name}:{float(depth)}"
-            assert float(ages[key]) == pytest.approx(
-                float(expected[index]), rel=5e-4, abs=1e-7,
-            )
-
-
-def test_interval_endpoints_reach_the_stated_criterion_rise(baseline: dict) -> None:
-    """each endpoint reoptimizes the other parameters to the required rise."""
-    reference = baseline["reference"]
-    reported = reported_fit(DATABASE)
-    endpoints = {
-        name: (float(lower), float(upper))
-        for name, lower, upper in rows(
-            DATABASE, "SELECT parameter, lower, upper FROM fit_limits",
+    def test_band_counts_sum_to_n_test(self, metrics):
+        parts = (
+            int(metrics["n_test_low"])
+            + int(metrics["n_test_med"])
+            + int(metrics["n_test_high"])
         )
-    }
-    assert set(endpoints) == set(PARAMETERS)
-    target = reference["objective"] + THRESHOLD
-    for index, name in enumerate(PARAMETERS):
-        assert np.allclose(
-            endpoints[name], reference["limits"][name], rtol=0.005, atol=2e-7,
+        assert parts == int(metrics["n_test"]), (
+            "per-band unscored counts do not sum to n_test"
         )
-        for value in endpoints[name]:
-            reached = profile_minimum(
-                reference["problem"],
-                reference["bounds"],
-                reported["penalty"],
-                reference["estimate"],
-                index,
-                value,
-            )
-            assert reached == pytest.approx(target, abs=0.02)
 
 
-def test_changed_and_reordered_database_is_refit_without_hardcoding(
-    baseline: dict, tmp_path: pathlib.Path,
-) -> None:
-    """a perturbed database with reversed insertion order earns a fresh fit."""
-    altered = tmp_path / "altered.sqlite"
-    shutil.copy2(DATABASE, altered)
-    with sqlite3.connect(altered) as connection:
-        connection.execute(
-            "UPDATE forcing SET moisture_scale = moisture_scale * 0.83 "
-            "WHERE plot IN ('alder', 'pine')",
+class TestGlobalDiscrimination:
+    def test_auc_near_reference(self, merged, oracle):
+        auc = roc_auc_score(
+            merged["target"].to_numpy(int), merged["pred_proba"].to_numpy(float)
         )
-        for table in ("layers", "forcing", "observations"):
-            connection.execute(
-                f"UPDATE {table} SET plot = 'tundra' WHERE plot = 'spruce'",
-            )
-        for table in ("layers", "observations"):
-            connection.execute(
-                f"CREATE TABLE shuffled AS SELECT * FROM {table} "
-                "ORDER BY plot DESC, depth DESC",
-            )
-            connection.execute(f"DELETE FROM {table}")
-            connection.execute(f"INSERT INTO {table} SELECT * FROM shuffled")
-            connection.execute("DROP TABLE shuffled")
-    completed = run_command(altered)
-    assert completed.returncode == 0, completed.stderr
-    reference = reference_fit(altered, limits=False)
-    reported = reported_fit(altered)
-    assert reported["penalty"] == pytest.approx(reference["weight"], rel=1e-9)
-    assert np.allclose(
-        reported["estimate"], reference["estimate"], rtol=0.005, atol=2e-7,
-    )
-    assert reported["objective"] == pytest.approx(
-        reference["objective"], rel=0.005, abs=0.02,
-    )
-    assert not np.allclose(
-        reported["estimate"], baseline["reference"]["estimate"], rtol=1e-4,
-    )
-
-
-def test_candidate_set_drives_the_selection(
-    baseline: dict, tmp_path: pathlib.Path,
-) -> None:
-    """withdrawing the winning candidate moves the penalty and the whole fit."""
-    reference = baseline["reference"]
-    reduced = tmp_path / "reduced.sqlite"
-    shutil.copy2(DATABASE, reduced)
-    with sqlite3.connect(reduced) as connection:
-        connection.execute(
-            "DELETE FROM penalty_grid WHERE ABS(weight - ?) < 1e-9",
-            (reference["weight"],),
+        assert auc >= oracle["auc"] - AUC_TOL, (
+            f"held-out AUC {auc:.4f} below reference {oracle['auc']:.4f} - {AUC_TOL}"
         )
-    completed = run_command(reduced)
-    assert completed.returncode == 0, completed.stderr
-    remaining = {
-        weight: scores
-        for weight, scores in reference["curve"].items()
-        if weight != reference["weight"]
-    }
-    expected = choose_weight(remaining)
-    reported = reported_fit(reduced)
-    assert reported["penalty"] == pytest.approx(expected, rel=1e-9)
-    assert np.allclose(
-        reported["estimate"], remaining[expected]["estimate"], rtol=0.005, atol=2e-7,
-    )
-    assert reported["objective"] == pytest.approx(
-        remaining[expected]["train"], rel=0.005, abs=0.02,
-    )
-    assert rows(reduced, "SELECT COUNT(*) FROM cv_scores")[0][0] == 4
+
+    def test_pr_auc_near_reference(self, merged, oracle):
+        ap = average_precision_score(
+            merged["target"].to_numpy(int), merged["pred_proba"].to_numpy(float)
+        )
+        assert ap >= oracle["ap"] - PR_TOL, (
+            f"held-out PR-AUC {ap:.4f} below reference {oracle['ap']:.4f} - {PR_TOL}"
+        )
+
+    def test_brier_not_worse_than_reference(self, merged, oracle):
+        brier = brier_score_loss(
+            merged["target"].to_numpy(int), merged["pred_proba"].to_numpy(float)
+        )
+        assert brier <= oracle["brier"] * BRIER_MULT, (
+            f"held-out Brier {brier:.5f} worse than reference {oracle['brier']:.5f}"
+        )
+
+    def test_global_calibration_in_the_large(self, merged):
+        gap = abs(float(merged["pred_proba"].mean()) - float(merged["target"].mean()))
+        assert gap <= GLOBAL_CAL_TOL, (
+            f"overall mean prediction is {gap:.4f} away from the overall held-out "
+            "purchase rate; predictions are not globally calibrated to the target "
+            "regime"
+        )
 
 
-def test_input_tables_remain_unchanged(baseline: dict) -> None:
-    """a successful fit replaces results without modifying any input row."""
-    assert snapshot_inputs(DATABASE) == baseline["inputs"]
+class TestBandCalibration:
+    @pytest.mark.parametrize("band", BAND_NAMES)
+    def test_band_auc_floor(self, merged, oracle, band):
+        group = merged[merged["band"] == band]
+        ref = oracle["per_band"][band]
+        auc = roc_auc_score(
+            group["target"].to_numpy(int), group["pred_proba"].to_numpy(float)
+        )
+        assert auc >= ref["auc"] - BAND_AUC_TOL, (
+            f"{band}-band AUC {auc:.4f} below reference "
+            f"{ref['auc']:.4f} - {BAND_AUC_TOL}; the ranking does not hold up "
+            "within this engagement band"
+        )
 
-
-def test_invalid_inputs_fail_without_touching_results(
-    baseline: dict, tmp_path: pathlib.Path,
-) -> None:
-    """rejected databases keep whatever result tables they already carried."""
-    del baseline
-    mutations = (
-        "DROP TABLE forcing",
-        "DELETE FROM observations WHERE plot = 'alder' AND depth = 5",
-        "UPDATE observations SET sigma_f = 0 WHERE plot = 'birch' AND depth = 20",
-        "UPDATE layers SET moisture = 0 WHERE plot = 'cedar'",
-        "DELETE FROM penalty_grid",
-        "UPDATE penalty_grid SET weight = -4 WHERE weight = 64.0",
-        "UPDATE observations SET fold = 1",
-    )
-    for index, mutation in enumerate(mutations):
-        invalid = tmp_path / f"invalid_{index}.sqlite"
-        shutil.copy2(DATABASE, invalid)
-        before = snapshot_outputs(invalid)
-        with sqlite3.connect(invalid) as connection:
-            connection.execute(mutation)
-        completed = run_command(invalid)
-        assert completed.returncode != 0
-        assert snapshot_outputs(invalid) == before
-
-
-def test_missing_database_returns_nonzero(tmp_path: pathlib.Path) -> None:
-    """a nonexistent database path is rejected without creating a file."""
-    missing = tmp_path / "missing.sqlite"
-    completed = run_command(missing)
-    assert completed.returncode != 0
-    assert not missing.exists()
+    @pytest.mark.parametrize("band", BAND_NAMES)
+    def test_band_calibration_in_the_large(self, merged, oracle, band):
+        group = merged[merged["band"] == band]
+        ref = oracle["per_band"][band]
+        gap = abs(float(group["pred_proba"].mean()) - ref["base_rate"])
+        assert gap <= CAL_TOL, (
+            f"{band}-band mean prediction is {gap:.4f} away from the band "
+            f"held-out purchase rate {ref['base_rate']:.4f}; probabilities are "
+            "not calibrated to the peak-season regime within this band"
+        )

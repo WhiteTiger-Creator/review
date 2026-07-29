@@ -1,28 +1,33 @@
 version = "2.0"
 
+# Base-image exception: this is an R modeling task, but no digest-pinned R base
+# image is approved. It therefore uses the canonical digest-pinned Python verifier
+# base (pytest/CTRF grade the task) and installs r-base-core for the agent's R
+# entrypoint. See environment/Dockerfile. languages = ["r"] below records the
+# runtime requirement.
+
 [metadata]
-author_name = "Task Author"
-author_email = "author@example.com"
+author_name = "anonymous"
+author_email = "anonymous"
 difficulty = "medium"
 category = "machine-learning"
-subcategories = ["db_interaction"]
-codebase_size = "small"
-languages = ["awk", "bash", "sql"]
-tags = ["cross-validation", "hyperparameter-selection", "regularization", "hierarchical-models", "model-selection", "profile-likelihood"]
-expert_time_estimate_min = 360
-junior_time_estimate_min = 840
+codebase_size = "minimal"
+subcategories = ["tool_specific"]
 number_of_milestones = 0
+languages = ["r"]
+tags = ["r", "classification", "distribution-shift", "calibration", "domain-adaptation", "online-retail"]
+expert_time_estimate_min = 90
+junior_time_estimate_min = 240
 
 [verifier]
-timeout_sec = 600.0
+timeout_sec = 1200
 
 [agent]
-timeout_sec = 1800.0
+timeout_sec = 1200
 
 [environment]
-allow_internet = false
-build_timeout_sec = 600.0
+build_timeout_sec = 1800
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-workdir = "/app"
+allow_internet = false
