@@ -1,0 +1,84 @@
+{
+  "name": "s54_play_drawn_card",
+  "players": 2,
+  "info_tokens": 6,
+  "fuse_tokens": 3,
+  "fireworks": {
+    "R": 0,
+    "Y": 0,
+    "G": 0,
+    "B": 0,
+    "W": 0
+  },
+  "hands": [
+    [
+      {
+        "c": "Y",
+        "r": 4
+      },
+      {
+        "c": "G",
+        "r": 4
+      },
+      {
+        "c": "B",
+        "r": 4
+      },
+      {
+        "c": "W",
+        "r": 4
+      },
+      {
+        "c": "R",
+        "r": 3
+      }
+    ],
+    [
+      {
+        "c": "Y",
+        "r": 3
+      },
+      {
+        "c": "G",
+        "r": 3
+      },
+      {
+        "c": "B",
+        "r": 3
+      },
+      {
+        "c": "W",
+        "r": 3
+      },
+      {
+        "c": "R",
+        "r": 2
+      }
+    ]
+  ],
+  "deck": [
+    {
+      "c": "R",
+      "r": 1
+    },
+    {
+      "c": "Y",
+      "r": 1
+    }
+  ],
+  "start_player": 0,
+  "moves": [
+    {
+      "type": "discard",
+      "index": 0
+    },
+    {
+      "type": "discard",
+      "index": 0
+    },
+    {
+      "type": "play",
+      "index": 4
+    }
+  ]
+}

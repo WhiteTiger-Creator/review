@@ -1,0 +1,90 @@
+{
+  "name": "s51_one_card_exact_finale",
+  "players": 2,
+  "info_tokens": 5,
+  "fuse_tokens": 3,
+  "fireworks": {
+    "R": 0,
+    "Y": 0,
+    "G": 0,
+    "B": 0,
+    "W": 0
+  },
+  "hands": [
+    [
+      {
+        "c": "R",
+        "r": 1
+      },
+      {
+        "c": "Y",
+        "r": 3
+      },
+      {
+        "c": "G",
+        "r": 3
+      },
+      {
+        "c": "B",
+        "r": 3
+      },
+      {
+        "c": "W",
+        "r": 3
+      }
+    ],
+    [
+      {
+        "c": "Y",
+        "r": 1
+      },
+      {
+        "c": "R",
+        "r": 2
+      },
+      {
+        "c": "G",
+        "r": 2
+      },
+      {
+        "c": "B",
+        "r": 2
+      },
+      {
+        "c": "W",
+        "r": 2
+      }
+    ]
+  ],
+  "deck": [
+    {
+      "c": "G",
+      "r": 1
+    }
+  ],
+  "start_player": 0,
+  "moves": [
+    {
+      "type": "play",
+      "index": 0
+    },
+    {
+      "type": "play",
+      "index": 0
+    },
+    {
+      "type": "discard",
+      "index": 1
+    },
+    {
+      "type": "discard",
+      "index": 1
+    },
+    {
+      "type": "hint",
+      "to": 1,
+      "kind": "color",
+      "value": "Y"
+    }
+  ]
+}

@@ -1,0 +1,102 @@
+{
+  "name": "s44_three_deck_start2",
+  "players": 3,
+  "info_tokens": 6,
+  "fuse_tokens": 3,
+  "fireworks": {
+    "R": 0,
+    "Y": 0,
+    "G": 0,
+    "B": 0,
+    "W": 0
+  },
+  "hands": [
+    [
+      {
+        "c": "R",
+        "r": 1
+      },
+      {
+        "c": "Y",
+        "r": 3
+      },
+      {
+        "c": "G",
+        "r": 3
+      },
+      {
+        "c": "B",
+        "r": 3
+      }
+    ],
+    [
+      {
+        "c": "Y",
+        "r": 1
+      },
+      {
+        "c": "R",
+        "r": 3
+      },
+      {
+        "c": "G",
+        "r": 2
+      },
+      {
+        "c": "B",
+        "r": 2
+      }
+    ],
+    [
+      {
+        "c": "G",
+        "r": 1
+      },
+      {
+        "c": "R",
+        "r": 2
+      },
+      {
+        "c": "Y",
+        "r": 2
+      },
+      {
+        "c": "B",
+        "r": 1
+      }
+    ]
+  ],
+  "deck": [
+    {
+      "c": "W",
+      "r": 1
+    }
+  ],
+  "start_player": 2,
+  "moves": [
+    {
+      "type": "play",
+      "index": 0
+    },
+    {
+      "type": "play",
+      "index": 0
+    },
+    {
+      "type": "play",
+      "index": 0
+    },
+    {
+      "type": "discard",
+      "index": 1
+    },
+    {
+      "type": "discard",
+      "index": 1
+    },
+    {
+      "type": "play",
+      "index": 0
+    }
+  ]
+}

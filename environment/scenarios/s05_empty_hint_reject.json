@@ -1,0 +1,17 @@
+{
+  "name": "s05_empty_hint_reject",
+  "players": 2,
+  "info_tokens": 8,
+  "fuse_tokens": 3,
+  "fireworks": {"R": 0, "Y": 0, "G": 0, "B": 0, "W": 0},
+  "hands": [
+    [{"c": "R", "r": 1}, {"c": "R", "r": 2}, {"c": "R", "r": 3}, {"c": "R", "r": 4}, {"c": "R", "r": 1}],
+    [{"c": "Y", "r": 1}, {"c": "Y", "r": 2}, {"c": "Y", "r": 3}, {"c": "Y", "r": 4}, {"c": "Y", "r": 5}]
+  ],
+  "deck": [{"c": "G", "r": 1}],
+  "start_player": 0,
+  "moves": [
+    {"type": "hint", "to": 1, "kind": "color", "value": "B"},
+    {"type": "hint", "to": 1, "kind": "color", "value": "Y"}
+  ]
+}

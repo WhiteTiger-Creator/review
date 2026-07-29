@@ -1,24 +1,35 @@
-# Canonical Terminal-Bench Java JDK 21 base (docs/PLATFORM_AUTO_EVAL.md).
-FROM public.ecr.aws/docker/library/eclipse-temurin:21-jdk-jammy@sha256:25d1276565738d3c805e632a4542c3a7598866ef967f4def6544c15de3a74b14
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+
+ENV PATH="/usr/local/go/bin:/usr/local/bin:${PATH}"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tmux \
+    asciinema \
+    python3 \
+    python3-pip \
+    python-is-python3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip3 install --break-system-packages \
+    pytest==8.4.1 \
+    pytest-json-ctrf==0.3.5
+
+RUN ln -sf /usr/local/go/bin/go /usr/local/bin/go \
+    && ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt \
+    && printf '%s\n' 'export PATH="/usr/local/go/bin:/usr/local/bin:$PATH"' > /etc/profile.d/go-path.sh \
+    && chmod 644 /etc/profile.d/go-path.sh \
+    && echo 'export PATH="/usr/local/go/bin:/usr/local/bin:$PATH"' >> /root/.bashrc \
+    && echo 'export PATH="/usr/local/go/bin:/usr/local/bin:$PATH"' >> /root/.profile
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends python3=3.10.6-1~22.04.1 python3-venv=3.10.6-1~22.04.1 make=4.3-4.1build1 tmux=3.2a-4ubuntu0.2 asciinema=2.1.0-1 ca-certificates=20260601~22.04.1 && rm -rf /var/lib/apt/lists/*
+COPY go.mod /app/go.mod
+COPY cmd/ /app/cmd/
+COPY internal/ /app/internal/
+COPY config/ /app/config/
+COPY docs/ /app/docs/
+COPY scenarios/ /app/scenarios/
 
-RUN python3 -m venv /opt/verifier \
-    && /opt/verifier/bin/pip install --no-cache-dir \
-       pytest==8.4.1 \
-       pytest-json-ctrf==0.3.5 \
-       pytest-randomly==3.16.0
+RUN mkdir -p /app/bin /app/output \
+    && go build -o /app/bin/hanabi ./cmd/hanabi
 
-ENV PATH=/opt/verifier/bin:${PATH}
-
-RUN mkdir -p /app/exec /app/output /app/environment
-
-COPY . /app/environment
-
-RUN cp /app/environment/exec/diff_run /app/exec/diff_run \
-    && chmod +x /app/exec/diff_run /app/environment/app/tools/inspect.sh \
-    && chown -R 65534:65534 /app/environment /app/output /app/exec
-
-ENV JAVA_HOME=/opt/java/openjdk
+CMD ["sleep", "infinity"]

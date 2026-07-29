@@ -1,0 +1,8 @@
+# Club-night table profile — exhibition settings (not championship).
+hint_cost = 0
+max_info = 9
+five_restores_info = false
+empty_hints_ok = true
+fuse_on_success = true
+hint_keeps_turn = true
+score_mode = "nonzero_stacks"

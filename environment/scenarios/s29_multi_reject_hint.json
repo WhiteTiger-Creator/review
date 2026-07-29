@@ -1,0 +1,93 @@
+{
+  "name": "s29_multi_reject_hint",
+  "players": 2,
+  "info_tokens": 8,
+  "fuse_tokens": 3,
+  "fireworks": {
+    "R": 0,
+    "Y": 0,
+    "G": 0,
+    "B": 0,
+    "W": 0
+  },
+  "hands": [
+    [
+      {
+        "c": "R",
+        "r": 1
+      },
+      {
+        "c": "Y",
+        "r": 2
+      },
+      {
+        "c": "G",
+        "r": 3
+      },
+      {
+        "c": "B",
+        "r": 4
+      },
+      {
+        "c": "W",
+        "r": 5
+      }
+    ],
+    [
+      {
+        "c": "R",
+        "r": 2
+      },
+      {
+        "c": "Y",
+        "r": 3
+      },
+      {
+        "c": "G",
+        "r": 4
+      },
+      {
+        "c": "B",
+        "r": 5
+      },
+      {
+        "c": "W",
+        "r": 1
+      }
+    ]
+  ],
+  "deck": [],
+  "start_player": 0,
+  "moves": [
+    {
+      "type": "hint",
+      "to": 0,
+      "kind": "color",
+      "value": "R"
+    },
+    {
+      "type": "hint",
+      "to": 1,
+      "kind": "color",
+      "value": "X"
+    },
+    {
+      "type": "hint",
+      "to": 5,
+      "kind": "color",
+      "value": "R"
+    },
+    {
+      "type": "hint",
+      "to": 1,
+      "kind": "rank",
+      "value": "9"
+    },
+    {
+      "type": "hint",
+      "to": 1,
+      "kind": "color",
+      "value": "R"
+    }
+  ]
+}

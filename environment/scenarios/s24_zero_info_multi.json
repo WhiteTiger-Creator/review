@@ -1,0 +1,88 @@
+{
+  "name": "s24_zero_info_multi",
+  "players": 2,
+  "info_tokens": 0,
+  "fuse_tokens": 3,
+  "fireworks": {
+    "R": 1,
+    "Y": 0,
+    "G": 0,
+    "B": 0,
+    "W": 0
+  },
+  "hands": [
+    [
+      {
+        "c": "Y",
+        "r": 4
+      },
+      {
+        "c": "G",
+        "r": 4
+      },
+      {
+        "c": "B",
+        "r": 4
+      },
+      {
+        "c": "W",
+        "r": 4
+      },
+      {
+        "c": "R",
+        "r": 4
+      }
+    ],
+    [
+      {
+        "c": "Y",
+        "r": 1
+      },
+      {
+        "c": "G",
+        "r": 1
+      },
+      {
+        "c": "B",
+        "r": 1
+      },
+      {
+        "c": "W",
+        "r": 1
+      },
+      {
+        "c": "R",
+        "r": 2
+      }
+    ]
+  ],
+  "deck": [
+    {
+      "c": "G",
+      "r": 2
+    }
+  ],
+  "start_player": 0,
+  "moves": [
+    {
+      "type": "hint",
+      "to": 1,
+      "kind": "color",
+      "value": "Y"
+    },
+    {
+      "type": "hint",
+      "to": 1,
+      "kind": "rank",
+      "value": "1"
+    },
+    {
+      "type": "discard",
+      "index": 0
+    },
+    {
+      "type": "play",
+      "index": 0
+    }
+  ]
+}

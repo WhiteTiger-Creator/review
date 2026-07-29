@@ -1,0 +1,83 @@
+{
+  "name": "s56_empty_multi_perfect",
+  "players": 2,
+  "info_tokens": 5,
+  "fuse_tokens": 3,
+  "fireworks": {
+    "R": 4,
+    "Y": 4,
+    "G": 4,
+    "B": 4,
+    "W": 4
+  },
+  "hands": [
+    [
+      {
+        "c": "R",
+        "r": 5
+      },
+      {
+        "c": "G",
+        "r": 5
+      },
+      {
+        "c": "B",
+        "r": 5
+      },
+      {
+        "c": "Y",
+        "r": 1
+      },
+      {
+        "c": "W",
+        "r": 1
+      }
+    ],
+    [
+      {
+        "c": "Y",
+        "r": 5
+      },
+      {
+        "c": "W",
+        "r": 5
+      },
+      {
+        "c": "R",
+        "r": 1
+      },
+      {
+        "c": "G",
+        "r": 1
+      },
+      {
+        "c": "B",
+        "r": 1
+      }
+    ]
+  ],
+  "deck": [],
+  "start_player": 0,
+  "moves": [
+    {
+      "type": "play",
+      "index": 0
+    },
+    {
+      "type": "play",
+      "index": 0
+    },
+    {
+      "type": "play",
+      "index": 0
+    },
+    {
+      "type": "play",
+      "index": 0
+    },
+    {
+      "type": "play",
+      "index": 0
+    }
+  ]
+}
