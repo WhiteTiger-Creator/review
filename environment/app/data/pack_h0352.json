@@ -1,0 +1,31 @@
+{
+  "case_id": 352,
+  "arm_id": 352,
+  "permute_order": ["c1", "c0", "c2"],
+  "cue_clusters": [
+    {
+      "cluster_id": "c0",
+      "cue_bytes": "a1b2c3",
+      "boundary": false,
+      "neighbor_id": "c1"
+    },
+    {
+      "cluster_id": "c1",
+      "cue_bytes": "4f5e6d",
+      "boundary": true,
+      "neighbor_id": "c0"
+    },
+    {
+      "cluster_id": "c2",
+      "cue_bytes": "8899aa",
+      "boundary": false,
+      "neighbor_id": "c1"
+    }
+  ],
+  "label_map": {
+    "c0": "L1",
+    "c1": "L3",
+    "c2": "L0"
+  },
+  "margin_bases": [118, 93, 198]
+}
