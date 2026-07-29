@@ -1,20 +1,28 @@
-FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac AS go-builder
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        tmux \
-        asciinema \
-        ca-certificates \
-        gcc \
-        libc6-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY --from=go-builder /usr/local/go /usr/local/go
-ENV PATH="/usr/local/go/bin:${PATH}"
-
-COPY requirements.txt /tmp/requirements.txt
-RUN python -m pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt
+FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
 
 WORKDIR /app
-COPY app /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3=3.11.2-1+b1 \
+    python3-venv=3.11.2-1+b1 \
+    tmux=3.3a-3 \
+    asciinema=2.2.0-1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /app/output /app/emit
+
+RUN python3 -m venv /opt/verifier \
+    && /opt/verifier/bin/pip install --no-cache-dir \
+        pytest==8.4.1 \
+        pytest-json-ctrf==0.3.5 \
+        pytest-randomly==3.16.0
+
+ENV PATH="/opt/verifier/bin:${PATH}"
+ENV CARGO_TARGET_DIR=/tmp/ferric-target
+
+COPY . /app/environment
+
+RUN chmod +x /app/environment/run_ferric_drv \
+    && cd /app/environment \
+    && cargo build --release --bin ferric_drv
+
+WORKDIR /app
