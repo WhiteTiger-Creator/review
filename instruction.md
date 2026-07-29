@@ -1,31 +1,19 @@
-Calibrated purchase-probability estimation under a seasonal distribution shift
+Train an importance-weighted marked Hawkes model in R through /app/run.sh.
+Learn cluster-held-out event scores for every policy, then search the prescribed
+randomized policy portfolios. Portfolio branching includes pairwise and
+three-way nonlinear switching excitation, so values, support, dispersion,
+stability, and feasibility must be
+recomputed after every one-cluster and two-cluster deletion. Select the robust
+full portfolio and independently certify the nested deletion surfaces.
 
-This is a supervised machine-learning task: train a probabilistic classifier on
-labeled browsing sessions and use it to predict calibrated purchase probabilities
-for unlabeled sessions that come from a different, shifted distribution. It is a
-domain-adaptation and probability-calibration problem, not a lookup or aggregation.
+Read the bundle from the first argument, defaulting to /app/data, and atomically
+replace the CSV at the second argument, defaulting to
+/app/outputs/results.csv. The complete validation, numerical, portfolio,
+selection, certificate, and audit contract is in
+/app/docs/OUTPUT-CONTRACT.md.
 
-The labeled training sessions (the off-season "source" regime) and the sessions
-you must score (the peak-season "target" regime) come from different
-distributions; purchase behaviour differs between the regimes. Every source
-session is labeled. In the target regime only a small labeled pilot is provided;
-the remaining target sessions have a blank outcome and are the ones you must
-score.
-
-The dataset at /app/environment/data/online_shoppers.csv holds 12330 e-commerce
-sessions: a stable row_id, ten numeric engagement features, six categorical
-context features, a domain indicator, and a binary purchase outcome. The data
-directory's notes and summaries document the columns and the split; derive any
-distributional quantities you need from the data itself.
-
-Your predictions are graded on both discrimination and calibration, within
-engagement bands and overall, against withheld outcomes and a reference model
-refit on the active data. The verifier re-fits and re-scores on several
-deterministically perturbed resamples of the data, so every reported quantity
-must be derived from the data you read, never hardcoded.
-
-A starting template is provided at /app/environment/analysis_template.R. Write
-your solution as /app/environment/analysis.R -- train your model and report the
-per-session probabilities and the summary statistics exactly as specified in
-/app/environment/contracts/output_contract.md. The verifier runs Rscript
-/app/environment/analysis.R.
+Derive all results from the supplied bundle. Hidden bundles vary labels,
+geometry, time scale, switching strength, support boundaries, and influential
+cluster pairs. Results must be deterministic and representation-invariant.
+Reject malformed bundles without creating or replacing the destination.
+Internet access is unavailable; only base R is guaranteed.
