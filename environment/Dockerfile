@@ -1,35 +1,38 @@
-FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+# Lua has no canonical image family, so the canonical Debian runtime is used and the distro Lua toolchain is installed below.
+FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
 
-ENV PATH="/usr/local/go/bin:/usr/local/bin:${PATH}"
+LABEL org.opencontainers.image.source="local/contamination-forensics-lua" \
+      org.opencontainers.image.version="1.0" \
+      org.opencontainers.image.licenses="MIT"
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    tmux \
-    asciinema \
-    python3 \
-    python3-pip \
-    python-is-python3 \
-    && rm -rf /var/lib/apt/lists/* \
-    && pip3 install --break-system-packages \
-    pytest==8.4.1 \
-    pytest-json-ctrf==0.3.5
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        asciinema \
+        ca-certificates \
+        lua-cjson \
+        lua-socket \
+        lua5.4 \
+        python-is-python3 \
+        python3-pip \
+        sqlite3 \
+        tmux \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN ln -sf /usr/local/go/bin/go /usr/local/bin/go \
-    && ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt \
-    && printf '%s\n' 'export PATH="/usr/local/go/bin:/usr/local/bin:$PATH"' > /etc/profile.d/go-path.sh \
-    && chmod 644 /etc/profile.d/go-path.sh \
-    && echo 'export PATH="/usr/local/go/bin:/usr/local/bin:$PATH"' >> /root/.bashrc \
-    && echo 'export PATH="/usr/local/go/bin:/usr/local/bin:$PATH"' >> /root/.profile
+COPY requirements.lock /opt/verifier/requirements.lock
+
+RUN python -m pip install --no-cache-dir --break-system-packages \
+    --require-hashes \
+    --no-deps \
+    -r /opt/verifier/requirements.lock
 
 WORKDIR /app
 
-COPY go.mod /app/go.mod
-COPY cmd/ /app/cmd/
-COPY internal/ /app/internal/
+COPY Makefile /app/Makefile
+COPY --chmod=0755 bin/memscope /app/bin/memscope
+COPY src/ /app/src/
 COPY config/ /app/config/
+COPY data/ /app/data/
+COPY mock_model/ /app/mock_model/
 COPY docs/ /app/docs/
-COPY scenarios/ /app/scenarios/
 
-RUN mkdir -p /app/bin /app/output \
-    && go build -o /app/bin/hanabi ./cmd/hanabi
-
-CMD ["sleep", "infinity"]
+RUN mkdir -p /app/output

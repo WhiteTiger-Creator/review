@@ -1,31 +1,14 @@
 #!/bin/bash
-set -uo pipefail
-export PATH="/usr/local/go/bin:/usr/local/bin:${PATH}"
-
+# Verifier dependencies are installed in environment/Dockerfile.
+mkdir -p /logs/verifier
+echo 0 > /logs/verifier/reward.txt
 if [ "$PWD" = "/" ]; then
-    echo "Error: No working directory set."
-    mkdir -p /logs/verifier
-    echo 0 > /logs/verifier/reward.txt
-    exit 0
+  echo "Error: No working directory set."
+  exit 1
 fi
+python -m pytest -o cache_dir=/tmp/pytest_cache --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
 
-mkdir -p /logs/verifier /app/output
-
-cd /app && go build -o /app/bin/hanabi ./cmd/hanabi 2>&1
-BUILD_RC=$?
-if [ "$BUILD_RC" -ne 0 ]; then
-    echo "Build failed with exit code $BUILD_RC"
-    echo 0 > /logs/verifier/reward.txt
-    exit 0
-fi
-
-rm -rf /app/output/*
-/app/bin/hanabi
-
-python3 -m pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -v -rA
-rc=$?
-
-if [ "$rc" -eq 0 ]; then
+if [ $? -eq 0 ]; then
     echo 1 > /logs/verifier/reward.txt
 else
     echo 0 > /logs/verifier/reward.txt

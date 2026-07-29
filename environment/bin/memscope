@@ -1,0 +1,6 @@
+#!/usr/bin/env lua
+
+package.path = "/app/src/?.lua;" .. package.path
+
+local cli = require("cli")
+os.exit(cli.main(arg))
