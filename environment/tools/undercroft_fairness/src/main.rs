@@ -1,254 +1,5 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-cat > /app/lib/xa/src/lib.rs <<'EOF_xa_src_lib_rs'
-use cartograph_core::{Campaign, Dungeon};
-
-#[derive(Clone, Debug)]
-pub struct RepA {
-    pub ok: bool,
-    pub mean_gap: f64,
-}
-
-fn collect_monster_indices(dung: &Dungeon) -> Vec<usize> {
-    dung.critical_path
-        .iter()
-        .enumerate()
-        .filter_map(|(i, &rid)| {
-            if dung.rooms[rid].threat > 0 {
-                Some(i)
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-fn pairwise_gaps(indices: &[usize]) -> Vec<u32> {
-    let mut gaps = Vec::new();
-    for pair in indices.windows(2) {
-        gaps.push((pair[1] - pair[0]) as u32);
-    }
-    gaps
-}
-
-fn mean_u32(values: &[u32]) -> f64 {
-    if values.is_empty() {
-        return 0.0;
-    }
-    values.iter().map(|g| f64::from(*g)).sum::<f64>() / values.len() as f64
-}
-
-fn gaps_meet_min(gaps: &[u32], min_gap: u32) -> bool {
-    gaps.iter().all(|g| *g >= min_gap)
-}
-
-pub fn eval_xa(camp: &Campaign, dung: &Dungeon) -> RepA {
-    let monster_idx = collect_monster_indices(dung);
-    if monster_idx.is_empty() {
-        return RepA {
-            ok: false,
-            mean_gap: 0.0,
-        };
-    }
-    if monster_idx.len() == 1 {
-        return RepA {
-            ok: true,
-            mean_gap: camp.mean_gap_min,
-        };
-    }
-    let gaps = pairwise_gaps(&monster_idx);
-    let mean_gap = mean_u32(&gaps);
-    let ok = gaps_meet_min(&gaps, camp.min_gap) && mean_gap >= camp.mean_gap_min;
-    RepA { ok, mean_gap }
-}
-EOF_xa_src_lib_rs
-
-cat > /app/lib/xb/src/lib.rs <<'EOF_xb_src_lib_rs'
-use cartograph_core::{Campaign, Dungeon};
-
-#[derive(Clone, Debug)]
-pub struct RepB {
-    pub ok: bool,
-    pub densities: [f64; 3],
-    pub total_gold: u32,
-}
-
-fn band_index(depth: u32, camp: &Campaign) -> usize {
-    if depth <= camp.band_d1 {
-        0
-    } else if depth <= camp.band_d2 {
-        1
-    } else {
-        2
-    }
-}
-
-fn density_of(values: &[u32]) -> f64 {
-    if values.is_empty() {
-        0.0
-    } else {
-        f64::from(values.iter().sum::<u32>()) / values.len() as f64
-    }
-}
-
-fn density_in_window(density: f64, lo: f64, hi: f64) -> bool {
-    density >= lo && density <= hi
-}
-
-pub fn eval_xb(camp: &Campaign, dung: &Dungeon) -> RepB {
-    let mut bands: [Vec<u32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-    for r in &dung.rooms {
-        if r.id == dung.start {
-            continue;
-        }
-        bands[band_index(r.depth, camp)].push(r.gold);
-    }
-    let mut densities = [0.0_f64; 3];
-    let mut ok = true;
-    for i in 0..3 {
-        densities[i] = density_of(&bands[i]);
-        if bands[i].is_empty() {
-            continue;
-        }
-        if !density_in_window(densities[i], camp.band_lo[i], camp.band_hi[i]) {
-            ok = false;
-        }
-    }
-    let total_gold: u32 = dung.rooms.iter().map(|r| r.gold).sum();
-    if total_gold < camp.total_gold_lo || total_gold > camp.total_gold_hi {
-        ok = false;
-    }
-    RepB {
-        ok,
-        densities,
-        total_gold,
-    }
-}
-EOF_xb_src_lib_rs
-
-cat > /app/lib/xc/src/lib.rs <<'EOF_xc_src_lib_rs'
-use cartograph_core::{Campaign, Dungeon};
-
-#[derive(Clone, Debug)]
-pub struct RepC {
-    pub ok: bool,
-    pub cum_threat_end: u32,
-    pub max_room_threat: u32,
-}
-
-fn budget_at(camp: &Campaign, route_depth: u32) -> u32 {
-    camp.threat_base + camp.threat_slope * route_depth
-}
-
-fn room_threat(dung: &Dungeon, rid: usize) -> u32 {
-    dung.rooms[rid].threat
-}
-
-pub fn eval_xc(camp: &Campaign, dung: &Dungeon) -> RepC {
-    let mut cum = 0u32;
-    let mut max_room = 0u32;
-    let mut ok = true;
-    for (i, &rid) in dung.critical_path.iter().enumerate() {
-        let th = room_threat(dung, rid);
-        max_room = max_room.max(th);
-        cum = cum.saturating_add(th);
-        if cum > budget_at(camp, i as u32) {
-            ok = false;
-        }
-    }
-    if max_room > camp.max_room_threat {
-        ok = false;
-    }
-    RepC {
-        ok,
-        cum_threat_end: cum,
-        max_room_threat: max_room,
-    }
-}
-EOF_xc_src_lib_rs
-
-cat > /app/lib/xd/src/lib.rs <<'EOF_xd_src_lib_rs'
-use cartograph_core::{generate_dungeon, Campaign, Dungeon};
-use xe::{evaluate_fairness, FairnessReport};
-
-#[derive(Clone, Debug)]
-pub struct HuntResult {
-    pub seed: u64,
-    pub dungeon: Dungeon,
-    pub report: FairnessReport,
-}
-
-fn window_end(camp: &Campaign) -> u64 {
-    camp.search_origin.saturating_add(camp.search_limit)
-}
-
-fn try_seed(camp: &Campaign, seed: u64) -> Option<HuntResult> {
-    let dungeon = generate_dungeon(camp, seed);
-    let report = evaluate_fairness(camp, &dungeon);
-    if report.ok {
-        Some(HuntResult {
-            seed,
-            dungeon,
-            report,
-        })
-    } else {
-        None
-    }
-}
-
-pub fn scan_xd(camp: &Campaign) -> Option<HuntResult> {
-    let start = camp.search_origin;
-    let end = window_end(camp);
-    for seed in start..end {
-        if let Some(hit) = try_seed(camp, seed) {
-            return Some(hit);
-        }
-    }
-    None
-}
-EOF_xd_src_lib_rs
-
-cat > /app/lib/xe/src/lib.rs <<'EOF_xe_src_lib_rs'
-use cartograph_core::{Campaign, Dungeon};
-use reach_graph::{evaluate_reach, ReachReport};
-use xa::{eval_xa, RepA};
-use xb::{eval_xb, RepB};
-use xc::{eval_xc, RepC};
-
-#[derive(Clone, Debug)]
-pub struct FairnessReport {
-    pub ok: bool,
-    pub reach: ReachReport,
-    pub pace: RepA,
-    pub trove: RepB,
-    pub threat: RepC,
-}
-
-fn all_ok(reach: &ReachReport, pace: &RepA, trove: &RepB, threat: &RepC) -> bool {
-    reach.ok && pace.ok && trove.ok && threat.ok
-}
-
-pub fn evaluate_fairness(camp: &Campaign, dung: &Dungeon) -> FairnessReport {
-    let reach = evaluate_reach(camp, dung);
-    let pace = eval_xa(camp, dung);
-    let trove = eval_xb(camp, dung);
-    let threat = eval_xc(camp, dung);
-    let ok = all_ok(&reach, &pace, &trove, &threat);
-    FairnessReport {
-        ok,
-        reach,
-        pace,
-        trove,
-        threat,
-    }
-}
-EOF_xe_src_lib_rs
-
-cat > /app/tools/undercroft_fairness/src/main.rs <<'EOF_undercroft_fairness_src_main_rs'
-use cartograph_core::{generate_dungeon, Campaign};
+use cartograph_core::Campaign;
 use xd::scan_xd;
-use xe::evaluate_fairness;
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -347,7 +98,7 @@ fn run_playtest(
 
     let mut staging_entries = Vec::new();
     let mut atlas_entries = Vec::new();
-    let mut camps: Vec<Campaign> = Vec::new();
+    let mut journal = fs::File::create(journal_path).map_err(|e| e.to_string())?;
 
     for path in &files {
         let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
@@ -358,6 +109,13 @@ fn run_playtest(
         if !hit.report.ok {
             return Err(format!("seed {} not fair for {}", hit.seed, camp.campaign_id));
         }
+        writeln!(
+            journal,
+            "{{\"campaign_id\":\"{}\",\"candidate_seed\":{},\"accepted\":true}}",
+            camp.campaign_id, hit.seed
+        )
+        .map_err(|e| e.to_string())?;
+
         staging_entries.push(format!(
             "{{\"campaign_id\":\"{id}\",\"candidate_seed\":{seed},\"path_len\":{plen},\"mean_gap\":{gap:.10},\"gold_density_early\":{e:.10},\"gold_density_mid\":{m:.10},\"gold_density_late\":{l:.10},\"total_gold\":{tg},\"cum_threat_end\":{ct},\"max_room_threat\":{mx},\"fair\":true}}",
             id = camp.campaign_id,
@@ -382,7 +140,6 @@ fn run_playtest(
             "{{\"campaign_id\":\"{}\",\"seed\":{},\"start\":{},\"exit\":{},\"critical_path\":[{}]}}",
             camp.campaign_id, hit.seed, hit.dungeon.start, hit.dungeon.exit, path_json
         ));
-        camps.push(camp);
     }
 
     let staging_body = format!(
@@ -391,94 +148,31 @@ fn run_playtest(
     );
     fs::write(&staging_path, &staging_body).map_err(|e| e.to_string())?;
 
-    let staging_raw = fs::read_to_string(&staging_path).map_err(|e| e.to_string())?;
-    let mut ledger_entries = Vec::new();
-    let mut journal = fs::File::create(journal_path).map_err(|e| e.to_string())?;
-    let mut atlas_out = Vec::new();
-
-    for (idx, camp) in camps.iter().enumerate() {
-        let seed = staging_candidate_seed(&staging_raw, &camp.campaign_id)?;
-        let dungeon = generate_dungeon(camp, seed);
-        let report = evaluate_fairness(camp, &dungeon);
-        if !report.ok {
-            return Err(format!(
-                "staging re-validation failed for {} seed {}",
-                camp.campaign_id, seed
-            ));
-        }
-        writeln!(
-            journal,
-            "{{\"campaign_id\":\"{}\",\"candidate_seed\":{},\"accepted\":true}}",
-            camp.campaign_id, seed
-        )
-        .map_err(|e| e.to_string())?;
-        ledger_entries.push(format!(
-            "{{\"campaign_id\":\"{id}\",\"selected_seed\":{seed},\"path_len\":{plen},\"mean_gap\":{gap:.10},\"gold_density_early\":{e:.10},\"gold_density_mid\":{m:.10},\"gold_density_late\":{l:.10},\"total_gold\":{tg},\"cum_threat_end\":{ct},\"max_room_threat\":{mx},\"fair\":true}}",
-            id = camp.campaign_id,
-            seed = seed,
-            plen = report.reach.path_len,
-            gap = report.pace.mean_gap,
-            e = report.trove.densities[0],
-            m = report.trove.densities[1],
-            l = report.trove.densities[2],
-            tg = report.trove.total_gold,
-            ct = report.threat.cum_threat_end,
-            mx = report.threat.max_room_threat,
-        ));
-        let path_json = dungeon
-            .critical_path
-            .iter()
-            .map(|x| x.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        // Prefer regenerated atlas; fall back index keeps order aligned.
-        let _ = idx;
-        atlas_out.push(format!(
-            "{{\"campaign_id\":\"{}\",\"seed\":{},\"start\":{},\"exit\":{},\"critical_path\":[{}]}}",
-            camp.campaign_id, seed, dungeon.start, dungeon.exit, path_json
-        ));
-    }
-    let _ = atlas_entries;
-
     let ledger_body = format!(
         "{{\"schema\":\"undercroft-seed-ledger-v1\",\"campaigns\":[{}]}}",
-        ledger_entries.join(",")
+        staging_entries
+            .iter()
+            .map(|row| row.replace("\"candidate_seed\"", "\"selected_seed\""))
+            .collect::<Vec<_>>()
+            .join(",")
     );
     let atlas_body = format!(
         "{{\"schema\":\"undercroft-route-atlas-v1\",\"routes\":[{}]}}",
-        atlas_out.join(",")
+        atlas_entries.join(",")
     );
     fs::write(ledger_path, &ledger_body).map_err(|e| e.to_string())?;
     fs::write(atlas_path, &atlas_body).map_err(|e| e.to_string())?;
 
-    let ledger_digest = sha256_hex(fs::read(ledger_path).map_err(|e| e.to_string())?.as_slice());
-    let atlas_digest = sha256_hex(fs::read(atlas_path).map_err(|e| e.to_string())?.as_slice());
-    let staging_digest = sha256_hex(fs::read(&staging_path).map_err(|e| e.to_string())?.as_slice());
+    let ledger_digest = sha256_hex(ledger_body.as_bytes());
+    let atlas_digest = sha256_hex(atlas_body.as_bytes());
     let seal_body = format!(
-        "{{\"schema\":\"undercroft-fairness-seal-v1\",\"seal_version\":1,\"campaign_count\":{},\"ledger_digest\":\"{}\",\"atlas_digest\":\"{}\",\"staging_digest\":\"{}\"}}",
-        ledger_entries.len(),
+        "{{\"schema\":\"undercroft-fairness-seal-v1\",\"seal_version\":1,\"campaign_count\":{},\"ledger_digest\":\"{}\",\"atlas_digest\":\"{}\"}}",
+        staging_entries.len(),
         ledger_digest,
-        atlas_digest,
-        staging_digest
+        atlas_digest
     );
     fs::write(seal_path, seal_body).map_err(|e| e.to_string())?;
     Ok(())
-}
-
-fn staging_candidate_seed(staging_raw: &str, campaign_id: &str) -> Result<u64, String> {
-    let marker = format!("\"campaign_id\":\"{campaign_id}\"");
-    let idx = staging_raw
-        .find(&marker)
-        .ok_or_else(|| format!("staging missing {campaign_id}"))?;
-    let after = &staging_raw[idx + marker.len()..];
-    let needle = "\"candidate_seed\":";
-    let sidx = after
-        .find(needle)
-        .ok_or_else(|| format!("staging seed missing for {campaign_id}"))?;
-    let rest = after[sidx + needle.len()..].trim_start();
-    let num: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-    num.parse()
-        .map_err(|_| format!("bad staging seed for {campaign_id}"))
 }
 
 fn parse_campaign(raw: &str) -> Result<Campaign, String> {
@@ -659,10 +353,3 @@ mod sha256 {
         h[7] = h[7].wrapping_add(hh);
     }
 }
-EOF_undercroft_fairness_src_main_rs
-
-cargo build --release -p undercroft_fairness
-mkdir -p /app/bin
-cp /app/target/release/undercroft_fairness /app/bin/undercroft-fairness
-chmod +x /app/bin/undercroft-fairness
-

@@ -1,5 +1,25 @@
-Commission the existing `harbor-relay` daemon for the scheduled North Quay operating window. Treat this as a Unix service-administration job: use the authoritative corpus at `/app/docs/service-commissioning-corpus.manifest`, the request fixtures, the socket allocation records in `/app/records`, and one read-only snapshot from each SQLite catalog. Catalogs may be accessed only through `/app/bin/catalog-query` with `/app/share/service-catalog.batch` and `/app/share/maintenance-window.batch`; the platform executables, read-only platform reference, catalogs, documents, records, fixtures, and initial configuration must remain unchanged.
+An indie dungeon crawl studio runs terminal playtest campaigns over procedurally generated undercroft levels. The working simulator under /app already builds deterministic maps from seeds and exposes a playfield graph for route inspection. The studio still needs a fairness playtest planner that searches candidate seeds until simultaneous reachability, pacing, treasure-balance, and threat-curve invariants hold for each campaign, then publishes durable playtest artifacts through a staging snapshot.
 
-Install the commissioned state in `/app/etc/harbor-relay/relay.conf`, `/app/etc/harbor-relay/limits.conf`, `/app/etc/harbor-relay/routes.map`, `/etc/systemd/system/harbor-relay.service`, `/app/var/window-plan.json`, `/app/var/commissioning-ledger.db`, and `/app/var/commissioning-manifest.json`. Keep `/app/var/harbor-commissioning.lock` as an empty coordination file. The service unit must run the existing daemon as `relayops:relay`; `/app/run/harbor-relay` is `relayops:relay` mode `0750`; configuration files are `root:relay` mode `0640`, the unit is `root:root` mode `0644`, JSON outputs are `relayops:relay` mode `0640`, and the ledger and lock are `relayops:relay` mode `0600`. The exact configuration, maintenance-window, SQLite, compact-JSON, digest, ordering, and publication contracts are in `/app/docs/relay-config-format.md`, `/app/docs/maintenance-window-governance.md`, `/app/docs/audit-database-contract.md`, and `/app/docs/service-commissioning-contract.md`.
+Implement the undercroft-fairness CLI capability so operators can run a multi-campaign playtest tick that materializes:
 
-The final service state must be accepted by the existing relay, bind the selected Unix socket when launched as `relayops`, and expose the commissioned request routes. Known routes must return 200, an unknown route must return 404, and a request body above the commissioned limit must return 413. No temporary files, backup files, SQLite journals, generated object files, or other staging residue may remain.
+- /app/state/seed-hunt-staging.json
+- /app/output/seed-ledger.json
+- /app/output/route-atlas.json
+- /app/output/fairness-seal.json
+- /app/state/playtest-journal.jsonl
+
+Invoke the planner as:
+
+/app/bin/undercroft-fairness playtest --campaigns /app/fixtures/campaigns --ledger /app/output/seed-ledger.json --atlas /app/output/route-atlas.json --seal /app/output/fairness-seal.json --journal /app/state/playtest-journal.jsonl
+
+Contracts governing map generation, win-condition style route checks, pacing gaps along the critical path, treasure density bands, threat budgets, seed search windows, staging-then-export publish rules, and seal digests live under:
+
+- /app/docs/playtest-workflow.md
+- /app/docs/cartograph-contract.md
+- /app/docs/reachability-pacing-contract.md
+- /app/docs/treasure-threat-contract.md
+- /app/docs/seed-search-contract.md
+- /app/docs/staging-export-contract.md
+- /app/docs/artifact-seal-contract.md
+
+Campaign JSON profiles under /app/fixtures/campaigns define board size, entity counts, invariant thresholds, and each campaign search_origin plus search_limit. Outputs must be deterministic for identical campaign inputs. Rebuild with /app/scripts/build.sh before grading runs.

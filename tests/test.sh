@@ -1,20 +1,22 @@
 #!/bin/bash
-set -uo pipefail
 
-mkdir -p /logs/verifier
-echo 0 > /logs/verifier/reward.txt
-
-TEST_DIR="${TEST_DIR:-/tests}"
 if [ "$PWD" = "/" ]; then
-  echo "Warning: verifier started at /; switching to $TEST_DIR"
+    echo "Error: No working directory set. Please set a WORKDIR in your Dockerfile."
+    exit 1
 fi
 
-cd "$TEST_DIR"
-PYTHONSAFEPATH=1 PYTHONNOUSERSITE=1 PYTHONPATH=/opt/harbor-verifier \
-  python3 -m pytest -p harbor_ctrf_plugin --ctrf /logs/verifier/ctrf.json "$TEST_DIR/test_outputs.py" -rA
-rc=$?
+mkdir -p /logs/verifier
+mkdir -p /opt/verifier-fixtures
+TEST_DIR=/tests
+cp -a "${TEST_DIR}/verifier-fixtures/." /opt/verifier-fixtures/
+cd /app
+cargo build --release -p undercroft_fairness
+cp /app/target/release/undercroft_fairness /app/bin/undercroft-fairness
+chmod +x /app/bin/undercroft-fairness
 
-if [ "$rc" -eq 0 ]; then
+pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
+
+if [ $? -eq 0 ]; then
   echo 1 > /logs/verifier/reward.txt
 else
   echo 0 > /logs/verifier/reward.txt
