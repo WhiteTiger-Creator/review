@@ -1,19 +1,7 @@
-Train an importance-weighted marked Hawkes model in R through /app/run.sh.
-Learn cluster-held-out event scores for every policy, then search the prescribed
-randomized policy portfolios. Portfolio branching includes pairwise and
-three-way nonlinear switching excitation, so values, support, dispersion,
-stability, and feasibility must be
-recomputed after every one-cluster and two-cluster deletion. Select the robust
-full portfolio and independently certify the nested deletion surfaces.
+We are developing `godeep-rl`, a high-performance, zero-dependency Machine Learning and Reinforcement Learning engine written in Go under `/app`. The engine features 4D tensor dynamic autograd computation graphs (`/app/tensor` and `/app/ml/autograd.go`), a Multi-Head Self-Attention module with NTK-aware Rotary Position Embeddings (RoPE) and causal masking (`/app/ml/transformer.go`), a per-head asymmetric INT8 quantized Key-Value Cache (KV-Cache) (`/app/ml/kvcache.go`), a Proximal Policy Optimization (PPO) Actor-Critic loss engine with episodic GAE-$\lambda$ (`/app/ml/ppo.go`), and a distributed Ring-AllReduce gradient synchronization driver with $L_2$ norm gradient clipping (`/app/ml/distributed.go`).
 
-Read the bundle from the first argument, defaulting to /app/data, and atomically
-replace the CSV at the second argument, defaulting to
-/app/outputs/results.csv. The complete validation, numerical, portfolio,
-selection, certificate, and audit contract is in
-/app/docs/OUTPUT-CONTRACT.md.
+However, during end-to-end PPO RL training, policy gradients explode after initial optimization steps, multi-head attention weights leak future token context into past sequence positions, INT8 KV-cache reconstruction exhibits excessive scale drift under asymmetric input distributions, value function updates fail to converge on episodic boundaries, and autograd backward passes fail on 4D tensor branching graphs.
 
-Derive all results from the supplied bundle. Hidden bundles vary labels,
-geometry, time scale, switching strength, support boundaries, and influential
-cluster pairs. Results must be deterministic and representation-invariant.
-Reject malformed bundles without creating or replacing the destination.
-Internet access is unavailable; only base R is guaranteed.
+Please audit the Go codebase under `/app` and complete the implementation so that `godeep-rl` functions reliably according to the full technical specification in `/app/spec.md`.
+
+All Go packages under `/app` should compile cleanly and pass unit tests when running `go test -v ./...`. The CLI subcommands `godeep-rl train`, `godeep-rl eval`, and `godeep-rl quantize-kv` must execute without error and satisfy the accuracy thresholds specified in `/app/spec.md`.
