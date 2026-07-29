@@ -1,35 +1,8 @@
-FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
+FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
 
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
-      ca-certificates \
-      curl \
-      g++ \
-      make \
-      cmake \
-      nlohmann-json3-dev \
-      python3 \
-      python3-venv \
-      python3-pip \
-      tmux \
-      asciinema; \
-    apt-get clean; \
-    rm -rf /var/lib/apt/lists/*
-
-RUN set -eux; \
-    python3 -m venv /opt/verifier-venv; \
-    /opt/verifier-venv/bin/pip install --no-cache-dir --upgrade pip==24.2; \
-    /opt/verifier-venv/bin/pip install --no-cache-dir \
-      pytest==8.4.1 \
-      pytest-json-ctrf==0.3.5 \
-      pytest-timeout==2.3.1
-
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-pip python-is-python3 tmux asciinema \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip3 install --no-cache-dir --break-system-packages pytest==8.4.1 pytest-json-ctrf==0.3.5
+COPY task_file/ /app/task_file/
 WORKDIR /app
-
-COPY openings/ /app/openings/
-COPY docs/ /app/docs/
-
-CMD ["/bin/bash"]

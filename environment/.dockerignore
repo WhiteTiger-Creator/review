@@ -1,11 +1,8 @@
 .git
 .gitignore
-.env
-solution/
-tests/
-**/__pycache__/
-**/*.pyc
-**/.pytest_cache/
-**/.mypy_cache/
-**/.ruff_cache/
-**/node_modules/
+.mypy_cache
+.pytest_cache
+.ruff_cache
+node_modules
+target
+output_data
