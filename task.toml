@@ -4,36 +4,27 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "machine-learning"
+category = "system-administration"
 subcategories = ["tool_specific"]
-tags = ["machine-learning", "hpo", "learning-rate-schedule", "nested-cv", "reproducibility", "rust"]
-languages = ["rust"]
-codebase_size = "small"
 number_of_milestones = 0
-expert_time_estimate_min = 180
-junior_time_estimate_min = 480
+codebase_size = "small"
+languages = ["go"]
+tags = ["go", "restart-budget", "digest", "replay", "convergence", "epoch-bus"]
+expert_time_estimate_min = 90
+junior_time_estimate_min = 240
 
-[category_profile]
-challenge_family = "HPO log reverse engineering"
-profile_name = "ml_adversarial_robustness"
-allowed_instruction_disclosures = "observable symptoms, public commands, verifier contracts for HPO log reverse engineering, holdout seed, replay tolerances, artifact schemas"
-forbidden_instruction_leaks = "root cause, fix location, patch recipe, oracle transcript, FlintSift/SlagBind/KilnForge paths"
-category_specific_hardness_bar = "three or more coupled subsystems must align for hyperparam schedule log archaeology"
-category_specific_verifier_risks = "false greens from local checks or golden fixtures; overfit to summary peaks"
-coverage_role = "strengthens ml_adversarial_robustness coverage via hyperparam schedule log archaeology reverse_engineering"
-
-[reference_pattern]
-justification_if_none = "no promoted reference for hyperparam schedule log archaeology; docs/reference_tasks/index.json has zero promoted references that fit this topology"
+[verifier]
+timeout_sec = 1800
 
 [agent]
 timeout_sec = 1800
 
-[verifier]
-timeout_sec = 900
-
 [environment]
 allow_internet = false
-build_timeout_sec = 900
+build_timeout_sec = 600
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
+docker_flags = []
+gpus = 0
+gpu_types = []

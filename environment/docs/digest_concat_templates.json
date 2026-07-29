@@ -1,8 +1,0 @@
-{
-  "sheet_line": "aid={aid};rung={rung_total:.10};lr0={lr0:.10};gamma={gamma:.10};period={period};outer={nest_outer}\\n",
-  "ledger_line": "rid={rid};score={score_used:.10};side={0|1};outer={nest_outer};inner={nest_inner};halt={0|1}\\n",
-  "forge_string": "{best_aid}|{lr0:.10}|{gamma:.10}|{period}|{knob}|{salt}|{nest_outer}",
-  "eta_expected": "lr0 * gamma.powi(step / period) with integer division truncating toward zero",
-  "nestmap_object_shape": {"outer": "<outer-id>", "inner": "<inner-id>"},
-  "forge_bag_shape": {"bag_id": "...", "knob": "<u64>", "salt": "..."}
-}

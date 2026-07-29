@@ -1,0 +1,9 @@
+{
+  "family": "wave_delta",
+  "budget": 3,
+  "unit_slice": "sd",
+  "incident_wave": "sd",
+  "permute": false,
+  "swap_masks": true,
+  "band_limit": 34
+}

@@ -1,0 +1,14 @@
+{
+  "rows": [
+    {
+      "family": "wave_alpha",
+      "span_band": 12,
+      "span_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "family": "wave_beta",
+      "span_band": 14,
+      "span_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ]
+}
