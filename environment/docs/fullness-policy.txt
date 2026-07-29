@@ -1,0 +1,11 @@
+Project destination use after the proposed movement.
+
+The movement is unsafe when projected use reaches or exceeds backfillfull.
+Nearfull alone permits a conservative movement when backfillfull headroom remains.
+The comparison uses byte values so proportional capacity scaling preserves it.
+No published complete state may cross the configured backfillfull ratio.
+The destination is nearfull when its current used-to-capacity ratio is at or above nearfull.
+For a nearfull destination, subtract the larger of backfill_headroom_ratio and nearfull_margin_ratio from backfillfull.
+The projected ratio at or above this effective limit pauses with fullness-gate.
+A projected value strictly below the effective limit may proceed, including a one-byte-below boundary case.
+No state change may precede the fullness decision.
