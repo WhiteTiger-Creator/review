@@ -4,24 +4,36 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "security"
-tags = ["security", "saml", "federation", "auth", "java", "unification"]
-languages = ["java"]
-codebase_size = "small"
-number_of_milestones = 0
+category = "machine-learning"
 subcategories = ["tool_specific"]
-expert_time_estimate_min = 120
+number_of_milestones = 0
+codebase_size = "small"
+languages = ["go"]
+tags = ["machine-learning", "go", "model-evaluation", "held-out-generalization", "inference-metrics", "witness-reduction"]
+expert_time_estimate_min = 180
 junior_time_estimate_min = 360
+
+[category_profile]
+challenge_family = "ml held-out capture inference witness reduction"
+profile_name = "ml_adversarial_robustness"
+allowed_instruction_disclosures = "EVAL.md protocol, MODEL.contract, FORMAT.contract, holdout pack paths, emit CLI, eval shards, instrument observe limits, metric_fold definition"
+forbidden_instruction_leaks = "oracle patch sites, hidden test names, static JSON answers, exact Go fix symbols"
+category_specific_hardness_bar = "bundle byte seal, full-pack instrument coupling, metric_fold cascade, and padded holdout lane jointly necessary for correct eval"
+category_specific_verifier_risks = "static witness report JSON, replacing reference instrument or packs, wrapper-only CLI edits without inference semantics"
+coverage_role = "machine-learning offline held-out evaluation with witness-metrics JSON and instrument-coupled stamps"
+
+[reference_pattern]
+justification_if_none = "Machine-learning held-out K7 capture evaluation with witness-metrics metric_fold, eval shards, and retry idempotency; distinct from Platt calibration incubator and generic replay templates."
+
+[verifier]
+timeout_sec = 900
 
 [agent]
 timeout_sec = 1800
 
-[verifier]
-timeout_sec = 1800
-
 [environment]
 allow_internet = false
-build_timeout_sec = 400
+build_timeout_sec = 900
 cpus = 2
-memory_mb = 4096
+memory_mb = 8192
 storage_mb = 10240

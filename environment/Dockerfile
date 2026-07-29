@@ -1,43 +1,49 @@
-FROM public.ecr.aws/docker/library/maven:3.9.9-eclipse-temurin-21@sha256:3a4ab3276a087bf276f79cae96b1af04f53731bec53fb2e651aca79e4b10211e
+# Canonical Terminal-Bench Go 1.24 bookworm (docs/PLATFORM_AUTO_EVAL.md, Go row).
+# Image: golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+# Mirror: public.ecr.aws/docker/library/golang — same digest as the sanctioned canonical entry.
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3=3.12.3-0ubuntu2.1 \
-    python3-venv=3.12.3-0ubuntu2.1 \
-    python3-pip=24.0+dfsg-1ubuntu1.3 \
-    tmux=3.4-1ubuntu0.1 \
-    asciinema=2.4.0-1 \
-    ca-certificates=20260601~24.04.1 \
-    openssl=3.0.13-0ubuntu3.11 \
-    libssl3t64=3.0.13-0ubuntu3.11 \
-    patch=2.7.6-7build3 \
+RUN rm -f /etc/apt/sources.list.d/debian.sources \
+    && printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20260101T000000Z bookworm main\n' > /etc/apt/sources.list \
+    && printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/20260101T000000Z bookworm-security main\n' >> /etc/apt/sources.list
+
+RUN ln -sf /usr/local/go/bin/go /usr/bin/go \
+    && ln -sf /usr/local/go/bin/gofmt /usr/bin/gofmt
+
+RUN apt-get update && apt-get install -y --no-install-recommends make=4.3-4.1 \
+    python3=3.11.2-1+b1 \
+    python3-venv=3.11.2-1+b1 \
+    tmux=3.3a-3 \
+    asciinema=2.2.0-1 \
+    ca-certificates=20230311+deb12u1 \
     && rm -rf /var/lib/apt/lists/*
 
+COPY requirements.lock /tmp/requirements.txt
 RUN python3 -m venv /opt/verifier \
-    && /opt/verifier/bin/pip install --no-cache-dir \
-        pytest==8.4.1 \
-        pytest-json-ctrf==0.3.5 \
-        pytest-randomly==3.16.0
+    && /opt/verifier/bin/pip install --no-cache-dir --require-hashes --no-deps -r /tmp/requirements.txt
+RUN rm -f /tmp/requirements.txt
 
-RUN ln -sf /opt/verifier/bin/pytest /usr/local/bin/pytest
+COPY go.mod go.sum Makefile ingest.go ./environment/
+COPY cmd ./environment/cmd
+COPY internal ./environment/internal
+COPY slice ./environment/slice
+COPY slot ./environment/slot
+COPY memo ./environment/memo
+COPY range ./environment/range
+COPY pipeline ./environment/pipeline
+COPY bundle ./environment/bundle
+COPY data ./environment/data
+COPY docs ./environment/docs
+COPY tools/dy ./environment/tools/dy
+COPY tools/check-k7.sh ./environment/tools/check-k7.sh
 
-ENV PATH=/opt/verifier/bin:${PATH}
-ENV MAVEN_OPTS="-Dmaven.repo.local=/root/.m2/repository"
+RUN cd /app/environment \
+    && go mod download \
+    && mkdir -p bin /opt/k7probe \
+    && go build -o /opt/k7probe/dy ./cmd/k7probe \
+    && go build -o bin/w7 ./cmd/w7 \
+    && chmod +x /app/environment/tools/dy /app/environment/tools/check-k7.sh /opt/k7probe/dy
 
-COPY pom.xml /app/pom.xml
-COPY r4 /app/r4
-COPY p7 /app/p7
-COPY v5 /app/v5
-COPY t3 /app/t3
-COPY q9 /app/q9
-COPY m6 /app/m6
-COPY w8 /app/w8
-COPY tools /app/tools
-COPY data /app/data
-COPY docs /app/docs
-
-RUN mvn -q -DskipTests package \
-    && mkdir -p /app/output /app/bin \
-    && printf '%s\n' '#!/bin/bash' 'exec java -jar /app/target/uxr-1.0.0.jar "$@"' > /app/bin/uxr \
-    && chmod +x /app/bin/uxr
+ENV PATH=/app/environment/bin:/opt/verifier/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

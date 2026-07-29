@@ -1,0 +1,7 @@
+[
+  {
+    "cert_not_before": 180,
+    "ds_inception": 150,
+    "scope_expect": "ssh"
+  }
+]

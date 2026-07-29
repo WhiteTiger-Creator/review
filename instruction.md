@@ -1,5 +1,24 @@
-The SAML federation assertion security authority under `/app` certifies annex31 claim families against unification-modulo-theories obligation 631. That trust boundary is compromised. Training-side checks can look green while holdout arms breach the published interval-bound envelope. Operator caches, soft markers, pins, and journal snaps under `/app/output/side` can freeze a route certificate that no longer matches the live walk after the annex epoch moves. Pad-family splits can leave seed binding, hop walks, fold composition, span envelopes, stamp duty, mesh composition, and replay seals mutually inconsistent.
+The K7 **model evaluation** desk under `/app/environment` runs **offline inference** over frozen enrollment captures, scores each capture against published **held-out eval shards** in `/app/environment/data/wt_pair/`, and must match the sealed reference **scoring instrument** at `/opt/k7probe/dy` on every evaluation arm. The Go **inference-reduction** worker currently emits `/app/output/k7_witness_report.json` with wrong scope labels, timing anchors, instrument stamps, or top-level `metric_fold` on padded holdout lanes, stacked alternates, relabeled shards, and repeated transition deliveries. Repair **model-evaluation semantics** in the worker and regenerate metrics through the published eval pipeline; static or hand-written JSON is insufficient.
 
-Restore coherent federation validation. Change the Java implementation under `/app` so an offline rebuild emits `/app/output/sol_run.json` and `/app/output/replay_seal.json` that satisfy the published contract in `/app/docs` (hop_map, fold_home, ibp_home, duty_home, out_fields, jrn_home). fold_home means the hold fold rotate and padMix contract. out_fields defines train_mesh as the xor of train-arm hop_key values and hold_mesh as the xor of hold-arm hop_key values, then mesh composition over those meshes, plus hold join mixes. This is not output-only work; static or hand-edited JSON under `/app/output` is insufficient. sol_run must carry schema_version, mesh_digest, auth_stamp, replay_seal, and rows with row_id, hop_key, fold_tag, span_u64, join_hex, and arm. replay_seal.json must carry schema_version, epoch, and seal_hex matching sol_run.replay_seal. PubMath under `/app/tools/uxr/PubMath.java` indexes the contract docs. Those docs state the exact parenthesized mixes for hold walks, padMix, hold spans, mesh rotate width, join mixes, and seal fold rotates; implement them byte-exact. Driver emission and serialization must agree on the same live identities; a fix that updates only one of those paths will not satisfy the seal and mesh contracts together.
+## Deliverable
 
-Rebuild with `mvn -q -DskipTests package` and regenerate through `/app/bin/uxr` (see `/app/docs/build_hints.txt`). A correct fix must survive that offline rebuild against the Java sources under `/app`. Two consecutive identical `/app/bin/uxr` runs must bitwise-agree on sol_run.json. Poisoned side state must not prevent a correct live regeneration. After the annex manifest epoch changes, every epoch-latched identity must follow the new epoch. Interleaved poisoned side states and epoch moves must leave every regeneration matching the live annex contract.
+- Output: `/app/output/k7_witness_report.json` — evaluation report with `lines` (each row: `line_id`, `scope_code`, `timing_anchor`, `transition_id`, `rationale_text`) and held-out **metric_fold** per `/app/environment/docs/MODEL.contract` and `/app/environment/docs/EVAL.md`.
+- Build: `make -C /app/environment build` produces `/app/environment/bin/w7`.
+- Pipeline: `/app/environment/tools/check-k7.sh`, then `w7 emit --out /app/output/k7_witness_report.json` (see `/app/environment/README.md`).
+
+## Authoritative contracts
+
+| Doc | Role |
+|-----|------|
+| `/app/environment/docs/EVAL.md` | Held-out eval protocol, metric_fold, leakage and instrument coupling |
+| `/app/environment/docs/MODEL.contract` | Inference reduction, eval shard binding, retry idempotency |
+| `/app/environment/docs/FORMAT.contract` | Wire-level emit shape |
+| `/app/environment/docs/COLS.md` | Report column semantics and timing anchor reduction |
+| `/app/environment/docs/WIRE.md` | Frame TLV notes (draft paragraphs may be stale) |
+| `/app/environment/bundle/k7/README.txt` | Capture pack layout and probe usage |
+
+`/app/environment/docs/EVAL_SHORTCUTS.md` and superseded draft notes in `WIRE.md` are **non-authoritative** decoys.
+
+## Scope
+
+Do not replace `/opt/k7probe/dy`, mutate bytes under `/app/environment/bundle/k7/` or `/app/environment/data/`, or satisfy the task by editing JSON at the output path. Held-out padded lane `var089.pad` and canonical pack `base.k7` stay byte-identical. **Generalization** must hold when capture packs, eval shard filenames, or retry schedules change under the same contracts.

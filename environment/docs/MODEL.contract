@@ -1,0 +1,82 @@
+# Witness reduction model (normative ML evaluation contract)
+
+Normative home for held-out **machine-learning evaluation** artifact `/app/output/k7_witness_report.json`, epoch sidecars, timing reduction, transition cardinality, and stamp coupling to the reference scoring instrument used during inference.
+
+## 1. Paths
+
+- Simulation root: `/app/environment`
+- Driver: `/app/environment/bin/w7 emit --out PATH`
+- Canonical output: `/app/output/k7_witness_report.json`
+- Sidecars: `/app/environment/data/wt_pair/*.json`
+- Retry schedule: `/app/environment/data/retry_schedules.json`
+- Template profile: `/app/environment/data/tmpl_set.json`
+- Supplemental epoch tables: `/app/environment/data/epoch_hosts.json`
+- Supplemental revocation table: `/app/environment/data/crl_snapshot.json`
+- Capture pack: `/app/environment/bundle/k7/base.k7`
+
+## 2. Output schema
+
+Single JSON object. No boolean verdict fields.
+
+Required top-level key: `lines` (array).
+
+Each line object requires:
+
+| Field | Type | Semantics |
+|-------|------|-----------|
+| `line_id` | string | Pack row label (`L-<capture>` or `R-<transition>`) |
+| `scope_code` | string | Reduced alternate label for the capture |
+| `timing_anchor` | int64 | Unix seconds from epoch reduction |
+| `transition_id` | string | Stable transition key |
+| `rationale_text` | string | Non-empty; may embed `canon_hex` from instrument |
+
+## 3. Epoch reduction
+
+For pack rows with wt_pair sidecars:
+
+```
+timing_anchor = min(ds_inception, cert_not_before)
+```
+
+using integers from the matching sidecar object. Integer comparison is exact; no floating-point tolerance applies to anchors.
+
+## 4. Stamp coupling
+
+For each pack capture, `rationale_text` for the corresponding `L-*` line must contain the `canon_hex` returned by the reference instrument on that capture's frame bytes (including padded lane invariance).
+
+## 5. Alternate selection
+
+When multiple alternate TLVs appear in one frame body, the reduced `scope_code` must match `scope_expect` in the wt_pair sidecar for that capture. The public bundle includes stacked alternates specifically to disprove a fixed label preference or the stale draft note in `WIRE.md`.
+
+## 6. Transition cardinality
+
+Entries in `retry_schedules.json` describe duplicate deliveries with identical bytes. The reducer must emit at most one `R-*` line per distinct `transition_id` in the schedule. Distinct ids each appear at most once among `R-*` rows.
+
+## 7. Line count invariant
+
+The number of `L-*` lines equals the entry count in `base.k7` (big-endian count at bytes 4–7). Pack rows are sorted lexicographically by capture name when emitting lines (`alpha`, `beta`, `gamma`, `gamma-alt`, ...).
+
+Sidecar binding:
+
+- Prefixed filenames `NN-<capture>.json` bind witness fields to the pack entry named `<capture>`.
+- Unprefixed stems (`a.json`, `b.json`, ...) bind by sorted position: the i-th sorted `*.json` file pairs with the i-th sorted capture name.
+
+Renaming sidecars with numeric prefixes must not reassign witness rows to a different capture name.
+
+## 8. Rationale stamp format
+
+Each pack row `rationale_text` must contain the substring `stamp=` immediately followed by the 64-character lowercase `canon_hex` from the reference instrument on that row's frame bytes (no uppercase, no shortened digests).
+
+## 9. Metric fold (held-out eval cascade)
+
+Top-level string `metric_fold` is eight lowercase hex digits binding pack inference rows, retry rows, and pack cardinality.
+
+Build payload lines in order:
+
+1. For each `L-*` line sorted by `line_id` ascending, append `{line_id}|{scope_code}|{timing_anchor}|{stamp}` where `{stamp}` is the 64-char hex after `stamp=` in `rationale_text`.
+2. For each `R-*` line sorted by `line_id` ascending, append `{line_id}|{transition_id}`.
+3. Append `pack:{N}` where `N` is the big-endian entry count in `base.k7` (bytes 4–7).
+
+Join lines with newline. Apply fold64: for each byte at zero-based index `i`, update `total = (total + (i+1)*byte) mod 2^64`, then emit `metric_fold` as the low 32 bits in hex (eight digits). `emit` must recompute `metric_fold` after all `lines` are final.
+
+Static JSON at the output path, replacing `/opt/k7probe/dy`, mutating pack or sidecar bytes, or CLI-only wrappers without corrected reduction semantics are insufficient.

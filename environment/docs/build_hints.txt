@@ -1,8 +1,0 @@
-Offline image already caches Maven deps.
-
-Command sequence lives in instruction.md. Maven package, then /app/bin/uxr.
-
-Artifact paths are /app/output/sol_run.json and /app/output/replay_seal.json.
-
-Annex inputs sit under /app/data/annex31 including the packed blob, manifest
-epoch, and shard jsonl files.
