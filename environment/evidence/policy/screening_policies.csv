@@ -1,5 +1,0 @@
-policy_id,effective_tca,status,quality_code,max_miss_km,max_sigma_distance,max_probability
-P1,2026-04-01T00:00,approved,HIGH,1.2,2.0,0.12
-P2,2026-04-01T00:00,approved,LOW,0.7,1.4,0.30
-P3,2026-05-02T00:00,draft,HIGH,5.0,9.0,0.01
-P4,2026-05-02T00:00,approved,HIGH,1.0,1.7,0.18
