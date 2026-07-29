@@ -1,8 +1,8 @@
-.git
-.gitignore
-.mypy_cache
-.pytest_cache
-.ruff_cache
-node_modules
-target
-output_data
+**/.git
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+**/target
+**/*.zip
+solution/
+tests/

@@ -1,20 +1,40 @@
 #!/bin/bash
-mkdir -p /logs/verifier
-echo 0 > /logs/verifier/reward.txt
+set -uo pipefail
+
 if [ "$PWD" = "/" ]; then
-    echo "Error: No working directory set. Please set a working directory before running tests."
-    exit 1
+  echo "Error: No working directory set."
+  mkdir -p /logs/verifier
+  echo 0 > /logs/verifier/reward.txt
+  exit 0
 fi
-_on_exit() {
-  if [ ! -f /logs/verifier/ctrf.json ]; then
-    echo '{"results":{"summary":{"tests":0,"passed":0,"failed":0,"pending":0,"skipped":0},"tests":[]}}' > /logs/verifier/ctrf.json
-  fi
-}
-trap _on_exit EXIT
-python3 -m pytest -o cache_dir=/tmp/pytest_cache --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
+
+mkdir -p /logs/verifier /app/output
+
+export PATH="/app/bin:${PATH}"
+
+cd /app
+python3 /app/scripts/gen_heat.py
+go build -o /app/bin/yinsh-ring /app/cmd/yinsh-ring
+rc_build=$?
+if [ "$rc_build" -ne 0 ]; then
+  echo "go build failed"
+  echo 0 > /logs/verifier/reward.txt
+  exit 0
+fi
+
+/app/bin/yinsh-ring --scenarios /app/scenarios --config /app/config --out /app/output
+rc_run=$?
+if [ "$rc_run" -ne 0 ]; then
+  echo "yinsh-ring run failed"
+  echo 0 > /logs/verifier/reward.txt
+  exit 0
+fi
+
+python3 -m pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -v -rA
 rc=$?
+
 if [ "$rc" -eq 0 ]; then
-    echo 1 > /logs/verifier/reward.txt
+  echo 1 > /logs/verifier/reward.txt
 else
-    echo 0 > /logs/verifier/reward.txt
+  echo 0 > /logs/verifier/reward.txt
 fi
