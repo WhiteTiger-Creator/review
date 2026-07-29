@@ -1,0 +1,31 @@
+# K7 capture and frame formats (normative)
+
+## 1. Pack container (`base.k7`)
+
+- Magic: `K7PK` (4 bytes)
+- Entry count: `uint32` big-endian
+- Repeated entries: `name_len uint32`, `name bytes`, `blob_len uint32`, `frame blob`
+
+Held-out padded lane: `/app/environment/bundle/k7/var089.pad` (filler suffix must not change canonical stamp when logical frame unchanged).
+
+## 2. Frame blob (`K7FR`)
+
+- Magic: `K7FR` (4 bytes)
+- Body length: `uint32` big-endian
+- TLV body: sequence of `{tag u8, len u16 BE, value bytes}`
+
+Tags (see module constants): filler `0x00`, alternate `0x10` / `0x11`, usage `0x20`, nest `0x80`.
+
+## 3. Reference instrument
+
+`/opt/k7probe/dy observe --chunk PATH` returns JSON:
+
+```json
+{"canon_hex": "<lowercase hex>", "body_len": <int>}
+```
+
+Partition invariance: delivering the same frame bytes in one read or split reads must yield identical `canon_hex`.
+
+## 4. Public sanity command
+
+`/app/environment/tools/check-k7.sh` exercises bundled pack bytes without replacing the instrument.

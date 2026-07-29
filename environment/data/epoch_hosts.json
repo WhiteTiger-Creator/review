@@ -1,0 +1,4 @@
+[
+  {"epoch": 1, "host": "host-a.example"},
+  {"epoch": 2, "host": "host-b.example"}
+]
