@@ -4,31 +4,24 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "security"
-subcategories = ["tool_specific"]
+category = "scientific-computing"
+subcategories = []
 number_of_milestones = 0
 codebase_size = "small"
-languages = ["rego", "go", "bash"]
-tags = [
-  "oauth",
-  "token-exposure",
-  "bearer-tokens",
-  "scope-escalation",
-  "rego",
-  "opa",
-]
-expert_time_estimate_min = 315
-junior_time_estimate_min = 750
+languages = ["cpp"]
+tags = ["simulator", "engine", "corpus", "numerical", "replay"]
+expert_time_estimate_min = 120
+junior_time_estimate_min = 360
+
+[verifier]
+timeout_sec = 600
 
 [agent]
 timeout_sec = 1800
 
-[verifier]
-timeout_sec = 1200
-
 [environment]
-build_timeout_sec = 1500
+allow_internet = false
+build_timeout_sec = 900
 cpus = 2
 memory_mb = 4096
-storage_mb = 8192
-allow_internet = false
+storage_mb = 10240

@@ -1,0 +1,17 @@
+{
+  "events": [
+    "EMIT_ROW",
+    "VERIFY_FUZZ",
+    "ARM_OMIT",
+    "NEST_HOLD",
+    "PERM_STRESS"
+  ],
+  "obligation_ids": [
+    "OBL-11",
+    "OBL-11a",
+    "OBL-11b",
+    "OBL-11c",
+    "OBL-7",
+    "OBL-9"
+  ]
+}

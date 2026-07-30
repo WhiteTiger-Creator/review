@@ -1,4 +1,0 @@
-schema_version: 2
-analysis_revision: 3
-salt: tb3-oauth-exposure-v1
-event_glob: "*.ndjson"

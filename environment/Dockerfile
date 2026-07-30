@@ -1,55 +1,53 @@
-FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3=3.11.2-1+b1 python3-pip=23.0.1+dfsg-1 \
-        graphviz=2.42.2-7+deb12u1 \
-        bash=5.2.15-2+b10 \
-        jq=1.6-2.1+deb12u2 \
-        ca-certificates=20230311+deb12u1 \
-        coreutils=9.1-1 \
-        patch=2.7.6-7 \
-        findutils=4.9.0-4 \
-        tmux=3.3a-3 \
-        asciinema=2.2.0-1 \
-        curl=7.88.1-10+deb12u15 \
-    && ln -sf /usr/bin/python3 /usr/bin/python \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    g++=4:12.2.0-3 \
+    cmake=3.25.1-1 \
+    make=4.3-4.1 \
+    tmux=3.3a-3 \
+    asciinema=2.2.0-1 \
+    ca-certificates=20230311+deb12u1 \
+    openssl=3.0.20-1~deb12u2 \
+    nlohmann-json3-dev=3.11.2-2 \
+    libssl-dev=3.0.20-1~deb12u2 \
+    python3=3.11.2-1+b1 \
+    python3-venv=3.11.2-1+b1 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL -o /tmp/opa https://openpolicyagent.org/downloads/v0.68.0/opa_linux_amd64_static \
-    && echo 'dfd5081fc6f930dfeaf2a225e31e616fc227dc0c7b43019b73d6f8fb8a1de1aa  /tmp/opa' | sha256sum -c - \
-    && mv /tmp/opa /usr/local/bin/opa \
-    && chmod 755 /usr/local/bin/opa
+# Verifier-only: pytest harness. Agent engine sources live under /app/environment (g++/cmake), not Python.
+RUN python3 -m venv /opt/verifier \
+                && /opt/verifier/bin/pip install --no-cache-dir \
+                    pytest==8.4.1 \
+                    pytest-json-ctrf==0.3.5 \
+                    pytest-randomly==3.16.0
+ENV PATH=/opt/verifier/bin:${PATH}
 
-RUN groupadd -r policyuser && useradd -r -g policyuser -d /home/policyuser -m policyuser
+COPY CMakeLists.txt deps.cmake /app/
+COPY annex/ /app/annex/
+COPY corpora/ /app/corpora/
+COPY desk/ /app/desk/
+COPY docs/ /app/docs/
+COPY fixtures/ /app/fixtures/
+COPY stage_p/ /app/stage_p/
+COPY stage_q/ /app/stage_q/
+COPY stage_r/ /app/stage_r/
+COPY stage_t/ /app/stage_t/
+COPY stage_j/ /app/stage_j/
+COPY stage_v/ /app/stage_v/
+COPY pvsim /app/pvsim
+COPY README.md /app/README.md
 
-COPY requirements.txt /tmp/requirements.txt
-RUN pip3 install --no-cache-dir --break-system-packages -r /tmp/requirements.txt
-
-COPY go.mod go.sum ./
-RUN go mod download
-
-COPY --chown=policyuser:policyuser app/ /app/
-COPY --chown=policyuser:policyuser scripts/ /app/scripts/
-
-RUN bash /app/scripts/build_binary.sh \
-    && chmod +x /app/scripts/*.py /app/test-visible/*.sh \
-    && opa check /app/opalib \
-    && chown policyuser:policyuser /app/bin /app/bin/*
-
-RUN mkdir -p /output /logs/verifier /logs/agent \
-    && chown policyuser:policyuser /output /logs /logs/verifier /logs/agent /home/policyuser \
-    && chmod a+rwX /logs /output
-
-ENV TZ=UTC \
-    LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8 \
-    HOME=/home/policyuser \
-    OPA_PATH=/usr/local/bin/opa \
-    TOKEN_EVENTS=/app/data/events \
-    TOKEN_CONFIG=/app/config \
-    TOKEN_REGOLIB=/app/opalib \
-    TOKEN_OUTPUT=/output
-
-CMD ["sleep", "infinity"]
+RUN chmod +x /app/pvsim \
+    && mkdir -p /app/environment \
+    && ln -sfn /app/stage_p /app/environment/stage_p \
+    && ln -sfn /app/stage_q /app/environment/stage_q \
+    && ln -sfn /app/stage_r /app/environment/stage_r \
+    && ln -sfn /app/stage_t /app/environment/stage_t \
+    && ln -sfn /app/stage_j /app/environment/stage_j \
+    && ln -sfn /app/stage_v /app/environment/stage_v \
+    && ln -sfn /app/desk /app/environment/desk \
+    && cmake -S /app -B /app/build -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build /app/build -j$(nproc) \
+    && mkdir -p /app/runtime/dossier /app/runtime/transcript /app/runtime/journal

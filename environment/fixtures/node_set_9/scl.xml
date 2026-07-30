@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SCL xmlns="http://www.iec.ch/61850/2003/SCL">
+  <Header id="node_set_9" version="1.0"/>
+  <Substation name="PV_DESK_9">
+    <VoltageLevel name="MV">
+      <Bay name="B2">
+        <LNode iedName="IED9" ldInst="LD0" lnClass="MMXU" lnInst="1"/>
+        <LNode iedName="IED9" ldInst="LD0" lnClass="ATCC" lnInst="1">
+          <LNode iedName="IED9" ldInst="LD0" lnClass="CSWI" lnInst="2">
+            <LNode iedName="IED9" ldInst="LD0" lnClass="XSWI" lnInst="3">
+              <LNode iedName="IED9" ldInst="LD0" lnClass="CILO" lnInst="4"/>
+            </LNode>
+          </LNode>
+        </LNode>
+      </Bay>
+    </VoltageLevel>
+  </Substation>
+</SCL>
