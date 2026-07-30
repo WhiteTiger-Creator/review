@@ -1,70 +1,57 @@
-FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
-
-ENV DEBIAN_FRONTEND=noninteractive \
-    LC_ALL=C.UTF-8 \
-    LANG=C.UTF-8 \
-    TERM=xterm-256color \
-    PATH=/app/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-    PYTHONPATH=/opt/harbor-verifier
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        adduser \
-        asciinema \
-        bash \
-        ca-certificates \
-        coreutils \
-        curl \
-        gawk \
-        grep \
-        jq \
-        python3 \
-        python3-pytest \
-        sed \
-        sqlite3 \
-        tmux \
-        util-linux \
-    && rm -rf /var/lib/apt/lists/* \
-    && /usr/sbin/addgroup --system relay \
-    && /usr/sbin/adduser --system --ingroup relay --no-create-home --home /nonexistent --shell /usr/sbin/nologin relayops
-
-COPY harbor_ctrf_plugin.py /opt/harbor-verifier/harbor_ctrf_plugin.py
-COPY prebuilt/harbor-relay /app/bin/harbor-relay
-COPY prebuilt/catalog-query /app/bin/catalog-query
-COPY prebuilt/service-catalog.db /opt/harbor/service-catalog.db
-COPY prebuilt/maintenance-window.db /opt/harbor/maintenance-window.db
-COPY app/include/ /opt/harbor-platform-source/include/
-COPY app/src/ /opt/harbor-platform-source/src/
-COPY app/tools/ /opt/harbor-platform-source/tools/
-COPY app/docs/ /app/docs/
-COPY app/records/ /app/records/
-COPY app/fixtures/ /app/fixtures/
-COPY app/etc/ /app/etc/
-COPY app/share/ /app/share/
-COPY app/scripts/ /app/scripts/
-
-RUN install -m 0755 /app/bin/catalog-query /usr/local/bin/catalog-query \
-    && chmod 0755 /app/bin/harbor-relay /app/bin/catalog-query /app/scripts/initialize-service-instance /app/scripts/exercise-service \
-    && chmod 0444 /opt/harbor/service-catalog.db /opt/harbor/maintenance-window.db \
-    && find /opt/harbor-platform-source -type f -exec chmod 0444 {} + \
-    && find /app/docs /app/records /app/fixtures /app/share -type f -exec chmod 0444 {} + \
-    && test "$(sha256sum /app/fixtures/requests/arrival-replay.http | awk '{print $1}')" = "1952a39bd9edfe4868259d14675eb5219ef6f21afe4854ee3e91b0c8c4ea5795" \
-    && mkdir -p /app/run/harbor-relay /app/var /etc/systemd/system \
-    && chown relayops:relay /app/run/harbor-relay /app/var \
-    && chmod 0750 /app/run/harbor-relay /app/var \
-    && chmod g-s /app/run/harbor-relay /app/var \
-    && chown root:relay /app/etc/harbor-relay \
-    && chmod 0750 /app/etc/harbor-relay \
-    && tmux -V \
-    && asciinema --version \
-    && tmux -L harbor-runtime-smoke new-session -d -s smoke "sleep 30" \
-    && tmux -L harbor-runtime-smoke has-session -t smoke \
-    && tmux -L harbor-runtime-smoke kill-server \
-    && bash /app/scripts/initialize-service-instance \
-    && /app/bin/catalog-query --batch-file /app/share/service-catalog.batch > /tmp/service-catalog.snapshot \
-    && HARBOR_CATALOG_DB=/opt/harbor/maintenance-window.db /app/bin/catalog-query --batch-file /app/share/maintenance-window.batch > /tmp/maintenance-window.snapshot \
-    && sh -c '/app/bin/harbor-relay --help > /tmp/harbor-relay.help 2>&1; rc=$?; test "$rc" -eq 78' \
-    && rm -f /tmp/service-catalog.snapshot /tmp/maintenance-window.snapshot /tmp/harbor-relay.help \
-    && chown root:relay /app/etc/harbor-relay/relay.conf /app/etc/harbor-relay/limits.conf /app/etc/harbor-relay/routes.map
+FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
 
 WORKDIR /app
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-pip \
+        jq \
+        file \
+        tmux \
+        asciinema \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pinned pytest plus the CTRF reporter plugin (for --ctrf output). Debian
+# bookworm's apt pytest predates the API the plugin needs.
+RUN pip3 install --no-cache-dir --break-system-packages \
+        pytest==8.3.4 \
+        pytest-json-ctrf==0.5.2
+
+# The agent's solving script is expected in Rust: rustc/cargo are on PATH from
+# the base image. No crates are vendored (no external dependency, no network
+# fetch risk) -- std alone is sufficient for this task's flat JSON schemas, so
+# there is nothing to configure offline the way Go's GOPROXY=off does.
+
+# Two users: "agent" runs the task (unprivileged); "oracle" owns the sealed
+# daemon so the agent can execute it but cannot read the hidden retention
+# rules, copy the binary, or ptrace it.
+RUN useradd -m -u 1000 agent && useradd -m -u 1001 oracle
+
+# The daemon ships as a prebuilt, sealed executable. Its source is deliberately
+# not part of this build context, so the hidden retention rules never exist in
+# readable form anywhere in the agent-facing environment. The source of record
+# lives in solution/engine.go (outside this context) and is compiled offline
+# with CGO_ENABLED=0 -trimpath -ldflags="-s -w" for a static, stripped binary.
+COPY daemon/decide /opt/retention/decide
+RUN printf '0' > /opt/retention/.count
+
+# Public material handed to the agent: the audit request set and worked
+# examples.
+RUN mkdir -p /app/challenge /app/out
+COPY challenge/requests.json /app/challenge/requests.json
+COPY challenge/examples.json /app/challenge/examples.json
+
+# Seal the oracle side: directory traversable but not listable; query counter
+# private to oracle; daemon set-uid + execute-only.
+RUN chown oracle:oracle /opt/retention /opt/retention/decide /opt/retention/.count \
+    && chmod 0711 /opt/retention \
+    && chmod 0600 /opt/retention/.count \
+    && chmod 4711 /opt/retention/decide
+
+# Hand the working area to the agent. No USER directive here, deliberately: the
+# container default must stay privileged so the verifier can create and write
+# /logs/verifier/reward.txt on a harness-provided root-owned /logs. The agent's
+# own unprivileged execution comes from [agent].user in task.toml instead.
+RUN chown agent:agent /app /app/out /app/challenge
