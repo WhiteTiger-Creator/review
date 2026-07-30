@@ -1,25 +1,5 @@
-An indie dungeon crawl studio runs terminal playtest campaigns over procedurally generated undercroft levels. The working simulator under /app already builds deterministic maps from seeds and exposes a playfield graph for route inspection. The studio still needs a fairness playtest planner that searches candidate seeds until simultaneous reachability, pacing, treasure-balance, and threat-curve invariants hold for each campaign, then publishes durable playtest artifacts through a staging snapshot.
+The SAML federation assertion security authority under `/app` certifies annex31 claim families against unification-modulo-theories obligation 631. That trust boundary is compromised. Training-side checks can look green while holdout arms breach the published interval-bound envelope. Operator caches, soft markers, pins, and journal snaps under `/app/output/side` can freeze a route certificate that no longer matches the live walk after the annex epoch moves. Pad-family splits can leave seed binding, hop walks, fold composition, span envelopes, stamp duty, mesh composition, and replay seals mutually inconsistent.
 
-Implement the undercroft-fairness CLI capability so operators can run a multi-campaign playtest tick that materializes:
+Restore coherent federation validation. Change the Java implementation under `/app` so an offline rebuild emits `/app/output/sol_run.json` and `/app/output/replay_seal.json` that satisfy the published contract in `/app/docs` (hop_map, fold_home, ibp_home, duty_home, out_fields, jrn_home). fold_home means the hold fold rotate and padMix contract. out_fields defines train_mesh as the xor of train-arm hop_key values and hold_mesh as the xor of hold-arm hop_key values, then mesh composition over those meshes, plus hold join mixes. This is not output-only work; static or hand-edited JSON under `/app/output` is insufficient. sol_run must carry schema_version, mesh_digest, auth_stamp, replay_seal, and rows with row_id, hop_key, fold_tag, span_u64, join_hex, and arm. replay_seal.json must carry schema_version, epoch, and seal_hex matching sol_run.replay_seal. PubMath under `/app/tools/uxr/PubMath.java` indexes the contract docs. Those docs state the exact parenthesized mixes for hold walks, padMix, hold spans, mesh rotate width, join mixes, and seal fold rotates; implement them byte-exact. Driver emission and serialization must agree on the same live identities; a fix that updates only one of those paths will not satisfy the seal and mesh contracts together.
 
-- /app/state/seed-hunt-staging.json
-- /app/output/seed-ledger.json
-- /app/output/route-atlas.json
-- /app/output/fairness-seal.json
-- /app/state/playtest-journal.jsonl
-
-Invoke the planner as:
-
-/app/bin/undercroft-fairness playtest --campaigns /app/fixtures/campaigns --ledger /app/output/seed-ledger.json --atlas /app/output/route-atlas.json --seal /app/output/fairness-seal.json --journal /app/state/playtest-journal.jsonl
-
-Contracts governing map generation, win-condition style route checks, pacing gaps along the critical path, treasure density bands, threat budgets, seed search windows, staging-then-export publish rules, and seal digests live under:
-
-- /app/docs/playtest-workflow.md
-- /app/docs/cartograph-contract.md
-- /app/docs/reachability-pacing-contract.md
-- /app/docs/treasure-threat-contract.md
-- /app/docs/seed-search-contract.md
-- /app/docs/staging-export-contract.md
-- /app/docs/artifact-seal-contract.md
-
-Campaign JSON profiles under /app/fixtures/campaigns define board size, entity counts, invariant thresholds, and each campaign search_origin plus search_limit. Outputs must be deterministic for identical campaign inputs. Rebuild with /app/scripts/build.sh before grading runs.
+Rebuild with `mvn -q -DskipTests package` and regenerate through `/app/bin/uxr` (see `/app/docs/build_hints.txt`). A correct fix must survive that offline rebuild against the Java sources under `/app`. Two consecutive identical `/app/bin/uxr` runs must bitwise-agree on sol_run.json. Poisoned side state must not prevent a correct live regeneration. After the annex manifest epoch changes, every epoch-latched identity must follow the new epoch. Interleaved poisoned side states and epoch moves must leave every regeneration matching the live annex contract.
