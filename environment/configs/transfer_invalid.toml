@@ -1,0 +1,11 @@
+[principals]
+outgoing_user = "ctrl_a"
+outgoing_uid = 1100
+outgoing_gid = 2100
+incoming_user = ""
+incoming_uid = 1101
+incoming_gid = 2101
+supplementary_groups = [2102]
+
+[runtime]
+unit_name = "desk.service"
