@@ -1,9 +1,0 @@
-#!/bin/bash
-set -euo pipefail
-
-if [ "$#" -ne 1 ]; then
-    echo "usage: site-admin VOLUME_STATE_DIRECTORY" >&2
-    exit 64
-fi
-
-exec /app/usr/libexec/a1/q1.sh "$1"
