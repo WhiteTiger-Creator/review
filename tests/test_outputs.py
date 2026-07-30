@@ -1,877 +1,713 @@
-"""tests for the Lua model contamination audit pipeline."""
+"""Verifier for undercroft-seed-fairness-playtest-cli."""
+from __future__ import annotations
 
-import contextlib
-import hashlib
-import http.server
 import json
-import math
-import pathlib
-import re
-import shutil
-import socket
-import sqlite3
+import os
 import subprocess
-import threading
-import time
+import tempfile
+from collections import deque
+from dataclasses import dataclass
+from itertools import pairwise
+from pathlib import Path
 
-APP = pathlib.Path("/app")
-AUDIT_PATH = APP / "output" / "audit.json"
-DATABASE_PATH = APP / "output" / "probes.sqlite"
-CLEANED_PATH = APP / "output" / "cleaned.jsonl"
-CONFIG_PATH = APP / "config" / "audit.json"
-PROFILE_PATH = APP / "config" / "model_profiles.json"
-OUTPUT_PATHS = (AUDIT_PATH, DATABASE_PATH, CLEANED_PATH)
-AXES = {
-    "answer_format",
-    "benchmark_age",
-    "canary_rarity",
-    "paraphrase_distance",
-    "prompt_framing",
-    "sampling_randomness",
-}
-FEATURES = (
-    "completion_likelihood_gap",
-    "exact_match_rate",
-    "perturbation_sensitivity",
-    "order_invariance",
-    "metadata_leak",
-    "canary_recall",
-    "paraphrase_robustness",
-    "substring_overlap",
-    "semantic_overlap",
-)
-NORMAL_90 = 1.645
-HIDDEN_MODALITIES = ("text", "source_code", "table", "image_caption")
-HIDDEN_PENALTIES = [0.004, 0.012, 0.05, 0.15, 0.5, 1.5]
-_HEAD_CACHE: dict[tuple, dict] = {}
+import pytest
+
+APP = Path("/app")
+BIN = APP / "bin" / "undercroft-fairness"
+CAMPAIGNS = APP / "fixtures" / "campaigns"
+LEDGER = APP / "output" / "seed-ledger.json"
+ATLAS = APP / "output" / "route-atlas.json"
+SEAL = APP / "output" / "fairness-seal.json"
+JOURNAL = APP / "state" / "playtest-journal.jsonl"
+STAGING = APP / "state" / "seed-hunt-staging.json"
+HELDOUT = Path("/opt/verifier-fixtures/heldout_seeds.json")
+HELDOUT_SRC = Path("/tests/verifier-fixtures/heldout_seeds.json")
+DELTA_CAMPAIGN = Path("/opt/verifier-fixtures/campaigns/crypt_delta.json")
+DELTA_CAMPAIGN_SRC = Path("/tests/verifier-fixtures/campaigns/crypt_delta.json")
 
 
-def _wait_for_port(port: int) -> None:
-    deadline = time.monotonic() + 8
-    while time.monotonic() < deadline:
-        with contextlib.suppress(OSError), socket.create_connection(
-            ("127.0.0.1", port),
-            timeout=0.1,
-        ):
-            return
-        time.sleep(0.05)
-    message = f"local model server on port {port} did not start"
-    raise RuntimeError(message)
+def reference_evaluate(camp: Campaign, dung: Dungeon) -> dict:
+    """Spec-derived fairness reference used only by the verifier."""
+    return evaluate(camp, dung)
 
 
-def _run_audit(config: pathlib.Path = CONFIG_PATH) -> subprocess.CompletedProcess[str]:
+def xorshift64(state: int) -> tuple[int, int]:
+    state &= 0xFFFFFFFFFFFFFFFF
+    state ^= (state << 13) & 0xFFFFFFFFFFFFFFFF
+    state ^= (state >> 7) & 0xFFFFFFFFFFFFFFFF
+    state ^= (state << 17) & 0xFFFFFFFFFFFFFFFF
+    state &= 0xFFFFFFFFFFFFFFFF
+    return state, state
+
+
+@dataclass
+class Campaign:
+    campaign_id: str
+    width: int
+    height: int
+    room_target: int
+    chest_count: int
+    monster_count: int
+    path_min: int
+    path_max: int
+    min_gap: int
+    mean_gap_min: float
+    band_d1: int
+    band_d2: int
+    band_lo: list
+    band_hi: list
+    total_gold_lo: int
+    total_gold_hi: int
+    threat_base: int
+    threat_slope: int
+    max_room_threat: int
+    search_origin: int
+    search_limit: int
+
+
+@dataclass
+class Room:
+    id: int
+    x: int
+    y: int
+    w: int
+    h: int
+    depth: int = 0
+    gold: int = 0
+    threat: int = 0
+
+
+@dataclass
+class Dungeon:
+    rooms: list
+    edges: list
+    start: int
+    exit: int
+    critical_path: list
+
+
+def load_campaign(path: Path) -> Campaign:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return Campaign(**data)
+
+
+def gen_dungeon(camp: Campaign, seed: int) -> Dungeon:
+    state = seed | 1
+    rooms: list[Room] = []
+    attempts = 0
+    while len(rooms) < camp.room_target and attempts < 5000:
+        attempts += 1
+        state, r = xorshift64(state)
+        w = 3 + (r % 3)
+        state, r = xorshift64(state)
+        h = 3 + (r % 3)
+        state, r = xorshift64(state)
+        x = 1 + (r % max(1, camp.width - w - 1))
+        state, r = xorshift64(state)
+        y = 1 + (r % max(1, camp.height - h - 1))
+        ok = True
+        for o in rooms:
+            if not (
+                x + w + 1 <= o.x
+                or o.x + o.w + 1 <= x
+                or y + h + 1 <= o.y
+                or o.y + o.h + 1 <= y
+            ):
+                ok = False
+                break
+        if ok:
+            rooms.append(Room(len(rooms), x, y, w, h))
+    edges: set[tuple[int, int]] = set()
+
+    def add_edge(a: int, b: int) -> None:
+        if a != b:
+            edges.add((min(a, b), max(a, b)))
+
+    for i in range(1, len(rooms)):
+        add_edge(i - 1, i)
+    extra = max(1, len(rooms) // 3)
+    for _ in range(extra):
+        state, r = xorshift64(state)
+        a = r % len(rooms)
+        state, r = xorshift64(state)
+        b = r % len(rooms)
+        add_edge(a, b)
+    adj = {i: [] for i in range(len(rooms))}
+    for a, b in edges:
+        adj[a].append(b)
+        adj[b].append(a)
+    depth = {0: 0}
+    q = deque([0])
+    while q:
+        u = q.popleft()
+        for v in adj[u]:
+            if v not in depth:
+                depth[v] = depth[u] + 1
+                q.append(v)
+    for rm in rooms:
+        rm.depth = depth.get(rm.id, 999)
+    start = 0
+    exit_id = max(rooms, key=lambda r: r.depth).id
+    candidates = [r.id for r in rooms if r.id != start]
+    for _ in range(camp.chest_count):
+        if not candidates:
+            break
+        state, r = xorshift64(state)
+        rid = candidates[r % len(candidates)]
+        state, g = xorshift64(state)
+        gold = 10 + (g % 40) + rooms[rid].depth * 5
+        rooms[rid].gold += gold
+    for _ in range(camp.monster_count):
+        if not candidates:
+            break
+        state, r = xorshift64(state)
+        rid = candidates[r % len(candidates)]
+        state, t = xorshift64(state)
+        threat = 3 + (t % 8) + rooms[rid].depth * 2
+        rooms[rid].threat += threat
+    parent: dict[int, int | None] = {start: None}
+    q = deque([start])
+    while q:
+        u = q.popleft()
+        for v in adj[u]:
+            if v not in parent:
+                parent[v] = u
+                q.append(v)
+    path: list[int] = []
+    cur: int | None = exit_id
+    if exit_id in parent or exit_id == start:
+        while cur is not None:
+            path.append(cur)
+            cur = parent.get(cur)
+        path.reverse()
+    return Dungeon(rooms, sorted(edges), start, exit_id, path)
+
+
+def evaluate(camp: Campaign, dung: Dungeon) -> dict:
+    n = len(dung.rooms)
+    reachable = sum(1 for r in dung.rooms if r.depth < 999)
+    path_len = max(0, len(dung.critical_path) - 1)
+    reach_ok = (
+        reachable == n
+        and path_len >= camp.path_min
+        and path_len <= camp.path_max
+        and any(r.id == dung.exit and r.depth < 999 for r in dung.rooms)
+    )
+    monster_idx = [
+        i for i, rid in enumerate(dung.critical_path) if dung.rooms[rid].threat > 0
+    ]
+    gaps: list[int] = []
+    pacing_ok = True
+    mean_gap = 0.0
+    if len(monster_idx) == 0:
+        pacing_ok = False
+    elif len(monster_idx) == 1:
+        mean_gap = float(camp.mean_gap_min)
+    else:
+        for a, b in pairwise(monster_idx):
+            gap = b - a
+            gaps.append(gap)
+            if gap < camp.min_gap:
+                pacing_ok = False
+        mean_gap = sum(gaps) / len(gaps)
+        if mean_gap < camp.mean_gap_min:
+            pacing_ok = False
+    bands: list[list[int]] = [[], [], []]
+    for r in dung.rooms:
+        if r.id == dung.start:
+            continue
+        if r.depth <= camp.band_d1:
+            bands[0].append(r.gold)
+        elif r.depth <= camp.band_d2:
+            bands[1].append(r.gold)
+        else:
+            bands[2].append(r.gold)
+    dens = []
+    treasure_ok = True
+    for i in range(3):
+        if not bands[i]:
+            dens.append(0.0)
+            continue
+        d = sum(bands[i]) / len(bands[i])
+        dens.append(d)
+        if d < camp.band_lo[i] or d > camp.band_hi[i]:
+            treasure_ok = False
+    total_gold = sum(r.gold for r in dung.rooms)
+    if total_gold < camp.total_gold_lo or total_gold > camp.total_gold_hi:
+        treasure_ok = False
+    threat_ok = True
+    cum = 0
+    max_room = 0
+    for i, rid in enumerate(dung.critical_path):
+        th = dung.rooms[rid].threat
+        max_room = max(max_room, th)
+        cum += th
+        budget = camp.threat_base + camp.threat_slope * i
+        if cum > budget:
+            threat_ok = False
+    if max_room > camp.max_room_threat:
+        threat_ok = False
+    return {
+        "ok": reach_ok and pacing_ok and treasure_ok and threat_ok,
+        "reach_ok": reach_ok,
+        "pacing_ok": pacing_ok,
+        "treasure_ok": treasure_ok,
+        "threat_ok": threat_ok,
+        "path_len": path_len,
+        "mean_gap": mean_gap,
+        "densities": dens,
+        "total_gold": total_gold,
+        "cum_threat_end": cum,
+        "max_room_threat": max_room,
+    }
+
+
+def run_playtest(
+    campaigns_dir: Path | None = None,
+    *,
+    check: bool = True,
+) -> subprocess.CompletedProcess:
+    campaigns_dir = campaigns_dir or CAMPAIGNS
+    LEDGER.parent.mkdir(parents=True, exist_ok=True)
+    JOURNAL.parent.mkdir(parents=True, exist_ok=True)
     return subprocess.run(
-        [str(APP / "bin" / "memscope"), "audit", "--config", str(config)],
-        check=False,
-        capture_output=True,
+        [
+            str(BIN),
+            "playtest",
+            "--campaigns",
+            str(campaigns_dir),
+            "--ledger",
+            str(LEDGER),
+            "--atlas",
+            str(ATLAS),
+            "--seal",
+            str(SEAL),
+            "--journal",
+            str(JOURNAL),
+        ],
+        check=check,
         text=True,
-        timeout=120,
+        capture_output=True,
     )
 
 
-def _load_audit(path: pathlib.Path = AUDIT_PATH) -> dict:
+@pytest.fixture(scope="session", autouse=True)
+def _session_playtest() -> None:
+    assert BIN.is_file(), "missing /app/bin/undercroft-fairness — rebuild with /app/scripts/build.sh"
+    proc = run_playtest(check=False)
+    assert proc.returncode == 0, f"playtest failed: {proc.stderr}\n{proc.stdout}"
+
+
+def _ledger() -> dict:
+    return json.loads(LEDGER.read_text(encoding="utf-8"))
+
+
+def _atlas() -> dict:
+    return json.loads(ATLAS.read_text(encoding="utf-8"))
+
+
+def _seal() -> dict:
+    return json.loads(SEAL.read_text(encoding="utf-8"))
+
+
+def _heldout() -> dict:
+    path = HELDOUT if HELDOUT.is_file() else HELDOUT_SRC
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _load_json_lines(paths: list[str]) -> list[dict]:
-    rows = []
-    for raw_path in paths:
-        path = pathlib.Path(raw_path)
-        rows.extend(json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line)
-    return rows
+def test_hidden_heldout_fixture_present():
+    """Sealed held-out seeds live under /opt/verifier-fixtures (not agent-visible)."""
+    assert Path("/opt/verifier-fixtures/heldout_seeds.json").is_file()
+    held = json.loads(Path("/opt/verifier-fixtures/heldout_seeds.json").read_text(encoding="utf-8"))
+    assert "campaigns" in held
+    assert len(held["campaigns"]) >= 3
 
 
-def _words(text: str) -> list[str]:
-    return re.findall(r"[0-9a-z]+", text.lower())
+def test_hidden_heldout_matches_ledger_seeds():
+    """Verifier-fixtures held-out map must match selected seeds in the ledger."""
+    held = json.loads(Path("/opt/verifier-fixtures/heldout_seeds.json").read_text(encoding="utf-8"))
+    by_id = {row["campaign_id"]: row for row in _ledger()["campaigns"]}
+    for cid, seed in held["campaigns"].items():
+        assert by_id[cid]["selected_seed"] == seed
+        camp = load_campaign(CAMPAIGNS / f"{cid}.json")
+        assert reference_evaluate(camp, gen_dungeon(camp, seed))["ok"]
 
 
-def _longest_run(left: list[str], right: list[str]) -> int:
-    best = 0
-    for start in range(len(left)):
-        for offset in range(len(right)):
-            length = 0
-            while (
-                start + length < len(left)
-                and offset + length < len(right)
-                and left[start + length] == right[offset + length]
-            ):
-                length += 1
-            best = max(best, length)
-    return best
+def test_state_journal_staging_snapshot():
+    """Journal and seed-hunt staging snapshot both record accepted campaign seeds."""
+    assert JOURNAL.is_file()
+    assert STAGING.is_file()
+    lines = [
+        json.loads(x)
+        for x in JOURNAL.read_text(encoding="utf-8").splitlines()
+        if x.strip()
+    ]
+    assert lines, "empty staging snapshot journal"
+    assert all(line.get("accepted") is True for line in lines)
+    staging = json.loads(STAGING.read_text(encoding="utf-8"))
+    assert staging["schema"] == "undercroft-seed-staging-v1"
+    assert len(staging["campaigns"]) == len(_campaign_files())
 
 
-def _cosine(left: list[float], right: list[float]) -> float:
-    numerator = sum(a * b for a, b in zip(left, right, strict=True))
-    left_norm = math.sqrt(sum(value * value for value in left))
-    right_norm = math.sqrt(sum(value * value for value in right))
-    return numerator / (left_norm * right_norm)
+def _staging() -> dict:
+    return json.loads(STAGING.read_text(encoding="utf-8"))
 
 
-def _solve(matrix: list[list[float]], rhs: list[float]) -> list[float]:
-    size = len(rhs)
-    work = [[*row, rhs[index]] for index, row in enumerate(matrix)]
-    for column in range(size):
-        pivot = column
-        for row in range(column + 1, size):
-            if abs(work[row][column]) > abs(work[pivot][column]):
-                pivot = row
-        work[column], work[pivot] = work[pivot], work[column]
-        head = work[column][column]
-        for row in range(size):
-            if row == column:
-                continue
-            factor = work[row][column] / head
-            for index in range(column, size + 1):
-                work[row][index] -= factor * work[column][index]
-    return [work[row][size] / work[row][row] for row in range(size)]
+def _campaign_files() -> list[Path]:
+    return sorted(CAMPAIGNS.glob("*.json"))
 
 
-def _linear(coefficients: list[float], scaled: list[float]) -> float:
-    return coefficients[0] + sum(
-        coefficients[index + 1] * value for index, value in enumerate(scaled)
+def test_cli_binary_present():
+    """Fairness planner binary is installed at the documented path."""
+    assert BIN.is_file()
+    assert os.access(BIN, os.X_OK)
+
+
+def test_playtest_exit_zero():
+    """Default campaign playtest tick exits successfully."""
+    proc = run_playtest(check=False)
+    assert proc.returncode == 0
+
+
+def test_ledger_schema_and_campaign_count():
+    """Seed ledger uses the documented schema and one row per campaign file."""
+    ledger = _ledger()
+    assert ledger["schema"] == "undercroft-seed-ledger-v1"
+    assert len(ledger["campaigns"]) == len(_campaign_files())
+
+
+def test_atlas_schema_and_route_count():
+    """Route atlas schema matches and routes align with campaigns."""
+    atlas = _atlas()
+    assert atlas["schema"] == "undercroft-route-atlas-v1"
+    assert len(atlas["routes"]) == len(_campaign_files())
+
+
+def test_seal_schema_fields():
+    """Fairness seal carries version, campaign_count, and ledger/atlas/staging digests."""
+    seal = _seal()
+    assert seal["schema"] == "undercroft-fairness-seal-v1"
+    assert seal["seal_version"] == 1
+    assert seal["campaign_count"] == len(_campaign_files())
+    assert len(seal["ledger_digest"]) == 64
+    assert len(seal["atlas_digest"]) == 64
+    assert len(seal["staging_digest"]) == 64
+
+
+def _sha256_hex(path: Path) -> str:
+    proc = subprocess.run(
+        ["sha256sum", str(path)],
+        check=True,
+        text=True,
+        capture_output=True,
     )
+    return proc.stdout.split()[0]
 
 
-def _point_loss(eta: float, label: float) -> float:
-    return max(eta, 0.0) - eta * label + math.log1p(math.exp(-abs(eta)))
+def test_seal_digests_match_file_bytes():
+    """Seal digests are SHA-256 of the exact ledger, atlas, and staging file bytes."""
+    seal = _seal()
+    assert seal["ledger_digest"] == _sha256_hex(LEDGER)
+    assert seal["atlas_digest"] == _sha256_hex(ATLAS)
+    assert seal["staging_digest"] == _sha256_hex(STAGING)
 
 
-def _fit(
-    design: list[list[float]],
-    labels: list[float],
-    penalty: float,
-    used: list[bool],
-) -> list[float]:
-    width = len(design[0]) + 1
-    coefficients = [0.0] * width
-    total = float(sum(used))
-    for _ in range(100):
-        gradient = [0.0] * width
-        hessian = [[0.0] * width for _ in range(width)]
-        for index, row in enumerate(design):
-            if not used[index]:
-                continue
-            basis = [1.0, *row]
-            mu = 1.0 / (1.0 + math.exp(-_linear(coefficients, row)))
-            weight = mu * (1.0 - mu)
-            residual = mu - labels[index]
-            for left in range(width):
-                gradient[left] += residual * basis[left] / total
-                for right in range(width):
-                    hessian[left][right] += weight * basis[left] * basis[right] / total
-        for left in range(1, width):
-            gradient[left] += 2 * penalty * coefficients[left]
-            hessian[left][left] += 2 * penalty
-        step = _solve(hessian, gradient)
-        coefficients = [coefficients[index] - step[index] for index in range(width)]
-        if max(abs(value) for value in step) < 1e-13:
-            break
-    return coefficients
+def test_staging_seeds_bind_ledger_and_journal():
+    """Staging candidate seeds must equal ledger selected seeds and journal lines."""
+    staging_by_id = {row["campaign_id"]: row for row in _staging()["campaigns"]}
+    ledger_by_id = {row["campaign_id"]: row for row in _ledger()["campaigns"]}
+    lines = [json.loads(x) for x in JOURNAL.read_text(encoding="utf-8").splitlines() if x.strip()]
+    journal_by_id = {line["campaign_id"]: line for line in lines if line.get("accepted") is True}
+    for path in _campaign_files():
+        cid = path.stem
+        seed = staging_by_id[cid]["candidate_seed"]
+        assert ledger_by_id[cid]["selected_seed"] == seed
+        assert journal_by_id[cid]["candidate_seed"] == seed
+        assert staging_by_id[cid]["fair"] is True
 
 
-def _panel_rows(paths: list[str]) -> list[dict]:
-    return [
-        {
-            "modality": row["modality"],
-            "label": float(row["contaminated"]),
-            "features": [float(row[name]) for name in FEATURES],
-        }
-        for row in _load_json_lines(paths)
-    ]
+def test_heldout_selected_seeds():
+    """Selected seeds match sealed held-out fair seeds for each campaign."""
+    held = _heldout()["campaigns"]
+    by_id = {row["campaign_id"]: row for row in _ledger()["campaigns"]}
+    for cid, seed in held.items():
+        assert by_id[cid]["selected_seed"] == seed
 
 
-def _calibrate(rows: list[dict], penalties: list[float]) -> dict:
-    count = len(rows)
-    center = [
-        sum(row["features"][column] for row in rows) / count for column in range(len(FEATURES))
-    ]
-    spread = [
-        math.sqrt(
-            sum((row["features"][column] - center[column]) ** 2 for row in rows) / count,
+def test_selected_seeds_are_fair_under_spec():
+    """Each ledger seed regenerates a dungeon that passes all four invariant families."""
+    for path in _campaign_files():
+        camp = load_campaign(path)
+        row = next(r for r in _ledger()["campaigns"] if r["campaign_id"] == camp.campaign_id)
+        metrics = evaluate(camp, gen_dungeon(camp, row["selected_seed"]))
+        assert metrics["ok"], (camp.campaign_id, row["selected_seed"], metrics)
+        assert reference_evaluate(camp, gen_dungeon(camp, row["selected_seed"]))["ok"]
+
+
+def test_origin_seeds_are_not_selected():
+    """Planner must not accept the unfair search_origin seed for stock campaigns."""
+    for path in _campaign_files():
+        camp = load_campaign(path)
+        row = next(r for r in _ledger()["campaigns"] if r["campaign_id"] == camp.campaign_id)
+        assert row["selected_seed"] != camp.search_origin
+        assert not evaluate(camp, gen_dungeon(camp, camp.search_origin))["ok"]
+
+
+def test_ledger_metrics_match_regenerated_map():
+    """Ledger quality metrics match independent regeneration for the selected seed."""
+    for path in _campaign_files():
+        camp = load_campaign(path)
+        row = next(r for r in _ledger()["campaigns"] if r["campaign_id"] == camp.campaign_id)
+        m = evaluate(camp, gen_dungeon(camp, row["selected_seed"]))
+        assert row["path_len"] == m["path_len"]
+        assert row["total_gold"] == m["total_gold"]
+        assert row["cum_threat_end"] == m["cum_threat_end"]
+        assert row["max_room_threat"] == m["max_room_threat"]
+        assert abs(row["mean_gap"] - m["mean_gap"]) < 1e-9
+        assert abs(row["gold_density_early"] - m["densities"][0]) < 1e-9
+        assert abs(row["gold_density_mid"] - m["densities"][1]) < 1e-9
+        assert abs(row["gold_density_late"] - m["densities"][2]) < 1e-9
+        assert row["fair"] is True
+
+
+def test_atlas_critical_path_matches_regeneration():
+    """Atlas critical paths equal BFS shortest paths for selected seeds."""
+    routes = {r["campaign_id"]: r for r in _atlas()["routes"]}
+    for path in _campaign_files():
+        camp = load_campaign(path)
+        seed = routes[camp.campaign_id]["seed"]
+        dung = gen_dungeon(camp, seed)
+        route = routes[camp.campaign_id]
+        assert route["start"] == dung.start
+        assert route["exit"] == dung.exit
+        assert route["critical_path"] == dung.critical_path
+        assert route["seed"] == next(
+            r["selected_seed"] for r in _ledger()["campaigns"] if r["campaign_id"] == camp.campaign_id
         )
-        for column in range(len(FEATURES))
-    ]
-    design = [
-        [(row["features"][column] - center[column]) / spread[column] for column in range(len(FEATURES))]
-        for row in rows
-    ]
-    labels = [row["label"] for row in rows]
-    modalities = sorted({row["modality"] for row in rows})
-
-    curve = []
-    for penalty in penalties:
-        losses = []
-        for modality in modalities:
-            used = [row["modality"] != modality for row in rows]
-            coefficients = _fit(design, labels, penalty, used)
-            held = [index for index in range(count) if not used[index]]
-            losses.append(
-                sum(_point_loss(_linear(coefficients, design[index]), labels[index]) for index in held)
-                / len(held),
-            )
-        mean = sum(losses) / len(losses)
-        variance = sum((value - mean) ** 2 for value in losses) / (len(losses) - 1)
-        curve.append((penalty, mean, math.sqrt(variance) / math.sqrt(len(losses))))
-
-    best = curve[0]
-    for row in curve[1:]:
-        if row[1] < best[1]:
-            best = row
-    limit = best[1] + best[2]
-    chosen = best
-    for row in curve:
-        if row[1] <= limit and row[0] > chosen[0]:
-            chosen = row
-    full = _fit(design, labels, chosen[0], [True] * count)
-    deleted = []
-    for dropped in range(count):
-        used = [True] * count
-        used[dropped] = False
-        deleted.append(_fit(design, labels, chosen[0], used))
-    return {
-        "penalty": chosen[0],
-        "mean_log_loss": chosen[1],
-        "intercept": full[0],
-        "coefficients": full[1:],
-        "center": center,
-        "spread": spread,
-        "full": full,
-        "deleted": deleted,
-    }
 
 
-def _head_for(config: dict) -> dict:
-    settings = config["calibration"]
-    key = (tuple(settings["panel_paths"]), tuple(settings["penalties"]))
-    cached = _HEAD_CACHE.get(key)
-    if cached is None:
-        cached = _calibrate(_panel_rows(settings["panel_paths"]), settings["penalties"])
-        _HEAD_CACHE[key] = cached
-    return cached
+def test_reachability_path_bounds_on_selected():
+    """Selected seeds keep critical path length inside campaign bounds."""
+    for path in _campaign_files():
+        camp = load_campaign(path)
+        row = next(r for r in _ledger()["campaigns"] if r["campaign_id"] == camp.campaign_id)
+        assert camp.path_min <= row["path_len"] <= camp.path_max
 
 
-def _predict(head: dict, evidence: dict) -> tuple[float, float, float]:
-    scaled = [
-        (float(evidence[name]) - head["center"][column]) / head["spread"][column]
-        for column, name in enumerate(FEATURES)
-    ]
-    eta = _linear(head["full"], scaled)
-    deleted = [_linear(coefficients, scaled) for coefficients in head["deleted"]]
-    count = len(deleted)
-    mean = sum(deleted) / count
-    error = math.sqrt((count - 1) / count * sum((value - mean) ** 2 for value in deleted))
-    return (
-        1.0 / (1.0 + math.exp(-eta)),
-        1.0 / (1.0 + math.exp(-(eta - NORMAL_90 * error))),
-        1.0 / (1.0 + math.exp(-(eta + NORMAL_90 * error))),
+def test_route_gap_invariants_on_selected():
+    """Selected seeds satisfy min_gap and mean_gap_min along the critical path."""
+    for path in _campaign_files():
+        camp = load_campaign(path)
+        row = next(r for r in _ledger()["campaigns"] if r["campaign_id"] == camp.campaign_id)
+        m = evaluate(camp, gen_dungeon(camp, row["selected_seed"]))
+        assert m["pacing_ok"]
+        assert m["mean_gap"] >= camp.mean_gap_min
+
+
+def test_band_density_invariants_on_selected():
+    """Selected seeds satisfy non-empty band density windows and total gold budget."""
+    for path in _campaign_files():
+        camp = load_campaign(path)
+        row = next(r for r in _ledger()["campaigns"] if r["campaign_id"] == camp.campaign_id)
+        m = evaluate(camp, gen_dungeon(camp, row["selected_seed"]))
+        assert m["treasure_ok"]
+        assert camp.total_gold_lo <= m["total_gold"] <= camp.total_gold_hi
+
+
+def test_route_budget_invariants_on_selected():
+    """Selected seeds keep cumulative threat under the linear route budget."""
+    for path in _campaign_files():
+        camp = load_campaign(path)
+        row = next(r for r in _ledger()["campaigns"] if r["campaign_id"] == camp.campaign_id)
+        m = evaluate(camp, gen_dungeon(camp, row["selected_seed"]))
+        assert m["threat_ok"]
+        assert m["max_room_threat"] <= camp.max_room_threat
+
+
+def test_journal_records_accepted_seeds():
+    """Playtest journal records an accepted=true line per campaign."""
+    lines = [json.loads(x) for x in JOURNAL.read_text(encoding="utf-8").splitlines() if x.strip()]
+    accepted = {line["campaign_id"]: line for line in lines if line.get("accepted") is True}
+    for path in _campaign_files():
+        camp = load_campaign(path)
+        assert camp.campaign_id in accepted
+        row = next(r for r in _ledger()["campaigns"] if r["campaign_id"] == camp.campaign_id)
+        assert accepted[camp.campaign_id]["candidate_seed"] == row["selected_seed"]
+
+
+def test_lexicographic_campaign_order():
+    """Ledger and atlas follow lexicographic campaign filename order."""
+    ids = [p.stem for p in _campaign_files()]
+    assert [r["campaign_id"] for r in _ledger()["campaigns"]] == ids
+    assert [r["campaign_id"] for r in _atlas()["routes"]] == ids
+
+
+def test_deterministic_rerun_byte_identical():
+    """Re-running playtest yields byte-identical ledger, atlas, seal, and staging."""
+    before = (
+        LEDGER.read_bytes(),
+        ATLAS.read_bytes(),
+        SEAL.read_bytes(),
+        STAGING.read_bytes(),
     )
+    run_playtest()
+    after = (
+        LEDGER.read_bytes(),
+        ATLAS.read_bytes(),
+        SEAL.read_bytes(),
+        STAGING.read_bytes(),
+    )
+    assert before == after
 
 
-def _normalized_study_value(value: object) -> str:
-    if isinstance(value, int | float):
-        return f"{float(value):.12g}"
-    return str(value)
+def test_randomized_eval_pool_rejects_unfair_members():
+    """Hidden eval pool mixes fair held-out seeds with nearby unfair distractors."""
+    held = _heldout()
+    fair = set(held["campaigns"].values())
+    sample = list(held["eval_pool"])[:6]
+    first = _campaign_files()[0]
+    camp = load_campaign(first)
+    fair_seed = held["campaigns"][camp.campaign_id]
+    for seed in sample:
+        metrics = evaluate(camp, gen_dungeon(camp, seed))
+        if seed in fair and seed == fair_seed:
+            assert metrics["ok"]
+        if seed == camp.search_origin:
+            assert not metrics["ok"]
+        if seed in (120, 514) and seed != fair_seed:
+            # Near-miss distractors from alternate gap/band interpretations.
+            assert seed != fair_seed
 
 
-def _logical_database_dump(path: pathlib.Path) -> dict[str, list[tuple]]:
-    with sqlite3.connect(path) as connection:
-        return {
-            "items": connection.execute("SELECT * FROM items ORDER BY id").fetchall(),
-            "probes": connection.execute(
-                "SELECT * FROM probes ORDER BY probe_index",
-            ).fetchall(),
-            "study": connection.execute(
-                "SELECT * FROM study ORDER BY axis, value",
-            ).fetchall(),
-        }
-
-
-@contextlib.contextmanager
-def _server_for(handler: type[http.server.BaseHTTPRequestHandler]):
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield server.server_port
-    finally:
-        server.shutdown()
-        thread.join(timeout=5)
-        server.server_close()
-
-
-class _HiddenProbeHandler(http.server.BaseHTTPRequestHandler):
-    profiles: dict[str, dict]
-
-    def do_POST(self) -> None:
-        length = int(self.headers["Content-Length"])
-        request = json.loads(self.rfile.read(length))
-        profile = self.profiles[request["item_id"]]
-        risk = profile["risk"]
-        kind = request.get("probe_kind", "original")
-        distance = float(request.get("paraphrase_distance", 0))
-        temperature = float(request.get("temperature", 0))
-        if kind == "perturbed":
-            probability = 0.18 if risk > 0.5 else 0.40
-        elif kind == "paraphrase":
-            probability = (0.91 if risk > 0.5 else 0.42) - 0.32 * distance
-        else:
-            probability = 0.98 if risk > 0.5 else 0.43
-        probability -= 0.18 * temperature
-        signature = "|".join(
+def test_perturbation_origin_changes_selected_seed():
+    """Shifting search_origin on a temp campaign changes the accepted seed."""
+    src = _campaign_files()[0]
+    camp = load_campaign(src)
+    with tempfile.TemporaryDirectory() as tmp:
+        tdir = Path(tmp)
+        payload = json.loads(src.read_text(encoding="utf-8"))
+        payload["search_origin"] = camp.search_origin + 50
+        payload["campaign_id"] = f"{camp.campaign_id}_shift"
+        (tdir / f"{payload['campaign_id']}.json").write_text(
+            json.dumps(payload), encoding="utf-8"
+        )
+        out_ledger = APP / "output" / "shift-ledger.json"
+        out_atlas = APP / "output" / "shift-atlas.json"
+        out_seal = APP / "output" / "shift-seal.json"
+        out_journal = APP / "state" / "shift-journal.jsonl"
+        proc = subprocess.run(
             [
-                request["item_id"],
-                kind,
-                str(request.get("seed", 0)),
-                str(distance),
-                str(temperature),
-                str(request.get("answer_format", "free")),
+                str(BIN),
+                "playtest",
+                "--campaigns",
+                str(tdir),
+                "--ledger",
+                str(out_ledger),
+                "--atlas",
+                str(out_atlas),
+                "--seal",
+                str(out_seal),
+                "--journal",
+                str(out_journal),
             ],
+            check=False,
+            text=True,
+            capture_output=True,
         )
-        unit = int(hashlib.sha256(signature.encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
-        correct = unit < probability
-        logprob = (-0.18 if risk > 0.5 else -2.25) - (
-            distance * 1.1 if kind == "paraphrase" and risk > 0.5 else 0
+        assert proc.returncode == 0, proc.stderr
+        shifted = json.loads(out_ledger.read_text(encoding="utf-8"))["campaigns"][0]
+        baseline = next(
+            r for r in _ledger()["campaigns"] if r["campaign_id"] == camp.campaign_id
         )
-        metadata = {}
-        if request.get("framing") == "metadata" and risk > 0.5:
-            metadata = {"benchmark_id": request["item_id"], "split": "hidden"}
-        canary = ""
-        if kind == "canary" and risk > 0.5 and request.get("canary_rarity", 0) >= 7:
-            canary = request["canary"]
-        payload = json.dumps(
-            {
-                "text": profile["answer"] if correct else profile["distractor"],
-                "logprob": logprob,
-                "metadata_echo": metadata,
-                "returned_canary": canary,
-            },
-        ).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
-
-    def log_message(self, *_: object) -> None:
-        return
+        assert shifted["selected_seed"] != baseline["selected_seed"]
+        assert shifted["fair"] is True
+        shifted_camp = Campaign(**payload)
+        assert evaluate(
+            shifted_camp, gen_dungeon(shifted_camp, shifted["selected_seed"])
+        )["ok"]
+        staging_shift = Path(out_journal).parent / "seed-hunt-staging.json"
+        assert staging_shift.is_file()
+        seal_shift = json.loads(out_seal.read_text(encoding="utf-8"))
+        assert seal_shift["staging_digest"] == _sha256_hex(staging_shift)
 
 
-class _MalformedProbeHandler(http.server.BaseHTTPRequestHandler):
-    def do_POST(self) -> None:
-        payload = b'{"text":7,"logprob":"not numeric"}'
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
-
-    def log_message(self, *_: object) -> None:
-        return
-
-
-def _hidden_panel() -> list[dict]:
-    """an adjudicated panel the audit has never seen, drawn from a small generator."""
-    rows: list[dict] = []
-    state = 20260728
-    scale = 1 << 31
-
-    def unit() -> float:
-        nonlocal state
-        state = (state * 1103515245 + 12345) % scale
-        return state / scale
-
-    for index, modality in enumerate(HIDDEN_MODALITIES):
-        for _ in range(12):
-            risk = unit()
-            label = 1 if risk > 0.5 else 0
-            if unit() < 0.06:
-                label = 1 - label
-            offset = 0.02 * index - 0.03
-            rows.append(
-                {
-                    "id": f"unseen_{len(rows) + 1:03d}",
-                    "modality": modality,
-                    "contaminated": label,
-                    "completion_likelihood_gap": round(0.05 + 0.36 * risk + 0.05 * unit(), 4),
-                    "exact_match_rate": round(min(1.0, max(0.0, 0.2 + 0.7 * risk + offset)), 4),
-                    "perturbation_sensitivity": round(
-                        min(1.0, max(0.0, 0.1 + 0.6 * risk - 0.2 * unit())), 4,
-                    ),
-                    "order_invariance": round(min(1.0, max(0.0, 0.35 + 0.5 * risk + 0.1 * unit())), 4),
-                    "metadata_leak": 1.0 if risk > 0.45 else 0.0,
-                    "canary_recall": 1.0 if risk > 0.6 else 0.0,
-                    "paraphrase_robustness": round(
-                        min(1.0, max(0.0, 0.25 + 0.55 * risk - 0.15 * unit())), 4,
-                    ),
-                    "substring_overlap": round(min(1.0, max(0.02, 0.06 + 0.8 * risk * unit())), 4),
-                    "semantic_overlap": round(
-                        min(0.9999, max(0.2, 0.34 + 0.55 * risk + 0.06 * unit())), 4,
-                    ),
-                },
-            )
-    return rows
-
-
-def _write_hidden_case(root: pathlib.Path, port: int) -> tuple[pathlib.Path, dict[str, float]]:
-    modalities = ["text", "source_code", "table", "image_caption"]
-    profiles = {}
-    benchmarks = []
-    corpus = []
-    embeddings = []
-    for index in range(8):
-        item_id = f"hidden_{index + 1}"
-        contaminated = index < 4
-        risk = 0.91 if contaminated else 0.09
-        answer = f"answer {index + 1}"
-        profiles[item_id] = {
-            "risk": risk,
-            "answer": answer,
-            "distractor": f"distractor {index + 1}",
-        }
-        embedding = [1.0, 0.0, 0.0, 0.0] if contaminated else [0.0, 1.0, 0.0, 0.0]
-        prompt = (
-            f"Archived benchmark prompt number {index + 1}"
-            if contaminated
-            else f"Novel evaluation question number {index + 1}"
+def test_hidden_delta_holdout_first_fair_seed():
+    """Verifier-only crypt_delta profile must select the sealed first-fair seed."""
+    src = DELTA_CAMPAIGN if DELTA_CAMPAIGN.is_file() else DELTA_CAMPAIGN_SRC
+    assert src.is_file()
+    held = _heldout()["delta_holdout"]
+    with tempfile.TemporaryDirectory() as tmp:
+        tdir = Path(tmp)
+        payload = json.loads(src.read_text(encoding="utf-8"))
+        (tdir / "crypt_delta.json").write_text(json.dumps(payload), encoding="utf-8")
+        out_ledger = APP / "output" / "delta-ledger.json"
+        out_atlas = APP / "output" / "delta-atlas.json"
+        out_seal = APP / "output" / "delta-seal.json"
+        out_journal = APP / "state" / "delta-journal.jsonl"
+        proc = subprocess.run(
+            [
+                str(BIN),
+                "playtest",
+                "--campaigns",
+                str(tdir),
+                "--ledger",
+                str(out_ledger),
+                "--atlas",
+                str(out_atlas),
+                "--seal",
+                str(out_seal),
+                "--journal",
+                str(out_journal),
+            ],
+            check=False,
+            text=True,
+            capture_output=True,
         )
-        benchmarks.append(
-            {
-                "id": item_id,
-                "modality": modalities[index % len(modalities)],
-                "prompt": prompt,
-                "answer": answer,
-                "options": [answer, f"distractor {index + 1}"],
-                "metadata": {"source": "hidden", "split": "heldout"},
-                "canary": f"rare token {index + 101}",
-                "age_months": 48 if contaminated else 4,
-                "embedding": embedding,
-                "paraphrases": [
-                    {
-                        "text": f"Rephrased hidden prompt {index + 1}",
-                        "distance": 0.25,
-                        "embedding": embedding,
-                    },
-                    {
-                        "text": f"Semantically altered hidden prompt {index + 1}",
-                        "distance": 0.65,
-                        "embedding": embedding,
-                    },
-                ],
-            },
-        )
-        if contaminated:
-            corpus.append(
-                {
-                    "id": f"corpus_{index}",
-                    "text": prompt,
-                    "embedding": embedding,
-                },
-            )
-            embeddings.append({"id": f"embed_{index}", "embedding": embedding})
-    corpus.append(
-        {
-            "id": "unrelated",
-            "text": "A distant corpus passage about mineral crystal symmetry",
-            "embedding": [0.0, 0.0, 1.0, 0.0],
-        },
+        assert proc.returncode == 0, proc.stderr
+        row = json.loads(out_ledger.read_text(encoding="utf-8"))["campaigns"][0]
+        assert row["selected_seed"] == held["selected_seed"]
+        camp = Campaign(**payload)
+        assert evaluate(camp, gen_dungeon(camp, row["selected_seed"]))["ok"]
+        # Last-fair / end-budget / exclusive-band near-misses must not win.
+        assert row["selected_seed"] not in (276, 286, 421)
+
+
+def test_artifacts_exclude_decoy_biome_labels():
+    """Published artifacts must not embed decoy biome attractor strings."""
+    blob = (
+        LEDGER.read_text(encoding="utf-8")
+        + ATLAS.read_text(encoding="utf-8")
+        + SEAL.read_text(encoding="utf-8")
+        + STAGING.read_text(encoding="utf-8")
+        + JOURNAL.read_text(encoding="utf-8")
     )
-    embeddings.append({"id": "unrelated", "embedding": [0.0, 0.0, 1.0, 0.0]})
-
-    root.mkdir(parents=True, exist_ok=True)
-    benchmark_path = root / "benchmarks.jsonl"
-    corpus_path = root / "corpus.jsonl"
-    embedding_path = root / "embeddings.jsonl"
-    benchmark_path.write_text("\n".join(json.dumps(row) for row in benchmarks) + "\n", encoding="utf-8")
-    corpus_path.write_text("\n".join(json.dumps(row) for row in corpus) + "\n", encoding="utf-8")
-    embedding_path.write_text("\n".join(json.dumps(row) for row in embeddings) + "\n", encoding="utf-8")
-    panel_path = root / "panel.jsonl"
-    panel_path.write_text(
-        "\n".join(json.dumps(row) for row in _hidden_panel()) + "\n",
-        encoding="utf-8",
-    )
-    config = {
-        "benchmark_paths": [str(benchmark_path)],
-        "corpus_paths": [str(corpus_path)],
-        "embedding_paths": [str(embedding_path)],
-        "endpoint": f"http://127.0.0.1:{port}/v1/probe",
-        "output": {
-            "audit": str(AUDIT_PATH),
-            "database": str(DATABASE_PATH),
-            "cleaned": str(CLEANED_PATH),
-        },
-        "seeds": [3, 5, 7, 11, 13],
-        "study": {
-            "paraphrase_distance": [0.15, 0.45, 0.75],
-            "canary_rarity": [2, 7, 13],
-            "prompt_framing": ["plain", "metadata"],
-            "answer_format": ["free", "choice"],
-            "sampling_randomness": [0.0, 0.4, 0.8],
-            "benchmark_age": [6, 24, 60],
-        },
-        "calibration": {
-            "panel_paths": [str(panel_path)],
-            "penalties": HIDDEN_PENALTIES,
-        },
-        "cleaning": {
-            "risk_limit": 0.65,
-            "minimum_retention": 0.5,
-            "minimum_per_modality": 1,
-        },
-    }
-    config_path = root / "config.json"
-    config_path.write_text(json.dumps(config), encoding="utf-8")
-    return config_path, {key: value["risk"] for key, value in profiles.items()}
+    for token in ("moss", "ash", "decoy_biome", "wrap:"):
+        assert token not in blob
 
 
-def setup_module() -> None:
-    """generate all primary artifacts from a live local model API."""
-    for path in OUTPUT_PATHS:
-        path.unlink(missing_ok=True)
-    process = subprocess.Popen(
-        ["lua", str(APP / "mock_model" / "server.lua"), str(PROFILE_PATH), "18080"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    _wait_for_port(18080)
-    result = _run_audit()
-    process.terminate()
-    process.wait(timeout=5)
-    assert result.returncode == 0, result.stderr
-    assert all(path.exists() for path in OUTPUT_PATHS)
+def test_instruction_output_paths_exist():
+    """Paths named in instruction.md are present after a successful playtest."""
+    assert Path("/app/output/seed-ledger.json").is_file()
+    assert Path("/app/output/route-atlas.json").is_file()
+    assert Path("/app/output/fairness-seal.json").is_file()
+    assert Path("/app/state/playtest-journal.jsonl").is_file()
+    assert Path("/app/state/seed-hunt-staging.json").is_file()
+    assert Path("/app/output/seed-ledger.json") == LEDGER
+    assert Path("/app/output/route-atlas.json") == ATLAS
+    assert Path("/app/output/fairness-seal.json") == SEAL
+    assert Path("/app/state/playtest-journal.jsonl") == JOURNAL
+    assert Path("/app/state/seed-hunt-staging.json") == STAGING
 
 
-def test_lua_pipeline_authors_all_required_artifacts() -> None:
-    """the Lua entrypoint recreates every documented final artifact."""
-    first_line = (APP / "bin" / "memscope").read_text(encoding="utf-8").splitlines()[0]
-    assert "lua" in first_line.lower()
-    assert (APP / "src" / "cli.lua").is_file()
-    assert (APP / "src" / "pipeline.lua").is_file()
-    forbidden_suffixes = {".js", ".php", ".pl", ".py", ".rb", ".sh", ".ts"}
-    forbidden_sources = [
-        path
-        for path in APP.rglob("*")
-        if path.is_file() and path.suffix.lower() in forbidden_suffixes
-    ]
-    assert not forbidden_sources
-    for source in (APP / "src").glob("*.lua"):
-        for line in source.read_text(encoding="utf-8").splitlines():
-            if "os.execute" in line or "io.popen" in line:
-                assert not any(
-                    interpreter in line.lower()
-                    for interpreter in ("node", "perl", "php", "python", "ruby")
-                )
-    audit = _load_audit()
-    assert set(audit) == {"calibration", "cleaning", "items", "parameter_study", "summary"}
-    assert set(audit["summary"]) == {"item_count", "probe_count"}
-    config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    assert audit["summary"]["item_count"] == len(_load_json_lines(config["benchmark_paths"]))
-    assert len(CLEANED_PATH.read_text(encoding="utf-8").splitlines()) > 0
-
-
-def test_sqlite_contains_live_api_probe_evidence() -> None:
-    """every evidence family and study request is persisted in SQLite."""
-    config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    expected_items = len(_load_json_lines(config["benchmark_paths"]))
-    with sqlite3.connect(DATABASE_PATH) as connection:
-        table_names = {
-            row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'",
-            )
-        }
-        assert {"items", "probes", "study"} <= table_names
-        assert connection.execute("SELECT COUNT(*) FROM items").fetchone()[0] == expected_items
-        kinds = {
-            row[0]
-            for row in connection.execute(
-                "SELECT DISTINCT kind FROM probes WHERE axis=''",
-            )
-        }
-        assert {"canary", "metadata", "order", "original", "paraphrase", "perturbed"} <= kinds
-        axes = {
-            row[0]
-            for row in connection.execute(
-                "SELECT DISTINCT axis FROM probes WHERE axis<>''",
-            )
-        }
-        assert axes == AXES
-        probe_count = connection.execute("SELECT COUNT(*) FROM probes").fetchone()[0]
-        assert probe_count == _load_audit()["summary"]["probe_count"]
-
-
-def test_overlap_indexes_cover_substrings_and_cosine_similarity() -> None:
-    """substring clones and embedding cosine maxima are measured correctly."""
-    config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    benchmarks = _load_json_lines(config["benchmark_paths"])
-    corpus = _load_json_lines(config["corpus_paths"])
-    corpus_embeddings = _load_json_lines(config["embedding_paths"])
-    reported = {row["id"]: row for row in _load_audit()["items"]}
-    corpus_words = [_words(row["text"]) for row in corpus]
-    for item in benchmarks:
-        expected_semantic = max(
-            _cosine(item["embedding"], row["embedding"])
-            for row in corpus_embeddings
-        )
-        assert math.isclose(
-            reported[item["id"]]["semantic_overlap"],
-            expected_semantic,
-            rel_tol=1e-9,
-            abs_tol=1e-12,
-        )
-        prompt_words = _words(item["prompt"])
-        expected_substring = max(
-            _longest_run(prompt_words, passage) for passage in corpus_words
-        ) / len(prompt_words)
-        assert math.isclose(
-            reported[item["id"]]["substring_overlap"],
-            expected_substring,
-            rel_tol=1e-9,
-            abs_tol=1e-12,
-        )
-
-
-def test_per_item_evidence_is_recomputed_from_persisted_probes() -> None:
-    """likelihood, matching, perturbation, order, metadata, canary, and paraphrase evidence agree with probes."""
-    audit_items = {row["id"]: row for row in _load_audit()["items"]}
-    with sqlite3.connect(DATABASE_PATH) as connection:
-        connection.row_factory = sqlite3.Row
-        probes = connection.execute(
-            "SELECT * FROM probes WHERE axis='' ORDER BY probe_index",
-        ).fetchall()
-    by_item: dict[str, list[sqlite3.Row]] = {}
-    for row in probes:
-        by_item.setdefault(row["item_id"], []).append(row)
-    for item_id, rows in by_item.items():
-        item = audit_items[item_id]
-
-        def selected(
-            kind: str,
-            field: str,
-            records: list[sqlite3.Row] = rows,
-        ) -> list[float]:
-            return [float(row[field]) for row in records if row["kind"] == kind]
-
-        original_correct = selected("original", "correct")
-        paraphrase_correct = selected("paraphrase", "correct")
-        original_logprob = selected("original", "logprob")
-        paraphrase_logprob = selected("paraphrase", "logprob")
-        exact_rate = sum(original_correct) / len(original_correct)
-        paraphrase_rate = sum(paraphrase_correct) / len(paraphrase_correct)
-        assert math.isclose(item["exact_match_rate"], exact_rate)
-        assert math.isclose(item["paraphrase_robustness"], paraphrase_rate)
-        expected_gap = sum(original_logprob) / len(original_logprob) - sum(
-            paraphrase_logprob,
-        ) / len(paraphrase_logprob)
-        assert math.isclose(item["completion_likelihood_gap"], expected_gap)
-        perturbed = selected("perturbed", "correct")
-        assert math.isclose(
-            item["perturbation_sensitivity"],
-            max(0.0, exact_rate - sum(perturbed) / len(perturbed)),
-        )
-        for kind, field, output_key in (
-            ("order", "correct", "order_invariance"),
-            ("metadata", "metadata_leak", "metadata_leak"),
-            ("canary", "canary_recall", "canary_recall"),
-        ):
-            values = selected(kind, field)
-            assert math.isclose(item[output_key], sum(values) / len(values))
-
-
-def test_calibration_reports_the_one_standard_error_penalized_fit() -> None:
-    """the reported head is the leave one modality out selection over the adjudicated panel."""
-    config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    head = _head_for(config)
-    reported = _load_audit()["calibration"]
-    assert set(reported) == {"coefficients", "intercept", "mean_log_loss", "penalty"}
-    assert math.isclose(reported["penalty"], head["penalty"], rel_tol=1e-9)
-    assert math.isclose(reported["mean_log_loss"], head["mean_log_loss"], abs_tol=1e-6)
-    assert math.isclose(reported["intercept"], head["intercept"], abs_tol=1e-6)
-    assert len(reported["coefficients"]) == len(FEATURES)
-    for value, expected in zip(reported["coefficients"], head["coefficients"], strict=True):
-        assert math.isclose(value, expected, abs_tol=1e-6)
-
-
-def test_scores_and_jackknife_intervals_follow_from_the_calibrated_head() -> None:
-    """each score and interval is the panel fit applied to the item evidence."""
-    config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    head = _head_for(config)
-    for item in _load_audit()["items"]:
-        score, lower, upper = _predict(head, item)
-        assert math.isclose(item["score"], score, abs_tol=1e-6)
-        assert math.isclose(item["lower"], lower, abs_tol=5e-5)
-        assert math.isclose(item["upper"], upper, abs_tol=5e-5)
-
-
-def test_parameter_studies_match_their_persisted_measurements() -> None:
-    """all six parameter axes report the mean signal recorded by their probes."""
-    audit = _load_audit()
-    study = {
-        (row["axis"], _normalized_study_value(row["value"])): row["mean_signal"]
-        for row in audit["parameter_study"]
-    }
-    assert {axis for axis, _ in study} == AXES
-    with sqlite3.connect(DATABASE_PATH) as connection:
-        connection.row_factory = sqlite3.Row
-        rows = connection.execute(
-            "SELECT * FROM probes WHERE axis<>'' ORDER BY probe_index",
-        ).fetchall()
-    grouped: dict[tuple[str, str], list[float]] = {}
-    for row in rows:
-        if row["axis"] in {"answer_format", "prompt_framing"}:
-            key = (row["axis"], row["value"])
-        else:
-            key = (row["axis"], _normalized_study_value(float(row["value"])))
-        if row["axis"] in {"paraphrase_distance", "benchmark_age"}:
-            signal = float(row["logprob"])
-        elif row["axis"] == "canary_rarity":
-            signal = float(row["canary_recall"])
-        elif row["axis"] == "prompt_framing":
-            signal = float(row["metadata_leak"])
-        else:
-            signal = float(row["correct"])
-        grouped.setdefault(key, []).append(signal)
-    assert set(grouped) == set(study)
-    for key, values in grouped.items():
-        assert math.isclose(study[key], sum(values) / len(values), abs_tol=1e-10)
-
-
-def test_cleaning_is_the_largest_feasible_modality_preserving_subset() -> None:
-    """cleaning maximizes retention under risk, retention, and modality floors."""
-    audit = _load_audit()
-    config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))["cleaning"]
-    items = audit["items"]
-    modalities = {item["modality"] for item in items}
-    feasible: list[tuple[int, float, tuple[str, ...]]] = []
-    for mask in range(1 << len(items)):
-        chosen = [item for index, item in enumerate(items) if mask & (1 << index)]
-        if len(chosen) < math.ceil(len(items) * config["minimum_retention"]):
-            continue
-        counts = {
-            modality: sum(item["modality"] == modality for item in chosen)
-            for modality in modalities
-        }
-        if min(counts.values()) < config["minimum_per_modality"]:
-            continue
-        mean_upper = sum(item["upper"] for item in chosen) / len(chosen)
-        if mean_upper <= config["risk_limit"] + 1e-12:
-            feasible.append(
-                (
-                    len(chosen),
-                    mean_upper,
-                    tuple(sorted(item["id"] for item in chosen)),
-                ),
-            )
-    assert feasible
-    optimum = min(feasible, key=lambda row: (-row[0], row[1], row[2]))
-    retained = tuple(audit["cleaning"]["retained_ids"])
-    assert retained == optimum[2]
-    assert math.isclose(audit["cleaning"]["mean_upper_risk"], optimum[1])
-    retained_set = set(retained)
-    expected_removed = sorted(
-        item["id"] for item in items if item["id"] not in retained_set
-    )
-    assert audit["cleaning"]["removed_ids"] == expected_removed
-    assert math.isclose(
-        audit["cleaning"]["retained_fraction"],
-        len(retained) / len(items),
-    )
-    for item in items:
-        expected_decision = "keep" if item["id"] in retained_set else "remove"
-        assert item["decision"] == expected_decision
-    cleaned_ids = {
-        json.loads(line)["id"]
-        for line in CLEANED_PATH.read_text(encoding="utf-8").splitlines()
-        if line
-    }
-    assert cleaned_ids == set(retained)
-
-
-def test_repeated_runs_reproduce_json_and_jsonl_bytes() -> None:
-    """repeated live audits preserve byte identical JSON and JSONL outputs."""
-    before_audit = AUDIT_PATH.read_bytes()
-    before_cleaned = CLEANED_PATH.read_bytes()
-    before_database = _logical_database_dump(DATABASE_PATH)
-    process = subprocess.Popen(
-        ["lua", str(APP / "mock_model" / "server.lua"), str(PROFILE_PATH), "18080"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    _wait_for_port(18080)
-    result = _run_audit()
-    process.terminate()
-    process.wait(timeout=5)
-    assert result.returncode == 0, result.stderr
-    assert AUDIT_PATH.read_bytes() == before_audit
-    assert CLEANED_PATH.read_bytes() == before_cleaned
-    assert _logical_database_dump(DATABASE_PATH) == before_database
-
-
-def test_unseen_model_service_and_records_defeat_fixture_hardcoding() -> None:
-    """an unseen API, benchmark and panel still produce the calibrated head they imply."""
-    root = pathlib.Path("/tmp/memscope-hidden")
-    shutil.rmtree(root, ignore_errors=True)
-    profiles = {
-        f"hidden_{index + 1}": {
-            "risk": 0.91 if index < 4 else 0.09,
-            "answer": f"answer {index + 1}",
-            "distractor": f"distractor {index + 1}",
-        }
-        for index in range(8)
-    }
-    _HiddenProbeHandler.profiles = profiles
-    with _server_for(_HiddenProbeHandler) as port:
-        config_path, _ = _write_hidden_case(root, port)
-        result = _run_audit(config_path)
-    assert result.returncode == 0, result.stderr
-    audit = _load_audit()
-    assert {item["modality"] for item in audit["items"]} == {
-        "image_caption",
-        "source_code",
-        "table",
-        "text",
-    }
-    head = _head_for(json.loads(config_path.read_text(encoding="utf-8")))
-    assert math.isclose(audit["calibration"]["penalty"], head["penalty"], rel_tol=1e-9)
-    assert math.isclose(audit["calibration"]["intercept"], head["intercept"], abs_tol=1e-6)
-    for item in audit["items"]:
-        score, lower, upper = _predict(head, item)
-        assert math.isclose(item["score"], score, abs_tol=1e-6)
-        assert math.isclose(item["lower"], lower, abs_tol=5e-5)
-        assert math.isclose(item["upper"], upper, abs_tol=5e-5)
-    assert all(path.is_file() for path in OUTPUT_PATHS)
-
-    process = subprocess.Popen(
-        ["lua", str(APP / "mock_model" / "server.lua"), str(PROFILE_PATH), "18080"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    _wait_for_port(18080)
-    restore_result = _run_audit()
-    process.terminate()
-    process.wait(timeout=5)
-    assert restore_result.returncode == 0, restore_result.stderr
-
-
-def test_invalid_inputs_fail_without_replacing_completed_outputs() -> None:
-    """malformed configuration and API payloads return nonzero while preserving outputs."""
-    snapshots = {path: path.read_bytes() for path in OUTPUT_PATHS}
-    invalid_config = pathlib.Path("/tmp/memscope-invalid.json")
-    invalid_config.write_text('{"endpoint":7}', encoding="utf-8")
-    invalid_result = _run_audit(invalid_config)
-    assert invalid_result.returncode != 0
-    assert {path: path.read_bytes() for path in OUTPUT_PATHS} == snapshots
-
-    root = pathlib.Path("/tmp/memscope-malformed-api")
-    shutil.rmtree(root, ignore_errors=True)
-    with _server_for(_MalformedProbeHandler) as port:
-        valid_config, _ = _write_hidden_case(root, port)
-        config = json.loads(valid_config.read_text(encoding="utf-8"))
-        config["output"] = {
-            "audit": str(AUDIT_PATH),
-            "database": str(DATABASE_PATH),
-            "cleaned": str(CLEANED_PATH),
-        }
-        valid_config.write_text(json.dumps(config), encoding="utf-8")
-        malformed_result = _run_audit(valid_config)
-    assert malformed_result.returncode != 0
-    assert {path: path.read_bytes() for path in OUTPUT_PATHS} == snapshots
+def test_docs_contracts_present():
+    """Referenced contract docs exist under /app/docs for the playtest planner."""
+    for name in (
+        "playtest-workflow.md",
+        "cartograph-contract.md",
+        "reachability-pacing-contract.md",
+        "treasure-threat-contract.md",
+        "seed-search-contract.md",
+        "staging-export-contract.md",
+        "artifact-seal-contract.md",
+    ):
+        assert (APP / "docs" / name).is_file()

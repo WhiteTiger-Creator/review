@@ -1,0 +1,14 @@
+[package]
+name = "undercroft_fairness"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "undercroft_fairness"
+path = "src/main.rs"
+
+[dependencies]
+cartograph_core = { path = "../../lib/carto" }
+reach_graph = { path = "../../lib/reach" }
+xe = { path = "../../lib/xe" }
+xd = { path = "../../lib/xd" }

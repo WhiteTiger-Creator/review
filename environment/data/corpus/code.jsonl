@@ -1,2 +1,0 @@
-{"id":"cc1","text":"In Lua, what decimal value is returned by local x=5; return (x << 2) | 1?","embedding":[0.93,0.11,0.04,0.02]}
-{"id":"cc2","text":"A note on recursive descent parser recovery.","embedding":[0.22,0.18,0.30,0.72]}
