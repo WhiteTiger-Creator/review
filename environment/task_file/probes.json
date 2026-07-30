@@ -1,1 +1,0 @@
-[{"source":"10.0.0.8","port":22,"must":"accept"},{"source":"203.0.113.9","port":8080,"must":"drop"},{"source":"203.0.113.9","port":22,"must":"drop"}]

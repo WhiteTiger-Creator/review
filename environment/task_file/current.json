@@ -1,1 +1,0 @@
-{"policy":"drop","rules":[{"id":"ssh-old","position":10,"source":"10.0.0.0/24","port":22,"verdict":"accept"},{"id":"deny-web","position":20,"source":"0.0.0.0/0","port":8080,"verdict":"drop"}]}
