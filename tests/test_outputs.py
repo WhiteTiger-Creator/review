@@ -1,1105 +1,464 @@
-"""End-to-end verification for the Compose Dungeon game server.
-
-test.sh compiles /app offline into /tmp/dungeond and the tests-owned bbolt
-dump helper into /tmp/dbdump. These tests then play the game over HTTP
-against the shipped dungeon plus verifier-owned compose maps, checking the
-gameplay rules, the reachability computation, per-player item state, the
-win condition, crash durability, and the on-disk bbolt layout.
-"""
-
+import csv
 import json
-import socket
+import math
 import subprocess
-import threading
-import time
+import tempfile
 from pathlib import Path
 
+import mpmath as mp
+import numpy as np
 import pytest
-import requests
+from numpy.polynomial.hermite_e import hermegauss
 
-TESTS_DIR = Path(__file__).resolve().parent
-SERVER_BIN = Path("/tmp/dungeond")
-DBDUMP_BIN = Path("/tmp/dbdump")
-SHIPPED_WORLD = "/app/world/docker-compose.yml"
-FORMS_WORLD = str(TESTS_DIR / "worlds" / "forms.yml")
-MAZE_WORLD = str(TESTS_DIR / "worlds" / "maze.yml")
-BRANCH_WORLD = str(TESTS_DIR / "worlds" / "branch.yml")
+mp.mp.dps = 40
 
-_ports = iter(range(18310, 18600))
+APP = Path("/app")
+TESTS = Path(__file__).resolve().parent
+AGENT = APP / "solve.R"
+PUBLIC = APP / "data"
+HIDDEN_A = TESTS / "fixtures" / "hidden_a"
+HIDDEN_B = TESTS / "fixtures" / "hidden_b"
+HIDDEN_SCALED = TESTS / "fixtures" / "hidden_scaled"
 
+REL_TOL = 1e-8
+ABS_TOL = 1e-10
+META_TOL = 1e-7
+SCALE_C = 3.0
+GH_ORDER = 80
+PSD_SLACK = 1e-10
+MIN_CASES = 60
+MODE_STEP = 1e-4
+MODE_VERTEX_TOL = 1e-2
 
-class Dungeon:
-    """Runs one dungeond process against a given world and database path."""
+_NODES, _WEIGHTS = hermegauss(GH_ORDER)
+_WEIGHTS = _WEIGHTS / math.sqrt(2.0 * math.pi)
 
-    def __init__(self, compose, db_path, port=None):
-        self.port = port if port is not None else next(_ports)
-        self.compose = compose
-        self.db_path = str(db_path)
-        self.base = f"http://127.0.0.1:{self.port}"
-        self.proc = None
-
-    def start(self):
-        assert SERVER_BIN.exists(), "server binary missing: go build of /app failed"
-        self.proc = subprocess.Popen(
-            [
-                str(SERVER_BIN),
-                "-addr",
-                f"127.0.0.1:{self.port}",
-                "-db",
-                self.db_path,
-                "-compose",
-                self.compose,
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        deadline = time.time() + 15
-        while time.time() < deadline:
-            if self.proc.poll() is not None:
-                raise AssertionError("server process exited during startup")
-            try:
-                with socket.create_connection(("127.0.0.1", self.port), timeout=0.25):
-                    return self
-            except OSError:
-                time.sleep(0.1)
-        raise AssertionError("server did not start listening within 15s")
-
-    def kill(self):
-        if self.proc and self.proc.poll() is None:
-            self.proc.kill()
-        if self.proc:
-            self.proc.wait(timeout=10)
-
-    def terminate(self):
-        if self.proc and self.proc.poll() is None:
-            self.proc.terminate()
-        if self.proc:
-            self.proc.wait(timeout=10)
-
-    def __enter__(self):
-        return self.start()
-
-    def __exit__(self, *exc):
-        self.kill()
-
-    def get(self, path):
-        return requests.get(self.base + path, timeout=10)
-
-    def post(self, path, body=None, raw=None):
-        if raw is not None:
-            return requests.post(self.base + path, data=raw, timeout=10)
-        return requests.post(self.base + path, json=body, timeout=10)
+CASES = []
 
 
-def rooms_by_name(world_json):
-    return {r["name"]: r for r in world_json["rooms"]}
+def _read(path):
+    with open(path, newline="") as fh:
+        return list(csv.DictReader(fh))
 
 
-def dbdump(path):
-    """Dump a bbolt database file as {bucket: {key: value}} via the
-    tests-owned helper binary."""
-    out = subprocess.run(
-        [str(DBDUMP_BIN), str(path)], capture_output=True, text=True, check=True
+def _qnorm(p):
+    return float(mp.sqrt(2) * mp.erfinv(2 * mp.mpf(str(p)) - 1))
+
+
+def _kernel(a, b, sv, ell):
+    return sv * np.exp(-0.5 * ((a[:, None] - b[None, :]) / ell) ** 2)
+
+
+def _warp(name, y, lam):
+    if name == "identity":
+        return y.copy(), np.ones_like(y)
+    if name == "log":
+        return np.log(y), 1.0 / y
+    return (y**lam - 1.0) / lam, y ** (lam - 1.0)
+
+
+def _ginv(name, u, lam):
+    if name == "identity":
+        return u
+    if name == "log":
+        return np.exp(u)
+    base = lam * u + 1.0
+    out = np.full(np.shape(base), np.nan, dtype=float)
+    ok = base > 0.0
+    out[ok] = base[ok] ** (1.0 / lam)
+    return out
+
+
+def _mode(name, mu, var, lam):
+    """The mode of the predictive law of radius, or None where none exists."""
+    if name == "identity":
+        return [float(v) for v in mu]
+    if name == "log":
+        return [float(v) for v in np.exp(mu - var)]
+    if lam < 1.0:
+        return None
+    base = 1.0 + lam * mu
+    root = (base + np.sqrt(base**2 + 4.0 * lam * var * (lam - 1.0))) / 2.0
+    return [float(v) for v in root ** (1.0 / lam)]
+
+
+def _log_density(name, r, m, sd, lam):
+    """Log density of radius r under the back-transformed predictive law.
+
+    Up to an additive constant, and independent of the closed form in _mode.
+    """
+    if name != "identity" and r <= 0.0:
+        return -math.inf
+    if name == "identity":
+        g, ljac = r, 0.0
+    elif name == "log":
+        g, ljac = math.log(r), -math.log(r)
+    else:
+        g, ljac = (r**lam - 1.0) / lam, (lam - 1.0) * math.log(r)
+    return -((g - m) ** 2) / (2.0 * sd * sd) + ljac
+
+
+def _nullify(arr):
+    return [
+        None if not math.isfinite(float(v)) else float(v) for v in np.atleast_1d(arr)
+    ]
+
+
+def _gh_mean(m, v):
+    return float(np.sum(_WEIGHTS * np.exp(m + math.sqrt(v) * _NODES)))
+
+
+def _gh_cov(mu, sig, i, j):
+    sii, sjj, sij = sig[i, i], sig[j, j], sig[i, j]
+    cvar = sjj - sij * sij / sii
+    t = mu[i] + math.sqrt(sii) * _NODES
+    inner = np.exp(mu[j] + (sij / sii) * (t - mu[i]) + cvar / 2.0)
+    joint = float(np.sum(_WEIGHTS * np.exp(t) * inner))
+    return joint - math.exp(mu[i] + sii / 2.0) * math.exp(mu[j] + sjj / 2.0)
+
+
+def _solve_block(wname, train, xq, par):
+    x, y, sg = train
+    sv, ell, jit, lam, zlo, zhi = par
+    n = len(x)
+    z, gp = _warp(wname, y, lam)
+    s = sg * gp
+    centre = z.mean()
+    zt = z - centre
+    amat = _kernel(x, x, sv, ell) + np.diag(s**2) + jit * np.eye(n)
+    evals, evecs = np.linalg.eigh(amat)
+    proj = evecs.T @ zt
+    evidence = (
+        -0.5 * float(np.sum(proj**2 / evals))
+        - 0.5 * float(np.sum(np.log(evals)))
+        - 0.5 * n * math.log(2.0 * math.pi)
+        + float(np.sum(np.log(gp)))
     )
-    return json.loads(out.stdout)
+    kq = _kernel(x, xq, sv, ell)
+    mu = centre + kq.T @ (evecs @ (proj / evals))
+    sig = _kernel(xq, xq, sv, ell) - kq.T @ (evecs @ ((evecs.T @ kq) / evals[:, None]))
+    dg = np.diag(sig).copy()
+    block = {
+        "warp": wname,
+        "evidence": evidence,
+        "median": _nullify(_ginv(wname, mu, lam)),
+        "mode": _mode(wname, mu, dg, lam),
+        "mu_warped": list(mu),
+        "sd_warped": list(np.sqrt(dg)),
+        "lam": lam,
+        "quantile_low": _nullify(_ginv(wname, mu + np.sqrt(dg) * zlo, lam)),
+        "quantile_high": _nullify(_ginv(wname, mu + np.sqrt(dg) * zhi, lam)),
+        "n_train": n,
+    }
+    if wname == "boxcox":
+        block["mean"] = None
+        block["covariance"] = None
+    elif wname == "identity":
+        block["mean"] = list(mu)
+        block["covariance"] = sig.tolist()
+    else:
+        block["mean"] = [_gh_mean(mu[k], dg[k]) for k in range(len(mu))]
+        block["covariance"] = [
+            [_gh_cov(mu, sig, i, j) for j in range(len(mu))] for i in range(len(mu))
+        ]
+    return block
 
 
-SHIPPED_ROOMS = {
-    "cellar": {
-        "exits": ["courtyard", "crypt"],
-        "lock": None,
-        "dark": True,
-        "goal": False,
-        "items": ["key.silver"],
-        "reachable": True,
-    },
-    "chapel": {
-        "exits": ["courtyard", "vault"],
-        "lock": "iron",
-        "dark": False,
-        "goal": False,
-        "items": ["gem.amber", "key.gold"],
-        "reachable": True,
-    },
-    "courtyard": {
-        "exits": ["cellar", "chapel", "gatehouse"],
-        "lock": None,
-        "dark": False,
-        "goal": False,
-        "items": ["key.iron"],
-        "reachable": True,
-    },
-    "crypt": {
-        "exits": ["cellar"],
-        "lock": "silver",
-        "dark": True,
-        "goal": False,
-        "items": ["gem.onyx", "torch"],
-        "reachable": True,
-    },
-    "gatehouse": {
-        "exits": ["courtyard"],
-        "lock": None,
-        "dark": False,
-        "goal": False,
-        "items": ["torch"],
-        "reachable": True,
-    },
-    "observatory": {
-        "exits": ["oubliette"],
-        "lock": None,
-        "dark": False,
-        "goal": False,
-        "items": [],
-        "reachable": False,
-    },
-    "oubliette": {
-        "exits": ["observatory"],
-        "lock": "bone",
-        "dark": False,
-        "goal": False,
-        "items": ["key.bone"],
-        "reachable": False,
-    },
-    "vault": {
-        "exits": ["chapel"],
-        "lock": "gold",
-        "dark": False,
-        "goal": True,
-        "items": ["crown"],
-        "reachable": True,
-    },
-}
-
-FORMS_ROOMS = {
-    "archive": {
-        "exits": ["bluevault", "lobby"],
-        "lock": "red",
-        "dark": False,
-        "goal": False,
-        "items": ["map"],
-        "reachable": True,
-    },
-    "basement": {
-        "exits": ["lobby"],
-        "lock": None,
-        "dark": True,
-        "goal": False,
-        "items": ["key.blue", "torch"],
-        "reachable": True,
-    },
-    "bluevault": {
-        "exits": ["archive"],
-        "lock": "blue",
-        "dark": False,
-        "goal": True,
-        "items": ["gem.sapphire"],
-        "reachable": False,
-    },
-    "lobby": {
-        "exits": ["archive", "basement"],
-        "lock": None,
-        "dark": False,
-        "goal": False,
-        "items": ["coin", "key.red"],
-        "reachable": True,
-    },
-}
-
-MAZE_ROOMS = {
-    "hub": {
-        "exits": {"east", "north", "south"},
-        "lock": None,
-        "dark": False,
-        "goal": False,
-        "items": {"key.green", "torch"},
-    },
-    "north": {
-        "exits": {"attic", "hub"},
-        "lock": None,
-        "dark": False,
-        "goal": False,
-        "items": {"key.white"},
-    },
-    "east": {
-        "exits": {"attic", "hub"},
-        "lock": "green",
-        "dark": False,
-        "goal": False,
-        "items": {"gem.emerald"},
-    },
-    "south": {
-        "exits": {"blackroom", "hub"},
-        "lock": None,
-        "dark": True,
-        "goal": False,
-        "items": {"gem.moss", "key.black"},
-    },
-    "attic": {
-        "exits": {"east", "north"},
-        "lock": "white",
-        "dark": False,
-        "goal": True,
-        "items": {"lens"},
-    },
-    "blackroom": {
-        "exits": {"south"},
-        "lock": "black",
-        "dark": True,
-        "goal": False,
-        "items": {"gem.void"},
-    },
-    "isolated": {
-        "exits": set(),
-        "lock": None,
-        "dark": False,
-        "goal": False,
-        "items": {"gem.lost"},
-    },
-}
-
-BRANCH_ROOMS = {
-    "start": {
-        "exits": {"alcove", "beacon", "cavern"},
-        "lock": None,
-        "dark": False,
-        "goal": False,
-        "items": set(),
-    },
-    "alcove": {
-        "exits": {"start"},
-        "lock": None,
-        "dark": False,
-        "goal": False,
-        "items": {"coin"},
-    },
-    "beacon": {
-        "exits": {"start", "vault"},
-        "lock": None,
-        "dark": False,
-        "goal": False,
-        "items": {"key.gold"},
-    },
-    "cavern": {
-        "exits": {"start", "vault"},
-        "lock": None,
-        "dark": False,
-        "goal": False,
-        "items": {"key.gold"},
-    },
-    "vault": {
-        "exits": {"beacon", "cavern"},
-        "lock": "gold",
-        "dark": False,
-        "goal": True,
-        "items": {"crown"},
-    },
-}
+def reference(data_dir):
+    planets = _read(data_dir / "planets.csv")
+    qtab = _read(data_dir / "queries.csv")
+    out = []
+    for cf in _read(data_dir / "configurations.csv"):
+        rows = [r for r in planets if r["facility"] == cf["facility"]][
+            : int(cf["n_train"])
+        ]
+        x = np.array([float(r["log_mass_earth"]) for r in rows])
+        y = np.array([float(r["radius_earth"]) for r in rows])
+        sg = np.array([float(r["radius_sigma_earth"]) for r in rows])
+        qrows = sorted(
+            (r for r in qtab if r["config_id"] == cf["config_id"]),
+            key=lambda r: int(r["query_index"]),
+        )
+        xq = np.array([float(r["log_mass_earth"]) for r in qrows])
+        par = (
+            float(cf["signal_variance"]),
+            float(cf["lengthscale"]),
+            float(cf["jitter"]),
+            float(cf["boxcox_lambda"]),
+            _qnorm(cf["quantile_low"]),
+            _qnorm(cf["quantile_high"]),
+        )
+        warps = cf["warp_catalogue"].split(";")
+        blocks = [_solve_block(w, (x, y, sg), xq, par) for w in warps]
+        evs = [b["evidence"] for b in blocks]
+        top = max(evs)
+        tol = float(cf["tie_tolerance"])
+        selected = warps[min(i for i, e in enumerate(evs) if e >= top - tol)]
+        out.append(
+            {"config_id": cf["config_id"], "selected_warp": selected, "warps": blocks}
+        )
+    return out
 
 
-def test_server_builds_offline():
-    """The Go module at /app must compile offline into a server binary
-    (test.sh runs `go build` with GOPROXY=off before pytest starts)."""
-    assert SERVER_BIN.exists(), "go build of /app did not produce a binary"
-    assert DBDUMP_BIN.exists(), "verifier dbdump helper failed to build"
+def run_agent(data_dir):
+    assert AGENT.is_file(), f"agent program missing at {AGENT}"
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = Path(tmp) / "answer.json"
+        proc = subprocess.run(
+            ["Rscript", str(AGENT), str(data_dir), str(dest)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        assert proc.returncode == 0, (
+            f"agent failed on {data_dir}: {proc.stderr[-2000:]}"
+        )
+        assert dest.is_file(), f"agent wrote no output for {data_dir}"
+        with open(dest) as fh:
+            return json.load(fh)
 
 
-def test_world_contract_shipped(tmp_path):
-    """GET /world on the shipped compose map returns rooms sorted by name,
-    with sorted exits and items, lock color or null, and dark/goal flags
-    exactly matching the service labels and depends_on edges."""
-    with Dungeon(SHIPPED_WORLD, tmp_path / "w.db") as d:
-        resp = d.get("/world")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["entry"] == "gatehouse"
-        assert body["par"] == 3, f"par should be 3, got {body['par']}"
-        assert [r["name"] for r in body["rooms"]] == sorted(SHIPPED_ROOMS)
-        got = rooms_by_name(body)
-        for name, want in SHIPPED_ROOMS.items():
-            expected = {"name": name, **want}
-            assert got[name] == expected, f"room {name}: {got[name]}"
+def close(got, want):
+    if isinstance(got, bool) or not isinstance(got, (int, float)):
+        return False
+    if not math.isfinite(got):
+        return False
+    return abs(got - want) <= max(REL_TOL * abs(want), ABS_TOL)
 
 
-def test_world_reachability_shipped(tmp_path):
-    """Reachability on the shipped map: the key-behind-lock chain
-    (iron -> gold, torch -> silver) is fully reachable, while the
-    disconnected observatory/oubliette island is not."""
-    with Dungeon(SHIPPED_WORLD, tmp_path / "w.db") as d:
-        got = rooms_by_name(d.get("/world").json())
-        for name, want in SHIPPED_ROOMS.items():
-            assert got[name]["reachable"] is want["reachable"], name
+def _check_quantile_arrays(gw, rw, tag):
+    for key in ("median", "quantile_low", "quantile_high"):
+        arr = gw.get(key)
+        assert isinstance(arr, list) and len(arr) == len(rw[key]), f"{tag}: bad {key}"
+        for k, want in enumerate(rw[key]):
+            if want is None:
+                assert arr[k] is None, (
+                    f"{tag}: {key}[{k}] must be null, the inverse warp is undefined there"
+                )
+            else:
+                assert close(arr[k], want), (
+                    f"{tag}: {key}[{k}] {arr[k]} expected {want}"
+                )
+                if rw["warp"] != "identity":
+                    assert arr[k] > 0.0, f"{tag}: {key}[{k}] not positive"
+            CASES.append(1)
+    lo, mid, hi = gw["quantile_low"], gw["median"], gw["quantile_high"]
+    for k in range(len(mid)):
+        if lo[k] is not None and mid[k] is not None and hi[k] is not None:
+            assert lo[k] < mid[k] < hi[k], f"{tag}: quantile ordering violated at {k}"
 
 
-def test_session_creation_and_ids(tmp_path):
-    """POST /sessions returns 201 with zero-padded sequential ids starting
-    at s000001 and a fresh player state at the entry room."""
-    with Dungeon(SHIPPED_WORLD, tmp_path / "s.db") as d:
-        r1 = d.post("/sessions")
-        assert r1.status_code == 201
-        assert r1.json() == {
-            "id": "s000001",
-            "room": "gatehouse",
-            "inventory": [],
-            "moves": 0,
-            "won": False,
-        }
-        r2 = d.post("/sessions")
-        assert r2.status_code == 201
-        assert r2.json()["id"] == "s000002"
-        g = d.get("/sessions/s000001")
-        assert g.status_code == 200
-        assert g.json() == r1.json()
+def _check_mean(gw, rw, tag):
+    gm = gw.get("mean")
+    assert isinstance(gm, list) and len(gm) == len(rw["mean"]), f"{tag}: bad mean"
+    for k, want in enumerate(rw["mean"]):
+        assert close(gm[k], want), f"{tag}: mean[{k}] {gm[k]} expected {want}"
+        CASES.append(1)
+    if rw["warp"] == "log":
+        for k, mval in enumerate(gm):
+            assert mval > gw["median"][k], f"{tag}: mean must exceed median at {k}"
+            CASES.append(1)
 
 
-def test_unknown_session_is_404(tmp_path):
-    """Requests naming a session that was never created return 404 with
-    error code unknown-session, even when the body is malformed."""
-    with Dungeon(SHIPPED_WORLD, tmp_path / "u.db") as d:
-        r = d.get("/sessions/s000042")
-        assert r.status_code == 404
-        assert r.json() == {"error": "unknown-session"}
-        r = d.post("/sessions/s000042/move", raw=b"not json at all")
-        assert r.status_code == 404
-        assert r.json() == {"error": "unknown-session"}
+def _check_covariance(gw, rw, tag):
+    ref_cov = rw["covariance"]
+    gcov = gw.get("covariance")
+    m = len(ref_cov)
+    assert isinstance(gcov, list) and len(gcov) == m, f"{tag}: bad covariance"
+    for i in range(m):
+        assert isinstance(gcov[i], list) and len(gcov[i]) == m, (
+            f"{tag}: bad covariance row"
+        )
+        for j in range(m):
+            want = ref_cov[i][j]
+            got = gcov[i][j]
+            scale = math.sqrt(abs(ref_cov[i][i] * ref_cov[j][j]))
+            assert isinstance(got, (int, float)) and math.isfinite(got), (
+                f"{tag}: covariance[{i}][{j}] not finite"
+            )
+            assert abs(got - want) <= max(
+                REL_TOL * abs(want), REL_TOL * scale, ABS_TOL
+            ), f"{tag}: covariance[{i}][{j}] {got} expected {want}"
+            CASES.append(1)
+    arr = np.array(gcov, dtype=float)
+    peak = max(abs(arr).max(), 1.0)
+    assert np.allclose(arr, arr.T, rtol=0, atol=1e-9 * peak), (
+        f"{tag}: covariance not symmetric"
+    )
+    evals = np.linalg.eigvalsh((arr + arr.T) / 2.0)
+    assert evals.min() > -PSD_SLACK * max(abs(evals).max(), 1.0), (
+        f"{tag}: covariance not positive semidefinite"
+    )
+    CASES.append(1)
 
 
-def test_move_rule_precedence(tmp_path):
-    """Moves are validated as room existence, then a connecting door, then
-    the lock: an existing-but-distant locked room reports no-door, a fake
-    room reports unknown-room, an adjacent locked room reports locked, and
-    failed moves never increment the moves counter."""
-    with Dungeon(SHIPPED_WORLD, tmp_path / "m.db") as d:
-        d.post("/sessions")
-        r = d.post("/sessions/s000001/move", {"to": "vault"})
-        assert (r.status_code, r.json()) == (409, {"error": "no-door"})
-        r = d.post("/sessions/s000001/move", {"to": "throneroom"})
-        assert (r.status_code, r.json()) == (409, {"error": "unknown-room"})
-        r = d.post("/sessions/s000001/move", {"to": "gatehouse"})
-        assert (r.status_code, r.json()) == (409, {"error": "no-door"})
-        r = d.post("/sessions/s000001/move", {"to": "courtyard"})
-        assert r.status_code == 200
-        r = d.post("/sessions/s000001/move", {"to": "chapel"})
-        assert (r.status_code, r.json()) == (409, {"error": "locked"})
-        state = d.get("/sessions/s000001").json()
-        assert state["room"] == "courtyard"
-        assert state["moves"] == 1
+def _check_mode(gw, rw, tag):
+    ref = rw["mode"]
+    got = gw.get("mode", "missing")
+    if ref is None:
+        assert got is None, (
+            f"{tag}: mode must be null, the density of radius attains no "
+            f"maximum under this warp"
+        )
+        CASES.append(1)
+        return
+    assert isinstance(got, list) and len(got) == len(ref), f"{tag}: bad mode"
+    for k, want in enumerate(ref):
+        assert close(got[k], want), f"{tag}: mode[{k}] {got[k]} expected {want}"
+        CASES.append(1)
+
+    # Independent confirmation that the reported point maximises the radius
+    # scale density, using a direct evaluation of that density rather than the
+    # closed form the reference used to produce it.
+    for k, spot in enumerate(got):
+        m = rw["mu_warped"][k]
+        sd = rw["sd_warped"][k]
+        step = MODE_STEP * max(abs(spot), 1.0)
+        here = _log_density(rw["warp"], spot, m, sd, rw["lam"])
+        up = _log_density(rw["warp"], spot + step, m, sd, rw["lam"])
+        down = _log_density(rw["warp"], spot - step, m, sd, rw["lam"])
+        assert here > up and here > down, (
+            f"{tag}: mode[{k}] is not a local maximum of the density"
+        )
+        curve = up - 2.0 * here + down
+        assert curve < 0.0, f"{tag}: mode[{k}] sits where the density is convex"
+        vertex = step * (down - up) / (2.0 * curve)
+        assert abs(vertex) <= MODE_VERTEX_TOL * step, (
+            f"{tag}: mode[{k}] is not stationary; the density peaks {vertex} away"
+        )
+        CASES.append(1)
 
 
-def test_bad_request_bodies(tmp_path):
-    """Malformed bodies (non-JSON, missing, non-string or empty fields)
-    return 400 bad-request and leave the session untouched."""
-    with Dungeon(SHIPPED_WORLD, tmp_path / "b.db") as d:
-        d.post("/sessions")
-        for raw in (b"not json", b"{}", b'{"to": 5}', b'{"to": ""}'):
-            r = d.post("/sessions/s000001/move", raw=raw)
-            assert (r.status_code, r.json()) == (400, {"error": "bad-request"}), raw
-        for raw in (b"[1,2]", b'{"item": null}', b'{"item": ""}'):
-            r = d.post("/sessions/s000001/take", raw=raw)
-            assert (r.status_code, r.json()) == (400, {"error": "bad-request"}), raw
-        assert d.get("/sessions/s000001").json() == {
-            "id": "s000001",
-            "room": "gatehouse",
-            "inventory": [],
-            "moves": 0,
-            "won": False,
-        }
+def _check_warp_block(gw, rw, tag):
+    assert gw.get("warp") == rw["warp"], f"{tag}: warp name or ordering mismatch"
+    assert close(gw.get("evidence"), rw["evidence"]), (
+        f"{tag}: evidence {gw.get('evidence')} expected {rw['evidence']}"
+    )
+    CASES.append(1)
+    _check_mode(gw, rw, tag)
+    _check_quantile_arrays(gw, rw, tag)
+    if rw["mean"] is None:
+        assert gw.get("mean", "missing") is None, (
+            f"{tag}: mean must be null, the expectation does not exist under this warp"
+        )
+        assert gw.get("covariance", "missing") is None, (
+            f"{tag}: covariance must be null"
+        )
+        CASES.extend([1, 1])
+        return
+    _check_mean(gw, rw, tag)
+    _check_covariance(gw, rw, tag)
 
 
-def test_move_rejects_extra_fields_and_trailing_data(tmp_path):
-    """A move with an unexpected key, second JSON value, or trailing garbage
-    returns 400 without changing the session or creating a journal entry."""
-    db = tmp_path / "move_strict.db"
-    with Dungeon(SHIPPED_WORLD, db) as d:
-        fresh = d.post("/sessions").json()
-        for raw in (
-            b'{"to": "courtyard", "extra": true}',
-            b'{"to":"courtyard"}{"extra":true}',
-            b'{"to":"courtyard"} garbage',
-        ):
-            r = d.post("/sessions/s000001/move", raw=raw)
-            assert (r.status_code, r.json()) == (
-                400,
-                {"error": "bad-request"},
-            ), raw
-        assert d.get("/sessions/s000001").json() == fresh
-        d.terminate()
-    dump = dbdump(db)
-    assert json.loads(dump["sessions"]["s000001"]) == fresh
-    assert dump.get("journal", {}) == {}
+def compare(answer, ref):
+    assert isinstance(answer, dict), "answer is not a JSON object"
+    got_cfgs = answer.get("configurations")
+    assert isinstance(got_cfgs, list), "missing configurations array"
+    assert len(got_cfgs) == len(ref), "configuration count mismatch"
+    for gc, rc in zip(got_cfgs, ref, strict=True):
+        assert gc.get("config_id") == rc["config_id"], "config_id or ordering mismatch"
+        assert gc.get("selected_warp") == rc["selected_warp"], (
+            f"{rc['config_id']}: selected_warp {gc.get('selected_warp')} "
+            f"expected {rc['selected_warp']}"
+        )
+        CASES.append(1)
+        gws = gc.get("warps")
+        assert isinstance(gws, list) and len(gws) == len(rc["warps"]), (
+            "warp block count mismatch"
+        )
+        for gw, rw in zip(gws, rc["warps"], strict=True):
+            _check_warp_block(gw, rw, f"{rc['config_id']}/{rw['warp']}")
 
-
-def test_take_rejects_extra_fields_and_trailing_data(tmp_path):
-    """A take with an unexpected key, second JSON value, or trailing garbage
-    returns 400 without changing the session or creating a journal entry."""
-    db = tmp_path / "take_strict.db"
-    with Dungeon(SHIPPED_WORLD, db) as d:
-        fresh = d.post("/sessions").json()
-        for raw in (
-            b'{"item": "torch", "extra": true}',
-            b'{"item":"torch"}{"extra":true}',
-            b'{"item":"torch"} garbage',
-        ):
-            r = d.post("/sessions/s000001/take", raw=raw)
-            assert (r.status_code, r.json()) == (
-                400,
-                {"error": "bad-request"},
-            ), raw
-        assert d.get("/sessions/s000001").json() == fresh
-        d.terminate()
-    dump = dbdump(db)
-    assert json.loads(dump["sessions"]["s000001"]) == fresh
-    assert dump.get("journal", {}) == {}
-
-
-def test_keys_unlock_and_are_reusable(tmp_path):
-    """Carrying key.<color> lets a player enter a room locked with that
-    color, and the key is not consumed: the player can leave and re-enter
-    while moves counts each successful move."""
-    with Dungeon(SHIPPED_WORLD, tmp_path / "k.db") as d:
-        d.post("/sessions")
-        assert d.post("/sessions/s000001/move", {"to": "courtyard"}).status_code == 200
-        assert d.post("/sessions/s000001/take", {"item": "key.iron"}).status_code == 200
-        assert d.post("/sessions/s000001/move", {"to": "chapel"}).status_code == 200
-        assert d.post("/sessions/s000001/move", {"to": "courtyard"}).status_code == 200
-        r = d.post("/sessions/s000001/move", {"to": "chapel"})
-        assert r.status_code == 200
-        assert r.json() == {
-            "id": "s000001",
-            "room": "chapel",
-            "inventory": ["key.iron"],
-            "moves": 4,
-            "won": False,
-        }
-
-
-def test_dark_rooms_need_a_torch(tmp_path):
-    """Dark rooms can be entered freely but refuse every take with 409
-    dark until the player carries a torch; the dark check also fires for
-    items that are not even in the room."""
-    with Dungeon(SHIPPED_WORLD, tmp_path / "d.db") as d:
-        d.post("/sessions")
-        d.post("/sessions/s000001/move", {"to": "courtyard"})
-        r = d.post("/sessions/s000001/move", {"to": "cellar"})
-        assert r.status_code == 200
-        r = d.post("/sessions/s000001/take", {"item": "key.silver"})
-        assert (r.status_code, r.json()) == (409, {"error": "dark"})
-        r = d.post("/sessions/s000001/take", {"item": "phantom"})
-        assert (r.status_code, r.json()) == (409, {"error": "dark"})
-        for to in ("courtyard", "gatehouse"):
-            assert d.post("/sessions/s000001/move", {"to": to}).status_code == 200
-        assert d.post("/sessions/s000001/take", {"item": "torch"}).status_code == 200
-        for to in ("courtyard", "cellar"):
-            assert d.post("/sessions/s000001/move", {"to": to}).status_code == 200
-        r = d.post("/sessions/s000001/take", {"item": "key.silver"})
-        assert r.status_code == 200
-        assert d.post("/sessions/s000001/move", {"to": "crypt"}).status_code == 200
-        r = d.post("/sessions/s000001/take", {"item": "gem.onyx"})
-        assert r.status_code == 200
-        assert r.json() == {
-            "id": "s000001",
-            "room": "crypt",
-            "inventory": ["gem.onyx", "key.silver", "torch"],
-            "moves": 7,
-            "won": False,
-        }
-
-
-def test_take_is_idempotent(tmp_path):
-    """Taking an item you already carry is a 200 no-op that changes
-    nothing, and taking something not in the room is 409 no-item."""
-    with Dungeon(SHIPPED_WORLD, tmp_path / "t.db") as d:
-        d.post("/sessions")
-        first = d.post("/sessions/s000001/take", {"item": "torch"})
-        assert first.status_code == 200
-        again = d.post("/sessions/s000001/take", {"item": "torch"})
-        assert again.status_code == 200
-        assert again.json() == first.json()
-        for item in ("crown", "key.iron"):
-            r = d.post("/sessions/s000001/take", {"item": item})
-            assert (r.status_code, r.json()) == (409, {"error": "no-item"}), item
-
-
-def test_sessions_have_private_items(tmp_path):
-    """Each player plays on their own copy of the dungeon's items: one
-    session taking the torch does not remove it for another session, and
-    GET /world keeps reporting the compose-defined items."""
-    with Dungeon(SHIPPED_WORLD, tmp_path / "p.db") as d:
-        d.post("/sessions")
-        assert d.post("/sessions/s000001/take", {"item": "torch"}).status_code == 200
-        d.post("/sessions")
-        r = d.post("/sessions/s000002/take", {"item": "torch"})
-        assert r.status_code == 200
-        assert r.json()["inventory"] == ["torch"]
-        world = rooms_by_name(d.get("/world").json())
-        assert world["gatehouse"]["items"] == ["torch"]
-
-
-def test_winning_at_the_goal_room(tmp_path):
-    """Moving into the goal room flips won to true and winning is sticky:
-    the flag stays true after the player wanders back out."""
-    with Dungeon(SHIPPED_WORLD, tmp_path / "win.db") as d:
-        d.post("/sessions")
-        assert d.post("/sessions/s000001/move", {"to": "courtyard"}).status_code == 200
-        assert d.post("/sessions/s000001/take", {"item": "key.iron"}).status_code == 200
-        assert d.post("/sessions/s000001/move", {"to": "chapel"}).status_code == 200
-        assert d.post("/sessions/s000001/take", {"item": "key.gold"}).status_code == 200
-        r = d.post("/sessions/s000001/move", {"to": "vault"})
-        assert r.status_code == 200
-        assert r.json() == {
-            "id": "s000001",
-            "room": "vault",
-            "inventory": ["key.gold", "key.iron"],
-            "moves": 3,
-            "won": True,
-        }
-        r = d.post("/sessions/s000001/move", {"to": "chapel"})
-        assert r.status_code == 200
-        assert r.json()["won"] is True
-        assert r.json()["room"] == "chapel"
-
-
-def test_state_survives_sigkill(tmp_path):
-    """Every acknowledged state change is committed to bbolt before the
-    response: after SIGKILL and a restart on the same database, all
-    sessions are intact and the id counter keeps counting."""
-    db = tmp_path / "crash.db"
-    d = Dungeon(SHIPPED_WORLD, db).start()
-    try:
-        d.post("/sessions")
-        assert d.post("/sessions/s000001/take", {"item": "torch"}).status_code == 200
-        assert d.post("/sessions/s000001/move", {"to": "courtyard"}).status_code == 200
-        assert d.post("/sessions/s000001/take", {"item": "key.iron"}).status_code == 200
-        d.post("/sessions")
-        state1 = d.get("/sessions/s000001").json()
-        state2 = d.get("/sessions/s000002").json()
-        assert state1 == {
-            "id": "s000001",
-            "room": "courtyard",
-            "inventory": ["key.iron", "torch"],
-            "moves": 1,
-            "won": False,
-        }
-    finally:
-        d.kill()
-    with Dungeon(SHIPPED_WORLD, db, port=d.port) as d2:
-        assert d2.get("/sessions/s000001").json() == state1
-        assert d2.get("/sessions/s000002").json() == state2
-        r = d2.post("/sessions")
-        assert r.status_code == 201
-        assert r.json()["id"] == "s000003"
-
-
-def test_bbolt_database_layout(tmp_path):
-    """The bbolt file contains a sessions bucket mapping each id to the
-    exact JSON object the API returns for it, and a meta bucket whose
-    last_id key holds the last issued counter value as a decimal string."""
-    db = tmp_path / "layout.db"
-    with Dungeon(SHIPPED_WORLD, db) as d:
-        d.post("/sessions")
-        assert d.post("/sessions/s000001/take", {"item": "torch"}).status_code == 200
-        assert d.post("/sessions/s000001/move", {"to": "courtyard"}).status_code == 200
-        d.post("/sessions")
-        api = {sid: d.get(f"/sessions/{sid}").json() for sid in ("s000001", "s000002")}
-        d.terminate()
-    dump = dbdump(db)
-    assert "sessions" in dump and "meta" in dump, sorted(dump)
-    assert set(dump["sessions"]) == {"s000001", "s000002"}
-    for sid, raw in dump["sessions"].items():
-        assert json.loads(raw) == api[sid], sid
-    assert dump["meta"]["last_id"] == "2"
-
-
-def test_agent_left_a_winning_save():
-    """Playing the shipped dungeon is part of the job: the default save at
-    /app/data/dungeon.db must already contain a finished run, meaning a
-    session with won true whose inventory holds both keys needed to reach
-    the vault and at least the three moves the shortest route takes."""
-    save = Path("/app/data/dungeon.db")
-    assert save.exists(), "no save file at /app/data/dungeon.db"
-    dump = dbdump(save)
-    sessions = [json.loads(v) for v in dump.get("sessions", {}).values()]
-    winners = [s for s in sessions if s.get("won") is True]
-    assert winners, "no winning run found in /app/data/dungeon.db"
-    assert any(
-        {"key.gold", "key.iron"} <= set(s.get("inventory", []))
-        and s.get("moves", 0) >= 3
-        for s in winners
-    ), f"winning runs look implausible: {winners}"
-
-
-def test_world_contract_alternate_syntax(tmp_path):
-    """Compose maps using list-form labels, long-form depends_on maps,
-    and untrimmed item lists produce the same world contract."""
-    with Dungeon(FORMS_WORLD, tmp_path / "f.db") as d:
-        body = d.get("/world").json()
-        assert (
-            body["par"] is None
-        ), f"unwinnable map should have par null, got {body['par']}"
-        assert body["entry"] == "lobby"
-        assert [r["name"] for r in body["rooms"]] == sorted(FORMS_ROOMS)
-        got = rooms_by_name(body)
-        for name, want in FORMS_ROOMS.items():
-            assert got[name] == {"name": name, **want}, name
-
-
-def test_torch_trapped_in_dark_room(tmp_path):
-    """When the only torch sits inside a dark room it can never be picked
-    up, so reachability must not count that room's items: the bluevault
-    goal stays unreachable (the dungeon is unwinnable) and takes in the
-    basement keep failing with dark."""
-    with Dungeon(FORMS_WORLD, tmp_path / "trap.db") as d:
-        got = rooms_by_name(d.get("/world").json())
-        assert got["bluevault"]["reachable"] is False
-        assert got["basement"]["reachable"] is True
-        d.post("/sessions")
-        assert d.post("/sessions/s000001/move", {"to": "basement"}).status_code == 200
-        for item in ("torch", "key.blue"):
-            r = d.post("/sessions/s000001/take", {"item": item})
-            assert (r.status_code, r.json()) == (409, {"error": "dark"}), item
-
-
-def test_par_counts_only_moves(tmp_path):
-    """par is the fewest moves to stand in the goal room, and looting is
-    free: on the maze the two-move route through north to fetch key.white
-    beats any longer detour, so par is 2 even though loot is picked up on
-    the way."""
-    with Dungeon(MAZE_WORLD, tmp_path / "par.db") as d:
-        body = d.get("/world").json()
-        assert body["par"] == 2, f"maze par should be 2, got {body['par']}"
-
-
-def test_world_route_shipped(tmp_path):
-    """route is one concrete shortest way to win: the rooms a fresh player moves
-    into, in order, to first reach the goal, with length equal to par. On the
-    shipped map the only three-move win is courtyard, chapel, vault."""
-    with Dungeon(SHIPPED_WORLD, tmp_path / "route.db") as d:
-        body = d.get("/world").json()
-        assert body["route"] == ["courtyard", "chapel", "vault"], body["route"]
-        assert len(body["route"]) == body["par"]
-
-
-def test_world_route_lexicographic_tiebreak(tmp_path):
-    """When several shortest routes exist, route is the lexicographically
-    smallest one, and it never wanders into a dead end whose name happens to
-    sort first: on the branch map beacon and cavern are both two-move wins that
-    each hold the key the goal needs, and alcove is a dead end sorting before
-    both, so the route is beacon then vault."""
-    with Dungeon(BRANCH_WORLD, tmp_path / "branch.db") as d:
-        body = d.get("/world").json()
-        assert body["par"] == 2, f"branch par should be 2, got {body['par']}"
-        assert body["route"] == ["beacon", "vault"], body["route"]
-
-
-def test_world_route_null_when_unwinnable(tmp_path):
-    """route is null exactly when par is null: an unwinnable map has no winning
-    move sequence to report."""
-    with Dungeon(FORMS_WORLD, tmp_path / "route_null.db") as d:
-        body = d.get("/world").json()
-        assert body["par"] is None
-        assert body["route"] is None
-
-
-_REPLAY_SEED = 0x243F6A8885A308D3
 
 @pytest.mark.parametrize(
-    "world,expected",
-    [
-        pytest.param(
-            SHIPPED_WORLD,
-            {
-                "seed": _REPLAY_SEED,
-                "steps": ["courtyard", "chapel", "vault"],
-                "won": True,
-            },
-            id="shipped",
-        ),
-        pytest.param(
-            MAZE_WORLD,
-            {
-                "seed": _REPLAY_SEED,
-                "steps": ["north", "hub", "north", "attic"],
-                "won": True,
-            },
-            id="maze",
-        ),
-        pytest.param(
-            BRANCH_WORLD,
-            {
-                "seed": _REPLAY_SEED,
-                "steps": ["beacon", "vault"],
-                "won": True,
-            },
-            id="branch",
-        ),
-    ],
+    "data_dir", [PUBLIC, HIDDEN_A, HIDDEN_B], ids=["public", "hidden_a", "hidden_b"]
 )
-def test_world_replay_matches_sealed_expectations(world, expected, tmp_path):
-    """GET /replay is a fixed SplitMix64 bot playthrough: seeded to the contract
-    constant, choosing each move by unbiased rejection sampling over the sorted
-    enterable doors and looting greedily. Its complete response must match
-    sealed expected data for each verifier-owned map."""
-    with Dungeon(world, tmp_path / "replay.db") as d:
-        response = d.get("/replay")
-        assert response.status_code == 200
-        assert response.json() == expected
+def test_contract(data_dir):
+    """Every reported quantity matches an independent recomputation of the contract."""
+    compare(run_agent(data_dir), reference(data_dir))
 
 
-def test_undo_rewinds_moves_and_pickups(tmp_path):
-    """Undo restores the exact previous state of a run: the last pickup
-    disappears from the inventory, the last move gives back both the room
-    and the moves count, and undoing on a fresh run is 409
-    nothing-to-undo."""
-    with Dungeon(SHIPPED_WORLD, tmp_path / "undo.db") as d:
-        fresh = d.post("/sessions").json()
-        r = d.post("/sessions/s000001/undo")
-        assert (r.status_code, r.json()) == (409, {"error": "nothing-to-undo"})
-        assert d.post("/sessions/s000001/take", {"item": "torch"}).status_code == 200
-        after_move = d.post("/sessions/s000001/move", {"to": "courtyard"}).json()
-        assert after_move["moves"] == 1
-        r = d.post("/sessions/s000001/undo")
-        assert r.status_code == 200
-        assert r.json() == {
-            "id": "s000001",
-            "room": "gatehouse",
-            "inventory": ["torch"],
-            "moves": 0,
-            "won": False,
-        }
-        r = d.post("/sessions/s000001/undo")
-        assert r.status_code == 200
-        assert r.json() == fresh
-        r = d.post("/sessions/s000001/undo")
-        assert (r.status_code, r.json()) == (409, {"error": "nothing-to-undo"})
-
-
-def test_undo_ignores_failed_and_no_op_actions(tmp_path):
-    """Only changes that actually changed something are undoable: rejected
-    moves and repeat takes of an item already carried leave the undo
-    history alone."""
-    with Dungeon(SHIPPED_WORLD, tmp_path / "noop.db") as d:
-        d.post("/sessions")
-        assert d.post("/sessions/s000001/take", {"item": "torch"}).status_code == 200
-        for _ in range(3):
-            assert (
-                d.post("/sessions/s000001/take", {"item": "torch"}).status_code == 200
+def test_unit_change_metamorphic():
+    """Rescaling radius and its uncertainty shifts log-warp evidence by exactly minus n log c."""
+    base = run_agent(HIDDEN_A)
+    scaled = run_agent(HIDDEN_SCALED)
+    ref = reference(HIDDEN_A)
+    shift = math.log(SCALE_C)
+    checked = 0
+    for bc, sc, rc in zip(
+        base["configurations"], scaled["configurations"], ref, strict=True
+    ):
+        bmap = {w["warp"]: w for w in bc["warps"]}
+        smap = {w["warp"]: w for w in sc["warps"]}
+        n = next(w["n_train"] for w in rc["warps"] if w["warp"] == "log")
+        want = -n * shift
+        got = smap["log"]["evidence"] - bmap["log"]["evidence"]
+        assert abs(got - want) <= META_TOL * max(abs(want), 1.0), (
+            f"{rc['config_id']}: log-warp evidence shift {got} expected {want}"
+        )
+        checked += 1
+        for k, bmed in enumerate(bmap["log"]["median"]):
+            assert close(smap["log"]["median"][k], SCALE_C * bmed), (
+                f"{rc['config_id']}: median[{k}] did not scale with the unit change"
             )
-        assert d.post("/sessions/s000001/move", {"to": "vault"}).status_code == 409
-        assert d.post("/sessions/s000001/take", {"item": "crown"}).status_code == 409
-        r = d.post("/sessions/s000001/undo")
-        assert r.status_code == 200
-        assert r.json()["inventory"] == []
-        r = d.post("/sessions/s000001/undo")
-        assert (r.status_code, r.json()) == (409, {"error": "nothing-to-undo"})
+            checked += 1
+        for k, bmode in enumerate(bmap["log"]["mode"]):
+            assert close(smap["log"]["mode"][k], SCALE_C * bmode), (
+                f"{rc['config_id']}: mode[{k}] did not scale with the unit change"
+            )
+            checked += 1
+        for i, row in enumerate(bmap["log"]["covariance"]):
+            for j, bval in enumerate(row):
+                assert close(
+                    smap["log"]["covariance"][i][j], SCALE_C * SCALE_C * bval
+                ), (
+                    f"{rc['config_id']}: covariance[{i}][{j}] did not scale with c squared"
+                )
+                checked += 1
+    CASES.extend([1] * checked)
+    assert checked > 0, "metamorphic relation executed no cases"
 
 
-def test_undo_takes_back_a_win(tmp_path):
-    """Winning is sticky against wandering but not against undo: rewinding
-    the move that entered the goal room clears won again, and replaying
-    that move wins once more."""
-    with Dungeon(SHIPPED_WORLD, tmp_path / "unwin.db") as d:
-        d.post("/sessions")
-        d.post("/sessions/s000001/move", {"to": "courtyard"})
-        d.post("/sessions/s000001/take", {"item": "key.iron"})
-        d.post("/sessions/s000001/move", {"to": "chapel"})
-        d.post("/sessions/s000001/take", {"item": "key.gold"})
-        assert d.post("/sessions/s000001/move", {"to": "vault"}).json()["won"] is True
-        r = d.post("/sessions/s000001/undo")
-        assert r.status_code == 200
-        assert r.json() == {
-            "id": "s000001",
-            "room": "chapel",
-            "inventory": ["key.gold", "key.iron"],
-            "moves": 2,
-            "won": False,
-        }
-        assert d.post("/sessions/s000001/move", {"to": "vault"}).json()["won"] is True
+@pytest.mark.parametrize(
+    "data_dir", [PUBLIC, HIDDEN_A, HIDDEN_B], ids=["public", "hidden_a", "hidden_b"]
+)
+def test_absent_mode_matches_an_unbounded_density(data_dir):
+    """Where the reference reports no mode, the density really does grow without bound.
+
+    Confirms the null is the correct answer rather than merely the expected one.
+    """
+    absent = 0
+    for cfg in reference(data_dir):
+        for warp in cfg["warps"]:
+            if warp["mode"] is not None:
+                continue
+            absent += 1
+            lam = warp["lam"]
+            assert lam < 1.0, (
+                f"{cfg['config_id']}/{warp['warp']}: mode reported absent but the "
+                f"density is bounded at the lower endpoint"
+            )
+            # Deep enough that the warped value has settled at its endpoint limit,
+            # so each further decade multiplies the density by a fixed factor.
+            per_decade = (1.0 - lam) * math.log(10.0)
+            for k in range(len(warp["mu_warped"])):
+                m = warp["mu_warped"][k]
+                sd = warp["sd_warped"][k]
+                near = _log_density(warp["warp"], 1e-60, m, sd, lam)
+                deeper = _log_density(warp["warp"], 1e-61, m, sd, lam)
+                gain = deeper - near
+                assert gain > 0.0 and abs(gain - per_decade) <= 1e-6 * per_decade, (
+                    f"{cfg['config_id']}/{warp['warp']}: density at query {k} grows "
+                    f"by {gain} per decade toward zero radius, not {per_decade}, so "
+                    f"it does not diverge and a mode should exist"
+                )
+                CASES.append(1)
+    assert absent > 0, "no absent-mode case was exercised"
 
 
-def test_undo_history_survives_restart(tmp_path):
-    """The undo log lives in the save file, so a run rewinds correctly even
-    after the server is SIGKILLed and restarted on the same database."""
-    db = tmp_path / "undocrash.db"
-    d = Dungeon(SHIPPED_WORLD, db).start()
-    try:
-        d.post("/sessions")
-        assert d.post("/sessions/s000001/take", {"item": "torch"}).status_code == 200
-        assert d.post("/sessions/s000001/move", {"to": "courtyard"}).status_code == 200
-        assert d.post("/sessions/s000001/take", {"item": "key.iron"}).status_code == 200
-    finally:
-        d.kill()
-    with Dungeon(SHIPPED_WORLD, db, port=d.port) as d2:
-        r = d2.post("/sessions/s000001/undo")
-        assert r.status_code == 200
-        assert r.json()["inventory"] == ["torch"]
-        r = d2.post("/sessions/s000001/undo")
-        assert r.status_code == 200
-        assert r.json() == {
-            "id": "s000001",
-            "room": "gatehouse",
-            "inventory": ["torch"],
-            "moves": 0,
-            "won": False,
-        }
-
-
-def test_journal_bucket_layout(tmp_path):
-    """The journal bucket is the append-only undo log: keys are the session
-    id, a colon, and a 6-digit sequence starting at 000001, values are the
-    run's state before each change, and undo removes the newest entry."""
-    db = tmp_path / "journal.db"
-    with Dungeon(SHIPPED_WORLD, db) as d:
-        d.post("/sessions")
-        d.post("/sessions/s000001/take", {"item": "torch"})
-        d.post("/sessions/s000001/move", {"to": "courtyard"})
-        d.post("/sessions")
-        d.post("/sessions/s000002/take", {"item": "torch"})
-        d.terminate()
-    dump = dbdump(db)
-    assert "journal" in dump, sorted(dump)
-    assert sorted(dump["journal"]) == [
-        "s000001:000001",
-        "s000001:000002",
-        "s000002:000001",
-    ]
-    first = json.loads(dump["journal"]["s000001:000001"])
-    second = json.loads(dump["journal"]["s000001:000002"])
-    assert first == {
-        "id": "s000001",
-        "room": "gatehouse",
-        "inventory": [],
-        "moves": 0,
-        "won": False,
-    }
-    assert second == {
-        "id": "s000001",
-        "room": "gatehouse",
-        "inventory": ["torch"],
-        "moves": 0,
-        "won": False,
-    }
-    with Dungeon(SHIPPED_WORLD, db) as d:
-        assert d.post("/sessions/s000001/undo").status_code == 200
-        d.terminate()
-    after = dbdump(db)
-    assert sorted(after["journal"]) == ["s000001:000001", "s000002:000001"]
-
-
-def test_concurrent_runs_get_unique_ids(tmp_path):
-    """Twenty runs started at the same time must get twenty distinct
-    sequential ids with no gaps or duplicates, and the saved state has to
-    agree with what the API handed out."""
-    with Dungeon(SHIPPED_WORLD, tmp_path / "conc.db") as d:
-        results = []
-        lock = threading.Lock()
-
-        def start_run():
-            resp = d.post("/sessions")
-            with lock:
-                results.append((resp.status_code, resp.json()))
-
-        threads = [threading.Thread(target=start_run) for _ in range(20)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-        assert all(status == 201 for status, _ in results), results
-        ids = sorted(body["id"] for _, body in results)
-        assert ids == [f"s{n:06d}" for n in range(1, 21)], ids
-        for _, body in results:
-            assert d.get(f"/sessions/{body['id']}").json() == body
-        d.terminate()
-    dump = dbdump(tmp_path / "conc.db")
-    assert sorted(dump["sessions"]) == ids
-    assert dump["meta"]["last_id"] == "20"
-
-
-MAZE_SESSION_TRANSCRIPT = [
-    (
-        "/sessions",
-        None,
-        201,
-        {
-            "id": "s000001",
-            "room": "hub",
-            "inventory": [],
-            "moves": 0,
-            "won": False,
-        },
-    ),
-    (
-        "/sessions/s000001/move",
-        {"to": "east"},
-        409,
-        {"error": "locked"},
-    ),
-    (
-        "/sessions/s000001/take",
-        {"item": "torch"},
-        200,
-        {
-            "id": "s000001",
-            "room": "hub",
-            "inventory": ["torch"],
-            "moves": 0,
-            "won": False,
-        },
-    ),
-    (
-        "/sessions/s000001/take",
-        {"item": "key.green"},
-        200,
-        {
-            "id": "s000001",
-            "room": "hub",
-            "inventory": ["key.green", "torch"],
-            "moves": 0,
-            "won": False,
-        },
-    ),
-    (
-        "/sessions/s000001/move",
-        {"to": "east"},
-        200,
-        {
-            "id": "s000001",
-            "room": "east",
-            "inventory": ["key.green", "torch"],
-            "moves": 1,
-            "won": False,
-        },
-    ),
-    (
-        "/sessions/s000001/take",
-        {"item": "gem.emerald"},
-        200,
-        {
-            "id": "s000001",
-            "room": "east",
-            "inventory": ["gem.emerald", "key.green", "torch"],
-            "moves": 1,
-            "won": False,
-        },
-    ),
-    (
-        "/sessions/s000001/move",
-        {"to": "attic"},
-        409,
-        {"error": "locked"},
-    ),
-    (
-        "/sessions/s000001/move",
-        {"to": "hub"},
-        200,
-        {
-            "id": "s000001",
-            "room": "hub",
-            "inventory": ["gem.emerald", "key.green", "torch"],
-            "moves": 2,
-            "won": False,
-        },
-    ),
-    (
-        "/sessions/s000001/move",
-        {"to": "north"},
-        200,
-        {
-            "id": "s000001",
-            "room": "north",
-            "inventory": ["gem.emerald", "key.green", "torch"],
-            "moves": 3,
-            "won": False,
-        },
-    ),
-    (
-        "/sessions/s000001/take",
-        {"item": "key.white"},
-        200,
-        {
-            "id": "s000001",
-            "room": "north",
-            "inventory": ["gem.emerald", "key.green", "key.white", "torch"],
-            "moves": 3,
-            "won": False,
-        },
-    ),
-    (
-        "/sessions/s000001/move",
-        {"to": "attic"},
-        200,
-        {
-            "id": "s000001",
-            "room": "attic",
-            "inventory": ["gem.emerald", "key.green", "key.white", "torch"],
-            "moves": 4,
-            "won": True,
-        },
-    ),
-    (
-        "/sessions/s000001/move",
-        {"to": "east"},
-        200,
-        {
-            "id": "s000001",
-            "room": "east",
-            "inventory": ["gem.emerald", "key.green", "key.white", "torch"],
-            "moves": 5,
-            "won": True,
-        },
-    ),
-    (
-        "/sessions/s000001/undo",
-        None,
-        200,
-        {
-            "id": "s000001",
-            "room": "attic",
-            "inventory": ["gem.emerald", "key.green", "key.white", "torch"],
-            "moves": 4,
-            "won": True,
-        },
-    ),
-    (
-        "/sessions/s000001/undo",
-        None,
-        200,
-        {
-            "id": "s000001",
-            "room": "north",
-            "inventory": ["gem.emerald", "key.green", "key.white", "torch"],
-            "moves": 3,
-            "won": False,
-        },
-    ),
-    (
-        "/sessions/s000001/undo",
-        None,
-        200,
-        {
-            "id": "s000001",
-            "room": "north",
-            "inventory": ["gem.emerald", "key.green", "torch"],
-            "moves": 3,
-            "won": False,
-        },
-    ),
-]
-
-
-def test_maze_session_matches_sealed_transcript(tmp_path):
-    """A fixed verifier-owned maze transcript covers locks, sorted inventory,
-    sticky wins, and exact undo snapshots without duplicating server logic."""
-    with Dungeon(MAZE_WORLD, tmp_path / "maze.db") as d:
-        got = rooms_by_name(d.get("/world").json())
-        for name in MAZE_ROOMS:
-            assert got[name]["reachable"] is (name != "isolated"), name
-
-        for step, (path, body, status, expected) in enumerate(
-            MAZE_SESSION_TRANSCRIPT
-        ):
-            response = d.post(path, body)
-            assert (response.status_code, response.json()) == (
-                status,
-                expected,
-            ), f"sealed transcript step {step}: {path}"
-        assert d.get("/sessions/s000001").json() == MAZE_SESSION_TRANSCRIPT[-1][3]
+def test_case_floor():
+    """The graded run executes at least the required number of semantic cases."""
+    total = len(CASES)
+    print(f"executed semantic cases: {total}")
+    assert total >= MIN_CASES, f"executed {total} semantic cases, floor is {MIN_CASES}"

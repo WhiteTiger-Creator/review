@@ -1,0 +1,8 @@
+iniconfig==2.3.0
+mpmath==1.4.1
+numpy==2.4.6
+packaging==26.2
+pluggy==1.6.0
+pygments==2.20.0
+pytest==9.1.1
+pytest-json-ctrf==0.5.3

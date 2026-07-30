@@ -1,181 +1,133 @@
-#!/bin/bash
-set -euo pipefail
+#!/usr/bin/env bash
+set -u
 
-python3 - <<'PY'
-from pathlib import Path
+cat > /app/solve.R <<'RSCRIPT'
+args <- commandArgs(trailingOnly = TRUE)
+data_dir <- args[1]
+out_path <- args[2]
 
-path = Path("/app/main.go")
-source = path.read_text()
+planets <- read.csv(file.path(data_dir, "planets.csv"), stringsAsFactors = FALSE)
+cfgs <- read.csv(file.path(data_dir, "configurations.csv"), stringsAsFactors = FALSE)
+qtab <- read.csv(file.path(data_dir, "queries.csv"), stringsAsFactors = FALSE)
 
-replacements = [
-    (
-        """\
-\t"fmt"
-\t"log"
-""",
-        """\
-\t"fmt"
-\t"io"
-\t"log"
-""",
-        "io import",
-    ),
-    (
-        """\
-\t\texits := w.Rooms[room].Exits
-\t\tfor i := len(exits) - 1; i >= 0; i-- {
-\t\t\texit := exits[i]
-""",
-        """\
-\t\tfor _, exit := range w.Rooms[room].Exits {
-""",
-        "route",
-    ),
-    (
-        "z = (z ^ (z >> 28)) * 0x94D049BB133111EB",
-        "z = (z ^ (z >> 27)) * 0x94D049BB133111EB",
-        "replay",
-    ),
-    (
-        """\
-\tdoor := false
-\tfor _, e := range s.world.Rooms[sess.Room].Exits {
-\t\tif e == to {
-\t\t\tdoor = true
-\t\t\tbreak
-\t\t}
-\t}
-\tif !door {
-\t\twriteErr(w, http.StatusConflict, "no-door")
-\t\treturn
-\t}
-\ttarget, ok := s.world.Rooms[to]
-\tif !ok {
-\t\twriteErr(w, http.StatusConflict, "unknown-room")
-\t\treturn
-\t}
-\tif target.Lock != "" && !sess.has("key."+target.Lock) {
-\t\twriteErr(w, http.StatusConflict, "locked")
-\t\treturn
-\t}
-\tif target.Dark && !sess.has("torch") {
-\t\twriteErr(w, http.StatusConflict, "dark")
-\t\treturn
-\t}
-""",
-        """\
-\ttarget, ok := s.world.Rooms[to]
-\tif !ok {
-\t\twriteErr(w, http.StatusConflict, "unknown-room")
-\t\treturn
-\t}
-\tdoor := false
-\tfor _, e := range s.world.Rooms[sess.Room].Exits {
-\t\tif e == to {
-\t\t\tdoor = true
-\t\t\tbreak
-\t\t}
-\t}
-\tif !door {
-\t\twriteErr(w, http.StatusConflict, "no-door")
-\t\treturn
-\t}
-\tif target.Lock != "" && !sess.has("key."+target.Lock) {
-\t\twriteErr(w, http.StatusConflict, "locked")
-\t\treturn
-\t}
-""",
-        "movement",
-    ),
-    (
-        "seq := len(s.history[sess.ID])",
-        "seq := len(s.history[sess.ID]) + 1",
-        "journal",
-    ),
-    (
-        """\
-\tif err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-\t\treturn "", false
-\t}
-\tv, ok := body[field].(string)
-""",
-        """\
-\tdecoder := json.NewDecoder(r.Body)
-\tif err := decoder.Decode(&body); err != nil {
-\t\treturn "", false
-\t}
-\tif len(body) != 1 {
-\t\treturn "", false
-\t}
-\tvar trailing any
-\tif err := decoder.Decode(&trailing); err != io.EOF {
-\t\treturn "", false
-\t}
-\tv, ok := body[field].(string)
-""",
-        "strict request body",
-    ),
-]
+kfun <- function(a, b, sv, ell) sv * exp(-0.5 * (outer(a, b, "-") / ell)^2)
 
-for old, new, name in replacements:
-    if source.count(old) != 1:
-        raise SystemExit(f"oracle: expected {name} defect not found exactly once")
-    source = source.replace(old, new)
-path.write_text(source)
-PY
-
-cd /app
-gofmt -w main.go
-go build -o /tmp/dungeond-oracle-check .
-
-ORACLE_ADDR=127.0.0.1:18383
-ORACLE_URL="http://$ORACLE_ADDR"
-ORACLE_DB=/app/data/dungeon.db
-ORACLE_LOG=/tmp/dungeond-oracle.log
-mkdir -p /app/data
-
-/tmp/dungeond-oracle-check \
-    -addr "$ORACLE_ADDR" \
-    -db "$ORACLE_DB" \
-    -compose /app/world/docker-compose.yml \
-    >"$ORACLE_LOG" 2>&1 &
-SERVER_PID=$!
-
-cleanup() {
-    kill "$SERVER_PID" 2>/dev/null || true
-    wait "$SERVER_PID" 2>/dev/null || true
+gwarp <- function(name, y, lam) {
+  if (name == "identity") return(list(z = y, gp = rep(1, length(y))))
+  if (name == "log") return(list(z = log(y), gp = 1 / y))
+  list(z = (y^lam - 1) / lam, gp = y^(lam - 1))
 }
-trap cleanup EXIT
 
-READY=false
-for _ in $(seq 1 50); do
-    if curl -sf "$ORACLE_URL/world" >/dev/null 2>&1; then
-        READY=true
-        break
-    fi
-    sleep 0.2
-done
-if [ "$READY" != true ]; then
-    echo "oracle: server did not become ready" >&2
-    cat "$ORACLE_LOG" >&2
-    exit 1
-fi
+ginv <- function(name, u, lam) {
+  if (name == "identity") return(u)
+  if (name == "log") return(exp(u))
+  base <- lam * u + 1
+  out <- rep(NA_real_, length(u))
+  ok <- base > 0
+  out[ok] <- base[ok]^(1 / lam)
+  out
+}
 
-SID=$(curl -sf -X POST "$ORACLE_URL/sessions" | sed -E 's/.*"id":"([^"]+)".*/\1/')
-if [ -z "$SID" ]; then
-    echo "oracle: session creation returned no id" >&2
-    exit 1
-fi
+fmtnum <- function(v) if (is.na(v) || !is.finite(v)) "null" else sprintf("%.17g", v)
+fmtarr <- function(v) paste0("[", paste(vapply(v, fmtnum, ""), collapse = ","), "]")
+fmtmat <- function(m) paste0("[", paste(apply(m, 1, fmtarr), collapse = ","), "]")
 
-curl -sf -H 'Content-Type: application/json' -X POST -d '{"to":"courtyard"}' "$ORACLE_URL/sessions/$SID/move" >/dev/null
-curl -sf -H 'Content-Type: application/json' -X POST -d '{"item":"key.iron"}' "$ORACLE_URL/sessions/$SID/take" >/dev/null
-curl -sf -H 'Content-Type: application/json' -X POST -d '{"to":"chapel"}' "$ORACLE_URL/sessions/$SID/move" >/dev/null
-curl -sf -H 'Content-Type: application/json' -X POST -d '{"item":"key.gold"}' "$ORACLE_URL/sessions/$SID/take" >/dev/null
-FINAL_STATE=$(curl -sf -H 'Content-Type: application/json' -X POST -d '{"to":"vault"}' "$ORACLE_URL/sessions/$SID/move")
-if [[ "$FINAL_STATE" != *'"won":true'* ]]; then
-    echo "oracle: playthrough did not produce a winning run: $FINAL_STATE" >&2
-    exit 1
-fi
+cfgjson <- character(nrow(cfgs))
 
-cleanup
-trap - EXIT
+for (ci in seq_len(nrow(cfgs))) {
+  cf <- cfgs[ci, ]
+  tr <- planets[planets$facility == cf$facility, ]
+  tr <- tr[seq_len(cf$n_train), ]
+  x <- tr$log_mass_earth
+  y <- tr$radius_earth
+  sg <- tr$radius_sigma_earth
+  n <- length(x)
+
+  qq <- qtab[qtab$config_id == cf$config_id, ]
+  qq <- qq[order(qq$query_index), ]
+  xq <- qq$log_mass_earth
+
+  warps <- strsplit(cf$warp_catalogue, ";")[[1]]
+  lam <- cf$boxcox_lambda
+  zlo <- qnorm(cf$quantile_low)
+  zhi <- qnorm(cf$quantile_high)
+
+  K <- kfun(x, x, cf$signal_variance, cf$lengthscale)
+  Kq <- kfun(x, xq, cf$signal_variance, cf$lengthscale)
+  Kqq <- kfun(xq, xq, cf$signal_variance, cf$lengthscale)
+
+  ev <- numeric(length(warps))
+  blocks <- character(length(warps))
+
+  for (wi in seq_along(warps)) {
+    w <- warps[wi]
+    g <- gwarp(w, y, lam)
+    s <- sg * g$gp
+    cc <- mean(g$z)
+    zt <- g$z - cc
+
+    A <- K + diag(s^2, n) + cf$jitter * diag(n)
+    R <- chol(A)
+    alpha <- backsolve(R, forwardsolve(t(R), zt))
+    logdet <- 2 * sum(log(diag(R)))
+
+    ev[wi] <- -0.5 * sum(zt * alpha) - 0.5 * logdet -
+      0.5 * n * log(2 * pi) + sum(log(g$gp))
+
+    mu <- cc + as.vector(t(Kq) %*% alpha)
+    V <- forwardsolve(t(R), Kq)
+    Sig <- Kqq - t(V) %*% V
+    dg <- diag(Sig)
+
+    med <- ginv(w, mu, lam)
+    ql <- ginv(w, mu + sqrt(dg) * zlo, lam)
+    qh <- ginv(w, mu + sqrt(dg) * zhi, lam)
+
+    if (w == "identity") {
+      mdtxt <- fmtarr(mu)
+    } else if (w == "log") {
+      mdtxt <- fmtarr(exp(mu - dg))
+    } else if (lam < 1) {
+      mdtxt <- "null"
+    } else {
+      bb <- 1 + lam * mu
+      mdtxt <- fmtarr(((bb + sqrt(bb^2 + 4 * lam * dg * (lam - 1))) / 2)^(1 / lam))
+    }
+
+    if (w == "identity") {
+      mtxt <- fmtarr(mu)
+      ctxt <- fmtmat(Sig)
+    } else if (w == "log") {
+      mtxt <- fmtarr(exp(mu + dg / 2))
+      ctxt <- fmtmat(exp(outer(mu, mu, "+") + outer(dg, dg, "+") / 2) * expm1(Sig))
+    } else {
+      mtxt <- "null"
+      ctxt <- "null"
+    }
+
+    blocks[wi] <- paste0(
+      "{\"warp\":\"", w, "\",",
+      "\"evidence\":", fmtnum(ev[wi]), ",",
+      "\"median\":", fmtarr(med), ",",
+      "\"mode\":", mdtxt, ",",
+      "\"quantile_low\":", fmtarr(ql), ",",
+      "\"quantile_high\":", fmtarr(qh), ",",
+      "\"mean\":", mtxt, ",",
+      "\"covariance\":", ctxt, "}"
+    )
+  }
+
+  cand <- which(ev >= max(ev) - cf$tie_tolerance)
+  sel <- warps[min(cand)]
+
+  cfgjson[ci] <- paste0(
+    "{\"config_id\":\"", cf$config_id, "\",",
+    "\"selected_warp\":\"", sel, "\",",
+    "\"warps\":[", paste(blocks, collapse = ","), "]}"
+  )
+}
+
+writeLines(paste0("{\"configurations\":[", paste(cfgjson, collapse = ","), "]}"), out_path)
+RSCRIPT
+
+chmod 0644 /app/solve.R

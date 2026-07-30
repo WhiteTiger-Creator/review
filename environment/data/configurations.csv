@@ -1,0 +1,10 @@
+config_id,facility,n_train,signal_variance,lengthscale,jitter,warp_catalogue,boxcox_lambda,quantile_low,quantile_high,tie_tolerance
+cfg_kepler_tight,Kepler,40,1.500000,0.250000,1.000e-07,identity;log;boxcox,0.3000,0.1000,0.9000,1.000e-09
+cfg_kepler_broad,Kepler,60,0.900000,0.800000,5.000e-07,identity;log;boxcox,0.3000,0.0500,0.9500,1.000e-09
+cfg_k2_tight,K2,40,1.500000,0.250000,1.000e-06,identity;log;boxcox,0.4500,0.1000,0.9000,1.000e-09
+cfg_k2_mid,K2,60,0.900000,0.300000,2.000e-07,identity;log;boxcox,0.3000,0.2500,0.7500,1.000e-09
+cfg_tess_tight,TESS,40,1.500000,0.250000,1.000e-06,identity;log;boxcox,0.6000,0.1000,0.9000,1.000e-09
+cfg_tess_broad,TESS,60,0.900000,0.800000,5.000e-07,identity;log;boxcox,0.8000,0.0500,0.9500,1.000e-09
+cfg_kepler_steep,Kepler,48,1.300000,0.400000,2.000e-07,identity;log;boxcox,1.4000,0.0500,0.9500,1.000e-09
+cfg_k2_steep,K2,52,1.000000,0.450000,3.000e-07,identity;log;boxcox,1.8000,0.1000,0.9000,1.000e-09
+cfg_tess_steep,TESS,44,1.600000,0.300000,1.000e-06,identity;log;boxcox,2.2000,0.1500,0.8500,1.000e-09
