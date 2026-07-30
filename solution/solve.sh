@@ -1,17 +1,34 @@
 #!/bin/bash
-# Oracle: build the probe-based solver and use it to recover the retention
-# policy from the sealed daemon, writing decisions for the audit request set to
-# /app/out/decisions.json.
-#
-# This does not embed the policy. It runs the same black-box discovery an agent
-# must perform: probe the sealed daemon, characterize the decision surface, and
-# generalize to the full request set.
 set -euo pipefail
 
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-mkdir -p /app/out
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PATCH_FILE="${SCRIPT_DIR}/varnish-grace-handover.patch"
 
-rustc -O "$here/solver.rs" -o /tmp/solver
-/tmp/solver
+cd /srv/mirrorveil
 
-echo "wrote /app/out/decisions.json"
+if [[ -x /srv/mirrorveil/bin/stop-cache-stack ]]; then
+  /srv/mirrorveil/bin/stop-cache-stack || true
+fi
+
+if patch -p1 --dry-run -i "${PATCH_FILE}" >/tmp/mirrorveil-patch-forward.out 2>/tmp/mirrorveil-patch-forward.err; then
+  patch -p1 -i "${PATCH_FILE}"
+elif patch -p1 -R --dry-run -i "${PATCH_FILE}" >/tmp/mirrorveil-patch-reverse.out 2>/tmp/mirrorveil-patch-reverse.err; then
+  echo "patch already applied"
+else
+  echo "patch does not apply in forward or reverse direction" >&2
+  echo "--- forward stderr ---" >&2
+  cat /tmp/mirrorveil-patch-forward.err >&2 || true
+  echo "--- forward stdout ---" >&2
+  cat /tmp/mirrorveil-patch-forward.out >&2 || true
+  echo "--- reverse stderr ---" >&2
+  cat /tmp/mirrorveil-patch-reverse.err >&2 || true
+  exit 1
+fi
+
+chmod 0755 /srv/mirrorveil/bin/reload-cache-policy /srv/mirrorveil/bin/start-cache-stack /srv/mirrorveil/bin/compute-vcl-label || true
+
+/srv/mirrorveil/build-cache-stack.sh
+/srv/mirrorveil/bin/start-cache-stack
+/srv/mirrorveil/bin/wait-for-cache stack-ready
+
+exit 0

@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+"""Emit the content-addressed VCL label for /srv/mirrorveil/vcl/*.vcl.
+
+Normative framing (same contract as reload-cache-policy / tests):
+  for each file in lexical order of relative path ``vcl/<name>``:
+      update SHA-256 with: path UTF-8 + NUL + decimal length + NUL + raw bytes
+  print ``mv_`` + first 16 lowercase hex digits of the digest.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from pathlib import Path
+
+ROOT = Path("/srv/mirrorveil/vcl")
+
+
+def main() -> None:
+    digest = hashlib.sha256()
+    for path in sorted(ROOT.glob("*.vcl")):
+        rel = f"vcl/{path.name}"
+        data = path.read_bytes()
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(len(data)).encode("ascii"))
+        digest.update(b"\0")
+        digest.update(data)
+    print("mv_" + digest.hexdigest()[:16])
+
+
+if __name__ == "__main__":
+    main()

@@ -1,57 +1,62 @@
-FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
+FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
 
-WORKDIR /app
-
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        asciinema \
+        bash \
+        ca-certificates \
+        curl \
+        jq \
+        netcat-openbsd \
+        nginx \
+        patch \
+        procps \
+        psmisc \
         python3 \
         python3-pip \
-        jq \
-        file \
+        python3-venv \
         tmux \
-        asciinema \
-        ca-certificates \
+        varnish \
     && rm -rf /var/lib/apt/lists/*
 
-# Pinned pytest plus the CTRF reporter plugin (for --ctrf output). Debian
-# bookworm's apt pytest predates the API the plugin needs.
-RUN pip3 install --no-cache-dir --break-system-packages \
-        pytest==8.3.4 \
-        pytest-json-ctrf==0.5.2
+COPY requirements.lock /tmp/requirements.lock
+COPY verifier-wheels /verifier-wheels
 
-# The agent's solving script is expected in Rust: rustc/cargo are on PATH from
-# the base image. No crates are vendored (no external dependency, no network
-# fetch risk) -- std alone is sufficient for this task's flat JSON schemas, so
-# there is nothing to configure offline the way Go's GOPROXY=off does.
+RUN python3 -m venv /opt/verifier_venv \
+    && /opt/verifier_venv/bin/pip install \
+        --no-index \
+        --find-links=/verifier-wheels \
+        --require-hashes \
+        --no-deps \
+        -r /tmp/requirements.lock \
+    && rm -rf /tmp/requirements.lock
 
-# Two users: "agent" runs the task (unprivileged); "oracle" owns the sealed
-# daemon so the agent can execute it but cannot read the hidden retention
-# rules, copy the binary, or ptrace it.
-RUN useradd -m -u 1000 agent && useradd -m -u 1001 oracle
+COPY mirrorveil/policy /srv/mirrorveil/policy
+COPY mirrorveil/bin /srv/mirrorveil/bin
+COPY mirrorveil/build-cache-stack.sh /srv/mirrorveil/build-cache-stack.sh
 
-# The daemon ships as a prebuilt, sealed executable. Its source is deliberately
-# not part of this build context, so the hidden retention rules never exist in
-# readable form anywhere in the agent-facing environment. The source of record
-# lives in solution/engine.go (outside this context) and is compiled offline
-# with CGO_ENABLED=0 -trimpath -ldflags="-s -w" for a static, stripped binary.
-COPY daemon/decide /opt/retention/decide
-RUN printf '0' > /opt/retention/.count
+COPY mirrorveil/vcl /srv/mirrorveil/vcl
+COPY mirrorveil/nginx /srv/mirrorveil/nginx
+COPY mirrorveil/runbooks /srv/mirrorveil/runbooks
+COPY mirrorveil/examples /srv/mirrorveil/examples
 
-# Public material handed to the agent: the audit request set and worked
-# examples.
-RUN mkdir -p /app/challenge /app/out
-COPY challenge/requests.json /app/challenge/requests.json
-COPY challenge/examples.json /app/challenge/examples.json
+RUN find /srv/mirrorveil -type f -exec sed -i 's/\r$//' {} +
 
-# Seal the oracle side: directory traversable but not listable; query counter
-# private to oracle; daemon set-uid + execute-only.
-RUN chown oracle:oracle /opt/retention /opt/retention/decide /opt/retention/.count \
-    && chmod 0711 /opt/retention \
-    && chmod 0600 /opt/retention/.count \
-    && chmod 4711 /opt/retention/decide
+RUN chmod 0755 \
+        /srv/mirrorveil/bin/start-cache-stack \
+        /srv/mirrorveil/bin/stop-cache-stack \
+        /srv/mirrorveil/bin/reload-cache-policy \
+        /srv/mirrorveil/bin/cache-control \
+        /srv/mirrorveil/bin/inspect-cache \
+        /srv/mirrorveil/bin/wait-for-cache \
+        /srv/mirrorveil/bin/compute-vcl-label \
+        /srv/mirrorveil/build-cache-stack.sh \
+        /srv/mirrorveil/examples/seed-origins.sh \
+        /srv/mirrorveil/examples/make-large-object.sh \
+        /srv/mirrorveil/examples/verify-stack.sh \
+    && chmod 0600 /srv/mirrorveil/policy/control.conf \
+    && /srv/mirrorveil/examples/seed-origins.sh \
+    && /srv/mirrorveil/examples/make-large-object.sh \
+    && /srv/mirrorveil/build-cache-stack.sh
 
-# Hand the working area to the agent. No USER directive here, deliberately: the
-# container default must stay privileged so the verifier can create and write
-# /logs/verifier/reward.txt on a harness-provided root-owned /logs. The agent's
-# own unprivileged execution comes from [agent].user in task.toml instead.
-RUN chown agent:agent /app /app/out /app/challenge
+WORKDIR /srv/mirrorveil

@@ -1,0 +1,103 @@
+#!/bin/bash
+set -euo pipefail
+
+ROOT=/srv/mirrorveil
+# shellcheck source=/dev/null
+source "${ROOT}/policy/topology.conf"
+# shellcheck source=/dev/null
+source "${ROOT}/policy/cache-limits.conf"
+
+usage() {
+  echo "usage: wait-for-cache stack-ready|primary-healthy|primary-sick|secondary-healthy|secondary-sick" >&2
+  exit 2
+}
+
+[[ $# -eq 1 ]] || usage
+want="$1"
+
+poll_ms() {
+  sleep "$(awk -v ms="$1" 'BEGIN { printf "%.3f", ms/1000 }')"
+}
+
+process_running() {
+  local pid_file="$1"
+  [[ -f "${pid_file}" ]] || return 1
+  local pid
+  pid="$(tr -d ' \n' < "${pid_file}")"
+  [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null
+}
+
+probe_state() {
+  local backend="$1"
+  local raw
+  raw="$(varnishadm -n "${VARNISH_WORK_DIR}" backend.list 2>/dev/null | awk -v b="${backend}" '
+    tolower($1) ~ tolower(b) {
+      for (i=1;i<=NF;i++) if ($i ~ /^(healthy|sick|Healthy|Sick)$/) { print tolower($i); exit }
+    }')"
+  case "${raw}" in
+    healthy) echo "Healthy" ;;
+    sick) echo "Sick" ;;
+    *) echo "${raw:-unknown}" ;;
+  esac
+}
+
+http_code() {
+  curl -sS --max-time 1 -o /dev/null -w '%{http_code}' \
+    -H "Host: readiness.check.invalid" \
+    "http://${CACHE_ADDR}:${CACHE_PORT}/" || true
+}
+
+deadline=$((SECONDS + STACK_READY_TIMEOUT_SEC))
+while (( SECONDS < deadline )); do
+  case "${want}" in
+    stack-ready)
+      if process_running "${VARNISH_PID_FILE}" \
+        && process_running "${PRIMARY_PID_FILE}" \
+        && process_running "${SECONDARY_PID_FILE}"; then
+        code="$(http_code)"
+        if [[ -n "${code}" && "${code}" != "000" ]]; then
+          p="$(probe_state primary_origin)"
+          s="$(probe_state secondary_origin)"
+          if [[ "${p}" == "Healthy" && "${s}" == "Healthy" ]]; then
+            exit 0
+          fi
+        fi
+      fi
+      ;;
+    primary-healthy)
+      if process_running "${PRIMARY_PID_FILE}"; then
+        p="$(probe_state primary_origin)"
+        if [[ "${p}" == "Healthy" ]]; then
+          exit 0
+        fi
+      fi
+      ;;
+    primary-sick)
+      p="$(probe_state primary_origin)"
+      if [[ "${p}" == "Sick" ]]; then
+        exit 0
+      fi
+      ;;
+    secondary-healthy)
+      if process_running "${SECONDARY_PID_FILE}"; then
+        s="$(probe_state secondary_origin)"
+        if [[ "${s}" == "Healthy" ]]; then
+          exit 0
+        fi
+      fi
+      ;;
+    secondary-sick)
+      s="$(probe_state secondary_origin)"
+      if [[ "${s}" == "Sick" ]]; then
+        exit 0
+      fi
+      ;;
+    *)
+      usage
+      ;;
+  esac
+  poll_ms "${STACK_READY_POLL_MS}"
+done
+
+echo "timeout waiting for ${want}" >&2
+exit 1

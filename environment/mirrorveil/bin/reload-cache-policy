@@ -1,0 +1,25 @@
+#!/bin/bash
+set -euo pipefail
+
+ROOT=/srv/mirrorveil
+# shellcheck source=/dev/null
+source "${ROOT}/policy/topology.conf"
+# shellcheck source=/dev/null
+source "${ROOT}/policy/cache-limits.conf"
+
+# Starter reload: compile check only, activate under a non-content-addressed label.
+# Production activation must use the mv_ label from /srv/mirrorveil/bin/compute-vcl-label
+# (see /srv/mirrorveil/runbooks/invalidation-console.md).
+VCL_DIR="${ROOT}/vcl"
+ENTRY="${ENTRY_VCL}"
+
+if ! varnishd -C -f "${ENTRY}" >/tmp/mirrorveil-vcl-compile.out 2>/tmp/mirrorveil-vcl-compile.err; then
+  cat /tmp/mirrorveil-vcl-compile.err >&2
+  exit 1
+fi
+
+LABEL="boot_reload"
+varnishadm -n "${VARNISH_WORK_DIR}" vcl.load "${LABEL}" "${ENTRY}" >/dev/null
+varnishadm -n "${VARNISH_WORK_DIR}" vcl.use "${LABEL}" >/dev/null
+echo "active=${LABEL}"
+exit 0

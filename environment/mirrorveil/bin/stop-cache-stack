@@ -1,0 +1,52 @@
+#!/bin/bash
+set -euo pipefail
+
+ROOT=/srv/mirrorveil
+# shellcheck source=/dev/null
+source "${ROOT}/policy/topology.conf"
+# shellcheck source=/dev/null
+source "${ROOT}/policy/cache-limits.conf"
+
+poll_ms() {
+  sleep "$(awk -v ms="$1" 'BEGIN { printf "%.3f", ms/1000 }')"
+}
+
+stop_pidfile() {
+  local name="$1"
+  local pid_file="$2"
+  if [[ ! -f "${pid_file}" ]]; then
+    return 0
+  fi
+  local pid
+  pid="$(tr -d ' \n' < "${pid_file}" || true)"
+  if [[ -z "${pid}" ]]; then
+    rm -f "${pid_file}"
+    return 0
+  fi
+  if ! kill -0 "${pid}" 2>/dev/null; then
+    rm -f "${pid_file}"
+    return 0
+  fi
+  kill "${pid}" 2>/dev/null || true
+  local deadline=$((SECONDS + PROCESS_STOP_TIMEOUT_SEC))
+  while (( SECONDS < deadline )); do
+    if ! kill -0 "${pid}" 2>/dev/null; then
+      rm -f "${pid_file}"
+      return 0
+    fi
+    poll_ms 100
+  done
+  kill -9 "${pid}" 2>/dev/null || true
+  rm -f "${pid_file}"
+}
+
+stop_pidfile varnish "${VARNISH_PID_FILE}"
+stop_pidfile primary "${PRIMARY_PID_FILE}"
+stop_pidfile secondary "${SECONDARY_PID_FILE}"
+
+rm -f \
+  "${VARNISH_WORK_DIR}"/*.sock \
+  "${RUNTIME_ROOT}/tmp"/*.sock \
+  2>/dev/null || true
+
+exit 0
