@@ -1,5 +1,10 @@
-module cabrelay
+module dungeond
 
-go 1.24
+go 1.23.0
 
-require github.com/pelletier/go-toml/v2 v2.2.3
+require (
+	go.etcd.io/bbolt v1.3.11
+	gopkg.in/yaml.v3 v3.0.1
+)
+
+require golang.org/x/sys v0.4.0 // indirect

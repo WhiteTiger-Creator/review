@@ -1,0 +1,51 @@
+# The shipped Compose Dungeon world. Services are rooms, depends_on edges
+# are doors, and dungeon.* labels describe locks, darkness, and items.
+services:
+  gatehouse:
+    labels:
+      dungeon.entry: "true"
+      dungeon.items: "torch"
+    depends_on:
+      - courtyard
+
+  courtyard:
+    labels:
+      dungeon.items: "key.iron"
+    depends_on:
+      - chapel
+      - cellar
+
+  chapel:
+    labels:
+      dungeon.lock: "iron"
+      dungeon.items: "key.gold, gem.amber"
+
+  cellar:
+    labels:
+      dungeon.dark: "true"
+      dungeon.items: "key.silver"
+
+  vault:
+    labels:
+      dungeon.lock: "gold"
+      dungeon.goal: "true"
+      dungeon.items: "crown"
+    depends_on:
+      - chapel
+
+  crypt:
+    labels:
+      dungeon.dark: "true"
+      dungeon.lock: "silver"
+      dungeon.items: "torch, gem.onyx"
+    depends_on:
+      - cellar
+
+  oubliette:
+    labels:
+      dungeon.lock: "bone"
+      dungeon.items: "key.bone"
+
+  observatory:
+    depends_on:
+      - oubliette

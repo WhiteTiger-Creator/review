@@ -1,41 +1,35 @@
-# Multi-stage host build for Go control plane + Rust custody/fence helpers.
-# Justification: golang bookworm final stage is the canonical Go runtime base and
-# also hosts the Rust toolchain copy required to rebuild helpers offline.
-FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36 AS rust-base
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
 
-FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac AS toolchain
-
-COPY --from=rust-base /usr/local/cargo /usr/local/cargo
-COPY --from=rust-base /usr/local/rustup /usr/local/rustup
-ENV CARGO_HOME=/usr/local/cargo \
-    RUSTUP_HOME=/usr/local/rustup \
-    PATH=/usr/local/cargo/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-    GOPATH=/go
-
+# System packages required by the agent harness (tmux, asciinema) and the
+# Python-based verifier.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        asciinema \
         ca-certificates \
+        psmisc \
         python3 \
         python3-pip \
-        python3-venv \
         tmux \
-        asciinema \
-        build-essential \
-        pkg-config \
-        libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m pip install --no-cache-dir --break-system-packages \
-    pytest==8.4.1 \
-    pytest-json-ctrf==0.3.5
+# Verifier dependencies are baked into the image: the verifier runs with
+# networking disabled, so nothing may be installed at test time. The full
+# transitive closure is pinned by hash in requirements.lock.
+COPY requirements.lock /tmp/requirements.lock
+RUN pip3 install --no-cache-dir --break-system-packages \
+    --require-hashes --no-deps -r /tmp/requirements.lock
 
-WORKDIR /app/environment
-COPY . /app/environment
-
-# Populate module/crate caches inside the image (not under solver-edited paths).
-RUN go mod download \
-    && cargo fetch --manifest-path /app/environment/Cargo.toml \
-    && chmod +x /app/environment/scripts/build.sh \
-    && /app/environment/scripts/build.sh
+# Pre-warm the Go module cache so `go build` works completely offline.
+ENV GOMODCACHE=/opt/gomodcache \
+    GOFLAGS=-mod=mod \
+    GOPROXY=off \
+    GOTOOLCHAIN=local
 
 WORKDIR /app
+COPY go.mod go.sum /app/
+RUN GOPROXY=https://proxy.golang.org,direct go mod download all
+
+# Task source: server stub and the shipped world definition.
+COPY app/main.go /app/main.go
+COPY app/world/ /app/world/
+RUN mkdir -p /app/data

@@ -1,0 +1,35 @@
+# Verifier-owned map that exercises the /world "route" field. The entry has a
+# dead-end neighbour (alcove) whose name sorts before the rooms on any winning
+# path, and two equally short winning paths (through beacon or cavern, each
+# holding the key the goal needs). The shortest, lexicographically smallest
+# winning route is therefore beacon -> vault, not anything through alcove.
+services:
+  start:
+    labels:
+      dungeon.entry: "true"
+    depends_on:
+      - alcove
+      - beacon
+      - cavern
+
+  alcove:
+    labels:
+      dungeon.items: "coin"
+
+  beacon:
+    labels:
+      dungeon.items: "key.gold"
+    depends_on:
+      - vault
+
+  cavern:
+    labels:
+      dungeon.items: "key.gold"
+    depends_on:
+      - vault
+
+  vault:
+    labels:
+      dungeon.lock: "gold"
+      dungeon.goal: "true"
+      dungeon.items: "crown"
