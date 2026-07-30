@@ -1,0 +1,802 @@
+diff -ruN before/internal/cli/run.go after/internal/cli/run.go
+--- before/internal/cli/run.go	2026-07-28 06:55:03.017482607 +0000
++++ after/internal/cli/run.go	2026-07-28 08:47:22.282396382 +0000
+@@ -4,6 +4,7 @@
+ 	"encoding/json"
+ 	"fmt"
+ 	"os"
++	"path/filepath"
+ 	"sort"
+ 
+ 	"tokenexposure/internal/corpus"
+@@ -18,6 +19,13 @@
+ 	if err != nil {
+ 		return err
+ 	}
++	failpoint := os.Getenv("TOKEN_EXPOSURE_FAILPOINT")
++	cp := &state.Checkpoint{Path: opts.StatePath}
++	prevState, err := cp.Load()
++	if err != nil {
++		return err
++	}
++
+ 	reader := corpus.NewReader(opts.EventsDir)
+ 	events, err := reader.LoadAll()
+ 	if err != nil {
+@@ -26,6 +34,27 @@
+ 	if err := corpus.ValidateEvents(events, "/app/schemas/event.schema.json"); err != nil {
+ 		return err
+ 	}
++	committedShards, err := corpus.CommittedShards(opts.EventsDir)
++	if err != nil {
++		return err
++	}
++	relevantFP, err := corpus.RelevantFingerprint(opts.EventsDir, opts.ConfigDir, events)
++	if err != nil {
++		return err
++	}
++	evidenceFP := corpus.EvidenceFingerprint(events)
++	checkpointID := corpus.CheckpointID(evidenceFP, relevantFP)
++
++	prevRelevant, _ := prevState["relevant_fingerprint"].(string)
++
++	resumed := false
++	if prevStatus, _ := prevState["status"].(string); prevStatus == state.Checkpointed || prevStatus == state.ReadyToPublish || prevStatus == state.Validating || prevStatus == state.Correlating {
++		prevEvidence, _ := prevState["evidence_fingerprint"].(string)
++		if prevEvidence == evidenceFP && prevRelevant == relevantFP {
++			resumed = true
++		}
++	}
++
+ 	chains, err := reduce.BuildChains(events, opts.ConfigDir)
+ 	if err != nil {
+ 		return err
+@@ -34,10 +63,20 @@
+ 	if err != nil {
+ 		return err
+ 	}
++	trustPath := filepath.Join(opts.ConfigDir, "trust-boundaries.json")
++	trustBytes, err := os.ReadFile(trustPath)
++	if err != nil {
++		return err
++	}
++	var trustBoundaries map[string]any
++	if err := json.Unmarshal(trustBytes, &trustBoundaries); err != nil {
++		return err
++	}
+ 	input := map[string]any{
+-		"events": events,
+-		"chains": chains,
+-		"config_dir": opts.ConfigDir,
++		"events":           events,
++		"chains":           chains,
++		"config_dir":       opts.ConfigDir,
++		"trust_boundaries": trustBoundaries,
+ 	}
+ 	result, err := engine.Evaluate(input)
+ 	if err != nil {
+@@ -55,8 +94,34 @@
+ 	if err := graph.ValidateConsistency(report, dot); err != nil {
+ 		return err
+ 	}
++	if err := corpus.ValidateReportSchema(report, "/app/schemas/exposure-report.schema.json"); err != nil {
++		return err
++	}
++
++	checkpointState := map[string]any{
++		"status":               state.Checkpointed,
++		"checkpoint_id":        checkpointID,
++		"committed_shards":     committedShards,
++		"evidence_fingerprint": evidenceFP,
++		"relevant_fingerprint": relevantFP,
++		"published":            false,
++	}
++	if err := cp.Save(checkpointState); err != nil {
++		return err
++	}
++	if failpoint == "after_checkpoint" {
++		return fmt.Errorf("failpoint after_checkpoint")
++	}
++
++	finalState := map[string]any{
++		"checkpoint_id":           checkpointID,
++		"committed_shards":          committedShards,
++		"evidence_fingerprint":    evidenceFP,
++		"relevant_fingerprint":    relevantFP,
++		"resumed_from_checkpoint": resumed,
++	}
+ 	st := state.New(opts.StatePath)
+-	if err := st.Publish(report, dot, opts.OutputDir); err != nil {
++	if err := st.PublishAtomic(report, dot, opts.OutputDir, failpoint, finalState); err != nil {
+ 		return err
+ 	}
+ 	enc := json.NewEncoder(os.Stdout)
+diff -ruN before/internal/corpus/relevant.go after/internal/corpus/relevant.go
+--- before/internal/corpus/relevant.go	1970-01-01 00:00:00.000000000 +0000
++++ after/internal/corpus/relevant.go	2026-07-28 08:45:35.420524538 +0000
+@@ -0,0 +1,98 @@
++package corpus
++
++import (
++	"crypto/sha256"
++	"encoding/hex"
++	"fmt"
++	"os"
++	"path/filepath"
++	"sort"
++	"strings"
++)
++
++func CommittedShards(eventsDir string) ([]string, error) {
++	entries, err := os.ReadDir(eventsDir)
++	if err != nil {
++		return nil, err
++	}
++	var shards []string
++	for _, e := range entries {
++		if e.IsDir() || !strings.HasSuffix(e.Name(), ".ndjson") {
++			continue
++		}
++		shards = append(shards, e.Name())
++	}
++	sort.Strings(shards)
++	return shards, nil
++}
++
++func RelevantFingerprint(eventsDir, configDir string, events []map[string]any) (string, error) {
++	h := sha256.New()
++	shards, err := CommittedShards(eventsDir)
++	if err != nil {
++		return "", err
++	}
++	for _, name := range shards {
++		b, err := os.ReadFile(filepath.Join(eventsDir, name))
++		if err != nil {
++			return "", err
++		}
++		sum := sha256.Sum256(b)
++		_, _ = h.Write([]byte(name))
++		_, _ = h.Write(sum[:])
++	}
++	for _, rel := range []string{
++		"collectors.json",
++		"trust-boundaries.json",
++		"policy-revisions.json",
++		"scope-catalog.json",
++		"publication.json",
++	} {
++		b, err := os.ReadFile(filepath.Join(configDir, rel))
++		if err != nil {
++			return "", err
++		}
++		sum := sha256.Sum256(b)
++		_, _ = h.Write([]byte(rel))
++		_, _ = h.Write(sum[:])
++	}
++	used := usedKeyMaterial(events)
++	for _, item := range used {
++		_, _ = h.Write([]byte(item))
++		_, _ = h.Write([]byte{0})
++	}
++	return hex.EncodeToString(h.Sum(nil)), nil
++}
++
++func usedKeyMaterial(events []map[string]any) []string {
++	seen := map[string]struct{}{}
++	var out []string
++	for _, ev := range events {
++		if fmt.Sprintf("%v", ev["event_type"]) != "token_issued" {
++			continue
++		}
++		payload, _ := ev["payload"].(map[string]any)
++		if payload == nil {
++			continue
++		}
++		issuer := fmt.Sprintf("%v", payload["issuer"])
++		material := fmt.Sprintf("%v", payload["material_id"])
++		kid := fmt.Sprintf("%v", payload["kid"])
++		if material == "" && kid == "" {
++			continue
++		}
++		key := issuer + "|" + material + "|" + kid
++		if _, ok := seen[key]; ok {
++			continue
++		}
++		seen[key] = struct{}{}
++		out = append(out, key)
++	}
++	sort.Strings(out)
++	return out
++}
++
++func CheckpointID(evidenceFP, relevantFP string) string {
++	sum := sha256.Sum256([]byte(evidenceFP + "|" + relevantFP))
++	return hex.EncodeToString(sum[:16])
++}
+diff -ruN before/internal/corpus/schema.go after/internal/corpus/schema.go
+--- before/internal/corpus/schema.go	1970-01-01 00:00:00.000000000 +0000
++++ after/internal/corpus/schema.go	2026-07-28 08:37:12.355540544 +0000
+@@ -0,0 +1,38 @@
++package corpus
++
++import (
++	"encoding/json"
++	"fmt"
++	"os"
++)
++
++func ValidateReportSchema(report map[string]any, schemaPath string) error {
++	schemaBytes, err := os.ReadFile(schemaPath)
++	if err != nil {
++		return err
++	}
++	var schema map[string]any
++	if err := json.Unmarshal(schemaBytes, &schema); err != nil {
++		return err
++	}
++	required, _ := schema["required"].([]any)
++	for _, raw := range required {
++		key, _ := raw.(string)
++		if key == "" {
++			continue
++		}
++		if _, ok := report[key]; !ok {
++			return fmt.Errorf("report missing required field %s", key)
++		}
++	}
++	if sv, ok := report["schema_version"].(float64); !ok || int(sv) != 2 {
++		if iv, ok := report["schema_version"].(json.Number); ok {
++			if n, err := iv.Int64(); err != nil || n != 2 {
++				return fmt.Errorf("invalid schema_version")
++			}
++		} else if iv, ok := report["schema_version"].(int); !ok || iv != 2 {
++			return fmt.Errorf("invalid schema_version")
++		}
++	}
++	return nil
++}
+diff -ruN before/internal/reduce/chains.go after/internal/reduce/chains.go
+--- before/internal/reduce/chains.go	2026-07-28 06:55:03.017482607 +0000
++++ after/internal/reduce/chains.go	2026-07-28 08:36:28.772008802 +0000
+@@ -48,7 +48,24 @@
+ }
+ 
+ func chainKey(ev map[string]any) string {
+-	return str(ev["request_id"])
++	tenant := str(ev["tenant_id"])
++	payload, _ := ev["payload"].(map[string]any)
++	if payload != nil {
++		if exchange := str(payload["exchange_id"]); exchange != "" {
++			return tenant + "|" + exchange
++		}
++		if family := str(payload["refresh_family"]); family != "" {
++			return tenant + "|" + family
++		}
++		if family := str(payload["refresh_family_id"]); family != "" {
++			return tenant + "|" + family
++		}
++	}
++	trace := str(ev["trace_id"])
++	if trace != "" {
++		return tenant + "|" + trace
++	}
++	return tenant + "|" + str(ev["request_id"])
+ }
+ 
+ func tokenID(ev map[string]any) string {
+@@ -87,7 +104,19 @@
+ }
+ 
+ func logicalKey(ev map[string]any, collectors map[string]any) string {
+-	return str(ev["observed_at"])
++	ts := str(ev["observed_at"])
++	collector := str(ev["collector_id"])
++	offset := "0"
++	if items, ok := collectors["collectors"].([]any); ok {
++		for _, item := range items {
++			m, _ := item.(map[string]any)
++			if str(m["collector_id"]) == collector {
++				offset = fmt.Sprintf("%v", m["clock_offset_ms"])
++			}
++		}
++	}
++	seq := fmt.Sprintf("%v", ev["collector_sequence"])
++	return offset + "|" + ts + "|" + seq
+ }
+ 
+ func str(v any) string {
+diff -ruN before/internal/state/lifecycle.go after/internal/state/lifecycle.go
+--- before/internal/state/lifecycle.go	2026-07-23 09:28:44.583278807 +0000
++++ after/internal/state/lifecycle.go	2026-07-28 08:37:02.922636528 +0000
+@@ -1,13 +1,14 @@
+ package state
+ 
+ const (
+-	Discovering    = "DISCOVERING"
+-	Validating     = "VALIDATING"
+-	Normalizing    = "NORMALIZING"
+-	Correlating    = "CORRELATING"
+-	Evaluating     = "EVALUATING"
+-	Rendering      = "RENDERING"
+-	ReadyToPublish = "READY_TO_PUBLISH"
+-	Finished       = "FINISHED"
+-	Failed         = "FAILED"
++	Discovering     = "DISCOVERING"
++	Validating      = "VALIDATING"
++	Normalizing     = "NORMALIZING"
++	Correlating     = "CORRELATING"
++	Evaluating      = "EVALUATING"
++	Rendering       = "RENDERING"
++	Checkpointed    = "CHECKPOINTED"
++	ReadyToPublish  = "READY_TO_PUBLISH"
++	Finished        = "FINISHED"
++	Failed          = "FAILED"
+ )
+diff -ruN before/internal/state/publication.go after/internal/state/publication.go
+--- before/internal/state/publication.go	2026-07-23 09:28:44.583299628 +0000
++++ after/internal/state/publication.go	2026-07-28 08:37:19.828773663 +0000
+@@ -2,6 +2,7 @@
+ 
+ import (
+ 	"encoding/json"
++	"fmt"
+ 	"os"
+ 	"path/filepath"
+ )
+@@ -14,11 +15,26 @@
+ 	return &Manager{path: path}
+ }
+ 
++func InvalidateOutput(outputDir string) {
++	_ = os.Remove(filepath.Join(outputDir, "token_exposure_report.json"))
++	_ = os.Remove(filepath.Join(outputDir, "token_exposure_graph.dot"))
++}
++
+ func (m *Manager) Publish(report map[string]any, dot string, outputDir string) error {
++	return m.PublishAtomic(report, dot, outputDir, "", map[string]any{
++		"status":    Finished,
++		"published": true,
++	})
++}
++
++func (m *Manager) PublishAtomic(report map[string]any, dot string, outputDir string, failpoint string, finalState map[string]any) error {
+ 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+ 		return err
+ 	}
+ 	staging := filepath.Join(outputDir, ".staging")
++	if err := os.RemoveAll(staging); err != nil {
++		return err
++	}
+ 	if err := os.MkdirAll(staging, 0o755); err != nil {
+ 		return err
+ 	}
+@@ -34,6 +50,10 @@
+ 	if err := os.WriteFile(dotPath, []byte(dot), 0o644); err != nil {
+ 		return err
+ 	}
++	if failpoint == "after_stage" {
++		_ = os.RemoveAll(staging)
++		return fmt.Errorf("failpoint after_stage")
++	}
+ 	finalReport := filepath.Join(outputDir, "token_exposure_report.json")
+ 	finalDot := filepath.Join(outputDir, "token_exposure_graph.dot")
+ 	if err := os.Rename(reportPath, finalReport); err != nil {
+@@ -42,6 +62,12 @@
+ 	if err := os.Rename(dotPath, finalDot); err != nil {
+ 		return err
+ 	}
++	_ = os.RemoveAll(staging)
++	if finalState == nil {
++		finalState = map[string]any{}
++	}
++	finalState["status"] = Finished
++	finalState["published"] = true
+ 	cp := &Checkpoint{Path: m.path}
+-	return cp.Save(map[string]any{"status": Finished, "published": true})
++	return cp.Save(finalState)
+ }
+diff -ruN before/opalib/grant.rego after/opalib/grant.rego
+--- before/opalib/grant.rego	2026-07-28 06:55:03.017482607 +0000
++++ after/opalib/grant.rego	2026-07-28 08:36:28.772097887 +0000
+@@ -2,25 +2,66 @@
+ 
+ import rego.v1
+ 
++payload_or_empty(ev) := p if {
++	p := ev.payload
++	p != null
++} else := {}
++
++required_scope(payload) := scope if {
++	scope := object.get(payload, "required_scope", "")
++	scope != ""
++}
++
++required_scope(payload) := scope if {
++	required := object.get(payload, "required", {})
++	scope := object.get(required, "resource_scope", "")
++	scope != ""
++}
++
++required_scope(payload) := scope if {
++	scope_obj := object.get(payload, "scope", {})
++	scope := object.get(scope_obj, "required", "")
++	scope != ""
++}
++
++granted_scope_set(payload) := scopes if {
++	scopes := object.get(payload, "granted_scopes", [])
++	is_array(scopes)
++	count(scopes) > 0
++}
++
++granted_scope_set(payload) := scopes if {
++	granted := object.get(payload, "granted", {})
++	scopes := object.get(granted, "scopes", [])
++	is_array(scopes)
++	count(scopes) > 0
++}
++
++granted_scope_set(payload) := scopes if {
++	scope_obj := object.get(payload, "scope", {})
++	scopes := object.get(scope_obj, "granted", [])
++	is_array(scopes)
++	count(scopes) > 0
++}
++
++decision_allowed(payload) if {
++	object.get(payload, "decision", "allow") in {"allow", "granted"}
++}
++
+ escalation_findings(events) := [f |
+ 	some i
+ 	ev := events[i]
+ 	ev.event_type == "scope_decision"
+-	granted := ev.payload.granted_scopes[_]
+-	required := ev.payload.required_scope
+-	scope_implies(granted, required)
+-	not tenant_allowed(ev, required)
++	payload := payload_or_empty(ev)
++	decision_allowed(payload)
++	required := required_scope(payload)
++	granted := granted_scope_set(payload)[_]
++	granted == required
++	resource_tenant := object.get(payload, "resource_tenant", ev.tenant_id)
++	ev.tenant_id != resource_tenant
+ 	f := {
+ 		"class": "scope_escalation",
+ 		"tenant_id": ev.tenant_id,
+ 		"evidence_event_ids": [ev.event_id],
+ 	}
+ ]
+-
+-scope_implies(granted, required) if {
+-	startswith(required, granted)
+-}
+-
+-tenant_allowed(ev, scope) if {
+-	ev.tenant_id == ev.payload.resource_tenant
+-}
+diff -ruN before/opalib/graph.rego after/opalib/graph.rego
+--- before/opalib/graph.rego	2026-07-26 18:41:08.132208876 +0000
++++ after/opalib/graph.rego	2026-07-28 08:36:28.772297680 +0000
+@@ -2,33 +2,105 @@
+ 
+ import rego.v1
+ 
+-nodes(events, findings) := sort(node_list(events, findings))
++import data.tokenexposure.link
++import data.tokenexposure.redact
+ 
+-node_list(events, findings) := [n |
++nodes(events, findings) := sort(array.concat(chain_node_list(events), finding_node_list(findings)))
++
++chain_node_list(events) := [n |
++	some key in unique_chain_keys(events)
++	ev := representative_event(events, key)
++	fp := redact.chain_fingerprint(events, key)
++	n := {
++		"node_id": node_id("chain", key),
++		"chain_id": key,
++		"trace_id": object.get(ev, "trace_id", ""),
++		"tenant_id": ev.tenant_id,
++		"label": redact.redact_token(fp),
++		"class": "chain",
++	}
++]
++
++finding_node_list(findings) := [n |
+ 	some i
+ 	f := findings[i]
+ 	n := {
+ 		"node_id": node_id("finding", f.class),
+-		"label": f.class,
++		"label": finding_label(f),
+ 		"class": "finding",
+ 		"tenant_id": f.tenant_id,
+ 	}
+ ]
+ 
+-edges(events, findings) := sort([e |
++finding_label(f) := label if {
++	f.token_label
++	label := sprintf("%s %s", [f.class, f.token_label])
++}
++
++finding_label(f) := f.class if {
++	not f.token_label
++}
++
++unique_chain_keys(events) := keys if {
++	keys := {k |
++		some i
++		k := link.chain_key(events[i])
++	}
++}
++
++representative_event(events, key) := ev if {
++	ev := first_chain_event(events, key)
++}
++
++first_chain_event(events, key) := ev if {
++	candidates := [e |
++		some i
++		e := events[i]
++		link.chain_key(e) == key
++	]
++	count(candidates) > 0
++	sorted := sort(candidates)
++	ev := sorted[0]
++}
++
++edges(events, findings) := sort(array.concat(chain_edges(events, findings), finding_edges(findings)))
++
++chain_edges(events, findings) := [e |
+ 	some i
+ 	f := findings[i]
++	f.token_label
++	key := chain_key_for_finding(events, f)
+ 	e := {
+-		"edge_id": edge_id(f),
++		"edge_id": edge_id(f, key),
++		"source": node_id("finding", f.class),
++		"target": node_id("chain", key),
++		"label": f.token_label,
++		"class": "evidence",
++	}
++]
++
++finding_edges(findings) := [e |
++	some i
++	f := findings[i]
++	not f.token_label
++	e := {
++		"edge_id": edge_id(f, f.tenant_id),
+ 		"source": node_id("finding", f.class),
+ 		"target": node_id("tenant", f.tenant_id),
+ 		"label": "exposure",
+ 		"class": "used_at",
+ 	}
+-])
++]
++
++chain_key_for_finding(events, finding) := key if {
++	some i
++	ev := events[i]
++	ev.event_id == finding.evidence_event_ids[0]
++	key := link.chain_key(ev)
++}
+ 
+ node_id(kind, material) := sprintf("%s_%s", [kind, graph_safe(substring(sprintf("%v", [material]), 0, 32))])
+ 
+-edge_id(f) := sprintf("edge_%s", [graph_safe(substring(sprintf("%v", [f.class]), 0, 32))])
++edge_id(f, suffix) := sprintf("edge_%s_%s", [graph_safe(substring(sprintf("%v", [f.class]), 0, 16)), graph_safe(substring(sprintf("%v", [suffix]), 0, 16))])
+ 
+ graph_safe(s) := regex.replace(s, `[^A-Za-z0-9_]`, "_")
+diff -ruN before/opalib/hop.rego after/opalib/hop.rego
+--- before/opalib/hop.rego	2026-07-28 06:55:03.017482607 +0000
++++ after/opalib/hop.rego	2026-07-28 08:36:28.772162035 +0000
+@@ -2,23 +2,60 @@
+ 
+ import rego.v1
+ 
++import data.tokenexposure.redact
++
++payload_or_empty(ev) := p if {
++	p := ev.payload
++	p != null
++} else := {}
++
++proxy_id(ev) := object.get(payload_or_empty(ev), "proxy_id", "")
++
++untrusted_proxy(pid) if {
++	some i
++	input.trust_boundaries.untrusted_proxies[i] == pid
++}
++
+ bearer_findings(events) := [f |
+ 	some i
+ 	ev := events[i]
+-	ev.event_type in {"token_forwarded", "token_forward_attempted", "egress_blocked"}
++	ev.event_type == "token_forwarded"
++	pid := proxy_id(ev)
++	pid != ""
++	pid != null
++	untrusted_proxy(pid)
++	f := bearer_finding(ev)
++]
++
++bearer_finding(ev) := f if {
++	payload := payload_or_empty(ev)
++	fp := redact.raw_token_fingerprint(payload)
+ 	f := {
+ 		"class": "bearer_forwarding",
+ 		"tenant_id": ev.tenant_id,
+ 		"evidence_event_ids": [ev.event_id],
++		"token_label": redact.redact_token(fp),
+ 	}
+-]
++}
+ 
+-rejected_blocked(events) := [r |
++bearer_finding(ev) := f if {
++	payload := payload_or_empty(ev)
++	not redact.raw_token_fingerprint(payload)
++	f := {
++		"class": "bearer_forwarding",
++		"tenant_id": ev.tenant_id,
++		"evidence_event_ids": [ev.event_id],
++	}
++}
++
++rejected_forward(events) := [r |
+ 	some i
+ 	ev := events[i]
+-	ev.event_type == "egress_blocked"
++	ev.event_type in {"egress_blocked", "token_forward_attempted"}
+ 	r := {
+ 		"reason": "blocked_forward",
+ 		"event_id": ev.event_id,
+ 	}
+ ]
++
++rejected_blocked(events) := rejected_forward(events)
+diff -ruN before/opalib/link.rego after/opalib/link.rego
+--- before/opalib/link.rego	2026-07-28 06:55:03.017482607 +0000
++++ after/opalib/link.rego	2026-07-28 08:36:28.772217567 +0000
+@@ -14,4 +14,47 @@
+ 	}
+ ]
+ 
+-chain_key(ev) := sprintf("%s", [ev.request_id])
++payload_or_empty(ev) := p if {
++	p := ev.payload
++	p != null
++} else := {}
++
++chain_key(ev) := sprintf("%s|%s", [ev.tenant_id, exchange]) if {
++	payload := payload_or_empty(ev)
++	exchange := object.get(payload, "exchange_id", "")
++	exchange != ""
++}
++
++chain_key(ev) := sprintf("%s|%s", [ev.tenant_id, trace]) if {
++	payload := payload_or_empty(ev)
++	object.get(payload, "exchange_id", "") == ""
++	trace := object.get(ev, "trace_id", "")
++	trace != ""
++	trace != null
++}
++
++chain_key(ev) := sprintf("%s|%s", [ev.tenant_id, family]) if {
++	payload := payload_or_empty(ev)
++	object.get(payload, "exchange_id", "") == ""
++	object.get(ev, "trace_id", "") == ""
++	family := object.get(payload, "refresh_family", "")
++	family != ""
++}
++
++chain_key(ev) := sprintf("%s|%s", [ev.tenant_id, family]) if {
++	payload := payload_or_empty(ev)
++	object.get(payload, "exchange_id", "") == ""
++	object.get(ev, "trace_id", "") == ""
++	object.get(payload, "refresh_family", "") == ""
++	family := object.get(payload, "refresh_family_id", "")
++	family != ""
++}
++
++chain_key(ev) := sprintf("%s|%s", [ev.tenant_id, req]) if {
++	payload := payload_or_empty(ev)
++	object.get(payload, "exchange_id", "") == ""
++	object.get(ev, "trace_id", "") == ""
++	object.get(payload, "refresh_family", "") == ""
++	object.get(payload, "refresh_family_id", "") == ""
++	req := object.get(ev, "request_id", "")
++}
+diff -ruN before/opalib/redact.rego after/opalib/redact.rego
+--- before/opalib/redact.rego	2026-07-26 18:41:08.132208876 +0000
++++ after/opalib/redact.rego	2026-07-28 08:36:28.772367515 +0000
+@@ -2,7 +2,58 @@
+ 
+ import rego.v1
+ 
++import data.tokenexposure.link
++
+ redact_token(fp) := out if {
+ 	fp != ""
+ 	out := sprintf("tok_%s", [substring(fp, 0, 8)])
+ }
++
++raw_token_fingerprint(payload) := fp if {
++	fp := object.get(payload, "token_fingerprint", "")
++	fp != ""
++}
++
++raw_token_fingerprint(payload) := fp if {
++	object.get(payload, "token_fingerprint", "") == ""
++	fp := object.get(payload, "parent_token_fingerprint", "")
++	fp != ""
++}
++
++raw_token_fingerprint(payload) := fp if {
++	object.get(payload, "token_fingerprint", "") == ""
++	object.get(payload, "parent_token_fingerprint", "") == ""
++	fp := object.get(payload, "child_token_fingerprint", "")
++	fp != ""
++}
++
++raw_token_fingerprint(payload) := fp if {
++	object.get(payload, "token_fingerprint", "") == ""
++	object.get(payload, "parent_token_fingerprint", "") == ""
++	object.get(payload, "child_token_fingerprint", "") == ""
++	fp := object.get(payload, "access_token_fingerprint", "")
++	fp != ""
++}
++
++raw_token_fingerprint(payload) := fp if {
++	object.get(payload, "token_fingerprint", "") == ""
++	object.get(payload, "parent_token_fingerprint", "") == ""
++	object.get(payload, "child_token_fingerprint", "") == ""
++	object.get(payload, "access_token_fingerprint", "") == ""
++	fp := object.get(payload, "refresh_token_fingerprint", "")
++	fp != ""
++}
++
++chain_fingerprint(events, chain_key) := fp if {
++	fps := [val |
++		some i
++		ev := events[i]
++		link.chain_key(ev) == chain_key
++		payload := object.get(ev, "payload", {})
++		payload != null
++		val := raw_token_fingerprint(payload)
++	]
++	count(fps) > 0
++	sorted := sort(fps)
++	fp := sorted[0]
++}
+diff -ruN before/opalib/revocation.rego after/opalib/revocation.rego
+--- before/opalib/revocation.rego	2026-07-23 09:36:50.353545188 +0000
++++ after/opalib/revocation.rego	2026-07-28 08:36:28.772421974 +0000
+@@ -2,6 +2,8 @@
+ 
+ import rego.v1
+ 
++import data.tokenexposure.redact
++
+ lag_findings(events) := [f |
+ 	some i, j
+ 	rev := events[i]
+@@ -11,10 +13,12 @@
+ 	rev.payload.token_fingerprint == use.payload.token_fingerprint
+ 	use.observed_at > rev.observed_at
+ 	use.observed_at < rev.payload.effective_at
++	fp := rev.payload.token_fingerprint
+ 	f := {
+ 		"class": "revocation_lag_exposure",
+ 		"tenant_id": use.tenant_id,
+ 		"evidence_event_ids": [rev.event_id, use.event_id],
++		"token_label": redact.redact_token(fp),
+ 	}
+ ]
+ 

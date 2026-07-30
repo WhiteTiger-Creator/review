@@ -1,0 +1,1 @@
+Events are NDJSON with schema_version 2. Stable identity is (collector_id, collector_sequence, event_id). Logical time uses collector offsets from collectors.json and collector_sequence within a collector.

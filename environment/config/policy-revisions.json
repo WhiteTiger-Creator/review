@@ -1,0 +1,16 @@
+{
+  "revisions": [
+    {
+      "revision": 1,
+      "valid_from": "2026-07-01T00:00:00Z"
+    },
+    {
+      "revision": 3,
+      "valid_from": "2026-07-10T00:00:00Z"
+    },
+    {
+      "revision": 5,
+      "valid_from": "2026-07-15T00:00:00Z"
+    }
+  ]
+}

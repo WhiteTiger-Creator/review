@@ -1,0 +1,21 @@
+{
+  "revision": 3,
+  "scopes": [
+    {
+      "name": "billing.read",
+      "resource": "billing-api"
+    },
+    {
+      "name": "billing.invoice.write",
+      "resource": "billing-api"
+    },
+    {
+      "name": "admin",
+      "resource": "admin-api"
+    },
+    {
+      "name": "admin.read",
+      "resource": "admin-api"
+    }
+  ]
+}

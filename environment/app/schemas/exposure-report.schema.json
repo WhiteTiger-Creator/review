@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["schema_version", "evidence_fingerprint", "analysis_revision", "findings", "rejected_candidates", "nodes", "edges"],
+  "properties": {
+    "schema_version": {"type": "integer"},
+    "evidence_fingerprint": {"type": "string"},
+    "analysis_revision": {"type": "integer"},
+    "findings": {"type": "array"},
+    "rejected_candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["reason", "event_id"],
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "type": "string",
+            "enum": ["blocked_forward"]
+          },
+          "event_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "nodes": {"type": "array"},
+    "edges": {"type": "array"},
+    "legacy_compatibility": {"type": "object"}
+  }
+}

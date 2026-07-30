@@ -1,0 +1,9 @@
+{
+  "seed": "0x0A17BEEF",
+  "variants": [
+    "tenant-isolation",
+    "key-reuse",
+    "refresh-replay",
+    "redaction-lineage"
+  ]
+}

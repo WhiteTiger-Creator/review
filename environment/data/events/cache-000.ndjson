@@ -1,0 +1,1 @@
+{"schema_version":2,"event_id":"evt_cache_01","collector_id":"cache-a","collector_sequence":1,"observed_at":"2026-07-10T12:21:00.000Z","clock_domain":"cache-a","tenant_id":"tenant-a","trace_id":"tr_cache","request_id":"req_cache_hit","event_type":"authorization_cache_hit","policy_revision":3,"payload":{"token_fingerprint":"fp_cache_01","cached_token_fingerprint":"fp_cache_01"}}

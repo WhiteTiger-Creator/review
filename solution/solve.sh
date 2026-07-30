@@ -1,34 +1,56 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd /app
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PATCH_FILE="${SCRIPT_DIR}/varnish-grace-handover.patch"
+patch -p1 --forward < "${ROOT_DIR}/patches/token-exposure-fixes.patch"
 
-cd /srv/mirrorveil
+opa check /app/opalib
+export PATH="/usr/local/go/bin:${PATH}"
+rm -rf /tmp/go-build /app/build
+mkdir -p /tmp/go-build /app/build
+export GOCACHE=/tmp/go-build
+bash /app/scripts/build_binary.sh
 
-if [[ -x /srv/mirrorveil/bin/stop-cache-stack ]]; then
-  /srv/mirrorveil/bin/stop-cache-stack || true
-fi
+bash /app/test-visible/policy-smoke.sh
+bash /app/test-visible/corpus-smoke.sh
+bash /app/test-visible/graph-smoke.sh
+bash /app/test-visible/legacy-smoke.sh
+bash /app/test-visible/recovery-smoke.sh
 
-if patch -p1 --dry-run -i "${PATCH_FILE}" >/tmp/mirrorveil-patch-forward.out 2>/tmp/mirrorveil-patch-forward.err; then
-  patch -p1 -i "${PATCH_FILE}"
-elif patch -p1 -R --dry-run -i "${PATCH_FILE}" >/tmp/mirrorveil-patch-reverse.out 2>/tmp/mirrorveil-patch-reverse.err; then
-  echo "patch already applied"
-else
-  echo "patch does not apply in forward or reverse direction" >&2
-  echo "--- forward stderr ---" >&2
-  cat /tmp/mirrorveil-patch-forward.err >&2 || true
-  echo "--- forward stdout ---" >&2
-  cat /tmp/mirrorveil-patch-forward.out >&2 || true
-  echo "--- reverse stderr ---" >&2
-  cat /tmp/mirrorveil-patch-reverse.err >&2 || true
-  exit 1
-fi
+run_dir=/tmp/oracle-exposure
+rm -rf "${run_dir}" /output/*
+mkdir -p "${run_dir}" /output
+cp -a /app/data/events "${run_dir}/events"
+cp -a /app/config "${run_dir}/config"
+cp /app/data/state/analysis-state.json "${run_dir}/analysis-state.json"
 
-chmod 0755 /srv/mirrorveil/bin/reload-cache-policy /srv/mirrorveil/bin/start-cache-stack /srv/mirrorveil/bin/compute-vcl-label || true
+/app/bin/token-exposure-analyze \
+  --events "${run_dir}/events" \
+  --config "${run_dir}/config" \
+  --regolib /app/opalib \
+  --state "${run_dir}/analysis-state.json" \
+  --output /output
 
-/srv/mirrorveil/build-cache-stack.sh
-/srv/mirrorveil/bin/start-cache-stack
-/srv/mirrorveil/bin/wait-for-cache stack-ready
+/app/bin/inspect-exposure-output \
+  --report /output/token_exposure_report.json \
+  --dot /output/token_exposure_graph.dot
 
-exit 0
+dot -Tsvg /output/token_exposure_graph.dot -o "${run_dir}/graph.svg"
+python3 -m jsonschema -i /output/token_exposure_report.json /app/schemas/exposure-report.schema.json
+
+sha256sum /output/token_exposure_report.json /output/token_exposure_graph.dot > "${run_dir}/first.sha256"
+
+/app/bin/token-exposure-analyze \
+  --events "${run_dir}/events" \
+  --config "${run_dir}/config" \
+  --regolib /app/opalib \
+  --state "${run_dir}/analysis-state.json" \
+  --output /output
+
+sha256sum /output/token_exposure_report.json /output/token_exposure_graph.dot > "${run_dir}/second.sha256"
+cmp "${run_dir}/first.sha256" "${run_dir}/second.sha256"
+
+test -s /output/token_exposure_report.json
+test -s /output/token_exposure_graph.dot
+echo "oracle solve complete"

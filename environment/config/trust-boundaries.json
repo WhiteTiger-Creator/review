@@ -1,0 +1,15 @@
+{
+  "trusted_proxies": [
+    "proxy-internal-mesh"
+  ],
+  "untrusted_proxies": [
+    "proxy-untrusted-1"
+  ],
+  "internal_services": [
+    "billing-api",
+    "payments-api"
+  ],
+  "external_destinations": [
+    "external-api"
+  ]
+}
