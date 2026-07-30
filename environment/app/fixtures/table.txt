@@ -1,4 +1,0 @@
-# An evening table of standing dominoes. A turn topples one domino along its row, to the
-# left or to the right, and every domino standing beyond it that way falls with it. No row
-# at this table may hold more than 512 dominoes.
-rowlimit: 512

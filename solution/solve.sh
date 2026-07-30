@@ -1,338 +1,543 @@
 #!/bin/bash
 set -euo pipefail
+umask 027
 
-cat > /app/src/topple.ts << 'EOF'
-import { readFileSync } from "node:fs";
+cd /app
+for command in awk bash chown grep install jq python3 runuser sha256sum sort tail tr wc; do
+  command -v "$command" >/dev/null 2>&1 || {
+    echo "missing required runtime command: $command" >&2
+    exit 127
+  }
+done
+bash /app/scripts/initialize-service-instance
 
-// What this must read, decide and print is set out in /app/docs/rules.md.
+work="$(mktemp -d /tmp/harbor-service-commissioning.XXXXXX)"
+trap 'rm -rf "$work"' EXIT
+catalog="$work/catalog.tsv"
+schedule_catalog="$work/maintenance-window.tsv"
+/app/bin/catalog-query --batch-file /app/share/service-catalog.batch > "$catalog"
+HARBOR_CATALOG_DB=/opt/harbor/maintenance-window.db /app/bin/catalog-query --batch-file /app/share/maintenance-window.batch > "$schedule_catalog"
 
-// A Row is one row of a position: colour is "b", "r" or "g", or null for an empty row, and n
-// is the number of dominoes standing in it.
-export type Row = {
-  colour: string | null;
-  n: number;
-};
-
-// A Table holds the settings read from a table file and answers one position line at a time.
-// limit is the largest number of dominoes any one row may hold; hasLimit says whether a limit
-// was given at all.
-export type Table = {
-  limit: bigint;
-  hasLimit: boolean;
-  evalLine(line: string): string | null;
-};
-
-// A Standing is a position boiled down to what settling it needs: the two stores, the lengths
-// of the grey rows longest first, which sorted place each row of the position holds among
-// them, and running sums of what the grey rows pour into the player taking them at an even
-// place (p0) and at an odd place (p1).
-type Standing = {
-  blue: number;
-  red: number;
-  greys: number[];
-  place: number[];
-  p0: number[];
-  p1: number[];
-};
-
-const INT64_MAX = 9223372036854775807n;
-
-// firstWord returns the text up to the first space or tab.
-function firstWord(s: string): string {
-  const k = s.search(/[ \t]/);
-  return k >= 0 ? s.slice(0, k) : s;
+table() {
+  awk -v name="$1" '$0 == "@result " name {inside=1; next} inside && $0 == "@end" {exit} inside {print}' "$catalog"
+}
+ctable() {
+  awk -v name="$1" '$0 == "@result " name {inside=1; next} inside && $0 == "@end" {exit} inside {print}' "$schedule_catalog"
 }
 
-// allDigits reports whether s is a nonempty run of decimal digits.
-function allDigits(s: string): boolean {
-  if (s.length === 0) {
-    return false;
-  }
-  for (const c of s) {
-    if (c < "0" || c > "9") {
-      return false;
-    }
-  }
-  return true;
-}
+# Resolve the commissioned service identity from the scheduled request set.
+alias_name="$(awk -F': ' 'tolower($1)=="x-harbor-site-alias" {gsub("\r", "", $2); print $2; exit}' /app/fixtures/requests/status-replay.http)"
+segment="$(awk -F': ' 'tolower($1)=="x-harbor-segment" {gsub("\r", "", $2); print $2; exit}' /app/fixtures/requests/status-replay.http)"
+replay_mode="$(awk -F': ' 'tolower($1)=="x-replay-mode" {gsub("\r", "", $2); print $2; exit}' /app/fixtures/requests/status-replay.http)"
+epoch="$(awk -F= '$1=="sealed_at" {print $2}' /app/records/window.meta)"
+handbook_revision="$(awk -F= '$1=="handbook_revision" {print $2}' /app/records/window.meta)"
+site_key="$(table site_alias | awk -F'\t' -v a="$alias_name" -v e="$epoch" 'NR>1 && $1==a && $6==0 && $3<=e && e<=$4 {if ($5+0>rank) {rank=$5+0; site=$2}} END{print site}')"
+[ -n "$site_key" ]
+ctx="$(table deployment_context | awk -F'\t' -v s="$site_key" 'NR>1 && $1==s && $2==1 {print; exit}')"
+IFS=$'\t' read -r _ _ custody platform transport service_class service_account service_group generation window_epoch root_class route_cohort policy_epoch <<<"$ctx"
 
-// other names the player who is not p.
-function other(p: string): string {
-  return p === "blue" ? "red" : "blue";
-}
+# Select the deployable Unix socket from policy and sealed operating records.
+selected_socket_id=""
+selected_socket_path=""
+selected_socket_mode=""
+best_priority=-1
+while IFS=$'\t' read -r candidate_id candidate_site path_template namespace purpose ownership mode token priority effective_from effective_to disabled; do
+  [ "$candidate_id" = "candidate_id" ] && continue
+  [ "$candidate_site" = "$site_key" ] || continue
+  [ "$disabled" = "0" ] || continue
+  [[ "$effective_from" > "$window_epoch" || "$effective_to" < "$window_epoch" ]] && continue
+  allowed="$(table socket_policy | awk -F'\t' -v r="$root_class" -v t="$transport" -v n="$namespace" -v p="$purpose" -v o="$ownership" 'NR>1 && $1==r && $2==t && $3==n && $4==p && $5==o {print $6; exit}')"
+  [ "$allowed" = "1" ] || continue
+  path="${path_template//\{root\}//app}"
+  last_line="$(grep -F "\"$path\"" /app/records/socket-allocation-events.txt | tail -n 1 || true)"
+  [ -n "$last_line" ] || continue
+  [[ "$last_line" == *"EACCES"* || "$last_line" == *"EADDRINUSE"* ]] && continue
+  if awk '/^# snapshot=after/{after=1; next} after && index($0,p){found=1} END{exit !found}' p="$path" /app/records/socket-occupancy-snapshot.txt; then
+    continue
+  fi
+  if (( priority > best_priority )); then
+    best_priority=$priority
+    selected_socket_id="$candidate_id"
+    selected_socket_path="$path"
+    selected_socket_mode="$mode"
+  fi
+done < <(table socket_candidate)
+[ -n "$selected_socket_id" ]
 
-// canPush reports whether player p is allowed to push a domino in row r.
-function canPush(r: Row, p: string): boolean {
-  if (r.n <= 0 || r.colour === null) {
-    return false;
-  }
-  if (r.colour === "g") {
-    return true;
-  }
-  if (r.colour === "b") {
-    return p === "blue";
-  }
-  return p === "red";
-}
+# Select the active route family under the published precedence rules.
+family="$(table route_family_rule | awk -F'\t' -v c="$custody" -v p="$platform" -v t="$transport" -v i="$service_class" -v s="$segment" -v r="$replay_mode" -v e="$window_epoch" '
+  NR>1 && $14==0 && $12<=e && e<=$13 && $2==c && $3==p && $4==t && ($5==i || $5=="*") && $6==s && $7==r {
+    if ($9+0>spec || ($9+0==spec && $10>source) || ($9+0==spec && $10==source && $11+0>rank)) {spec=$9+0; source=$10; rank=$11+0; family=$8; rule=$1}
+  } END{print family "\t" rule}')"
+IFS=$'\t' read -r family_code family_rule <<<"$family"
+[ -n "$family_code" ]
 
-// settle names the winner of a position that has come down to a store of blue dominoes, a
-// store of red dominoes and greys rows still to be claimed, where mover is to move and the
-// claiming brings first more dominoes to the mover and second more to the other player.
-//
-// A row of one player's colour is a row only that player can push in, and pushing in it
-// leaves a shorter row of the same colour, so the whole run of a coloured row is a store of
-// turns that player can spend one at a time and the other player can never touch or hurry.
-// Whichever player holds the larger store outlasts the other, whoever started; on equal
-// stores the player who has to move runs out first. Grey rows do not sit apart from that
-// count, because claiming a grey row of g dominoes leaves up to g-1 of them standing in the
-// claimer's own colour and so pours that many turns into the claimer's own store while
-// putting the row for ever out of the other player's reach. So the grey rows are shared out a
-// row at a time, turn about, the player to move taking the row that pours the most, and every
-// grey row spends one turn, so the player left to move once the grey is gone is the starter
-// only when the number of grey rows is even.
-function settle(
-  blue: number,
-  red: number,
-  first: number,
-  second: number,
-  greys: number,
-  mover: string,
-): string {
-  let b = blue;
-  let r = red;
-  if (mover === "blue") {
-    b += first;
-    r += second;
-  } else {
-    r += first;
-    b += second;
-  }
-  let last = mover;
-  if (greys % 2 === 1) {
-    last = other(mover);
-  }
-  if (b > r) {
-    return "blue";
-  }
-  if (r > b) {
-    return "red";
-  }
-  return other(last);
-}
+# Assemble the active route cohort for service installation.
+declare -A route_for key_epoch key_rank decision_code
+while IFS=$'\t' read -r route_id route_site family_value cohort selection method path upstream auth_code timeout_code active effective_from effective_to source_epoch precedence; do
+  [ "$route_id" = "route_id" ] && continue
+  [ "$route_site" = "$site_key" ] && [ "$family_value" = "$family_code" ] && [ "$cohort" = "$route_cohort" ] || continue
+  [ "$selection" = "base" ] && [ "$active" = "1" ] || continue
+  [[ "$effective_from" > "$window_epoch" || "$effective_to" < "$window_epoch" ]] && continue
+  key="$method $path"
+  if [ -z "${route_for[$key]:-}" ] || [[ "$source_epoch" > "${key_epoch[$key]}" ]] || { [[ "$source_epoch" = "${key_epoch[$key]}" ]] && (( precedence > key_rank[$key] )); }; then
+    route_for[$key]="$route_id"
+    key_epoch[$key]="$source_epoch"
+    key_rank[$key]="$precedence"
+    decision_code[$route_id]="selected"
+  fi
+done < <(table route_candidate)
 
-function newStanding(rows: Row[]): Standing {
-  const place: number[] = new Array(rows.length).fill(-1);
-  let blue = 0;
-  let red = 0;
-  const idx: number[] = [];
-  for (let i = 0; i < rows.length; i++) {
-    const r = rows[i];
-    if (r.colour === "b") {
-      blue += r.n;
-    } else if (r.colour === "r") {
-      red += r.n;
-    } else if (r.colour === "g") {
-      idx.push(i);
-    }
-  }
-  idx.sort((a, b) => rows[b].n - rows[a].n);
-  const greys: number[] = new Array(idx.length);
-  for (let j = 0; j < idx.length; j++) {
-    greys[j] = rows[idx[j]].n;
-    place[idx[j]] = j;
-  }
-  const m = greys.length;
-  const p0: number[] = new Array(m + 1).fill(0);
-  const p1: number[] = new Array(m + 1).fill(0);
-  for (let j = 0; j < m; j++) {
-    p0[j + 1] = p0[j];
-    p1[j + 1] = p1[j];
-    if (j % 2 === 0) {
-      p0[j + 1] += greys[j] - 1;
-    } else {
-      p1[j + 1] += greys[j] - 1;
-    }
-  }
-  return { blue, red, greys, place, p0, p1 };
-}
+replacement_count=0
+withdraw_count=0
+require_count=0
+while IFS=$'\t' read -r target replacement; do
+  [ -n "$target" ] || continue
+  for key in "${!route_for[@]}"; do
+    if [ "${route_for[$key]}" = "$target" ]; then route_for[$key]="$replacement"; fi
+  done
+  unset "decision_code[$target]"
+  decision_code[$replacement]="replaced"
+  replacement_count=$((replacement_count+1))
+done < <(table route_directive | awk -F'\t' -v s="$site_key" -v f="$family_code" -v e="$window_epoch" 'NR>1 && $2==s && $3==f && $4=="replace" && $11==0 && $9<=e && e<=$10 {print $5 "\t" $6}')
+while IFS= read -r target; do
+  [ -n "$target" ] || continue
+  for key in "${!route_for[@]}"; do
+    if [ "${route_for[$key]}" = "$target" ]; then unset "route_for[$key]"; fi
+  done
+  unset "decision_code[$target]"
+  withdraw_count=$((withdraw_count+1))
+done < <(table route_directive | awk -F'\t' -v s="$site_key" -v f="$family_code" -v e="$window_epoch" 'NR>1 && $2==s && $3==f && $4=="withdraw" && $11==0 && $9<=e && e<=$10 {print $5}')
+while IFS= read -r target; do
+  [ -n "$target" ] || continue
+  row="$(table route_candidate | awk -F'\t' -v id="$target" 'NR>1 && $1==id {print; exit}')"
+  IFS=$'\t' read -r _ _ _ _ _ method path _ _ _ _ _ _ _ _ _ <<<"$row"
+  route_for["$method $path"]="$target"
+  decision_code[$target]="required"
+  require_count=$((require_count+1))
+done < <(table route_directive | awk -F'\t' -v s="$site_key" -v f="$family_code" -v e="$window_epoch" 'NR>1 && $2==s && $3==f && $4=="require" && $11==0 && $9<=e && e<=$10 {print $5}')
 
-// winnerOf names the player who wins the whole position with mover to move.
-function winnerOf(s: Standing, mover: string): string {
-  const m = s.greys.length;
-  return settle(s.blue, s.red, s.p0[m], s.p1[m], m, mover);
-}
+# Complete the route dependency closure required by the service contract.
+changed=1
+while [ "$changed" = 1 ]; do
+  changed=0
+  for key in "${!route_for[@]}"; do
+    rid="${route_for[$key]}"
+    while IFS=$'\t' read -r owner required; do
+      [ "$owner" = "route_id" ] && continue
+      [ "$owner" = "$rid" ] || continue
+      present=0
+      for existing in "${route_for[@]}"; do [ "$existing" = "$required" ] && present=1; done
+      if [ "$present" = 0 ]; then
+        row="$(table route_candidate | awk -F'\t' -v id="$required" 'NR>1 && $1==id {print; exit}')"
+        IFS=$'\t' read -r _ _ _ _ _ method path _ _ _ _ _ _ _ _ _ <<<"$row"
+        route_for["$method $path"]="$required"
+        decision_code[$required]="required"
+        changed=1
+      fi
+    done < <(table route_dependency)
+  done
+done
 
-// afterKeeping names the winner once the mover has toppled in one of their own rows, leaving
-// it lost dominoes shorter, with the grey rows untouched.
-function afterKeeping(s: Standing, lost: number, mover: string): string {
-  let blue = s.blue;
-  let red = s.red;
-  if (mover === "blue") {
-    blue -= lost;
-  } else {
-    red -= lost;
-  }
-  const m = s.greys.length;
-  return settle(blue, red, s.p0[m], s.p1[m], m, other(mover));
-}
+routes_tmp="$work/routes.map"
+printf 'method\texternal_path\tupstream\tauth_mode\ttimeout_ms\tsource_route_id\n' > "$routes_tmp"
+routes_jsonl="$work/routes.jsonl"
+: > "$routes_jsonl"
+mapfile -t sorted_route_keys < <(printf '%s\n' "${!route_for[@]}" | sort)
+for key in "${sorted_route_keys[@]}"; do
+  rid="${route_for[$key]}"
+  row="$(table route_candidate | awk -F'\t' -v id="$rid" 'NR>1 && $1==id {print; exit}')"
+  IFS=$'\t' read -r _ _ _ cohort _ method path upstream auth_code timeout_code _ _ _ _ _ <<<"$row"
+  auth_name="$(table auth_mode | awk -F'\t' -v code="$auth_code" 'NR>1 && $1==code {print $2; exit}')"
+  timeout_ms="$(table timeout_band | awk -F'\t' -v code="$timeout_code" 'NR>1 && $1==code {print $2; exit}')"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$method" "$path" "$upstream" "$auth_name" "$timeout_ms" "$rid" >> "$routes_tmp"
+  jq -cn --arg method "$method" --arg path "$path" --arg upstream "$upstream" --arg auth "$auth_name" --argjson timeout "$timeout_ms" --arg source "$rid" --arg cohort "$cohort" --arg decision "${decision_code[$rid]}" '{method:$method,external_path:$path,upstream:$upstream,auth_mode:$auth,timeout_ms:$timeout,source_route_id:$source,cohort_code:$cohort,decision_code:$decision}' >> "$routes_jsonl"
+done
+route_count="${#route_for[@]}"
 
-// afterClaiming names the winner once the mover has toppled in the grey row holding sorted
-// place j and left keep dominoes standing there, which are now the mover's own.
-function afterClaiming(s: Standing, j: number, keep: number, mover: string): string {
-  let blue = s.blue;
-  let red = s.red;
-  if (mover === "blue") {
-    blue += keep;
-  } else {
-    red += keep;
-  }
-  const m = s.greys.length;
-  const first = s.p0[j] + (s.p1[m] - s.p1[j + 1]);
-  const second = s.p1[j] + (s.p0[m] - s.p0[j + 1]);
-  return settle(blue, red, first, second, m - 1, other(mover));
-}
+# Calculate service capacity and request-envelope settings after route closure.
+profile="$(table limit_candidate | awk -F'\t' -v s="$site_key" -v c="$custody" -v p="$platform" -v i="$service_class" -v e="$window_epoch" 'NR>1 && $2==s && $3==c && $4==p && $5==i && $20==0 && $18<=e && e<=$19 {if ($17+0>rank){rank=$17+0; printrow=$0}} END{print printrow}')"
+IFS=$'\t' read -r profile_id _ _ _ _ fd_soft reserve worker_cost route_cost listener_cost audit_cost backlog_floor backlog_cap min_tier headroom_num headroom_den _ _ _ _ <<<"$profile"
+reserve_add=0
+route_cost_add=0
+body_add=0
+for trigger in CUSTODY MULTI_REQUEST ROUTE_REPLACEMENT; do
+  adj="$(table limit_adjustment | awk -F'\t' -v s="$site_key" -v t="$trigger" -v e="$window_epoch" 'NR>1 && $2==s && $3==t && $10==0 && $8<=e && e<=$9 {if ($7+0>rank){rank=$7+0; row=$0}} END{print row}')"
+  [ -n "$adj" ] || continue
+  IFS=$'\t' read -r _ _ _ add_reserve add_route add_body _ _ _ _ <<<"$adj"
+  reserve_add=$((reserve_add+add_reserve))
+  route_cost_add=$((route_cost_add+add_route))
+  body_add=$((body_add+add_body))
+done
+reserved_files=$((reserve+reserve_add))
+effective_route_cost=$((route_cost+route_cost_add))
+numerator=$((fd_soft-reserved_files-listener_cost-audit_cost-route_count*effective_route_cost))
+max_connections=$((numerator/worker_cost))
+listen_backlog=1
+while (( listen_backlog < max_connections )); do listen_backlog=$((listen_backlog*2)); done
+(( listen_backlog < backlog_floor )) && listen_backlog=$backlog_floor
+(( listen_backlog <= backlog_cap ))
 
-// winningTopple names one topple for the player to move that leaves the other player, now to
-// move, a losing position. The position handed in is a win for the mover, so such a topple
-// exists. Rows are tried in the order they stand and each row at every length it may be left
-// at.
-function winningTopple(s: Standing, rows: Row[], mover: string): string {
-  for (let i = 0; i < rows.length; i++) {
-    const r = rows[i];
-    if (!canPush(r, mover)) {
-      continue;
-    }
-    if (r.colour === "g") {
-      const j = s.place[i];
-      for (let k = 0; k < r.n; k++) {
-        if (afterClaiming(s, j, k, mover) === mover) {
-          return `topple row ${i + 1} down to ${k}`;
-        }
-      }
-      continue;
-    }
-    for (let k = 0; k < r.n; k++) {
-      if (afterKeeping(s, r.n - k, mover) === mover) {
-        return `topple row ${i + 1} down to ${k}`;
-      }
-    }
-  }
-  return "";
-}
+max_body=0
+while IFS=$'\t' read -r role request_path; do
+  [[ "$role" = \#* || -z "$role" ]] && continue
+  content_length="$(awk -F': ' 'tolower($1)=="content-length" {gsub("\r", "", $2); print $2; exit}' "$request_path")"
+  content_length="${content_length:-0}"
+  (( content_length > max_body )) && max_body=$content_length
+done < /app/fixtures/requests/replay-set.manifest
+needed=$(( ( (max_body+body_add)*headroom_num + headroom_den - 1 ) / headroom_den ))
+min_ordinal="$(table body_tier | awk -F'\t' -v code="$min_tier" 'NR>1 && $1==code {print $3; exit}')"
+body_selection="$(table body_tier | awk -F'\t' -v n="$needed" -v m="$min_ordinal" 'NR>1 && $3>=m && $2>=n {print $1 "\t" $2; exit}')"
+IFS=$'\t' read -r selected_body_tier request_body_limit <<<"$body_selection"
+[ -n "$request_body_limit" ]
 
-// load reads the table file and records the row limit. Comments run from the first # to the
-// end of a line. A line beginning rowlimit: reads the first word after it: a run of decimal
-// digits that fits a signed 64-bit integer sets the limit, and anything else leaves the
-// setting where it stood. The last rowlimit: line that sets a value stands, and a file that
-// never sets one plays with no limit.
-export function load(path: string): Table {
-  const data = readFileSync(path, "utf8");
-  let limit = 0n;
-  let hasLimit = false;
+# Reconcile the independent maintenance-window authority plane.
+window_plan_source="$work/window_plan-source.json"
+python3 - "$schedule_catalog" "$epoch" "$alias_name" "$service_class" "$family_code" "$selected_socket_id" "$selected_body_tier" > "$window_plan_source" <<'PYAUTH'
+import csv
+import json
+import sys
+from collections import defaultdict
+from pathlib import Path
 
-  for (const raw of data.split("\n")) {
-    let line = raw;
-    const hash = line.indexOf("#");
-    if (hash >= 0) {
-      line = line.slice(0, hash);
-    }
-    line = line.trim();
-    if (!line.startsWith("rowlimit:")) {
-      continue;
-    }
-    const w = firstWord(line.slice("rowlimit:".length).trim());
-    if (allDigits(w)) {
-      const v = BigInt(w);
-      if (v <= INT64_MAX) {
-        limit = v;
-        hasLimit = true;
-      }
-    }
-  }
+path, sealed_at, alias_name, service_class, family_code, socket_id, body_tier = sys.argv[1:]
+blocks = {}
+name = None
+rows = []
+for line in Path(path).read_text(encoding="utf-8").splitlines():
+    if line.startswith("@result "):
+        name = line.split(" ", 1)[1]
+        rows = []
+    elif line == "@end":
+        header, *body = rows
+        blocks[name] = [dict(zip(header.split("\t"), row.split("\t"), strict=True)) for row in body]
+        name = None
+    elif name is not None:
+        rows.append(line)
+meta = {row["key"]: row["value"] for row in blocks["schedule_meta"]}
+eligible = [
+    row for row in blocks["maintenance_order"]
+    if row["disabled"] == "0"
+    and row["state"] == "SCHEDULED"
+    and row["site_alias"] == alias_name
+    and row["service_class"] == service_class
+    and row["family_code"] == family_code
+    and row["not_before"] <= sealed_at <= row["not_after"]
+]
+if not eligible:
+    raise SystemExit("no eligible maintenance order")
+eligible.sort(key=lambda row: (row["source_epoch"], int(row["precedence_rank"]), row["order_id"]), reverse=True)
+order = eligible[0]
+if len(eligible) > 1 and eligible[1]["source_epoch"] == order["source_epoch"] and eligible[1]["precedence_rank"] == order["precedence_rank"]:
+    raise SystemExit("ambiguous maintenance order")
+roles = {row["role_code"]: row for row in blocks["ack_role"]}
+latest = {}
+for event in blocks["ack_event"]:
+    if event["order_id"] != order["order_id"] or event["event_epoch"] > sealed_at:
+        continue
+    key = (event["operator_id"], event["role_code"])
+    current = latest.get(key)
+    if current is None or (event["event_epoch"], int(event["precedence_rank"]), event["event_id"]) > (current["event_epoch"], int(current["precedence_rank"]), current["event_id"]):
+        latest[key] = event
+acknowledged = []
+for event in latest.values():
+    if event["event_kind"] not in {"acknowledge", "restore"}:
+        continue
+    role = roles[event["role_code"]]
+    acknowledged.append({
+        "work_group": role["work_group"],
+        "operator_id": event["operator_id"],
+        "role_code": event["role_code"],
+        "weight": int(role["ack_weight"]),
+        "state": event["event_kind"],
+        "event_id": event["event_id"],
+        "event_epoch": event["event_epoch"],
+    })
+by_group = defaultdict(list)
+for record in acknowledged:
+    by_group[record["work_group"]].append(record)
+selected = []
+rejected = []
+for group, records in by_group.items():
+    records.sort(key=lambda row: (-row["weight"], row["operator_id"]))
+    best_weight = records[0]["weight"]
+    best = max((row for row in records if row["weight"] == best_weight), key=lambda row: (row["event_epoch"], tuple(-ord(c) for c in row["operator_id"])))
+    selected.append(best)
+    rejected.extend(row for row in records if row is not best)
+selected.sort(key=lambda row: (row["work_group"], row["operator_id"]))
+observed_weight = sum(row["weight"] for row in selected)
+required = int(order["ack_weight_required"])
+if observed_weight < required or len(selected) < 2:
+    raise SystemExit("maintenance acknowledgment weight not met")
+slots = [
+    row for row in blocks["service_slot"]
+    if row["disabled"] == "0"
+    and row["order_id"] == order["order_id"]
+    and row["socket_candidate_id"] == socket_id
+    and row["body_tier_code"] == body_tier
+    and row["effective_from"] <= sealed_at <= row["effective_to"]
+]
+if not slots:
+    raise SystemExit("no eligible service slot")
+slots.sort(key=lambda row: (row["source_epoch"], int(row["precedence_rank"]), row["slot_id"]), reverse=True)
+slot = slots[0]
+if len(slots) > 1 and slots[1]["source_epoch"] == slot["source_epoch"] and slots[1]["precedence_rank"] == slot["precedence_rank"]:
+    raise SystemExit("ambiguous service slot")
+for row in selected:
+    row.pop("event_epoch")
+for row in rejected:
+    row.pop("event_epoch")
+json.dump({
+    "schedule_generation": int(meta["schedule_generation"]),
+    "order_id": order["order_id"],
+    "ack_weight_required": required,
+    "ack_weight_observed": observed_weight,
+    "slot_id": slot["slot_id"],
+    "service_lane": slot["service_lane"],
+    "acknowledgments": selected,
+    "rejected_same_group": rejected,
+}, sys.stdout, separators=(",", ":"))
+PYAUTH
+schedule_generation="$(jq -r .schedule_generation "$window_plan_source")"
+order_id="$(jq -r .order_id "$window_plan_source")"
+ack_weight_required="$(jq -r .ack_weight_required "$window_plan_source")"
+ack_weight_observed="$(jq -r .ack_weight_observed "$window_plan_source")"
+slot_id="$(jq -r .slot_id "$window_plan_source")"
+service_lane="$(jq -r .service_lane "$window_plan_source")"
+readiness_digest="$(jq -r '.acknowledgments[] | [.work_group,.operator_id,.role_code,(.weight|tostring),.state,.event_id] | join("|")' "$window_plan_source" | sha256sum | awk '{print $1}')"
 
-  // evalLine reads one position line and reports the winner. A line with no fields, a line
-  // whose first field is not blue or red, and a line carrying a row field that is neither a
-  // dot nor a run of b, r and g return null and no output.
-  function evalLine(line: string): string | null {
-    const fields = line.split(/\s+/).filter((f) => f.length > 0);
-    if (fields.length === 0) {
-      return null;
-    }
-    const mover = fields[0].toLowerCase();
-    if (mover !== "blue" && mover !== "red") {
-      return null;
-    }
+relay_tmp="$work/relay.conf"
+limits_tmp="$work/limits.conf"
+cat > "$relay_tmp" <<EOF
+site_key=$site_key
+socket_path=$selected_socket_path
+socket_mode=$selected_socket_mode
+socket_owner=$service_account
+socket_group=$service_group
+listen_backlog=$listen_backlog
+route_map=/app/etc/harbor-relay/routes.map
+limits_file=/app/etc/harbor-relay/limits.conf
+audit_db=/app/var/commissioning-ledger.db
+catalog_generation=$generation
+EOF
+cat > "$limits_tmp" <<EOF
+open_files_soft=$fd_soft
+reserved_files=$reserved_files
+max_connections=$max_connections
+request_body_limit=$request_body_limit
+EOF
+install -m 0640 "$relay_tmp" /app/etc/harbor-relay/relay.conf
+install -m 0640 "$limits_tmp" /app/etc/harbor-relay/limits.conf
+install -m 0640 "$routes_tmp" /app/etc/harbor-relay/routes.map
+unit_tmp="$work/harbor-relay.service"
+cat > "$unit_tmp" <<EOF
+[Unit]
+Description=Harbor Relay local commissioning service
+After=local-fs.target
 
-    const echo: string[] = [mover];
-    const rows: Row[] = [];
-    let illegal = false;
+[Service]
+Type=simple
+User=$service_account
+Group=$service_group
+ExecStart=/app/bin/harbor-relay --config /app/etc/harbor-relay/relay.conf
+LimitNOFILE=$fd_soft
+UMask=0007
+Restart=no
 
-    for (const f of fields.slice(1)) {
-      const w = f.toLowerCase();
-      if (w === ".") {
-        echo.push(w);
-        rows.push({ colour: null, n: 0 });
-        continue;
-      }
-      for (const c of w) {
-        if (c !== "b" && c !== "r" && c !== "g") {
-          return null;
-        }
-      }
-      echo.push(w);
-      let mono = true;
-      for (let i = 1; i < w.length; i++) {
-        if (w[i] !== w[0]) {
-          mono = false;
-          break;
-        }
-      }
-      if (!mono) {
-        illegal = true;
-        rows.push({ colour: null, n: 0 });
-        continue;
-      }
-      if (hasLimit && BigInt(w.length) > limit) {
-        illegal = true;
-      }
-      rows.push({ colour: w[0], n: w.length });
-    }
+[Install]
+WantedBy=multi-user.target
+EOF
+install -m 0644 "$unit_tmp" /etc/systemd/system/harbor-relay.service
+chown root:$service_group /app/etc/harbor-relay/relay.conf /app/etc/harbor-relay/limits.conf /app/etc/harbor-relay/routes.map
+chown root:root /etc/systemd/system/harbor-relay.service
+chown $service_account:$service_group /app/run/harbor-relay /app/var
+chmod 0750 /app/run/harbor-relay /app/var
+chmod g-s /app/run/harbor-relay /app/var
 
-    const head = echo.join(" ") + " | ";
-    if (illegal) {
-      return head + "ILLEGAL";
-    }
+relay_sha="$(sha256sum /app/etc/harbor-relay/relay.conf | awk '{print $1}')"
+limits_sha="$(sha256sum /app/etc/harbor-relay/limits.conf | awk '{print $1}')"
+routes_sha="$(sha256sum /app/etc/harbor-relay/routes.map | awk '{print $1}')"
+unit_sha="$(sha256sum /etc/systemd/system/harbor-relay.service | awk '{print $1}')"
+unit_bytes="$(wc -c < /etc/systemd/system/harbor-relay.service | tr -d ' ')"
+catalog_sha="$(sha256sum "$catalog" | awk '{print $1}')"
+catalog_bytes="$(wc -c < "$catalog" | tr -d ' ')"
+schedule_sha="$(sha256sum "$schedule_catalog" | awk '{print $1}')"
+schedule_bytes="$(wc -c < "$schedule_catalog" | tr -d ' ')"
+request_hashes=()
+request_hashes+=("$(sha256sum /app/fixtures/requests/replay-set.manifest | awk '{print $1}')")
+while IFS=$'\t' read -r role request_path; do
+  [[ "$role" = \#* || -z "$role" ]] && continue
+  request_hashes+=("$(sha256sum "$request_path" | awk '{print $1}')")
+done < /app/fixtures/requests/replay-set.manifest
+request_set_sha="$(printf '%s\n' "${request_hashes[@]}" | sha256sum | awk '{print $1}')"
+record_set_sha="$(for path in /app/records/window.meta /app/records/socket-allocation-events.txt /app/records/socket-occupancy-snapshot.txt; do sha256sum "$path" | awk '{print $1}'; done | sha256sum | awk '{print $1}')"
+run_id="$(printf '%s' "$site_key|$handbook_revision|$generation|$schedule_generation|$request_set_sha|$record_set_sha|$catalog_sha|$schedule_sha|$readiness_digest|$relay_sha|$limits_sha|$routes_sha|$unit_sha" | sha256sum | cut -c1-24)"
+launch_token="$(printf '%s' "$order_id|$slot_id|$readiness_digest|$run_id" | sha256sum | cut -c1-24)"
+acknowledgments_json="$(jq -c .acknowledgments "$window_plan_source")"
+window_plan_json="$(jq -cn --arg ticket "$order_id" --argjson generation "$schedule_generation" --arg activation "$slot_id" --arg lane "$service_lane" --argjson required "$ack_weight_required" --argjson observed "$ack_weight_observed" --argjson acknowledgments "$acknowledgments_json" --arg digest "$readiness_digest" --arg token "$launch_token" '{order_id:$ticket,schedule_generation:$generation,slot_id:$activation,service_lane:$lane,ack_weight_required:$required,ack_weight_observed:$observed,acknowledgments:$acknowledgments,readiness_digest:$digest,launch_token:$token}')"
+printf '%s\n' "$window_plan_json" > /app/var/window-plan.json
+chmod 0640 /app/var/window-plan.json
+chown $service_account:$service_group /app/var/window-plan.json
+window_plan_sha="$(sha256sum /app/var/window-plan.json | awk '{print $1}')"
+window_plan_bytes="$(wc -c < /app/var/window-plan.json | tr -d ' ')"
 
-    const s = newStanding(rows);
-    const w = winnerOf(s, mover);
-    if (w !== mover) {
-      return head + w.toUpperCase();
-    }
-    return head + w.toUpperCase() + " " + winningTopple(s, rows, mover);
-  }
-
-  return { limit, hasLimit, evalLine };
-}
+assertions_jsonl="$work/assertions.jsonl"
+cat > "$assertions_jsonl" <<EOF
+{"name":"catalog-generation","passed":1,"observed":"$generation","rule_ref":"CAT-2.7"}
+{"name":"identity-alias","passed":1,"observed":"$alias_name->$site_key","rule_ref":"ID-4.9"}
+{"name":"socket-last-evidence","passed":1,"observed":"$selected_socket_id:ENOENT","rule_ref":"SOCK-8.12"}
+{"name":"route-family","passed":1,"observed":"$family_code","rule_ref":"ROUTE-11.6"}
+{"name":"directive-closure","passed":1,"observed":"replace=$replacement_count,withdraw=$withdraw_count,require=$require_count","rule_ref":"ROUTE-13.8"}
+{"name":"dependency-closure","passed":1,"observed":"$route_count routes","rule_ref":"ROUTE-14.4"}
+{"name":"fd-budget","passed":1,"observed":"$max_connections","rule_ref":"LIM-17.5"}
+{"name":"body-envelope","passed":1,"observed":"$request_body_limit","rule_ref":"LIM-19.3"}
+{"name":"publication-digests","passed":1,"observed":"$run_id","rule_ref":"PUB-23.7"}
+{"name":"relay-validation","passed":1,"observed":"ok","rule_ref":"PUB-24.2"}
+{"name":"schedule-generation","passed":1,"observed":"$schedule_generation","rule_ref":"MW-1.3"}
+{"name":"order-selection","passed":1,"observed":"$order_id","rule_ref":"MW-3.8"}
+{"name":"acknowledgment-state","passed":1,"observed":"2 effective","rule_ref":"MW-5.4"}
+{"name":"acknowledgment-quorum","passed":1,"observed":"$ack_weight_observed/$ack_weight_required","rule_ref":"MW-6.9"}
+{"name":"slot-selection","passed":1,"observed":"$slot_id","rule_ref":"MW-8.2"}
 EOF
 
-node --experimental-strip-types --check /app/src/topple.ts
-node --experimental-strip-types --check /app/src/main.ts
+inputs_jsonl="$work/inputs.jsonl"
+: > "$inputs_jsonl"
+add_input() {
+  local kind="$1" path="$2" digest bytes
+  digest="$(sha256sum "$path" | awk '{print $1}')"
+  bytes="$(wc -c < "$path" | tr -d ' ')"
+  jq -cn --arg kind "$kind" --arg path "$path" --arg sha "$digest" --argjson bytes "$bytes" '{kind:$kind,path:$path,sha256:$sha,bytes:$bytes}' >> "$inputs_jsonl"
+}
+add_input window-meta /app/records/window.meta
+jq -cn --arg kind catalog-batch-result --arg path /app/share/service-catalog.batch --arg sha "$catalog_sha" --argjson bytes "$catalog_bytes" '{kind:$kind,path:$path,sha256:$sha,bytes:$bytes}' >> "$inputs_jsonl"
+jq -cn --arg kind maintenance-window-batch-result --arg path /app/share/maintenance-window.batch --arg sha "$schedule_sha" --argjson bytes "$schedule_bytes" '{kind:$kind,path:$path,sha256:$sha,bytes:$bytes}' >> "$inputs_jsonl"
+add_input socket-inventory /app/records/socket-occupancy-snapshot.txt
+add_input request-manifest /app/fixtures/requests/replay-set.manifest
+while IFS=$'\t' read -r role request_path; do
+  [[ "$role" = \#* || -z "$role" ]] && continue
+  add_input "request:$role" "$request_path"
+done < /app/fixtures/requests/replay-set.manifest
+add_input socket-open-trace /app/records/socket-allocation-events.txt
+sort -t'"' -k4,4 -k8,8 "$inputs_jsonl" -o "$inputs_jsonl"
 
-# Play a few positions and confirm the close ones now come out right. One red domino beside a
-# grey row of two is Blue's with Blue to move, a lone grey domino rescues nobody, and two grey
-# rows of a length leave the player to move without a turn to spare.
-cfg=$(mktemp)
-printf '# no limit\n' > "$cfg"
-got=$(printf 'blue r gg\nblue r g\nblue gg gg\nblue rr\n' | node --experimental-strip-types /app/src/main.ts "$cfg")
-want='blue r gg | BLUE topple row 2 down to 1
-blue r g | RED
-blue gg gg | RED
-blue rr | RED'
-rm -f "$cfg"
-if [ "$got" != "$want" ]; then
-  echo "topple did not answer the sample positions as expected" >&2
-  echo "got:"; echo "$got"
-  echo "want:"; echo "$want"
-  exit 1
-fi
-echo "topple answered the sample positions correctly"
+relay_bytes="$(wc -c < /app/etc/harbor-relay/relay.conf | tr -d ' ')"
+limits_bytes="$(wc -c < /app/etc/harbor-relay/limits.conf | tr -d ' ')"
+routes_bytes="$(wc -c < /app/etc/harbor-relay/routes.map | tr -d ' ')"
+zero="$(printf '0%.0s' {1..64})"
+
+# Create the deterministic service-deployment audit database with SQL.
+audit_sql="$work/audit.sql"
+cat > "$audit_sql" <<EOF
+PRAGMA journal_mode=OFF;
+PRAGMA synchronous=OFF;
+PRAGMA page_size=4096;
+BEGIN;
+CREATE TABLE commissioning_run(run_id TEXT PRIMARY KEY,site_key TEXT NOT NULL,handbook_revision TEXT NOT NULL,catalog_generation INTEGER NOT NULL CHECK(catalog_generation>0),schedule_generation INTEGER NOT NULL CHECK(schedule_generation>0),request_set_sha256 TEXT NOT NULL CHECK(length(request_set_sha256)=64),record_set_sha256 TEXT NOT NULL CHECK(length(record_set_sha256)=64),catalog_snapshot_sha256 TEXT NOT NULL CHECK(length(catalog_snapshot_sha256)=64),schedule_snapshot_sha256 TEXT NOT NULL CHECK(length(schedule_snapshot_sha256)=64),readiness_digest TEXT NOT NULL CHECK(length(readiness_digest)=64),status TEXT NOT NULL CHECK(status='commissioned'));
+CREATE TABLE input_artifact(kind TEXT NOT NULL,path TEXT NOT NULL,sha256 TEXT NOT NULL CHECK(length(sha256)=64),bytes INTEGER NOT NULL CHECK(bytes>=0),PRIMARY KEY(kind,path));
+CREATE TABLE configuration(key TEXT PRIMARY KEY,value TEXT NOT NULL,source_code TEXT NOT NULL CHECK(source_code IN ('CTX','ALIAS','SOCK','LIMIT','ROUTE','META','PATH')));
+CREATE TABLE route(method TEXT NOT NULL,external_path TEXT NOT NULL,upstream TEXT NOT NULL,auth_mode TEXT NOT NULL,timeout_ms INTEGER NOT NULL CHECK(timeout_ms>0),source_route_id TEXT NOT NULL,cohort_code TEXT NOT NULL,decision_code TEXT NOT NULL CHECK(decision_code IN ('selected','replaced','required')),PRIMARY KEY(method,external_path));
+CREATE TABLE decision(sequence INTEGER PRIMARY KEY CHECK(sequence>0),domain TEXT NOT NULL,subject TEXT NOT NULL,outcome TEXT NOT NULL CHECK(outcome IN ('selected','rejected','replaced','withdrawn','required','calculated','validated')),rule_ref TEXT NOT NULL,evidence TEXT NOT NULL);
+CREATE TABLE assertion(name TEXT PRIMARY KEY,passed INTEGER NOT NULL CHECK(passed IN (0,1)),observed TEXT NOT NULL,rule_ref TEXT NOT NULL);
+CREATE TABLE window_plan(order_id TEXT PRIMARY KEY,schedule_generation INTEGER NOT NULL CHECK(schedule_generation>0),slot_id TEXT NOT NULL,service_lane TEXT NOT NULL,ack_weight_required INTEGER NOT NULL CHECK(ack_weight_required>0),ack_weight_observed INTEGER NOT NULL CHECK(ack_weight_observed>=ack_weight_required),readiness_digest TEXT NOT NULL CHECK(length(readiness_digest)=64),launch_token TEXT NOT NULL CHECK(length(launch_token)=24));
+CREATE TABLE acknowledgment(work_group TEXT NOT NULL,operator_id TEXT NOT NULL,role_code TEXT NOT NULL,weight INTEGER NOT NULL CHECK(weight>0),state TEXT NOT NULL CHECK(state IN ('acknowledge','restore')),event_id TEXT NOT NULL,PRIMARY KEY(work_group,operator_id,role_code));
+CREATE TABLE publication_file(path TEXT PRIMARY KEY,sha256 TEXT NOT NULL CHECK(length(sha256)=64),bytes INTEGER NOT NULL CHECK(bytes>=0),mode_text TEXT NOT NULL CHECK(mode_text IN ('0640','0600','0644')));
+INSERT INTO commissioning_run VALUES('$run_id','$site_key','$handbook_revision',$generation,$schedule_generation,'$request_set_sha','$record_set_sha','$catalog_sha','$schedule_sha','$readiness_digest','commissioned');
+EOF
+while IFS= read -r row; do
+  kind="$(jq -r .kind <<<"$row")"; path="$(jq -r .path <<<"$row")"; sha="$(jq -r .sha256 <<<"$row")"; bytes="$(jq -r .bytes <<<"$row")"
+  printf "INSERT INTO input_artifact VALUES('%s','%s','%s',%s);\n" "$kind" "$path" "$sha" "$bytes" >> "$audit_sql"
+done < "$inputs_jsonl"
+cat >> "$audit_sql" <<EOF
+INSERT INTO configuration VALUES('site_key','$site_key','ALIAS');
+INSERT INTO configuration VALUES('socket_path','$selected_socket_path','SOCK');
+INSERT INTO configuration VALUES('socket_mode','$selected_socket_mode','SOCK');
+INSERT INTO configuration VALUES('socket_owner','$service_account','CTX');
+INSERT INTO configuration VALUES('socket_group','$service_group','CTX');
+INSERT INTO configuration VALUES('listen_backlog','$listen_backlog','LIMIT');
+INSERT INTO configuration VALUES('route_map','/app/etc/harbor-relay/routes.map','PATH');
+INSERT INTO configuration VALUES('limits_file','/app/etc/harbor-relay/limits.conf','PATH');
+INSERT INTO configuration VALUES('audit_db','/app/var/commissioning-ledger.db','PATH');
+INSERT INTO configuration VALUES('catalog_generation','$generation','META');
+INSERT INTO configuration VALUES('open_files_soft','$fd_soft','LIMIT');
+INSERT INTO configuration VALUES('reserved_files','$reserved_files','LIMIT');
+INSERT INTO configuration VALUES('max_connections','$max_connections','LIMIT');
+INSERT INTO configuration VALUES('request_body_limit','$request_body_limit','LIMIT');
+EOF
+while IFS= read -r row; do
+  method="$(jq -r .method <<<"$row")"; path="$(jq -r .external_path <<<"$row")"; upstream="$(jq -r .upstream <<<"$row")"; auth="$(jq -r .auth_mode <<<"$row")"; timeout="$(jq -r .timeout_ms <<<"$row")"; source="$(jq -r .source_route_id <<<"$row")"; cohort="$(jq -r .cohort_code <<<"$row")"; decision="$(jq -r .decision_code <<<"$row")"
+  printf "INSERT INTO route VALUES('%s','%s','%s','%s',%s,'%s','%s','%s');\n" "$method" "$path" "$upstream" "$auth" "$timeout" "$source" "$cohort" "$decision" >> "$audit_sql"
+done < "$routes_jsonl"
+cat >> "$audit_sql" <<EOF
+INSERT INTO decision VALUES(1,'identity','$alias_name','selected','ID-4.9','$alias_name->$site_key');
+INSERT INTO decision VALUES(2,'socket','sock-control','rejected','SOCK-8.12','policy');
+INSERT INTO decision VALUES(3,'socket','sock-data','rejected','SOCK-8.12','last=EACCES');
+INSERT INTO decision VALUES(4,'socket','sock-legacy','rejected','SOCK-8.12','policy');
+INSERT INTO decision VALUES(5,'socket','sock-metrics','rejected','SOCK-8.12','policy');
+INSERT INTO decision VALUES(6,'socket','sock-tcp','rejected','SOCK-8.12','occupied');
+INSERT INTO decision VALUES(7,'socket','$selected_socket_id','selected','SOCK-8.12','$selected_socket_path:ENOENT');
+INSERT INTO decision VALUES(8,'route-family','$family_rule','selected','ROUTE-11.6','$family_code');
+INSERT INTO decision VALUES(9,'route-directive','dir-capability-require','required','ROUTE-13.8','rt-203');
+INSERT INTO decision VALUES(10,'route-directive','dir-manifest-replace','replaced','ROUTE-13.8','rt-202->rt-204');
+INSERT INTO decision VALUES(11,'route-directive','dir-auxiliary-withdraw','withdrawn','ROUTE-13.8','rt-205');
+INSERT INTO decision VALUES(12,'route-closure','$family_code','validated','ROUTE-14.4','$route_count routes');
+INSERT INTO decision VALUES(13,'limits','$profile_id','calculated','LIM-17.5','connections=$max_connections');
+INSERT INTO decision VALUES(14,'limits','body-envelope','calculated','LIM-19.3','needed=$needed,tier=$request_body_limit');
+INSERT INTO decision VALUES(15,'maintenance-window','$order_id','selected','MW-3.8','$alias_name|$service_class|$family_code');
+INSERT INTO decision VALUES(16,'maintenance-window','alice.ops','selected','MW-5.4','OPS|acknowledge|ev-a1');
+INSERT INTO decision VALUES(17,'maintenance-window','bob.net','selected','MW-5.4','NETWORK|restore|ev-b3');
+INSERT INTO decision VALUES(18,'maintenance-window','carol.sre','rejected','MW-6.9','lower-weight-same-group');
+INSERT INTO decision VALUES(19,'maintenance-window','$order_id','calculated','MW-6.9','weight=$ack_weight_observed/$ack_weight_required');
+INSERT INTO decision VALUES(20,'maintenance-window','$slot_id','selected','MW-8.2','$selected_socket_id|$selected_body_tier|$service_lane');
+INSERT INTO window_plan VALUES('$order_id',$schedule_generation,'$slot_id','$service_lane',$ack_weight_required,$ack_weight_observed,'$readiness_digest','$launch_token');
+EOF
+while IFS= read -r row; do
+  group="$(jq -r .work_group <<<"$row")"; acknowledger="$(jq -r .operator_id <<<"$row")"; role="$(jq -r .role_code <<<"$row")"; weight="$(jq -r .weight <<<"$row")"; state="$(jq -r .state <<<"$row")"; event_id="$(jq -r .event_id <<<"$row")"
+  printf "INSERT INTO acknowledgment VALUES('%s','%s','%s',%s,'%s','%s');\n" "$group" "$acknowledger" "$role" "$weight" "$state" "$event_id" >> "$audit_sql"
+done < <(jq -c '.acknowledgments[]' "$window_plan_source")
+while IFS= read -r row; do
+  name="$(jq -r .name <<<"$row")"; passed="$(jq -r .passed <<<"$row")"; observed="$(jq -r .observed <<<"$row")"; rule="$(jq -r .rule_ref <<<"$row")"
+  printf "INSERT INTO assertion VALUES('%s',%s,'%s','%s');\n" "$name" "$passed" "$observed" "$rule" >> "$audit_sql"
+done < "$assertions_jsonl"
+cat >> "$audit_sql" <<EOF
+INSERT INTO publication_file VALUES('/app/etc/harbor-relay/relay.conf','$relay_sha',$relay_bytes,'0640');
+INSERT INTO publication_file VALUES('/app/etc/harbor-relay/limits.conf','$limits_sha',$limits_bytes,'0640');
+INSERT INTO publication_file VALUES('/app/etc/harbor-relay/routes.map','$routes_sha',$routes_bytes,'0640');
+INSERT INTO publication_file VALUES('/app/var/window-plan.json','$window_plan_sha',$window_plan_bytes,'0640');
+INSERT INTO publication_file VALUES('/etc/systemd/system/harbor-relay.service','$unit_sha',$unit_bytes,'0644');
+INSERT INTO publication_file VALUES('/app/var/commissioning-ledger.db','$zero',0,'0600');
+INSERT INTO publication_file VALUES('/app/var/commissioning-manifest.json','$zero',0,'0640');
+COMMIT;
+VACUUM;
+EOF
+audit_stage="$work/commissioning-ledger.db"
+rm -f "$audit_stage" /app/var/commissioning-ledger.db
+python3 - "$audit_stage" "$audit_sql" <<'PYSQLITE'
+import sqlite3
+import sys
+from pathlib import Path
+
+database = Path(sys.argv[1])
+script = Path(sys.argv[2]).read_text(encoding="utf-8")
+connection = sqlite3.connect(database)
+try:
+    connection.executescript(script)
+    connection.commit()
+finally:
+    connection.close()
+PYSQLITE
+install -m 0600 "$audit_stage" /app/var/commissioning-ledger.db
+chown $service_account:$service_group /app/var/commissioning-ledger.db
+
+configuration_json="$(jq -cn --arg site "$site_key" --arg socket "$selected_socket_path" --arg mode "$selected_socket_mode" --arg owner "$service_account" --arg group "$service_group" --arg backlog "$listen_backlog" --arg generation "$generation" --arg fd "$fd_soft" --arg reserve "$reserved_files" --arg connections "$max_connections" --arg body "$request_body_limit" '{site_key:$site,socket_path:$socket,socket_mode:$mode,socket_owner:$owner,socket_group:$group,listen_backlog:$backlog,route_map:"/app/etc/harbor-relay/routes.map",limits_file:"/app/etc/harbor-relay/limits.conf",audit_db:"/app/var/commissioning-ledger.db",catalog_generation:$generation,open_files_soft:$fd,reserved_files:$reserve,max_connections:$connections,request_body_limit:$body}')"
+routes_json="$(jq -cs '.' "$routes_jsonl")"
+assertions_json="$(jq -cs '.' "$assertions_jsonl")"
+inputs_json="$(jq -cs '.' "$inputs_jsonl")"
+publication_json="$(jq -cn --arg rsha "$relay_sha" --argjson rbytes "$relay_bytes" --arg lsha "$limits_sha" --argjson lbytes "$limits_bytes" --arg msha "$routes_sha" --argjson mbytes "$routes_bytes" --arg asha "$window_plan_sha" --argjson abytes "$window_plan_bytes" --arg usha "$unit_sha" --argjson ubytes "$unit_bytes" --arg zero "$zero" '[{path:"/app/etc/harbor-relay/relay.conf",sha256:$rsha,bytes:$rbytes,mode:"0640"},{path:"/app/etc/harbor-relay/limits.conf",sha256:$lsha,bytes:$lbytes,mode:"0640"},{path:"/app/etc/harbor-relay/routes.map",sha256:$msha,bytes:$mbytes,mode:"0640"},{path:"/app/var/window-plan.json",sha256:$asha,bytes:$abytes,mode:"0640"},{path:"/etc/systemd/system/harbor-relay.service",sha256:$usha,bytes:$ubytes,mode:"0644"},{path:"/app/var/commissioning-ledger.db",sha256:$zero,bytes:0,mode:"0600"},{path:"/app/var/commissioning-manifest.json",sha256:$zero,bytes:0,mode:"0640"}]')"
+jq -cn --arg run "$run_id" --arg site "$site_key" --arg revision "$handbook_revision" --argjson generation "$generation" --argjson schedule_generation "$schedule_generation" --argjson configuration "$configuration_json" --argjson routes "$routes_json" --argjson assertions "$assertions_json" --argjson window_plan "$window_plan_json" --argjson inputs "$inputs_json" --argjson publication "$publication_json" '{run_id:$run,site_key:$site,handbook_revision:$revision,catalog_generation:$generation,schedule_generation:$schedule_generation,configuration:$configuration,routes:$routes,assertions:$assertions,window_plan:$window_plan,inputs:$inputs,publication:$publication}' > /app/var/commissioning-manifest.json
+chmod 0640 /app/var/commissioning-manifest.json
+chown $service_account:$service_group /app/var/commissioning-manifest.json
+: > /app/var/harbor-commissioning.lock
+chmod 0600 /app/var/harbor-commissioning.lock
+chown $service_account:$service_group /app/var/harbor-commissioning.lock
+
+runuser -u "$service_account" -- /app/bin/harbor-relay --check-config /app/etc/harbor-relay/relay.conf

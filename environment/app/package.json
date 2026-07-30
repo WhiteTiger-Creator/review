@@ -1,7 +1,0 @@
-{
-  "name": "topple",
-  "version": "1.0.0",
-  "private": true,
-  "type": "module",
-  "description": "plays out positions of standing dominoes and reports the winner of each"
-}
