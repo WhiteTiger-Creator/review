@@ -1,0 +1,13 @@
+[Unit]
+Description=Prepare local site storage before activation
+DefaultDependencies=no
+After=local-fs-pre.target
+Before=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/app/usr/sbin/site-activate ${SITE_TARGET}
+RemainAfterExit=yes
+
+[Install]
+WantedBy=local-fs.target

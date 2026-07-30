@@ -1,20 +1,19 @@
 #!/bin/bash
-set -uo pipefail
+
+# Verifier Python/pytest are baked in the image (see environment/Dockerfile).
 
 mkdir -p /logs/verifier
 echo 0 > /logs/verifier/reward.txt
 
-TEST_DIR="${TEST_DIR:-/tests}"
 if [ "$PWD" = "/" ]; then
-  echo "Warning: verifier started at /; switching to $TEST_DIR"
+    echo "Error: No working directory set. Please set a WORKDIR in your Dockerfile."
+    exit 1
 fi
 
-cd "$TEST_DIR"
-PYTHONSAFEPATH=1 PYTHONNOUSERSITE=1 PYTHONPATH=/opt/harbor-verifier \
-  python3 -m pytest -p harbor_ctrf_plugin --ctrf /logs/verifier/ctrf.json "$TEST_DIR/test_outputs.py" -rA
-rc=$?
+pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
 
-if [ "$rc" -eq 0 ]; then
+verify_rc=$?
+if [ "$verify_rc" -eq 0 ]; then
   echo 1 > /logs/verifier/reward.txt
 else
   echo 0 > /logs/verifier/reward.txt

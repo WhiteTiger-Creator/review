@@ -1,7 +1,0 @@
-GET /v1/berth/status?verbose=1 HTTP/1.1
-Host: local-relay
-X-Harbor-Site-Alias: north-quay
-X-Harbor-Segment: COLD-QUAY
-X-Replay-Mode: custody
-X-Relay-Revision: 2026-06-18
-

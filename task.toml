@@ -5,26 +5,23 @@ author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
 category = "system-administration"
-subcategories = ["long_context", "tool_specific", "api_integration", "db_interaction"]
-number_of_milestones = 0
+subcategories = ["tool_specific"]
+tags = ["filesystem-operations", "crash-recovery", "systemd", "offline-maintenance"]
+languages = ["bash", "cpp"]
 codebase_size = "small"
-languages = ["bash", "sql", "python"]
-tags = ["systemd", "unix-sockets", "sqlite", "maintenance-window", "service-accounts", "configuration-management"]
-expert_time_estimate_min = 240
-junior_time_estimate_min = 480
-
-[verifier]
-timeout_sec = 600.0
+number_of_milestones = 0
+expert_time_estimate_min = 120
+junior_time_estimate_min = 360
 
 [agent]
-timeout_sec = 1800.0
+timeout_sec = 1800
+
+[verifier]
+timeout_sec = 600
 
 [environment]
-build_timeout_sec = 900.0
-docker_flags = []
+allow_internet = false
+build_timeout_sec = 600
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-gpus = 0
-gpu_types = []
-allow_internet = false
