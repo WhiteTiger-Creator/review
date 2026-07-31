@@ -1,0 +1,1 @@
+pass=<warm|stress> lane=<n> witness_seq=<n> rows=<n> duty_checksum=<8hex> status=<digest>

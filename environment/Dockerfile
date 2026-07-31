@@ -1,70 +1,93 @@
+# TB3 environment image for histopathology-stain-robustness-auditor-0763.
+#
+# Canonical runtime base (Terminal-Bench ECR library mirror):
+# public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
+#
+# Multi-stage layout: hs-builder compiles hs_driver; the runtime stage installs a
+# pinned g++/cmake toolchain so agents can recompile after C++ fixes under
+# allow_internet=false (verifier reruns the full HS cycle).
+#
+# Offline execution: apt packages are version-pinned; verifier Python deps install
+# from requirements.lock via pip --require-hashes.
+
+FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d AS hs-builder
+
+WORKDIR /app/environment
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake=3.25.1-1 \
+    g++=4:12.2.0-3 \
+    make=4.3-4.1 \
+    nlohmann-json3-dev=3.11.2-2 \
+    libssl-dev=3.0.20-1~deb12u2 \
+    ca-certificates=20230311+deb12u1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY CMakeLists.txt ./
+COPY corpus/ corpus/
+COPY docs/ docs/
+COPY exec/ exec/
+COPY hs_driver/ hs_driver/
+COPY j2n/ j2n/
+COPY k8m/ k8m/
+COPY logging/ logging/
+COPY o9_chk/ o9_chk/
+COPY r3k/ r3k/
+COPY s4d/ s4d/
+COPY schemas/ schemas/
+COPY tooling/ tooling/
+COPY w7p/ w7p/
+
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build build --target hs_driver -j"$(nproc)"
+
 FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    LC_ALL=C.UTF-8 \
-    LANG=C.UTF-8 \
-    TERM=xterm-256color \
-    PATH=/app/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-    PYTHONPATH=/opt/harbor-verifier
+WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        adduser \
-        asciinema \
-        bash \
-        ca-certificates \
-        coreutils \
-        curl \
-        gawk \
-        grep \
-        jq \
-        python3 \
-        python3-pytest \
-        sed \
-        sqlite3 \
-        tmux \
-        util-linux \
+COPY requirements.txt /tmp/requirements.txt
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake=3.25.1-1 \
+    g++=4:12.2.0-3 \
+    make=4.3-4.1 \
+    nlohmann-json3-dev=3.11.2-2 \
+    libssl-dev=3.0.20-1~deb12u2 \
+    python3=3.11.2-1+b1 \
+    python3-pip=23.0.1+dfsg-1 \
+    python3-venv=3.11.2-1+b1 \
+    tmux=3.3a-3 \
+    asciinema=2.2.0-1 \
+    ca-certificates=20230311+deb12u1 \
     && rm -rf /var/lib/apt/lists/* \
-    && /usr/sbin/addgroup --system relay \
-    && /usr/sbin/adduser --system --ingroup relay --no-create-home --home /nonexistent --shell /usr/sbin/nologin relayops
+    && mkdir -p /app/output /app/output/stage
 
-COPY harbor_ctrf_plugin.py /opt/harbor-verifier/harbor_ctrf_plugin.py
-COPY prebuilt/harbor-relay /app/bin/harbor-relay
-COPY prebuilt/catalog-query /app/bin/catalog-query
-COPY prebuilt/service-catalog.db /opt/harbor/service-catalog.db
-COPY prebuilt/maintenance-window.db /opt/harbor/maintenance-window.db
-COPY app/include/ /opt/harbor-platform-source/include/
-COPY app/src/ /opt/harbor-platform-source/src/
-COPY app/tools/ /opt/harbor-platform-source/tools/
-COPY app/docs/ /app/docs/
-COPY app/records/ /app/records/
-COPY app/fixtures/ /app/fixtures/
-COPY app/etc/ /app/etc/
-COPY app/share/ /app/share/
-COPY app/scripts/ /app/scripts/
+RUN python3 -m venv /opt/verifier \
+    && /opt/verifier/bin/pip install --no-cache-dir --require-hashes --no-deps -r /tmp/requirements.txt
 
-RUN install -m 0755 /app/bin/catalog-query /usr/local/bin/catalog-query \
-    && chmod 0755 /app/bin/harbor-relay /app/bin/catalog-query /app/scripts/initialize-service-instance /app/scripts/exercise-service \
-    && chmod 0444 /opt/harbor/service-catalog.db /opt/harbor/maintenance-window.db \
-    && find /opt/harbor-platform-source -type f -exec chmod 0444 {} + \
-    && find /app/docs /app/records /app/fixtures /app/share -type f -exec chmod 0444 {} + \
-    && test "$(sha256sum /app/fixtures/requests/arrival-replay.http | awk '{print $1}')" = "1952a39bd9edfe4868259d14675eb5219ef6f21afe4854ee3e91b0c8c4ea5795" \
-    && mkdir -p /app/run/harbor-relay /app/var /etc/systemd/system \
-    && chown relayops:relay /app/run/harbor-relay /app/var \
-    && chmod 0750 /app/run/harbor-relay /app/var \
-    && chmod g-s /app/run/harbor-relay /app/var \
-    && chown root:relay /app/etc/harbor-relay \
-    && chmod 0750 /app/etc/harbor-relay \
-    && tmux -V \
-    && asciinema --version \
-    && tmux -L harbor-runtime-smoke new-session -d -s smoke "sleep 30" \
-    && tmux -L harbor-runtime-smoke has-session -t smoke \
-    && tmux -L harbor-runtime-smoke kill-server \
-    && bash /app/scripts/initialize-service-instance \
-    && /app/bin/catalog-query --batch-file /app/share/service-catalog.batch > /tmp/service-catalog.snapshot \
-    && HARBOR_CATALOG_DB=/opt/harbor/maintenance-window.db /app/bin/catalog-query --batch-file /app/share/maintenance-window.batch > /tmp/maintenance-window.snapshot \
-    && sh -c '/app/bin/harbor-relay --help > /tmp/harbor-relay.help 2>&1; rc=$?; test "$rc" -eq 78' \
-    && rm -f /tmp/service-catalog.snapshot /tmp/maintenance-window.snapshot /tmp/harbor-relay.help \
-    && chown root:relay /app/etc/harbor-relay/relay.conf /app/etc/harbor-relay/limits.conf /app/etc/harbor-relay/routes.map
+ENV PATH=/opt/verifier/bin:${PATH}
+
+COPY --from=hs-builder /app/environment/build /app/environment/build
+
+WORKDIR /app/environment
+COPY CMakeLists.txt ./
+COPY corpus/ corpus/
+COPY docs/ docs/
+COPY exec/ exec/
+COPY hs_driver/ hs_driver/
+COPY j2n/ j2n/
+COPY k8m/ k8m/
+COPY logging/ logging/
+COPY o9_chk/ o9_chk/
+COPY r3k/ r3k/
+COPY s4d/ s4d/
+COPY schemas/ schemas/
+COPY tooling/ tooling/
+COPY w7p/ w7p/
+
+RUN chmod +x exec/*.sh o9_chk/*.sh tooling/*.sh
+
+ENV PATH=/app/environment/build:${PATH}
 
 WORKDIR /app
+CMD ["bash", "-c", "echo Environment ready"]

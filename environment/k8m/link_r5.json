@@ -1,0 +1,13 @@
+{
+  "chain_version": 5,
+  "layers": [
+    {
+      "layer_id": "r5_warm",
+      "digest_prefix": "a7c3e901"
+    },
+    {
+      "layer_id": "r5_stress",
+      "digest_prefix": "b8d4f012"
+    }
+  ]
+}

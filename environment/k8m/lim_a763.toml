@@ -1,0 +1,7 @@
+profile_word = 0x0763A7
+holdout_salt = 6
+tolerance_band = 0
+arm_label = "0763"
+od_bias = 3
+bank_epoch_warm = 1
+bank_epoch_stress = 2

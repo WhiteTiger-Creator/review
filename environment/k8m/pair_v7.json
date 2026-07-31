@@ -1,0 +1,17 @@
+{
+  "algebra_version": 7,
+  "instance_pairs": [
+    {
+      "key_a": "i0019",
+      "key_b": "i0487",
+      "cross_weight": 3
+    },
+    {
+      "key_a": "i046d",
+      "key_b": "i048c",
+      "cross_weight": 5
+    }
+  ],
+  "stress_multiplier": 2,
+  "profile_mask": 58
+}
