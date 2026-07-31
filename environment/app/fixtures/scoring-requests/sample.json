@@ -1,0 +1,12 @@
+{
+  "ticket_id": "T-100512",
+  "channel": "web",
+  "priority": "high",
+  "resolved_hours": 14.5,
+  "features": {
+    "log_resolved_hours": 2.740840,
+    "priority_score": 3,
+    "channel_web": 1,
+    "api_latency_ms": 198.4
+  }
+}

@@ -1,9 +1,0 @@
-team0 : enp0 : 1
-team0 : enp1 : 2
-team0 : enp2 : 3
-team1 : enp3 : 1
-team1 : enp4 : 2
-team1 : enp8 : 3
-team2 : enp5 : 1
-team2 : enp0 : 2
-team3 : enp6 : 1

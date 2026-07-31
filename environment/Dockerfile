@@ -1,31 +1,41 @@
-FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
+FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
+
+# Install NodeSource GPG key, Node.js 20, and build-essential (for compiling native tfjs bindings)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    asciinema \
+    curl \
     ca-certificates \
-    python3 \
-    python3-pip \
+    gnupg \
     python3-venv \
     tmux \
-    asciinema && \
-    rm -rf /var/lib/apt/lists/*
-COPY requirements.lock /tmp/requirements.lock
-RUN python3 -m pip install --no-cache-dir --break-system-packages \
-    --require-hashes --no-deps -r /tmp/requirements.lock
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        nodejs \
+        build-essential \
+        python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
-COPY --chmod=0777 app/ /app/
-RUN mkdir -p /app/bin /app/var/lib/linkctl && \
-    chmod 0777 /app/bin /app/var /app/var/lib /app/var/lib/linkctl /opt && \
-    mkdir -p /opt/go-cache && chmod 0777 /opt/go-cache
-ENV GOFLAGS=-mod=mod
-ENV GOCACHE=/opt/go-cache
-ENV GOTOOLCHAIN=local
-ENV CGO_ENABLED=0
-ENV GOPROXY=off
-ENV GOSUMDB=off
-ENV PATH=/usr/local/go/bin:/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-RUN ln -sf /usr/local/go/bin/go    /usr/bin/go && \
-    ln -sf /usr/local/go/bin/gofmt /usr/bin/gofmt && \
-    printf 'export PATH=/usr/local/go/bin:/go/bin:$PATH\nexport GOCACHE=/opt/go-cache\nexport GOPROXY=off\nexport GOSUMDB=off\nexport GOFLAGS=-mod=mod\nexport GOTOOLCHAIN=local\nexport CGO_ENABLED=0\n' > /etc/profile.d/go.sh && \
-    chmod 0644 /etc/profile.d/go.sh && \
-    printf '\nif ! command -v go >/dev/null 2>&1; then export PATH=/usr/local/go/bin:/go/bin:$PATH; fi\nexport GOCACHE=/opt/go-cache\nexport GOPROXY=off\nexport GOSUMDB=off\nexport GOFLAGS=-mod=mod\nexport GOTOOLCHAIN=local\nexport CGO_ENABLED=0\n' >> /etc/bash.bashrc
-CMD ["/bin/bash"]
+
+# Copy dependency manifests and locks
+COPY verifier-requirements.lock /tmp/verifier-requirements.lock
+COPY app/package.json app/package-lock.json /app/
+
+# Install verifier dependencies in an isolated venv and Node.js dependencies
+RUN python3 -m venv --system-site-packages /opt/verifier-venv \
+    && /opt/verifier-venv/bin/pip install --require-hashes --no-deps --no-cache-dir -r /tmp/verifier-requirements.lock \
+    && npm ci
+
+COPY app/tsconfig.json /app/
+
+# Copy application source and assets
+COPY app/src/ /app/src/
+COPY app/data/ /app/data/
+COPY app/docs/ /app/docs/
+COPY app/fixtures/ /app/fixtures/
+
+# Pre-compile the application
+RUN npx tsc
+

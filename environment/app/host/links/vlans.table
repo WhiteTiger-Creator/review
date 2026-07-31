@@ -1,6 +1,0 @@
-vl11 : bond0 : 11 : yes
-vl22 : bond1 : 22 : yes
-vl33 : eth12 : 33 : yes
-vl44 : bond2 : 44 : no
-vl55 : bond3 : 55 : yes
-vl66 : bond2 : 66 : yes
