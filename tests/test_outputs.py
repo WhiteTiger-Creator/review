@@ -1,405 +1,260 @@
+"""Verifier for the satellite conjunction risk task."""
+
 from __future__ import annotations
 
-import json
+import csv
+import os
+import shutil
 import subprocess
-from contextlib import contextmanager
+import tempfile
 from pathlib import Path
 
-APP = Path("/app")
-SCAN_OUT = APP / "output" / "inv_scan.tsv"
-MERGED_OUT = APP / "output" / "merged.tsv"
-REPORT_OUT = APP / "output" / "inventory_report.json"
-LED = APP / "data" / "led_rows.tsv"
-GEN = APP / "data" / "gen_sheet.dat"
-MESH = APP / "etc" / "mesh_table.tsv"
-RANK = APP / "docs" / "rank_buried.txt"
-DIRECT = APP / "etc" / "frags" / "direct.list"
-INDIRECT = APP / "etc" / "frags" / "indirect.list"
-T4 = APP / "s2" / "q6" / "exec" / "t4_scan.sh"
-W2 = APP / "m8" / "t1" / "lib" / "w2_merge.sh"
-K9 = APP / "v3" / "d4" / "lib" / "k9_phase.sh"
+if os.environ.get("ORBIT_VERIFIER_CONTEXT") != "1":
+    raise RuntimeError("verifier module is not available to candidate programs")
 
-BROKEN_T4 = r'''#!/bin/bash
-set -euo pipefail
+import orbit_oracle
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=/dev/null
-source "$ROOT/lib/common.sh"
-# shellcheck source=/dev/null
-source "$ROOT/lib/name_list.sh"
+ORACLE_SOURCE = Path(__file__).with_name("orbit_oracle.py")
+ORACLE_SOURCE.unlink(missing_ok=True)
+for pycache in Path(__file__).with_name("__pycache__").glob("orbit_oracle*.pyc"):
+    pycache.unlink(missing_ok=True)
 
-op_t4() {
-  local led_path="$1"
-  local mesh_path="$2"
-  local out_path="$3"
-  name_list /app/etc/frags >/dev/null
-  {
-    printf 'lane\tedition\tmark\n'
-    awk 'NR>1 {print $1 "\t" $2 "\t" $3}' "$led_path"
-  } > "$out_path"
-  mesh_stamp_for "noop" "$mesh_path" >/dev/null || true
-}
-
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  mkdir -p "$(dirname "$3")"
-  op_t4 "$1" "$2" "$3"
-fi
-'''
-
-BROKEN_W2 = r'''#!/bin/bash
-set -euo pipefail
-
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=/dev/null
-source "$ROOT/lib/table_io.sh"
-# shellcheck source=/dev/null
-source "$ROOT/lib/lane_fold.sh"
-
-fn_w2() {
-  local direct_path="$1"
-  local indirect_path="$2"
-  local rank_path="$3"
-  local out_path="$4"
-  lane_fold "$rank_path" >/dev/null
-  {
-    printf 'lane\tedition\tlayer\n'
-    declare -A seen=()
-    while IFS=$'\t' read -r k v; do
-      [ -z "$k" ] && continue
-      printf '%s\t%s\tdirect\n' "$k" "$v"
-      seen["$k"]=1
-    done < <(load_frag_map "$direct_path")
-    while IFS=$'\t' read -r k v; do
-      [ -z "$k" ] && continue
-      if [ -z "${seen[$k]:-}" ]; then
-        printf '%s\t%s\tindirect\n' "$k" "$v"
-      fi
-    done < <(load_frag_map "$indirect_path")
-  } > "$out_path"
-}
-
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  fn_w2 "$1" "$2" "$3" "$4"
-fi
-'''
-
-BROKEN_K9 = r'''#!/bin/bash
-set -euo pipefail
-
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=/dev/null
-source /app/s2/q6/lib/common.sh
-# shellcheck source=/dev/null
-source "$ROOT/lib/json_emit.sh"
-# shellcheck source=/dev/null
-source "$ROOT/lib/tree_pretty.sh"
-
-phase_k9() {
-  local table_path="$1"
-  local gen_path="$2"
-  local mesh_path="$3"
-  local out_json="$4"
-  tree_pretty "$mesh_path" >/dev/null
-  printf '{' > "$out_json"
-  local args=()
-  while IFS=$'\t' read -r lane edition layer; do
-    [ -z "$lane" ] && continue
-    [ "$lane" = "lane" ] && continue
-    local pick stamp dig
-    pick="$(awk -v p="$lane" 'NR>1 && $1==p && $3=="live" {print $2; exit}' /app/data/led_rows.tsv)"
-    if [ -z "$pick" ]; then
-      pick="$edition"
-    fi
-    stamp="$(mesh_stamp_for "$pick" "$mesh_path")"
-    dig="$(digest16 "$lane" "$pick" "$stamp")"
-    args+=("$lane" "$stamp" "$dig" "$pick")
-  done < "$table_path"
-  emit_rows_json "$out_json" "${args[@]}"
-}
-
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  phase_k9 "$1" "$2" "$3" "$4"
-fi
-'''
+REG_FIELDS = [
+    "encounter_id",
+    "primary_id",
+    "secondary_id",
+    "projected_miss_km",
+    "sigma_distance",
+    "probability",
+    "blackout",
+    "decision",
+]
+SUM_FIELDS = [
+    "primary_id",
+    "total_encounters",
+    "breaches",
+    "blackout_suppressed",
+    "max_probability",
+    "min_projected_miss_km",
+]
 
 
-def inventory_digest(lane_id: str, selected_edition: str, edition_stamp: str) -> str:
-    script = (
-        "source /app/s2/q6/lib/common.sh; "
-        f'digest16 "{lane_id}" "{selected_edition}" "{edition_stamp}"'
-    )
-    return subprocess.check_output(["bash", "-c", script], text=True).strip()
+def read_rows(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="") as f:
+        return list(csv.DictReader(f))
 
 
-def gen_map() -> dict[str, str]:
-    out: dict[str, str] = {}
-    for line in GEN.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        lane, edition, _gen = line.split("|")
-        out[lane] = edition
-    return out
+def write_rows(path: Path, rows: list[dict[str, str]], fields: list[str]) -> None:
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
-def mesh_map() -> dict[str, str]:
-    out: dict[str, str] = {}
-    for line in MESH.read_text(encoding="utf-8").splitlines()[1:]:
-        if not line.strip():
-            continue
-        host, stamp = line.split("\t")
-        out[host] = stamp
-    return out
-
-
-def rank_weights() -> dict[str, int]:
-    out: dict[str, int] = {}
-    for line in RANK.read_text(encoding="utf-8").splitlines():
-        if not line.strip() or line.startswith("#"):
-            continue
-        name, weight = line.split()
-        out[name] = int(weight)
-    return out
-
-
-def run_scan() -> None:
-    SCAN_OUT.parent.mkdir(parents=True, exist_ok=True)
+def run_candidate(root: Path) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    for p in [
+        Path("/app/encounter_risk_register.csv"),
+        Path("/app/satellite_exposure_summary.csv"),
+    ]:
+        if p.exists():
+            p.unlink()
+    env = os.environ.copy()
+    env["ORBIT_EVIDENCE_DIR"] = str(root)
+    env.pop("ORBIT_VERIFIER_CONTEXT", None)
     subprocess.run(
-        [
-            "bash",
-            "/app/s2/q6/exec/t4_scan.sh",
-            "/app/data/led_rows.tsv",
-            "/app/etc/mesh_table.tsv",
-            "/app/output/inv_scan.tsv",
-        ],
-        check=True,
-        cwd=APP,
+        ["Rscript", "/app/analysis.R"], cwd="/app", env=env, check=True, timeout=180
+    )
+    return read_rows(Path("/app/encounter_risk_register.csv")), read_rows(
+        Path("/app/satellite_exposure_summary.csv")
     )
 
 
-def run_merge() -> None:
-    MERGED_OUT.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [
-            "bash",
-            "/app/m8/t1/exec/w2_run.sh",
-            "/app/etc/frags/direct.list",
-            "/app/etc/frags/indirect.list",
-            "/app/docs/rank_buried.txt",
-            "/app/output/merged.tsv",
-        ],
-        check=True,
-        cwd=APP,
+def assert_ok(root: Path) -> int:
+    exp_r, exp_s, cases = orbit_oracle.expected(root)
+    got_r, got_s = run_candidate(root)
+    assert got_r and got_s
+    assert list(got_r[0].keys()) == REG_FIELDS
+    assert list(got_s[0].keys()) == SUM_FIELDS
+    assert sorted(got_r, key=lambda r: r["encounter_id"]) == sorted(
+        exp_r, key=lambda r: r["encounter_id"]
     )
-
-
-def run_batch() -> dict:
-    subprocess.run(
-        ["bash", "/app/scripts/run_batch.sh"],
-        check=True,
-        cwd=APP,
+    assert sorted(got_s, key=lambda r: r["primary_id"]) == sorted(
+        exp_s, key=lambda r: r["primary_id"]
     )
-    return json.loads(REPORT_OUT.read_text(encoding="utf-8"))
-
-
-def load_scan_rows() -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
-    for line in SCAN_OUT.read_text(encoding="utf-8").splitlines()[1:]:
-        if not line.strip():
-            continue
-        lane, edition, mark = line.split("\t")
-        rows.append({"lane": lane, "edition": edition, "mark": mark})
-    return rows
-
-
-def load_merged() -> dict[str, tuple[str, str]]:
-    rows: dict[str, tuple[str, str]] = {}
-    for line in MERGED_OUT.read_text(encoding="utf-8").splitlines()[1:]:
-        if not line.strip():
-            continue
-        lane, edition, layer = line.split("\t")
-        rows[lane] = (edition, layer)
-    return rows
-
-
-def report_row(data: dict, lane_id: str) -> dict:
-    for row in data["rows"]:
-        if row["lane_id"] == lane_id:
-            return row
-    raise AssertionError(f"missing lane {lane_id}")
-
-
-@contextmanager
-def patched_text(path: Path, replacement: str):
-    original = path.read_text(encoding="utf-8")
-    path.write_text(replacement, encoding="utf-8")
-    try:
-        yield
-    finally:
-        path.write_text(original, encoding="utf-8")
-
-
-def test_x9_q01_shape() -> None:
-    """Scan table rows expose lane, edition, and mark columns used by later stages."""
-    run_scan()
-    rows = load_scan_rows()
-    assert rows
-    for row in rows:
-        assert "lane" in row and "edition" in row and "mark" in row
-        assert row["mark"] in {"live", "tomb"}
-
-
-def test_x9_q02_c2() -> None:
-    """Effective c2 scan marks align with generation-stamped live editions."""
-    run_scan()
-    rows = [r for r in load_scan_rows() if r["lane"] == "c2"]
-    live = {r["edition"] for r in rows if r["mark"] == "live"}
-    tomb = {r["edition"] for r in rows if r["mark"] == "tomb"}
-    want = gen_map()["c2"]
-    led_eds = [
-        line.split("\t")[1]
-        for line in LED.read_text(encoding="utf-8").splitlines()[1:]
-        if line.startswith("c2\t")
-    ]
-    stale = next(h for h in led_eds if h != want)
-    assert want in live
-    assert stale in tomb
-    assert stale not in live
-
-
-def test_x9_q05_tomb() -> None:
-    """Retired editions remain visible as tomb marks for later emit stages."""
-    run_scan()
-    want = gen_map()
-    for lane, edition, mark in (
-        (r["lane"], r["edition"], r["mark"]) for r in load_scan_rows()
-    ):
-        if lane in want and edition != want[lane]:
-            assert mark == "tomb"
-    assert any(r["mark"] == "tomb" for r in load_scan_rows())
-
-
-def test_x9_a01_flip_s2() -> None:
-    """Reverting the s2 scan module collapses effective-ledger tomb alignment."""
-    want = gen_map()["c2"]
-    led_eds = [
-        line.split("\t")[1]
-        for line in LED.read_text(encoding="utf-8").splitlines()[1:]
-        if line.startswith("c2\t")
-    ]
-    stale = next(h for h in led_eds if h != want)
-    with patched_text(T4, BROKEN_T4):
-        run_scan()
-        rows = [r for r in load_scan_rows() if r["lane"] == "c2"]
-        live = {r["edition"] for r in rows if r["mark"] == "live"}
-        assert stale in live
-    run_scan()
-    rows = [r for r in load_scan_rows() if r["lane"] == "c2"]
-    live = {r["edition"] for r in rows if r["mark"] == "live"}
-    assert want in live
-    assert stale not in live
-
-
-def test_x9_q03_r7() -> None:
-    """Merged r7 edition follows the higher-weight fragment layer."""
-    run_merge()
-    edition, layer = load_merged()["r7"]
-    assert edition == gen_map()["r7"]
-    weights = rank_weights()
-    winner = max(weights, key=weights.get)
-    assert layer == winner
-
-
-def test_x9_q04_clash() -> None:
-    """Overlapping keys resolve to a single merged edition per lane."""
-    run_merge()
-    merged = load_merged()
-    want = gen_map()
-    assert set(merged.keys()) == set(want.keys())
-    for lane, edition in want.items():
-        assert merged[lane][0] == edition
-    direct_eds = {
-        line.split("\t")[0]: line.split("\t")[1]
-        for line in DIRECT.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    }
-    for lane in want:
-        assert merged[lane][0] != direct_eds[lane]
-
-
-def test_x9_q08_layer_order() -> None:
-    """Layer labels on merged rows follow buried weight ordering."""
-    run_merge()
-    merged = load_merged()
-    winner = max(rank_weights(), key=rank_weights().get)
-    for lane in gen_map():
-        assert merged[lane][1] == winner
-
-
-def test_x9_a02_flip_m8() -> None:
-    """Reverting the m8 merge module prefers lower-weight editions on clash."""
-    direct_eds = {
-        line.split("\t")[0]: line.split("\t")[1]
-        for line in DIRECT.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    }
-    loser = min(rank_weights(), key=rank_weights().get)
-    winner = max(rank_weights(), key=rank_weights().get)
-    with patched_text(W2, BROKEN_W2):
-        run_merge()
-        merged = load_merged()
-        assert merged["c2"][0] == direct_eds["c2"]
-        assert merged["c2"][1] == loser
-    run_merge()
-    merged = load_merged()
-    assert merged["c2"][0] == gen_map()["c2"]
-    assert merged["c2"][1] == winner
-
-
-def test_x9_q06_twice() -> None:
-    """Consecutive full harness runs produce identical inventory reports."""
-    first = run_batch()
-    second = run_batch()
-    assert first == second
-
-
-def test_x9_q07_tomb_clear() -> None:
-    """Selected editions never include rows marked tomb in the scan inventory."""
-    run_scan()
-    tombs = {r["edition"] for r in load_scan_rows() if r["mark"] == "tomb"}
-    data = run_batch()
-    for row in data["rows"]:
-        assert row["selected_edition"] not in tombs
-
-
-def test_x9_q09_alt_pick() -> None:
-    """Generation sheet editions win over first-live ledger picks in the inventory report."""
-    data = run_batch()
-    stamps = mesh_map()
-    want = gen_map()
-    for lane, edition in want.items():
-        row = report_row(data, lane)
-        assert row["selected_edition"] == edition
-        assert row["edition_stamp"] == stamps[edition]
-        assert row["inventory_digest"] == inventory_digest(lane, edition, stamps[edition])
-    led_first_live = next(
-        parts[1]
-        for line in LED.read_text(encoding="utf-8").splitlines()[1:]
-        for parts in [line.split("\t")]
-        if parts and parts[0] == "c2" and parts[-1] == "live"
+    assert sum(r["decision"] == "BREACH" for r in got_r) == sum(
+        int(r["breaches"]) for r in got_s
     )
-    assert report_row(data, "c2")["selected_edition"] != led_first_live
+    return cases
 
 
-def test_x9_a03_flip_v3() -> None:
-    """Reverting the v3 emit module reintroduces first-live ledger editions."""
-    led_first_live = next(
-        parts[1]
-        for line in LED.read_text(encoding="utf-8").splitlines()[1:]
-        for parts in [line.split("\t")]
-        if parts and parts[0] == "c2" and parts[-1] == "live"
+def test_visible_evidence_matches_scientific_oracle() -> None:
+    """Visible evidence checks covariance projection, blackout suppression, and policy revisions."""
+    assert assert_ok(Path("/app/evidence")) >= 60
+
+
+def test_private_variant_rejects_visible_hardcoding() -> None:
+    """Fresh orbital evidence prevents copying visible decisions."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "evidence"
+        orbit_oracle.generate(root, 17)
+        assert assert_ok(root) >= 60
+
+
+def test_private_variant_exercises_policy_and_geometry_edges() -> None:
+    """A second variant stresses policy revisions, covariance shape, and blackout intervals."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "evidence"
+        orbit_oracle.generate(root, 29)
+        assert assert_ok(root) >= 60
+
+
+def test_translation_metamorphism_preserves_risk() -> None:
+    """Relative encounter decisions are translation invariant."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "evidence"
+        copy = Path(tmp) / "copy"
+        orbit_oracle.generate(root, 41)
+        shutil.copytree(root, copy)
+        base_cases = assert_ok(root)
+        changed_cases = assert_ok(copy)
+    assert base_cases == changed_cases
+
+
+def test_policy_revision_and_probability_mass_are_semantic() -> None:
+    """Changing approved policy mass parameters changes the recomputed risk register."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "evidence"
+        changed = Path(tmp) / "changed"
+        orbit_oracle.generate(root, 53)
+        shutil.copytree(root, changed)
+        policy_path = changed / "policy/screening_policies.csv"
+        rows = read_rows(policy_path)
+        fields = list(rows[0])
+        for row in rows:
+            if row["status"] == "approved" and row["quality_code"] == "HIGH":
+                row["hard_body_radius_m"] = "32.0"
+                row["probability_floor"] = "0.000009"
+                row["covariance_scale"] = "0.62"
+        write_rows(policy_path, rows, fields)
+        base_expected, _, _ = orbit_oracle.expected(root)
+        changed_expected, _, _ = orbit_oracle.expected(changed)
+        assert base_expected != changed_expected
+        assert assert_ok(changed) >= 60
+
+
+def test_policy_age_adjustment_changes_thresholds() -> None:
+    """Moving the selected policy effective time changes age-adjusted probability gates."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "evidence"
+        changed = Path(tmp) / "changed"
+        orbit_oracle.generate(root, 61)
+        shutil.copytree(root, changed)
+        policy_path = changed / "policy/screening_policies.csv"
+        rows = read_rows(policy_path)
+        fields = list(rows[0])
+        for row in rows:
+            if row["status"] == "approved" and row["quality_code"] == "HIGH":
+                row["effective_tca"] = "2026-05-28T00:00"
+                row["max_probability"] = "0.000006"
+        write_rows(policy_path, rows, fields)
+        base_expected, _, _ = orbit_oracle.expected(root)
+        changed_expected, _, _ = orbit_oracle.expected(changed)
+        assert base_expected != changed_expected
+        assert assert_ok(changed) >= 60
+
+
+def test_degenerate_covariance_and_blackout_boundary_are_semantic() -> None:
+    """Degenerate covariance and half-open blackout boundaries use the stated rules."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "evidence"
+        orbit_oracle.generate(root, 73)
+        encounter_path = root / "orbits/encounters.csv"
+        rows = read_rows(encounter_path)
+        fields = list(rows[0])
+        rows[0]["encounter_id"] = "BOUNDARY-DEGENERATE"
+        rows[0]["primary_id"] = "SAT-X"
+        rows[0]["tca"] = "2026-06-02T12:00"
+        rows[0]["rx_km"] = "0.000"
+        rows[0]["ry_km"] = "0.000"
+        rows[0]["rz_km"] = "0.000"
+        rows[0]["cxx"] = "0.000"
+        rows[0]["cxy"] = "0.000"
+        rows[0]["cxz"] = "0.000"
+        rows[0]["cyy"] = "0.000"
+        rows[0]["cyz"] = "0.000"
+        rows[0]["czz"] = "0.000"
+        rows[0]["quality_code"] = "HIGH"
+        write_rows(encounter_path, rows, fields)
+        blackout_path = root / "policy/maneuver_blackouts.csv"
+        blackout_rows = read_rows(blackout_path)
+        blackout_fields = list(blackout_rows[0])
+        blackout_rows.append(
+            {
+                "primary_id": "SAT-X",
+                "start_tca": "2026-06-02T00:00",
+                "end_tca": "2026-06-02T12:00",
+                "status": "approved",
+            }
+        )
+        write_rows(blackout_path, blackout_rows, blackout_fields)
+        expected, _, _ = orbit_oracle.expected(root)
+        row = next(r for r in expected if r["encounter_id"] == "BOUNDARY-DEGENERATE")
+        assert row["blackout"] == "FALSE"
+        assert row["sigma_distance"] == "0.000000"
+        assert row["probability"] == "1.000000"
+        assert assert_ok(root) >= 60
+
+
+def test_policy_id_tie_break_and_fixed_decimal_fields_are_semantic() -> None:
+    """Policy-id tie-breaking and fixed six-place formatting affect outputs."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "evidence"
+        orbit_oracle.generate(root, 89)
+        policy_path = root / "policy/screening_policies.csv"
+        rows = read_rows(policy_path)
+        fields = list(rows[0])
+        rows.append(
+            {
+                "policy_id": "PZ",
+                "effective_tca": "2026-06-03T00:00",
+                "revision_ts": "2026-06-02T13:00",
+                "status": "approved",
+                "quality_code": "HIGH",
+                "max_miss_km": "0.15",
+                "max_sigma_distance": "0.35",
+                "max_probability": "0.900000",
+                "covariance_scale": "2.25",
+                "hard_body_radius_m": "7.0",
+                "probability_floor": "0.000000",
+            }
+        )
+        write_rows(policy_path, rows, fields)
+        expected, summary, _ = orbit_oracle.expected(root)
+        assert all(len(r["probability"].split(".")[1]) == 6 for r in expected)
+        assert all(len(r["max_probability"].split(".")[1]) == 6 for r in summary)
+        assert assert_ok(root) >= 60
+
+
+def test_candidate_does_not_mutate_evidence() -> None:
+    """The scientific evidence bundle must remain unchanged after evaluation."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "evidence"
+        shutil.copytree("/app/evidence", root)
+        before = sorted(
+            p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()
+        )
+        assert_ok(root)
+        after = sorted(
+            p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()
+        )
+        assert before == after
+
+
+def test_common_wrong_interpretations_are_present() -> None:
+    """The visible bundle separates miss-only, draft-policy, blackout, and covariance mistakes."""
+    exp_r, _, _ = orbit_oracle.expected(Path("/app/evidence"))
+    assert any(r["decision"] == "BREACH" for r in exp_r)
+    assert any(r["blackout"] == "TRUE" for r in exp_r)
+    assert any(
+        float(r["projected_miss_km"]) < 1.0 and r["decision"] == "CLEAR" for r in exp_r
     )
-    with patched_text(K9, BROKEN_K9):
-        data = run_batch()
-        assert report_row(data, "c2")["selected_edition"] == led_first_live
-    data = run_batch()
-    assert report_row(data, "c2")["selected_edition"] == gen_map()["c2"]

@@ -1,4 +1,0 @@
-# buried local layer weights — higher weight wins when keys clash
-# layer_name weight
-direct	1
-indirect	2

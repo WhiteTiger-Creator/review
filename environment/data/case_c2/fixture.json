@@ -1,6 +1,0 @@
-{
-  "lane_id": "c2",
-  "track_hint": "stable",
-  "closure": ["px-a17-new", "base-lib"],
-  "want_live": true
-}

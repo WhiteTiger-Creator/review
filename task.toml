@@ -1,42 +1,27 @@
 version = "2.0"
 
 [metadata]
-title = "Channel Mirror Sync Skew"
 author_name = "anonymous"
-author_email = "anonymous@example.com"
+author_email = "anonymous"
+category = "scientific-computing"
+subcategories = ["tool_specific"]
 difficulty = "hard"
-category = "system-administration"
-subcategories = []
+codebase_size = "minimal"
 number_of_milestones = 0
-codebase_size = "small"
-languages = ["bash"]
-tags = ["bash", "package-mirror", "release-channels", "repository-sync", "dependency-resolution", "mirror-consistency"]
-expert_time_estimate_min = 90
-junior_time_estimate_min = 240
-
-[category_profile]
-challenge_family = "multi_channel_package_mirror_partial_sync_reconciliation"
-bug_family = "partial_sync_generation_skew_across_release_tracks"
-profile_name = "distributed_reconciliation"
-allowed_instruction_disclosures = "symptoms of wrong editions after partial sync, lanes c2/r7, report schema fields, pipeline commands, inventory_digest formula, regenerate-not-handwrite rule"
-forbidden_instruction_leaks = "rank_buried merge order, gen_sheet.dat authority, op_t4/fn_w2/phase_k9 names, exact overlay paths on fix path, full target edition answer key, dependency closure algorithm"
-category_specific_hardness_bar = "multiple truth surfaces (pin ledger, pool mesh, track overlays, generation sheet, dep fixtures) reconcile with idempotency and false-green smoke"
-category_specific_verifier_risks = "count-only index checks, last-write-wins edition shortcut, golden merged Packages fixture, one-file mirror.conf fix"
-coverage_role = "Adds bash system-administration distributed_reconciliation for multi-track package mirror sync skew; distinct from debian-airgap-repository (GPG/reprepro) and fleet-netns (network cutover)"
-
-[reference_pattern]
-justification_if_none = "No promoted reference in docs/reference_tasks/index.json matches bash multi-track package-mirror partial-sync reconciliation; construction mold follows fleet/automount three-root repair with distinct package-distribution domain (not networking, not GPG/reprepro)"
-
-[environment]
-allow_internet = false
-build_timeout_sec = 300
-cpus = 2
-memory_mb = 2048
-storage_mb = 10240
-workdir = "/app"
+languages = ["r"]
+tags = ["orbital-mechanics", "conjunction-risk", "covariance", "scientific-validation", "space-safety"]
+expert_time_estimate_min = 180
+junior_time_estimate_min = 480
 
 [verifier]
-timeout_sec = 450
+timeout_sec = 1800.0
 
 [agent]
-timeout_sec = 1800
+timeout_sec = 1800.0
+
+[environment]
+build_timeout_sec = 1200.0
+cpus = 1
+memory_mb = 4096
+storage_mb = 6144
+allow_internet = false
