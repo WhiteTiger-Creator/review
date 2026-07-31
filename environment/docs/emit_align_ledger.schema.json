@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "rid": "string",
+      "aid": "string",
+      "score_used": 0.0,
+      "from_side": true,
+      "nest_outer": "string",
+      "nest_inner": "string",
+      "halted": false
+    }
+  ],
+  "ledger_digest": "lowercase hex sha256",
+  "forge": {
+    "bag_id": "string",
+    "aid": "string",
+    "score": 0.0,
+    "nest_outer": "string"
+  }
+}

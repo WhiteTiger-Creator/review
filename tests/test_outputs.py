@@ -1,468 +1,544 @@
+"""Independent verifier for ferric HPO log archaeology emits."""
+
+from __future__ import annotations
+
+import hashlib
 import json
-import re
+import os
+import shutil
 import subprocess
-import sys
+from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
-sys.path.insert(0, "/app/environment/tooling")
-from digest_util import bank_fp_material, journal_duty_checksum, row_material_digest
+import pytest
 
-ENV = Path("/app/environment")
-BUNDLE_PATH = "/app/output/proof_certificate_bundle.tar.json"
-BUNDLE = Path(BUNDLE_PATH)
-TRACE_DIR = Path("/app/output/stage")
-SCHEMA = ENV / "schemas/pcb_a763.schema.yaml"
-SLICE_REF = ENV / "schemas/ref_a763.kaitai"
+APP = Path("/app/environment")
+EMIT = Path("/app/emit")
+SHEET = EMIT / "rung_sheet.json"
+LEDGER = EMIT / "align_ledger.json"
+TOL = 1e-9
 
-
-def _run_graded_cycle() -> None:
-    if BUNDLE.exists():
-        BUNDLE.unlink()
-    for trace in TRACE_DIR.glob("lane_*.txt"):
-        trace.unlink()
-    bank = TRACE_DIR / "bank_cache.txt"
-    if bank.exists():
-        bank.unlink()
-    subprocess.run(
-        [str(ENV / "exec/run_hs_cycle.sh"), "--arm", "0763", "--all-fixtures"],
-        check=True,
-    )
+SLAG = APP / "slag" / "src" / "slag_bind.rs"
+KILN = APP / "kiln" / "src" / "kiln_forge.rs"
 
 
-def _load_certificate_doc() -> dict:
-    return json.loads(BUNDLE.read_text(encoding="utf-8"))
+def near(a: float, b: float) -> bool:
+    return abs(float(a) - float(b)) <= TOL
 
 
-def _cert_hex_ok(value: str) -> bool:
-    if len(value) != 8:
-        return False
-    try:
-        int(value, 16)
-    except ValueError:
-        return False
-    return value == value.lower()
-
-
-def _valid_ikey(value: str) -> bool:
-    if not value.startswith("i") or len(value) != 5:
-        return False
-    try:
-        int(value[1:], 16)
-    except ValueError:
-        return False
-    return value[1:] == value[1:].lower()
-
-
-def _run_replay_tool() -> None:
-    subprocess.run(
-        [str(ENV / "tooling/verify_ob9_d9.sh"), "--from", "/app/output/proof_certificate_bundle.tar.json"],
-        check=True,
-    )
-
-
-def _run_g09_chk() -> None:
-    subprocess.run([str(ENV / "o9_chk/g09_chk.sh"), BUNDLE_PATH, "9"], check=True)
-
-
-def _kaitai_int(name: str) -> int:
-    match = re.search(rf"^{name}:\s*(\d+)", SLICE_REF.read_text(encoding="utf-8"), re.MULTILINE)
-    assert match, f"{name} missing from ref_a763.kaitai"
-    return int(match.group(1))
-
-
-def _tag_to_ikey(tag: int) -> str:
-    base = _kaitai_int("reloc_base")
-    stride = _kaitai_int("reloc_stride")
-    bias = _kaitai_int("reloc_bias")
-    xor_v = _kaitai_int("reloc_xor")
-    if tag >= base:
-        tag = ((tag - base) * stride + bias) ^ xor_v
-    return f"i{tag:04x}"
-
-
-def _kidx_duty_rows(path: Path) -> list[tuple[str, int]]:
-    blob = path.read_bytes()
-    assert blob[:4] == b"A763"
-    count = int.from_bytes(blob[6:8], "little")
-    offset = 8
-    rows: list[tuple[str, int]] = []
-    for _ in range(count):
-        tag = int.from_bytes(blob[offset : offset + 4], "little")
-        plen = int.from_bytes(blob[offset + 4 : offset + 8], "little")
-        offset += 8
-        payload = blob[offset : offset + plen]
-        offset += plen
-        duty = max(1, (sum(payload) + max(0, len(payload) - 1)) // max(1, len(payload)))
-        rows.append((_tag_to_ikey(tag), duty))
+def load_jsonl(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if line:
+            rows.append(json.loads(line))
     return rows
 
 
-def _lane_journal_map(name: str) -> dict[str, str]:
-    text = (TRACE_DIR / f"lane_{name}.txt").read_text(encoding="utf-8").strip()
-    return dict(re.findall(r"([a-z_]+)=([^ ]+)", text))
+def halt_flag(tag: str) -> bool:
+    t = tag.strip().lower()
+    return t in {"e", "cut", "halted"}
 
 
-def _lim_u32(name: str, default: int = 0) -> int:
-    for line in (ENV / "k8m/lim_a763.toml").read_text(encoding="utf-8").splitlines():
-        if line.startswith(name):
-            raw = line.partition("=")[2].strip()
-            if raw.lower().startswith("0x"):
-                return int(raw, 16)
-            return int(raw, 0)
-    return default
+def eta_expected(lr0: float, gamma: float, period: int, step: int) -> float:
+    p = period if period else 1
+    return lr0 * (gamma ** (step // p))
 
 
-def _od_margin(instance_key: str, corpus_tag: str, epoch: int) -> int:
-    nibble = int(instance_key[1:], 16) & 0xFF
-    tag_bit = 1 if corpus_tag == "a" else 0
-    return ((nibble + _lim_u32("od_bias", 3)) * epoch + tag_bit) & 0xFF
+def sha256_hex(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _row_digest(rows: list[dict], bank_fingerprint: str) -> str:
-    return row_material_digest(rows, bank_fingerprint)
+def forge_score(
+    aid: str, lr0: float, gamma: float, period: int, bag: dict[str, Any], nest_outer: str
+) -> float:
+    s = f"{aid}|{lr0:.10f}|{gamma:.10f}|{period}|{bag['knob']}|{bag['salt']}|{nest_outer}"
+    dig = hashlib.sha256(s.encode("utf-8")).digest()
+    v = int.from_bytes(dig[:8], "big", signed=False)
+    return v / float((1 << 64) - 1)
 
 
-def _arm_profile_word() -> int:
-    return _lim_u32("profile_word", 0x0763A7)
+def load_traces() -> list[dict[str, Any]]:
+    runs = APP / "data" / "runs"
+    paths = sorted(
+        p
+        for p in runs.glob("*.jsonl")
+        if p.name != "side_bag.jsonl"
+    )
+    rows: list[dict[str, Any]] = []
+    for p in paths:
+        rows.extend(load_jsonl(p))
+    return rows
 
 
-def _holdout_salt() -> int:
-    return _lim_u32("holdout_salt", 0)
-
-
-def _effective_cross(pair: dict, algebra: dict) -> int:
-    mask = algebra.get("profile_mask", 0)
-    return pair["cross_weight"] ^ (_arm_profile_word() & mask) ^ _holdout_salt()
-
-
-def _additive_cross(pair: dict, algebra: dict) -> int:
-    mask = algebra.get("profile_mask", 0)
-    return pair["cross_weight"] + (_arm_profile_word() & mask)
-
-
-def _corpus_duty_lookup(epoch: int) -> dict[tuple[str, str], int]:
-    out: dict[tuple[str, str], int] = {}
-    for path, tag in [
-        (ENV / "k8m/corpus_a.kidx", "a"),
-        (ENV / "k8m/corpus_b.kidx", "b"),
-    ]:
-        for key, duty in _kidx_duty_rows(path):
-            out[(key, tag)] = duty + _od_margin(key, tag, epoch)
+def load_side() -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for row in load_jsonl(APP / "data" / "runs" / "side_bag.jsonl"):
+        out[row["rid"]] = row
     return out
 
 
-def _violation_slack() -> int:
-    return _lim_u32("tolerance_band", 0)
-
-
-def _lane_duty_tag(rows: list[dict]) -> str:
-    return journal_duty_checksum(rows)
-
-
-def _recomputed_catalog_nine(doc: dict) -> int:
-    algebra = json.loads((ENV / "k8m/pair_v7.json").read_text(encoding="utf-8"))
-    tolerance = _violation_slack()
-    multiplier = max(1, int(algebra.get("stress_multiplier", 1)))
-    rows = {(r["instance_key"], r["corpus_tag"]): r for r in doc.get("rows", [])}
-    violations = 0
-    for pair in algebra["instance_pairs"]:
-        a = rows.get((pair["key_a"], "a"))
-        b = rows.get((pair["key_b"], "b"))
-        if a is None or b is None:
-            violations += 1
-            continue
-        mc = _effective_cross(pair, algebra)
-        scale = multiplier if int(a.get("lane_phase", 0)) >= 2 else 1
-        duty_a = int(a["duty_cycles"])
-        duty_b = int(b["duty_cycles"])
-        if duty_b == 0 or duty_a % scale != 0:
-            violations += 1
-            continue
-        raw_a = duty_a // scale
-        derived_raw_a = max(0, raw_a - mc) // max(1, duty_b)
-        expected = (derived_raw_a * duty_b + mc) * scale
-        if abs(duty_a - expected) > tolerance:
-            violations += 1
-    return violations
-
-
-def _expected_stress_duty_a(pair: dict, algebra: dict, bases: dict) -> int:
-    mc = _effective_cross(pair, algebra)
-    base_a = bases[(pair["key_a"], "a")]
-    base_b = bases[(pair["key_b"], "b")]
-    return (base_a * base_b + mc) * algebra["stress_multiplier"]
-
-
-def _warm_base_rows() -> list[dict]:
-    bases = _corpus_duty_lookup(_lim_u32("bank_epoch_warm", 1))
-    rows = []
-    for (key, tag), duty in bases.items():
-        if tag == "a":
-            rows.append({"instance_key": key, "corpus_tag": "a", "duty_cycles": duty})
-    return rows
-
-
-def _expected_bank_fingerprint() -> str:
-    return bank_fp_material(
-        _lim_u32("bank_epoch_stress", 2),
-        _lim_u32("od_bias", 3),
-        _arm_profile_word(),
-    )
-
-
-def test_hs_01_w3_stable():
-    """Rows canonically ordered on stress lane with bank fingerprint bound."""
-    _run_graded_cycle()
-    doc = _load_certificate_doc()
-    assert doc.get("rows")
-    seq = [r["row_seq"] for r in doc["rows"]]
-    assert seq == list(range(1, len(seq) + 1))
-    assert [(r["instance_key"], r["corpus_tag"]) for r in doc["rows"]] == sorted(
-        (r["instance_key"], r["corpus_tag"]) for r in doc["rows"]
-    )
-    assert {r["lane_phase"] for r in doc["rows"]} == {int(_lane_journal_map("stress")["lane"])}
-    assert all(r["lane_phase"] >= 2 for r in doc["rows"])
-    calib = _lane_journal_map("warm")
-    scored = _lane_journal_map("stress")
-    assert int(calib["rows"]) < int(scored["rows"])
-    assert int(scored["rows"]) == len(doc["rows"])
-    assert _cert_hex_ok(doc["bank_fingerprint"])
-    assert doc["bank_fingerprint"] == _expected_bank_fingerprint()
-
-
-def test_hs_02_replay_hash():
-    """Independent replay digest must bind row material and bank fingerprint."""
-    _run_graded_cycle()
-    doc = _load_certificate_doc()
-    digest = doc["replay_digest"]
-    assert _cert_hex_ok(digest)
-    assert digest == _row_digest(doc["rows"], doc["bank_fingerprint"])
-    plain = row_material_digest(doc["rows"], "")
-    assert digest != plain
-    warm_status = _lane_journal_map("warm")["status"]
-    assert _cert_hex_ok(warm_status)
-    assert warm_status != digest
-    assert _cert_hex_ok(_lane_journal_map("stress")["status"])
-    assert warm_status != _lane_journal_map("stress")["status"]
-    _run_replay_tool()
-    _run_g09_chk()
-
-
-def test_hs_03_row_totals():
-    """Bundle rows must include stress-epoch stain margins before cross/stress fold."""
-    _run_graded_cycle()
-    doc = _load_certificate_doc()
-    assert len(doc["rows"]) >= 2
-    assert {r["corpus_tag"] for r in doc["rows"]} == {"a", "b"}
-    assert all(r["duty_cycles"] > 0 for r in doc["rows"])
-    algebra = json.loads((ENV / "k8m/pair_v7.json").read_text(encoding="utf-8"))
-    stress_bases = _corpus_duty_lookup(_lim_u32("bank_epoch_stress", 2))
-    warm_bases = _corpus_duty_lookup(_lim_u32("bank_epoch_warm", 1))
-    for pair in algebra["instance_pairs"]:
-        mc = _effective_cross(pair, algebra)
-        assert mc != _additive_cross(pair, algebra)
-        row_a = next(r for r in doc["rows"] if r["instance_key"] == pair["key_a"] and r["corpus_tag"] == "a")
-        row_b = next(r for r in doc["rows"] if r["instance_key"] == pair["key_b"] and r["corpus_tag"] == "b")
-        assert row_b["duty_cycles"] == stress_bases[(pair["key_b"], "b")]
-        assert row_a["duty_cycles"] == _expected_stress_duty_a(pair, algebra, stress_bases)
-        warm_expected = _expected_stress_duty_a(pair, algebra, warm_bases)
-        assert row_a["duty_cycles"] != warm_expected
-        assert row_a["duty_cycles"] >= mc
-    scored = _lane_journal_map("stress")
-    assert int(scored["rows"]) == len(doc["rows"])
-    _run_replay_tool()
-    _run_g09_chk()
-
-
-def test_hs_04_kidx_keys():
-    """Slice tags must decode with reloc_xor to the instance keys present in rows."""
-    _run_graded_cycle()
-    doc = _load_certificate_doc()
-    expected = set()
-    for fixture in sorted((ENV / "k8m").glob("corpus_*.kidx")):
-        expected |= {key for key, _ in _kidx_duty_rows(fixture)}
-    assert expected
-    assert expected == {r["instance_key"] for r in doc["rows"]}
-    assert len(doc["rows"]) == len(expected)
-    bases = _corpus_duty_lookup(_lim_u32("bank_epoch_stress", 2))
-    for row in doc["rows"]:
-        assert row["lane_phase"] >= 2
-        if row["corpus_tag"] == "b":
-            assert row["duty_cycles"] == bases[(row["instance_key"], "b")]
-    _run_g09_chk()
-
-
-def test_hs_05_chain_integrity():
-    """HS pipeline must publish a later scoring lane than the calibration pass."""
-    _run_graded_cycle()
-    doc = _load_certificate_doc()
-    calib = _lane_journal_map("warm")
-    scored = _lane_journal_map("stress")
-    assert calib["lane"].isdigit()
-    assert scored["lane"].isdigit()
-    assert int(scored["witness_seq"]) > int(calib["witness_seq"])
-    assert int(scored["lane"]) >= 2
-    assert int(scored["rows"]) > int(calib["rows"])
-    assert int(scored["rows"]) == len(doc["rows"])
-    assert calib["pass"] == "warm"
-    assert scored["pass"] == "stress"
-    assert _cert_hex_ok(calib["status"])
-    assert _cert_hex_ok(scored["status"])
-
-
-def test_hs_06_arm_meta():
-    """Arm 0763 metadata must appear in the regenerated bundle document."""
-    _run_graded_cycle()
-    doc = _load_certificate_doc()
-    assert doc["arm_id"] == "0763"
-    assert doc["obligation_violations"] == 0
-    assert doc["bank_fingerprint"] == _expected_bank_fingerprint()
-    assert doc["replay_digest"] == _row_digest(doc["rows"], doc["bank_fingerprint"])
-    _run_replay_tool()
-    _run_g09_chk()
-
-
-def test_hs_07_tar_shape():
-    """Bundle JSON shape and row hashes must be schema-complete."""
-    _run_graded_cycle()
-    doc = _load_certificate_doc()
-    for row in doc["rows"]:
-        assert _valid_ikey(row["instance_key"])
-        assert row["corpus_tag"] in {"a", "b"}
-    schema_text = SCHEMA.read_text(encoding="utf-8")
-    assert "arm_id" in schema_text and "replay_digest" in schema_text
-    assert "bank_fingerprint" in schema_text
-    assert isinstance(doc["obligation_violations"], int)
-    assert doc["obligation_violations"] == 0
-    assert doc["replay_digest"] == _row_digest(doc["rows"], doc["bank_fingerprint"])
-    seq = [r["row_seq"] for r in doc["rows"]]
-    assert seq == list(range(1, len(seq) + 1))
-    assert len(set(seq)) == len(seq)
-    assert all(r["lane_phase"] >= 2 for r in doc["rows"])
-    _run_replay_tool()
-    _run_g09_chk()
-
-
-def test_hs_08_catalog_nine():
-    """Catalog item nine must match recomputed row algebra and pass replay."""
-    _run_graded_cycle()
-    doc = _load_certificate_doc()
-    recomputed = _recomputed_catalog_nine(doc)
-    assert doc["obligation_violations"] == recomputed
-    assert recomputed == 0
-    _run_replay_tool()
-
-    saved = BUNDLE.read_text(encoding="utf-8")
-    tampered = dict(doc)
-    tampered["obligation_violations"] = recomputed + 1
-    BUNDLE.write_text(json.dumps(tampered, indent=2) + "\n", encoding="utf-8")
-    try:
-        probe = subprocess.run(
-            [str(ENV / "tooling/verify_ob9_d9.sh"), "--from", "/app/output/proof_certificate_bundle.tar.json"],
-            text=True,
-            check=False,
+def reconcile(
+    traces: list[dict[str, Any]], side: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for r in traces:
+        score = float(r["vis"])
+        from_side = False
+        s = side.get(r["rid"])
+        if s is not None and int(s["hid"]) == 1:
+            score = float(s["true_vis"])
+            from_side = True
+        out.append(
+            {
+                "rid": r["rid"],
+                "aid": r["aid"],
+                "step": int(r["step"]),
+                "eta": float(r["eta"]),
+                "score": score,
+                "halted": halt_flag(str(r["halt"])),
+                "from_side": from_side,
+                "nest": r["nest"],
+                "lr0": float(r["lr0"]),
+                "gamma": float(r["gamma"]),
+                "period": int(r["period"]),
+            }
         )
-        assert probe.returncode != 0
-        g09 = subprocess.run(
-            [str(ENV / "o9_chk/g09_chk.sh"), BUNDLE_PATH, "9"],
-            text=True,
-            check=False,
-        )
-        assert g09.returncode != 0
-    finally:
-        BUNDLE.write_text(saved, encoding="utf-8")
+    out.sort(key=lambda x: (x["aid"], x["step"], x["rid"]))
+    return out
 
 
-def test_hs_09_row_checksum():
-    """Warm checksum binds margin-folded warm bases; stress binds post-fold rows."""
-    _run_graded_cycle()
-    doc = _load_certificate_doc()
-    calib = _lane_journal_map("warm")
-    scored = _lane_journal_map("stress")
-    assert scored["duty_checksum"] == _lane_duty_tag(doc["rows"])
-    assert _cert_hex_ok(scored["duty_checksum"])
-    assert calib["duty_checksum"] == _lane_duty_tag(_warm_base_rows())
-    assert calib["duty_checksum"] != scored["duty_checksum"]
-
-
-def test_hs_10_stress_multiplier():
-    """Stress-lane corpus a rows must reflect algebra stress_multiplier scaling."""
-    _run_graded_cycle()
-    doc = _load_certificate_doc()
-    algebra = json.loads((ENV / "k8m/pair_v7.json").read_text(encoding="utf-8"))
-    stress_multiplier = algebra["stress_multiplier"]
-    assert stress_multiplier >= 2
-    bases = _corpus_duty_lookup(_lim_u32("bank_epoch_stress", 2))
-    for pair in algebra["instance_pairs"]:
-        mc = _effective_cross(pair, algebra)
-        row_a = next(r for r in doc["rows"] if r["instance_key"] == pair["key_a"] and r["corpus_tag"] == "a")
-        row_b = next(r for r in doc["rows"] if r["instance_key"] == pair["key_b"] and r["corpus_tag"] == "b")
-        duty_b = row_b["duty_cycles"]
-        assert row_a["lane_phase"] >= 2
-        assert row_a["duty_cycles"] >= (mc + duty_b) * stress_multiplier
-        desk_wrong = bases[(pair["key_a"], "a")] * stress_multiplier * duty_b + mc
-        assert row_a["duty_cycles"] != desk_wrong
-    _run_g09_chk()
-
-
-def test_hs_11_mask_blend():
-    """Corpus a duties must use xor holdout-salted cross weights, not additive desk blend."""
-    _run_graded_cycle()
-    doc = _load_certificate_doc()
-    algebra = json.loads((ENV / "k8m/pair_v7.json").read_text(encoding="utf-8"))
-    bases = _corpus_duty_lookup(_lim_u32("bank_epoch_stress", 2))
-    assert _holdout_salt() != 0
-    for pair in algebra["instance_pairs"]:
-        mc = _effective_cross(pair, algebra)
-        additive = _additive_cross(pair, algebra)
-        assert mc != additive
-        expected = _expected_stress_duty_a(pair, algebra, bases)
-        additive_expected = (bases[(pair["key_a"], "a")] * bases[(pair["key_b"], "b")] + additive) * algebra[
-            "stress_multiplier"
+def bind(
+    sift: list[dict[str, Any]],
+    grid: dict[str, Any],
+    nest: dict[str, Any],
+) -> dict[str, Any]:
+    by_aid: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for r in sift:
+        by_aid[r["aid"]].append(r)
+    arms: list[dict[str, Any]] = []
+    cases: list[dict[str, Any]] = []
+    ended_aids: set[str] = set()
+    triples = grid["triples"]
+    for aid, rows in by_aid.items():
+        outer_counts: dict[str, int] = defaultdict(int)
+        for r in rows:
+            e = nest.get(r["nest"])
+            if e:
+                outer_counts[e["outer"]] += 1
+        if not outer_counts:
+            continue
+        mode_outer = min(outer_counts.items(), key=lambda kv: (-kv[1], kv[0]))[0]
+        kept = [
+            r
+            for r in rows
+            if nest.get(r["nest"]) and nest[r["nest"]]["outer"] == mode_outer
         ]
-        row_a = next(r for r in doc["rows"] if r["instance_key"] == pair["key_a"] and r["corpus_tag"] == "a")
-        assert row_a["duty_cycles"] == expected
-        assert row_a["duty_cycles"] != additive_expected
-    _run_g09_chk()
+        if not kept:
+            continue
+        kept.sort(key=lambda x: (x["step"], x["rid"]))
+        lr0 = kept[0]["lr0"]
+        gamma = kept[0]["gamma"]
+        period = kept[0]["period"]
+        if any(
+            not near(r["lr0"], lr0) or not near(r["gamma"], gamma) or r["period"] != period
+            for r in kept
+        ):
+            continue
+        if not any(
+            near(t["lr0"], lr0) and near(t["gamma"], gamma) and int(t["period"]) == period
+            for t in triples
+        ):
+            continue
+        if any(not near(r["eta"], eta_expected(lr0, gamma, period, r["step"])) for r in kept):
+            continue
+        p = period if period else 1
+        rung_total = sum(r["score"] for r in kept if r["step"] % p == 0)
+        ended = bool(kept[-1]["halted"])
+        cases.extend(kept)
+        arms.append(
+            {
+                "aid": aid,
+                "rung_total": rung_total,
+                "lr0": lr0,
+                "gamma": gamma,
+                "period": period,
+                "nest_outer": mode_outer,
+            }
+        )
+        if ended:
+            ended_aids.add(aid)
+    arms.sort(key=lambda a: a["aid"])
+    cases.sort(key=lambda c: c["rid"])
+    eligible = [a for a in arms if a["aid"] not in ended_aids]
+    best_aid = ""
+    if eligible:
+        eligible.sort(key=lambda a: (-a["rung_total"], a["aid"]))
+        best_aid = eligible[0]["aid"]
+    return {"arms": arms, "best_aid": best_aid, "cases": cases, "nest": nest}
 
 
-def test_hs_12_bank_epoch_split():
-    """Stress-epoch margins must diverge from warm-epoch margins for the same keys."""
-    _run_graded_cycle()
-    doc = _load_certificate_doc()
-    warm_epoch = _lim_u32("bank_epoch_warm", 1)
-    stress_epoch = _lim_u32("bank_epoch_stress", 2)
-    assert stress_epoch != warm_epoch
-    warm_fp = bank_fp_material(warm_epoch, _lim_u32("od_bias", 3), _arm_profile_word())
-    assert doc["bank_fingerprint"] != warm_fp
-    assert doc["bank_fingerprint"] == _expected_bank_fingerprint()
-    for row in doc["rows"]:
-        warm_m = _od_margin(row["instance_key"], row["corpus_tag"], warm_epoch)
-        stress_m = _od_margin(row["instance_key"], row["corpus_tag"], stress_epoch)
-        assert stress_m != warm_m
-    algebra = json.loads((ENV / "k8m/pair_v7.json").read_text(encoding="utf-8"))
-    stress_bases = _corpus_duty_lookup(stress_epoch)
-    for pair in algebra["instance_pairs"]:
-        row_a = next(r for r in doc["rows"] if r["instance_key"] == pair["key_a"] and r["corpus_tag"] == "a")
-        assert row_a["duty_cycles"] == _expected_stress_duty_a(pair, algebra, stress_bases)
-    _run_replay_tool()
+def sheet_digest(arms: list[dict[str, Any]]) -> str:
+    blob = ""
+    for a in sorted(arms, key=lambda x: x["aid"]):
+        blob += (
+            f"aid={a['aid']};rung={a['rung_total']:.10f};lr0={a['lr0']:.10f};"
+            f"gamma={a['gamma']:.10f};period={a['period']};outer={a['nest_outer']}\n"
+        )
+    return sha256_hex(blob)
 
 
-def test_hs_13_recovery_rerun():
-    """Back-to-back HS cycles must clear bank cache and stay deterministic."""
-    _run_graded_cycle()
-    first = _load_certificate_doc()
-    bank = TRACE_DIR / "bank_cache.txt"
-    assert bank.exists()
-    bank.write_text("99\nstale=1\n", encoding="utf-8")
-    _run_graded_cycle()
-    second = _load_certificate_doc()
-    assert second["replay_digest"] == first["replay_digest"]
-    assert second["bank_fingerprint"] == first["bank_fingerprint"]
-    assert second["bank_fingerprint"] == _expected_bank_fingerprint()
-    for name in ("warm", "stress"):
-        fields = _lane_journal_map(name)
-        for key in ("pass", "lane", "witness_seq", "rows", "duty_checksum", "status"):
-            assert key in fields
-    _run_replay_tool()
-    _run_g09_chk()
+def ledger_digest(cases: list[dict[str, Any]], nest: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+    led: list[dict[str, Any]] = []
+    for r in sorted(cases, key=lambda x: x["rid"]):
+        e = nest.get(r["nest"], {"outer": "", "inner": ""})
+        led.append(
+            {
+                "rid": r["rid"],
+                "aid": r["aid"],
+                "score_used": r["score"],
+                "from_side": r["from_side"],
+                "nest_outer": e["outer"],
+                "nest_inner": e["inner"],
+                "halted": r["halted"],
+            }
+        )
+    blob = ""
+    for c in led:
+        blob += (
+            f"rid={c['rid']};score={c['score_used']:.10f};"
+            f"side={1 if c['from_side'] else 0};outer={c['nest_outer']};"
+            f"inner={c['nest_inner']};halt={1 if c['halted'] else 0}\n"
+        )
+    return sha256_hex(blob), led
+
+
+def expected_artifacts(
+    nest_path: Path | None = None, grid_path: Path | None = None
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    nest = json.loads((nest_path or APP / "data" / "nests" / "nest_map.json").read_text())
+    grid = json.loads((grid_path or APP / "data" / "grids" / "grid_pub.json").read_text())
+    bag = json.loads((APP / "data" / "bags" / "forge_bag.json").read_text())
+    sift = reconcile(load_traces(), load_side())
+    bound = bind(sift, grid, nest)
+    arms = [
+        {
+            "aid": a["aid"],
+            "rung_total": a["rung_total"],
+            "lr0": a["lr0"],
+            "gamma": a["gamma"],
+            "period": a["period"],
+            "nest_outer": a["nest_outer"],
+        }
+        for a in bound["arms"]
+    ]
+    dig_s = sheet_digest(arms)
+    dig_l, led_cases = ledger_digest(bound["cases"], nest)
+    best = next((a for a in bound["arms"] if a["aid"] == bound["best_aid"]), None)
+    if best is None:
+        score = 0.0
+        nest_outer = ""
+    else:
+        score = forge_score(
+            best["aid"], best["lr0"], best["gamma"], best["period"], bag, best["nest_outer"]
+        )
+        nest_outer = best["nest_outer"]
+    sheet = {
+        "version": 1,
+        "arms": arms,
+        "best_aid": bound["best_aid"],
+        "sheet_digest": dig_s,
+    }
+    ledger = {
+        "version": 1,
+        "cases": led_cases,
+        "ledger_digest": dig_l,
+        "forge": {
+            "bag_id": bag["bag_id"],
+            "aid": bound["best_aid"],
+            "score": score,
+            "nest_outer": nest_outer,
+        },
+    }
+    return sheet, ledger
+
+
+def run_drv(env: dict[str, str] | None = None) -> None:
+    EMIT.mkdir(parents=True, exist_ok=True)
+    for p in (SHEET, LEDGER):
+        if p.exists():
+            p.unlink()
+    cmd_env = dict(os.environ)
+    if env:
+        cmd_env.update(env)
+    subprocess.run(
+        [str(APP / "run_ferric_drv")],
+        check=True,
+        cwd=str(APP),
+        env=cmd_env,
+    )
+
+
+def read_emits() -> tuple[dict[str, Any], dict[str, Any]]:
+    return json.loads(SHEET.read_text()), json.loads(LEDGER.read_text())
+
+
+def cargo_build() -> None:
+    subprocess.run(
+        ["cargo", "build", "--release", "--bin", "ferric_drv"],
+        check=True,
+        cwd=str(APP),
+        env={**os.environ, "CARGO_TARGET_DIR": "/tmp/ferric-target"},
+    )
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _ensure_build() -> None:
+    # Rebuild in case oracle or ablations changed sources.
+    cargo_build()
+
+
+def assert_sheet_close(got: dict[str, Any], exp: dict[str, Any]) -> None:
+    assert got["version"] == exp["version"] == 1
+    assert got["best_aid"] == exp["best_aid"]
+    assert got["sheet_digest"] == exp["sheet_digest"]
+    assert len(got["arms"]) == len(exp["arms"])
+    for ga, ea in zip(
+        sorted(got["arms"], key=lambda x: x["aid"]),
+        sorted(exp["arms"], key=lambda x: x["aid"])
+    ):
+        assert ga["aid"] == ea["aid"]
+        assert near(ga["rung_total"], ea["rung_total"])
+        assert near(ga["lr0"], ea["lr0"])
+        assert near(ga["gamma"], ea["gamma"])
+        assert int(ga["period"]) == int(ea["period"])
+        assert ga["nest_outer"] == ea["nest_outer"]
+
+
+def assert_ledger_close(got: dict[str, Any], exp: dict[str, Any]) -> None:
+    assert got["version"] == exp["version"] == 1
+    assert got["ledger_digest"] == exp["ledger_digest"]
+    assert near(got["forge"]["score"], exp["forge"]["score"])
+    assert got["forge"]["aid"] == exp["forge"]["aid"]
+    assert got["forge"]["bag_id"] == exp["forge"]["bag_id"]
+    assert got["forge"]["nest_outer"] == exp["forge"]["nest_outer"]
+    assert len(got["cases"]) == len(exp["cases"])
+    for gc, ec in zip(
+        sorted(got["cases"], key=lambda x: x["rid"]),
+        sorted(exp["cases"], key=lambda x: x["rid"])
+    ):
+        assert gc["rid"] == ec["rid"]
+        assert gc["aid"] == ec["aid"]
+        assert near(gc["score_used"], ec["score_used"])
+        assert bool(gc["from_side"]) is bool(ec["from_side"])
+        assert gc["nest_outer"] == ec["nest_outer"]
+        assert gc["nest_inner"] == ec["nest_inner"]
+        assert bool(gc["halted"]) is bool(ec["halted"])
+
+
+def test_h7_c01_shape() -> None:
+    """Emit schemas, digests, forge, and per-arm fields match recomputed contract."""
+    run_drv()
+    sheet, ledger = read_emits()
+    exp_s, exp_l = expected_artifacts()
+    assert_sheet_close(sheet, exp_s)
+    assert_ledger_close(ledger, exp_l)
+    aids = [a["aid"] for a in sheet["arms"]]
+    assert aids == sorted(aids), "arms must be sorted by aid"
+    rids = [c["rid"] for c in ledger["cases"]]
+    assert rids == sorted(rids), "cases must be sorted by rid"
+
+
+def test_h7_c02_twin() -> None:
+    """Twin runs agree; digests and forge match independent recomputation under public and nest remap."""
+    run_drv()
+    s1, l1 = read_emits()
+    run_drv()
+    s2, l2 = read_emits()
+    assert s1["sheet_digest"] == s2["sheet_digest"]
+    assert l1["ledger_digest"] == l2["ledger_digest"]
+    assert near(l1["forge"]["score"], l2["forge"]["score"])
+    exp_s, exp_l = expected_artifacts()
+    assert_sheet_close(s1, exp_s)
+    assert_ledger_close(l1, exp_l)
+    nest_key = "FERRIC" + "_" + "NEST"
+    nest_hold = str(APP / "data" / "nests" / "nest_hold.json")
+    run_drv(env={nest_key: nest_hold})
+    h1_s, h1_l = read_emits()
+    run_drv(env={nest_key: nest_hold})
+    h2_s, h2_l = read_emits()
+    hold_s, hold_l = expected_artifacts(nest_path=APP / "data" / "nests" / "nest_hold.json")
+    assert h1_s["sheet_digest"] == h2_s["sheet_digest"] == hold_s["sheet_digest"]
+    assert h1_l["ledger_digest"] == h2_l["ledger_digest"] == hold_l["ledger_digest"]
+    assert near(h1_l["forge"]["score"], hold_l["forge"]["score"])
+    assert h1_s["sheet_digest"] != exp_s["sheet_digest"]
+
+
+def test_h7_c03_nestmap() -> None:
+    """Nestmap outer lineage remaps every arm, digests, and forge - not only one sample aid."""
+    run_drv()
+    sheet, ledger = read_emits()
+    exp_s, exp_l = expected_artifacts()
+    assert_sheet_close(sheet, exp_s)
+    assert_ledger_close(ledger, exp_l)
+    hold_s, hold_l = expected_artifacts(nest_path=APP / "data" / "nests" / "nest_hold.json")
+    changed = False
+    for ea in exp_s["arms"]:
+        ha = next(a for a in hold_s["arms"] if a["aid"] == ea["aid"])
+        if not near(ha["rung_total"], ea["rung_total"]) or ha["nest_outer"] != ea["nest_outer"]:
+            changed = True
+    assert changed, "held-out nestmap must alter at least one arm"
+    nest_key = "FERRIC" + "_" + "NEST"
+    run_drv(env={nest_key: str(APP / "data" / "nests" / "nest_hold.json")})
+    sheet2, ledger2 = read_emits()
+    assert_sheet_close(sheet2, hold_s)
+    assert_ledger_close(ledger2, hold_l)
+    assert sheet2["sheet_digest"] != sheet["sheet_digest"]
+    assert ledger2["ledger_digest"] != ledger["ledger_digest"]
+
+
+def test_h7_c04_rungsem() -> None:
+    """LR rung totals, eta law, and active-grid filtering match schedule contract."""
+    run_drv()
+    sheet, _ = read_emits()
+    exp_s, _ = expected_artifacts()
+    assert_sheet_close(sheet, exp_s)
+    for a in sheet["arms"]:
+        p = int(a["period"]) if int(a["period"]) else 1
+        sift = reconcile(load_traces(), load_side())
+        nest = json.loads((APP / "data" / "nests" / "nest_map.json").read_text())
+        rows = [r for r in sift if r["aid"] == a["aid"]]
+        outer_counts: dict[str, int] = defaultdict(int)
+        for r in rows:
+            e = nest.get(r["nest"])
+            if e:
+                outer_counts[e["outer"]] += 1
+        mode_outer = min(outer_counts.items(), key=lambda kv: (-kv[1], kv[0]))[0]
+        kept = [
+            r
+            for r in rows
+            if nest.get(r["nest"]) and nest[r["nest"]]["outer"] == mode_outer
+        ]
+        rung = sum(r["score"] for r in kept if int(r["step"]) % p == 0)
+        assert near(a["rung_total"], rung)
+        for row in kept:
+            expect = eta_expected(a["lr0"], a["gamma"], p, int(row["step"]))
+            assert near(float(row["eta"]), expect)
+    grid_key = "FERRIC" + "_" + "GRID"
+    strict = APP / "data" / "grids" / "grid_strict.json"
+    run_drv(env={grid_key: str(strict)})
+    sheet_g, ledger_g = read_emits()
+    exp_g_s, exp_g_l = expected_artifacts(grid_path=strict)
+    assert_sheet_close(sheet_g, exp_g_s)
+    assert_ledger_close(ledger_g, exp_g_l)
+    pub_aids = {a["aid"] for a in exp_s["arms"]}
+    strict_aids = {a["aid"] for a in sheet_g["arms"]}
+    assert strict_aids < pub_aids, "strict grid must invalidate at least one public arm"
+    assert "a3" not in strict_aids
+    assert sheet_g["sheet_digest"] != exp_s["sheet_digest"]
+
+
+def test_h7_c05_sidehide() -> None:
+    """Sidecar hid scores are recovered; non-hid rows keep visible scores; peaks do not win."""
+    run_drv()
+    sheet, ledger = read_emits()
+    exp_s, exp_l = expected_artifacts()
+    assert_sheet_close(sheet, exp_s)
+    assert_ledger_close(ledger, exp_l)
+    side_cases = [c for c in ledger["cases"] if c["from_side"]]
+    assert side_cases, "sidecar recovery must mark from_side cases"
+    by_rid = {c["rid"]: c for c in ledger["cases"]}
+    for rid, srow in load_side().items():
+        if int(srow["hid"]) == 1:
+            assert rid in by_rid
+            assert by_rid[rid]["from_side"] is True
+            assert near(by_rid[rid]["score_used"], float(srow["true_vis"]))
+        elif rid in by_rid:
+            assert by_rid[rid]["from_side"] is False
+    if "r3x" in by_rid:
+        assert by_rid["r3x"]["from_side"] is False
+    pub = (APP / "docs" / "ferric_pub.md").read_text()
+    assert "a2" in pub
+    assert sheet["best_aid"] == exp_l["forge"]["aid"]
+    assert sheet["best_aid"] != "a2"
+
+
+def test_h7_c06_write_trap() -> None:
+    """Hand-edited emits are overwritten; regen restores full public and nest-remap contracts."""
+    run_drv()
+    sheet, ledger = read_emits()
+    sheet["best_aid"] = sheet["best_aid"] + sheet["best_aid"]
+    sheet["sheet_digest"] = "0" * 64
+    sheet["arms"] = []
+    ledger["forge"]["score"] = 0.0
+    ledger["forge"]["aid"] = "bogus"
+    ledger["ledger_digest"] = "1" * 64
+    ledger["cases"] = []
+    SHEET.write_text(json.dumps(sheet))
+    LEDGER.write_text(json.dumps(ledger))
+    run_drv()
+    s2, l2 = read_emits()
+    exp_s, exp_l = expected_artifacts()
+    assert_sheet_close(s2, exp_s)
+    assert_ledger_close(l2, exp_l)
+    s2["sheet_digest"] = "f" * 64
+    SHEET.write_text(json.dumps(s2))
+    nest_key = "FERRIC" + "_" + "NEST"
+    run_drv(env={nest_key: str(APP / "data" / "nests" / "nest_hold.json")})
+    hold_s, hold_l = expected_artifacts(nest_path=APP / "data" / "nests" / "nest_hold.json")
+    s3, l3 = read_emits()
+    assert_sheet_close(s3, hold_s)
+    assert_ledger_close(l3, hold_l)
+
+
+def test_h7_c07_ablate_a() -> None:
+    """Ablating the bind path flips nestmap outer and rung totals together."""
+    bak = SLAG.read_text()
+    try:
+        snaps = sorted((APP / "lib").glob("snap_*.rs"))
+        shutil.copy(snaps[0], SLAG)
+        cargo_build()
+        run_drv()
+        sheet, _ = read_emits()
+        exp_s, _ = expected_artifacts()
+        nest_flip = False
+        rung_flip = False
+        best_flip = sheet["best_aid"] != exp_s["best_aid"]
+        for a in sheet["arms"]:
+            match = next((x for x in exp_s["arms"] if x["aid"] == a["aid"]), None)
+            if match is None:
+                nest_flip = True
+                rung_flip = True
+                continue
+            if a.get("nest_outer") != match["nest_outer"]:
+                nest_flip = True
+            if not near(a["rung_total"], match["rung_total"]):
+                rung_flip = True
+        assert best_flip or (nest_flip and rung_flip), (
+            "ablating bind path must flip best_aid or both nest_outer and rung_total"
+        )
+    finally:
+        SLAG.write_text(bak)
+        cargo_build()
+
+
+def test_h7_c08_ablate_b() -> None:
+    """Ablating the cast path flips both sheet digest and holdout forge/ledger digests."""
+    bak = KILN.read_text()
+    try:
+        snaps = sorted((APP / "lib").glob("snap_*.rs"))
+        shutil.copy(snaps[1], KILN)
+        cargo_build()
+        run_drv()
+        s, led = read_emits()
+        exp_s, exp_l = expected_artifacts()
+        digest_flip = s["sheet_digest"] != exp_s["sheet_digest"]
+        forge_flip = not near(led["forge"]["score"], exp_l["forge"]["score"])
+        ledger_flip = led["ledger_digest"] != exp_l["ledger_digest"]
+        assert digest_flip and (forge_flip or ledger_flip), (
+            "ablating cast path must flip sheet_digest and forge/ledger digests"
+        )
+    finally:
+        KILN.write_text(bak)
+        cargo_build()

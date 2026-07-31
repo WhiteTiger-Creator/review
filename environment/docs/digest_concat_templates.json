@@ -1,0 +1,9 @@
+{
+  "sheet_line": "aid={aid};rung={rung_total:.10f};lr0={lr0:.10f};gamma={gamma:.10f};period={period};outer={nest_outer}\\n",
+  "ledger_line": "rid={rid};score={score_used:.10f};side={0|1};outer={nest_outer};inner={nest_inner};halt={0|1}\\n",
+  "forge_string": "{best_aid}|{lr0:.10f}|{gamma:.10f}|{period}|{knob}|{salt}|{nest_outer}",
+  "eta_expected": "lr0 * gamma.powi(step / period) with integer division truncating toward zero",
+  "nestmap_object_shape": {"outer": "<outer-id>", "inner": "<inner-id>"},
+  "forge_bag_shape": {"bag_id": "...", "knob": "<u64>", "salt": "..."},
+  "float_format_note": "All :.10f placeholders mean fixed-point formatting to exactly 10 digits after the decimal point (e.g. 0.0500000000), matching Python format {:.10f}."
+}
