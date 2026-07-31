@@ -1,0 +1,176 @@
+Lantern-grid board-game referee rules
+
+The match sheet describes playable houses, move-style preference order, clubs, board limits, piece records, turn cards, exclusion rules, scoring cohorts, and extra table boards.
+The referee chooses one final scoring row across all turns and writes a scorecard.
+
+The public match sheet is /app/task_file/public_ledger.json. The --output flag is optional.
+If --output is omitted, write the scorecard to /app/out/scorecard.json.
+Otherwise write the scorecard to the path passed with --output.
+
+Per-piece playability
+
+A piece is playable for a turn only when all of these checks pass:
+
+- The piece subject matches the turn subject.
+- The piece club exists, is not disabled, and its house appears in playable_houses.
+- The piece style value appears in style_order and also in the club allowed_styles list.
+- The turn at value is between piece start_tick and end_tick inclusive.
+- If spent_tick is not null, the turn at value is less than spent_tick.
+- The turn space and stance are both listed on the piece.
+- The piece level is at least the turn level.
+- The turn heat is at most the club max_heat.
+- The piece labels contain every string in turn badge.
+- The piece pair string exactly matches the turn pair.
+- If booster_required is true, piece booster must be true.
+- remaining is positive.
+
+Failed per-option reasons are additive, not short-circuited.
+Emit them in this order: unknown_house, style_miss, late, spent, space_miss, level_miss, heat_limit, badge_miss, pair_miss, booster_missing, empty_piece.
+
+Final scoring-row limits
+
+Each turn can use at most one piece. Each piece can be used at most remaining times. Missing limits are zero unless this rule sheet says otherwise.
+
+The final scoring row must satisfy:
+
+- Per-house placements: limits.per_house[house].
+- Per-space placements: limits.per_space[space].
+- Per-subject placements: limits.per_subject[subject].
+- Per subject/house placements: limits.per_subject_house[subject][house].
+- Per subject/style placements: limits.per_subject_style[subject][style].
+- Per house/space placements: limits.per_house_space[house][space].
+- Per house/style placements: limits.per_house_style[house][style].
+- Per round placements: limits.per_round["<round>"].
+- Round heat budget: every scored turn adds its integer heat to limits.round_heat_budget["<round>"] unless the selected piece has round-heat-waive:<round>.
+- Family cap: every selected piece label family:<name> consumes one limits.family_cap[name] slot per scored turn using that piece. Pieces without family labels consume no family slots.
+- Mutex labels: for each label in limits.mutex_labels, at most one scored turn may use a piece carrying that label unless every selected piece carrying it also contains mutex-ok:<label>.
+- House heat budget: every scored turn adds its integer heat to limits.house_heat_budget[house] unless the selected piece has heat-waive.
+- Badges cap: each badge string on each scored turn consumes one limits.per_badge[badge] slot unless the piece has pool:<badge>. Repeated badge strings consume repeated slots.
+- Split badge: for badge listed in limits.split_badge, any two scored turns containing that badge must use different houses unless both selected pieces contain share:<badge>.
+- Blocked house pairs: if a row uses both houses in any limits.blocked_house_pairs item, it is invalid unless at least one selected piece from each house contains bridge:<leftHouse>:<rightHouse>.
+  Use the pair order from the ledger when forming the bridge label.
+- Same-piece cooldown: if the same piece is used for two scored turns, the absolute round difference must be greater than that piece cooldown.
+- Same-club gap: for two scored turns using pieces from the same club, the absolute round difference must be greater than limits.club_round_gap[club] unless both selected pieces contain club-burst:<club>.
+- Same-subject gap: for two scored turns with the same subject, the absolute round difference must be greater than limits.subject_round_gap[subject] unless both selected pieces contain rapid.
+- Same stance/space gap: for two scored turns with the same stance and space, the absolute round difference must be greater than limits.stance_space_gap[stance][space].
+  If both selected pieces contain parallel:<stance>:<space>, that pair is waived.
+
+Turn transition rules
+
+For each subject, sort scored turns by round and then turn input order.
+Every consecutive space transition from -> to must appear in limits.allowed_transitions[from] unless either selected piece in the pair contains route:<from>:<to>.
+Same-space consecutive turns also need an explicit transition or route label.
+
+If those same consecutive subject turns use different houses, oldHouse->newHouse must appear in limits.allowed_house_handoffs[subject] unless either selected piece contains handoff:<oldHouse>:<newHouse>.
+
+Exclusions, linked turns, cohorts, and review boards
+
+Every exclusions item has left, right, and unless_label. The two turn ids cannot both be scored unless both selected pieces contain unless_label.
+
+If a scored turn has links, every listed turn id must also be scored unless the selected piece contains the turn link_label.
+Empty links has no effect. Empty link_label never waives.
+For every scored turn whose links were not waived, each required turn must have round less than or equal to the requiring turn round unless the requiring turn piece contains late-link:<required_id>.
+
+Every cohorts item has members, min_score, max_score, min_houses, min_styles, and max_heat.
+If any member is scored, the scored count among members must be between min_score and max_score inclusive.
+The selected pieces for those members must span at least min_houses distinct houses and min_styles distinct styles.
+Scored member heats must sum to at most max_heat. Missing max_heat is zero.
+
+The match sheet may also contain review_boards. If review_boards is missing or empty, there is no review-board rule.
+Every review_boards item has name, members, chair_label, min_chairs, min_houses, min_styles, and max_same_club.
+If any member is scored, evaluate only scored member turns from that board.
+At least min_chairs of those selected pieces must contain chair_label.
+The selected pieces must span at least min_houses distinct houses and min_styles distinct styles.
+No club may appear more than max_same_club times among those selected pieces.
+The chair count is per scored turn, so two scored turns using the same piece count twice for min_chairs, while distinct house and style counts still count unique values.
+
+The match sheet may also contain surge_windows. If surge_windows is missing or empty, there is no surge-window rule.
+Every surge_windows item has name, rounds, max_heat, min_houses, min_spaces, max_same_subject, and anchor_label.
+Evaluate only scored turns whose round integer is listed in rounds. If none are scored in the window, the item has no effect.
+Otherwise the window heat is the sum of those scored turn heat values, except a selected piece with surge-waive:<name> contributes zero heat for the turn using it.
+The window heat must be at most max_heat.
+The selected pieces in the window must span at least min_houses distinct houses.
+The scored turns in the window must span at least min_spaces distinct spaces.
+At least one selected piece in the window must contain anchor_label.
+For each subject in the window, at most max_same_subject turns may be scored unless every selected piece used by that repeated subject in the window contains surge-repeat:<name>:<subject>.
+The repeat waiver is checked per selected turn, not per distinct piece; other surge-window checks still apply.
+
+The match sheet may also contain relay_paths. If relay_paths is missing or empty, there is no relay-path rule.
+Every relay_paths item has name, members, min_score, max_round_span, min_distinct_pieces, and edge_label_prefix.
+Evaluate scored member turns in the exact order listed in members after dropping members that were not scored. Do not reorder relay members by turn input order or by round.
+If none are scored, the item has no effect. Otherwise at least min_score members must be scored.
+The scored member rounds must have max(round)-min(round) at most max_round_span unless every selected piece for those scored members contains relay-wide:<name>.
+The scored members must use at least min_distinct_pieces distinct piece ids.
+For every adjacent scored pair in this filtered member-order path, at least one of the two selected pieces must contain <edge_label_prefix>:<leftTurnId>:<rightTurnId>.
+If the adjacent pair has the same subject, both selected pieces must also contain relay-subject:<name>:<subject>.
+Relay edge and same-subject checks are per adjacent pair only; satisfying one pair does not satisfy another pair, and other relay checks still apply.
+
+The match sheet may also contain score_tracks. If score_tracks is missing or empty, there is no score-track rule.
+Every score_tracks item has name, members, start, min_value, max_value, finish_min, and finish_max.
+Evaluate scored member turns by round and then turn input order, after dropping members that were not scored.
+If none are scored, the item has no effect. Start with the integer start value.
+For each selected turn, reset the current value to start before applying the delta if the selected piece contains track-reset:<name>.
+The normal delta is turn priority minus turn heat.
+If the selected piece contains one or more labels track:<name>:<turnId>:<signedInteger>, use the signed integer from the lexicographically smallest complete matching label.
+That override replaces the normal delta for that selected turn only.
+After applying the delta, the current value must be between min_value and max_value inclusive unless the selected piece contains track-guard:<name>.
+That guard waives only this per-step range check, not later steps and not the finish check.
+After all scored members in the track are evaluated, the final current value must be between finish_min and finish_max inclusive.
+
+The match sheet may also contain backup_sets. If backup_sets is missing or empty, there is no backup-set rule.
+Every backup_sets item has name, members, min_backups, min_backup_houses, max_backup_burden, and backup_label.
+Evaluate each scored turn whose id appears in members.
+Its backup options are pieces that satisfy all per-piece playability checks for that same turn, are not the selected piece id for that turn, and contain backup_label.
+Final scoring-row limits do not apply to backup options, and unusable backup options do not create miss reasons.
+Sort backup options by piece id and take the first min_backups options as the checked backup set.
+The checked backup set must exist, must span at least min_backup_houses distinct houses, and the sum of the checked pieces' 1-based style positions from style_order must be at most max_backup_burden.
+Extra backup options after the first min_backups do not affect the rule.
+
+The match sheet may also contain claim_markets. If claim_markets is missing or empty, there is no claim-market rule.
+Every claim_markets item has name, members, min_claims, min_claim_houses, max_claim_burden, and claim_label.
+Reserve pieces are ordinary entries in the top-level pieces array. There is no separate reserve list, and unknown top-level fields do not create reserve candidates.
+Evaluate scored member turns in turn input order after dropping members that were not scored. If none are scored, the item has no effect.
+For each scored member in that order, claim exactly one reserve piece from pieces.
+The reserve must satisfy all per-piece playability checks for that same turn, have the claim_label, and have the same subject as the turn.
+It must not be the selected piece for that turn and must not have been claimed earlier by this same claim market.
+Sort available reserves by piece id and claim the first one.
+Final scoring-row limits do not apply to claimed reserve pieces, and unusable reserves do not create miss reasons.
+After all scored members are processed, the number of claimed reserves must be at least min_claims.
+The claimed reserves must span at least min_claim_houses distinct houses, and the sum of their 1-based style positions from style_order must be at most max_claim_burden.
+
+The match sheet may also contain round_ladders. If round_ladders is missing or empty, there is no round-ladder rule.
+Every round_ladders item has name, members, min_score, pattern, max_round_gap, and free_label_prefix.
+Evaluate scored member turns by round and then turn input order after dropping members that were not scored.
+If none are scored, the item has no effect. Otherwise at least min_score members must be scored.
+For every adjacent scored pair in that order, the round difference must be at most max_round_gap unless either selected piece contains ladder-wide:<name>.
+Style movement is checked on adjacent pairs using 1-based style positions from style_order.
+Pattern "up-down" links the first adjacent pair to move to a strictly higher style position, the second to move strictly lower, then alternate.
+Pattern "down-up" starts with a strictly lower move and then alternates.
+If a pair does not satisfy the required movement, both selected pieces must contain <free_label_prefix>:<leftTurnId>:<rightTurnId>.
+This waiver is per adjacent pair only.
+
+Line leveling
+
+Compare complete scoring rows in this order:
+
+1. Highest scored priority sum.
+2. Lowest scored heat sum.
+3. Lowest sum of 1-based style positions from style_order.
+4. Fewest distinct piece ids used.
+5. Lexicographically smallest sorted turn_id=piece_id list joined by |.
+
+Missed turns
+
+Use turn input order for scored and missed arrays.
+A missed turn with at least one playable option but not selected by the best complete scoring row has reasons ["not_selected"].
+If no playable option exists, union additive failures from same-subject pieces using the playability reason order.
+If there are no same-subject pieces, use ["no_subject_piece"].
+
+Scorecard
+
+The scorecard object has exactly scored, missed, and summary.
+scored and missed are always arrays, including when empty. Do not serialize an empty scored or missed array as null.
+Each scored item has turn_id, piece_id, house, space, priority, and heat.
+Each missed item has turn_id and reasons, where reasons is also always an array.
+summary has scored_count, priority, heat, style_burden, and distinct_pieces as integers.
+Do not print table notes into the scorecard.

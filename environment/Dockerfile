@@ -1,14 +1,25 @@
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
-
-ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends asciinema r-base-core r-cran-nnet tmux util-linux \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY requirements.lock /tmp/requirements.lock
-RUN pip install --no-cache-dir --require-hashes --no-deps -r /tmp/requirements.lock
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
 
 WORKDIR /app
-COPY data/ /app/data/
-COPY docs/ /app/docs/
+
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        asciinema \
+        python3 \
+        python3-pip \
+        python3-venv \
+        tmux \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN ln -s /usr/local/go/bin/go /usr/local/bin/go \
+    && ln -s /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+
+COPY requirements.lock /tmp/requirements.lock
+RUN python3 -m venv /opt/verifier-venv \
+    && /opt/verifier-venv/bin/pip install --no-cache-dir --require-hashes -r /tmp/requirements.lock
+
+COPY task_file/ /app/task_file/
+
+RUN mkdir -p /app/bin /app/out /app/work

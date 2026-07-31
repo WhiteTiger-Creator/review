@@ -1,0 +1,76 @@
+{
+  "playable_houses": ["house-alpha", "house-beta"],
+  "style_order": ["spark", "hinge", "tower"],
+  "clubs": [
+    {"id": "club-a", "house": "house-alpha", "disabled": false, "allowed_styles": ["spark", "hinge"], "max_heat": 8},
+    {"id": "club-b", "house": "house-beta", "disabled": false, "allowed_styles": ["hinge", "tower"], "max_heat": 7},
+    {"id": "club-c", "house": "house-gamma", "disabled": true, "allowed_styles": ["spark"], "max_heat": 9}
+  ],
+  "limits": {
+    "per_house": {"house-alpha": 3, "house-beta": 2},
+    "per_space": {"vault": 2, "ops": 2, "lab": 1},
+    "per_subject": {"mira": 2, "niko": 2, "orla": 1, "pax": 1},
+    "per_subject_house": {
+      "mira": {"house-alpha": 3, "house-beta": 1, "house-gamma": 0},
+      "niko": {"house-alpha": 1, "house-beta": 3, "house-gamma": 0},
+      "orla": {"house-alpha": 0, "house-beta": 0, "house-gamma": 1},
+      "pax": {"house-alpha": 1, "house-beta": 1, "house-gamma": 0}
+    },
+    "per_subject_style": {
+      "mira": {"spark": 3, "hinge": 2, "tower": 0},
+      "niko": {"spark": 0, "hinge": 3, "tower": 2},
+      "orla": {"spark": 1, "hinge": 0, "tower": 0},
+      "pax": {"spark": 1, "hinge": 1, "tower": 0}
+    },
+    "per_house_space": {
+      "house-alpha": {"vault": 2, "ops": 1, "lab": 0},
+      "house-beta": {"vault": 1, "ops": 1, "lab": 1}
+    },
+    "per_house_style": {
+      "house-alpha": {"spark": 2, "hinge": 1, "tower": 0},
+      "house-beta": {"spark": 0, "hinge": 1, "tower": 1}
+    },
+    "per_round": {"1": 2, "2": 1, "3": 1, "4": 2, "5": 1},
+    "subject_round_gap": {"mira": 1, "niko": 1, "orla": 0, "pax": 0},
+    "per_badge": {"door": 2, "crest": 2, "rune": 2, "anvil": 1, "banner": 2},
+    "allowed_transitions": {"vault": ["ops", "vault"], "ops": ["vault", "lab"], "lab": ["ops"]},
+    "allowed_house_handoffs": {"mira": ["house-alpha->house-alpha"], "niko": ["house-beta->house-beta"], "orla": [], "pax": []},
+    "house_heat_budget": {"house-alpha": 12, "house-beta": 10, "house-gamma": 2},
+    "stance_space_gap": {
+      "forge": {"vault": 0, "ops": 0, "lab": 0},
+      "scout": {"vault": 0, "ops": 0, "lab": 0},
+      "captain": {"vault": 0, "ops": 0, "lab": 0}
+    },
+    "split_badge": [],
+    "family_cap": {},
+    "club_round_gap": {},
+    "blocked_house_pairs": [],
+    "round_heat_budget": {"1": 20, "2": 20, "3": 20, "4": 20, "5": 20},
+    "mutex_labels": []
+  },
+  "exclusions": [
+    {"left": "turn-01", "right": "turn-07", "unless_label": "dual"},
+    {"left": "turn-03", "right": "turn-04", "unless_label": "banner"}
+  ],
+  "cohorts": [
+    {"members": ["turn-01", "turn-02", "turn-07"], "min_score": 2, "max_score": 2, "min_houses": 1, "min_styles": 1, "max_heat": 20},
+    {"members": ["turn-03", "turn-04", "turn-06"], "min_score": 2, "max_score": 2, "min_houses": 2, "min_styles": 2, "max_heat": 12}
+  ],
+  "pieces": [
+    {"id": "tok-a1", "subject": "mira", "club": "club-a", "style": "spark", "start_tick": 80, "end_tick": 240, "spent_tick": null, "spaces": ["vault", "ops"], "stances": ["captain", "forge"], "level": 4, "pair": "pad-17", "remaining": 2, "booster": true, "labels": ["door", "crest", "rune", "rapid"], "cooldown": 1},
+    {"id": "tok-a2", "subject": "mira", "club": "club-a", "style": "hinge", "start_tick": 70, "end_tick": 180, "spent_tick": 175, "spaces": ["vault"], "stances": ["forge"], "level": 3, "pair": "pad-17", "remaining": 1, "booster": false, "labels": ["door"], "cooldown": 0},
+    {"id": "tok-b1", "subject": "niko", "club": "club-b", "style": "hinge", "start_tick": 100, "end_tick": 210, "spent_tick": null, "spaces": ["ops", "lab"], "stances": ["forge", "scout"], "level": 2, "pair": "pad-22", "remaining": 2, "booster": false, "labels": ["rune", "anvil"], "cooldown": 2},
+    {"id": "tok-b2", "subject": "niko", "club": "club-b", "style": "tower", "start_tick": 60, "end_tick": 260, "spent_tick": null, "spaces": ["vault", "ops"], "stances": ["scout"], "level": 4, "pair": "pad-22", "remaining": 1, "booster": true, "labels": ["crest", "rune", "banner"], "cooldown": 0},
+    {"id": "tok-c1", "subject": "orla", "club": "club-c", "style": "spark", "start_tick": 90, "end_tick": 220, "spent_tick": null, "spaces": ["lab"], "stances": ["captain"], "level": 5, "pair": "pad-31", "remaining": 1, "booster": true, "labels": ["anvil", "banner"], "cooldown": 0},
+    {"id": "tok-a3", "subject": "pax", "club": "club-a", "style": "spark", "start_tick": 120, "end_tick": 230, "spent_tick": null, "spaces": ["vault"], "stances": ["captain"], "level": 5, "pair": "pad-44", "remaining": 1, "booster": true, "labels": ["crest", "banner"], "cooldown": 0}
+  ],
+  "turns": [
+    {"id": "turn-01", "subject": "mira", "space": "vault", "stance": "forge", "at": 130, "level": 3, "pair": "pad-17", "booster_required": false, "priority": 9, "heat": 8, "badge": ["door"], "round": 1, "links": [], "link_label": ""},
+    {"id": "turn-02", "subject": "mira", "space": "ops", "stance": "captain", "at": 150, "level": 4, "pair": "pad-17", "booster_required": true, "priority": 7, "heat": 3, "badge": ["rune"], "round": 2, "links": ["turn-01"], "link_label": "override"},
+    {"id": "turn-03", "subject": "niko", "space": "lab", "stance": "forge", "at": 160, "level": 2, "pair": "pad-22", "booster_required": false, "priority": 6, "heat": 2, "badge": ["anvil"], "round": 1, "links": [], "link_label": ""},
+    {"id": "turn-04", "subject": "niko", "space": "vault", "stance": "scout", "at": 170, "level": 4, "pair": "pad-22", "booster_required": true, "priority": 8, "heat": 6, "badge": ["crest", "banner"], "round": 3, "links": ["turn-03"], "link_label": "banner"},
+    {"id": "turn-05", "subject": "orla", "space": "lab", "stance": "captain", "at": 175, "level": 5, "pair": "pad-31", "booster_required": true, "priority": 5, "heat": 1, "badge": ["anvil", "banner"], "round": 4, "links": [], "link_label": ""},
+    {"id": "turn-06", "subject": "pax", "space": "vault", "stance": "captain", "at": 200, "level": 5, "pair": "pad-44", "booster_required": true, "priority": 10, "heat": 4, "badge": ["crest"], "round": 5, "links": ["turn-04"], "link_label": "banner"},
+    {"id": "turn-07", "subject": "mira", "space": "vault", "stance": "captain", "at": 190, "level": 4, "pair": "pad-17", "booster_required": true, "priority": 4, "heat": 1, "badge": ["crest"], "round": 4, "links": ["turn-02"], "link_label": "dual"}
+  ]
+}
