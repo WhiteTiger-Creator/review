@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source /app/tools/runtime-lib
+
+[ "$#" -eq 1 ] || { echo "usage: rebuild-runtime ABSOLUTE_ROOT" >&2; exit 64; }
+root=$(validate_root_arg "$1")
+parent=$(dirname "$root")
+mkdir -p "$parent"
+mkdir -p "$root/opt/ledger/releases" "$root/etc/ld.so.conf.d" \
+    "$root/lib/x86_64-linux-gnu" "$root/lib64" "$root/var/lock" "$root/var/lib/ledger"
+exec 9>"$root/var/lock/ledger-runtime.lock"
+flock -x 9
+recover_pending "$root"
+find "$root/opt/ledger/releases" -maxdepth 1 -type d \
+    \( -name '.candidate.*' -o -name '.rejected.*' \) -exec rm -rf -- {} +
+
+source /app/config/release.conf
+[[ "$LEDGER_RELEASE_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "invalid release name" >&2; exit 65; }
+[ "$LEDGER_ABI" = LEDGER_2.1 ] || { echo "invalid release ABI" >&2; exit 65; }
+
+candidate="$root/opt/ledger/releases/.candidate.$$"
+candidate_rel="/opt/ledger/releases/.candidate.$$"
+cleanup() { rm -rf -- "$candidate"; }
+trap cleanup EXIT
+install -d "$candidate/bin" "$candidate/lib/glibc-hwcaps/x86-64-v3" "$candidate/requests"
+
+make -C /app clean all
+install -m 0755 /app/build/ledger-gateway "$candidate/bin/ledger-gateway"
+install -m 0644 /app/build/libledger_rules.so.1.0 /app/build/libledger_policy.so.2.0 \
+    /app/build/libledger_audit.so.1.0 "$candidate/lib/"
+ln -s libledger_rules.so.1.0 "$candidate/lib/libledger_rules.so.1"
+ln -s libledger_policy.so.2.0 "$candidate/lib/libledger_policy.so.2"
+ln -s libledger_audit.so.1.0 "$candidate/lib/libledger_audit.so.1"
+
+v3="$candidate/lib/glibc-hwcaps/x86-64-v3"
+install -m 0644 /app/build/libledger_rules.so.1.1 /app/build/libledger_policy.so.2.1 \
+    /app/build/libledger_audit.so.1.1 "$v3/"
+ln -s libledger_rules.so.1.1 "$v3/libledger_rules.so.1"
+ln -s libledger_policy.so.2.1 "$v3/libledger_policy.so.2"
+ln -s libledger_audit.so.1.1 "$v3/libledger_audit.so.1"
+install -m 0644 /app/requests/*.req "$candidate/requests/"
+
+(
+    cd "$candidate"
+    find bin lib requests -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > release.manifest
+)
+release_id=$(sha256sum "$candidate/release.manifest" | awk '{print $1}')
+printf '%s\n' "$release_id" > "$candidate/release.id"
+{
+    printf 'abi %s\n' "$LEDGER_ABI"
+    while IFS= read -r path; do
+        if readelf -h "$candidate/$path" >/dev/null 2>&1; then
+            build_id=$(readelf -n "$candidate/$path" | awk '/Build ID:/ {print $3; exit}')
+            [ ${#build_id} -eq 40 ] || { echo "missing build id: $path" >&2; exit 67; }
+            printf 'elf %s %s\n' "$path" "$build_id"
+        fi
+    done < <(cd "$candidate" && find bin lib -type f -printf '%p\n' | LC_ALL=C sort)
+} > "$candidate/release.provenance"
+provenance_hash=$(sha256sum "$candidate/release.provenance" | awk '{print $1}')
+printf 'release_id=%s\nabi=%s\nprovenance_sha256=%s\n' \
+    "$release_id" "$LEDGER_ABI" "$provenance_hash" > "$candidate/release.attestation"
+openssl pkeyutl -sign -inkey /app/packaging/release-signing.pem -rawin \
+    -in "$candidate/release.attestation" -out "$candidate/release.signature"
+chmod 0444 "$candidate"/release.{manifest,id,provenance,attestation,signature}
+
+loader_host=$(readlink -f /lib64/ld-linux-x86-64.so.2)
+libc_host=$(readlink -f /lib/x86_64-linux-gnu/libc.so.6)
+install -m 0755 "$loader_host" "$root/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"
+ln -sfn ../lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 "$root/lib64/ld-linux-x86-64.so.2"
+install -m 0755 "$libc_host" "$root/lib/x86_64-linux-gnu/libc.so.6"
+printf 'include /etc/ld.so.conf.d/*.conf\n' > "$root/etc/ld.so.conf"
+printf '/opt/ledger/current/lib\n' > "$root/etc/ld.so.conf.d/ledger-gateway.conf"
+
+verify_release "$root" "$candidate"
+rehearse_release "$root" "$candidate_rel"
+if [ "${LEDGER_REBUILD_FAIL:-}" = before-promote ]; then
+    echo "fault rehearsal stopped before promotion" >&2
+    exit 75
+fi
+
+slot="${LEDGER_RELEASE_NAME}-${release_id}"
+slot_rel="releases/$slot"
+final="$root/opt/ledger/releases/$slot"
+current_link="$root/opt/ledger/current"
+previous_link="$root/opt/ledger/previous"
+old_target=""
+old_valid=false
+if [ -L "$current_link" ]; then
+    old_target=$(readlink "$current_link")
+    if link_target_is_release "$old_target" && is_valid_release "$root" "$root/opt/ledger/$old_target"; then
+        old_valid=true
+    fi
+fi
+
+if [ -e "$final" ]; then
+    if is_valid_release "$root" "$final"; then
+        rm -rf -- "$candidate"
+    else
+        mv "$final" "$root/opt/ledger/releases/.rejected.$$"
+        mv "$candidate" "$final"
+    fi
+else
+    mv "$candidate" "$final"
+fi
+trap - EXIT
+
+if [ "$old_target" = "$slot_rel" ] && $old_valid; then
+    ldconfig -r "$root"
+else
+    pending="$root/var/lib/ledger/activation.pending"
+    printf 'old=%s\nnew=%s\n' "$old_target" "$slot_rel" > "${pending}.$$"
+    mv -Tf "${pending}.$$" "$pending"
+    atomic_link "$slot_rel" "$current_link" next
+    if [ "${LEDGER_REBUILD_FAIL:-}" = after-current ]; then
+        echo "fault rehearsal stopped after current changed" >&2
+        exit 76
+    fi
+    if $old_valid && [ "$old_target" != "$slot_rel" ]; then
+        atomic_link "$old_target" "$previous_link" prior
+    else
+        rm -f "$previous_link"
+    fi
+    rm -f "$pending"
+    ldconfig -r "$root"
+fi
+
+current=$(readlink "$current_link")
+previous=""
+[ -L "$previous_link" ] && previous=$(readlink "$previous_link")
+for release in "$root"/opt/ledger/releases/*; do
+    [ -d "$release" ] || continue
+    rel="releases/$(basename "$release")"
+    if [ "$rel" != "$current" ] && [ "$rel" != "$previous" ]; then rm -rf -- "$release"; fi
+done
+find "$root/opt/ledger/releases" -maxdepth 1 -type d \
+    \( -name '.candidate.*' -o -name '.rejected.*' \) -exec rm -rf -- {} +

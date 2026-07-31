@@ -1,0 +1,4 @@
+LEDGER_RULES_2.0 {
+    global: ledger_rule_profile; ledger_rule_generation;
+    local: *;
+};

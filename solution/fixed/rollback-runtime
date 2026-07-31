@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source /app/tools/runtime-lib
+
+[ "$#" -eq 1 ] || { echo "usage: rollback-runtime ABSOLUTE_ROOT" >&2; exit 64; }
+root=$(validate_root_arg "$1")
+[ -d "$root/var/lock" ] || { echo "no runtime state" >&2; exit 69; }
+exec 9>"$root/var/lock/ledger-runtime.lock"
+flock -x 9
+recover_pending "$root"
+
+current="$root/opt/ledger/current"
+previous="$root/opt/ledger/previous"
+[ -L "$current" ] && [ -L "$previous" ] || { echo "no previous release" >&2; exit 69; }
+current_target=$(readlink "$current")
+previous_target=$(readlink "$previous")
+link_target_is_release "$current_target" && link_target_is_release "$previous_target" \
+    || { echo "integrity: unsafe rollback link" >&2; exit 74; }
+verify_release "$root" "$root/opt/ledger/$previous_target"
+current_valid=false
+if is_valid_release "$root" "$root/opt/ledger/$current_target"; then current_valid=true; fi
+
+pending="$root/var/lib/ledger/activation.pending"
+printf 'old=%s\nnew=%s\n' "$current_target" "$previous_target" > "${pending}.$$"
+mv -Tf "${pending}.$$" "$pending"
+atomic_link "$previous_target" "$current" rollback
+if $current_valid; then
+    atomic_link "$current_target" "$previous" rollback
+else
+    rm -f "$previous"
+fi
+rm -f "$pending"
+if ! ldconfig -r "$root" || ! rehearse_release "$root" /opt/ledger/current; then
+    atomic_link "$current_target" "$current" restore
+    atomic_link "$previous_target" "$previous" restore
+    ldconfig -r "$root" || true
+    exit 70
+fi

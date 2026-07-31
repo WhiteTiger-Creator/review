@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source /app/tools/runtime-lib
+
+[ "$#" -eq 3 ] || { echo "usage: run-runtime ROOT baseline|v3 REQUEST" >&2; exit 64; }
+root=$(validate_root_arg "$1")
+mode=$2
+request=$3
+case "$request" in settlement|refund|reconcile|drain) ;;
+    *) echo "unknown request: $request" >&2; exit 65;; esac
+case "$mode" in baseline|v3) ;;
+    *) echo "unknown mode: $mode" >&2; exit 66;; esac
+[ -d "$root/var/lock" ] || { echo "integrity: runtime lock directory missing" >&2; exit 74; }
+exec 9>"$root/var/lock/ledger-runtime.lock"
+flock -s 9
+
+current="$root/opt/ledger/current"
+[ -L "$current" ] || { echo "integrity: active release link missing" >&2; exit 74; }
+target=$(readlink "$current")
+link_target_is_release "$target" || { echo "integrity: unsafe active release link" >&2; exit 74; }
+release=$(readlink -f "$current")
+verify_release "$root" "$release"
+
+loader=/lib64/ld-linux-x86-64.so.2
+app=/opt/ledger/current/bin/ledger-gateway
+input="/opt/ledger/current/requests/$request.req"
+if [ "$mode" = baseline ]; then
+    if [ -f "$root/etc/ld.so.cache" ]; then
+        native_env chroot "$root" "$loader" --glibc-hwcaps-mask "" "$app" "$input"
+    else
+        native_env chroot "$root" "$loader" --inhibit-cache \
+            --library-path /opt/ledger/current/lib --glibc-hwcaps-mask "" "$app" "$input"
+    fi
+else
+    native_env chroot "$root" "$loader" --inhibit-cache \
+        --library-path /opt/ledger/current/lib --glibc-hwcaps-prepend x86-64-v3 "$app" "$input"
+fi

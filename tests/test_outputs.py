@@ -1,590 +1,573 @@
-"""Verifier for YINSH championship report output."""
-
 from __future__ import annotations
 
 import hashlib
-import json
-import math
+import os
+import shutil
+import stat
 import subprocess
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
-SCENARIOS = Path("/app/scenarios")
-OUTPUT = Path("/app/output/championship_report.json")
-CONTRACT = Path("/app/docs/championship-rules.md")
-PROFILE = Path("/app/config/profiles/champ-v3/rules.toml")
-PROFILE_NAME = Path("/app/config/profile.name")
-BINARY = Path("/app/bin/yinsh-ring")
+import pytest
 
-RUN_ID = "yinsh-champ-v1"
-CORRECT = {
-    "run_id": RUN_ID,
-    "row_length": 5,
-    "rings_to_win": 3,
-    "rings_start": 5,
-    "flip_enabled": 1,
-    "leave_marker": 1,
-    "win_points": 3,
-    "draw_points": 1,
+APP = Path("/app")
+REBUILD = APP / "tools" / "rebuild-runtime"
+RUN = APP / "tools" / "run-runtime"
+ROLLBACK = APP / "tools" / "rollback-runtime"
+ROUTES = ("settlement", "refund", "reconcile", "drain")
+DECISIONS = {
+    "settlement": "accept",
+    "refund": "review",
+    "reconcile": "hold",
+    "drain": "quiesce",
 }
-CORRECT_SEAL = "063467fd701342809041f9cbb843d8e83772f6076602cd1c772257a1cbd9095d"
-
-SCENARIO_SHA256 = {
-    "m01.json": "116e045f409e580f6362eee6bcb5d217d836066c69c42bf0c3647652dcfc2078",
-    "m02.json": "0a2425a211df31f54e83211adb79ff3e58fed63adcc44d6df11bae44f4bf6bc2",
-    "m03.json": "82efa601cbd23338e7aa2bb04b0b69a21f7462f52dc63f1c502789d6956799e9",
-    "m04.json": "a4b026c297536bb4c4e195eaf3874878ad18e89069e21b261aafb66177e6bb04",
-    "m05.json": "69cc53e64c70aeeffd0719a8f411e7c968ca9cdc0fb39eb261d7da2c30a61b92",
-    "m06.json": "1a7545fa98fd14b9c997046bfc560e62ea977a0d1c1f7334e750b80a094a158b",
-    "m07.json": "299f6033ee5a011f9b152a63429f8657801b342aca486e7040f5537eb1c09994",
-    "m08.json": "16523f7c1eb11659f3ba0ef825b4767ea3db55cbe788a46bc8a4f96205b30715",
-    "m09.json": "41492608060788181e100e8c8b9fa91df8a0489c98dcdf3aea47091ae6f2aeca",
-    "m10.json": "c69f5b9a56477e4af0adb2067590297f4841c937a7a2fc43d57bd7c9d57519d4",
-    "m11.json": "191996bb6be00e05da74d9545ad8112f5b19893ab57610be31b9a6597cd516b7",
-    "m12.json": "56f290cd8bec1bdc27bede0024fb374a17d2f310e7190c96578d4496583746c2",
-}
-LEGACY_OVERLAY = Path("/app/config/profiles.legacy/champ-v3/rules.toml")
-FLOOR_BASELINE = Path("/app/config/baselines/champ-v3-floor.toml")
-HEAT_ENV = Path("/app/config/baselines/heat.env")
-RUNTIME_OVERLAY = Path("/app/config/runtime/champ-v3.floor.toml")
-GOV_OVERLAY = Path("/app/config/runtime/heat-v2.gov.toml")
-CONTRACT_PATH = Path("/app/docs/championship-rules.md")
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def run(
+    *args: str, check: bool = True, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    merged = os.environ.copy()
+    if env:
+        merged.update(env)
+    return subprocess.run(
+        args, text=True, capture_output=True, check=check, env=merged, timeout=45
+    )
 
 
-def _half_away_round(x: float) -> int:
-    if x >= 0:
-        return math.floor(x + 0.5)
-    return math.ceil(x - 0.5)
+def finish(process: subprocess.Popen[str], timeout: float = 30) -> tuple[str, str]:
+    try:
+        return process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        stdout, stderr = process.communicate()
+        pytest.fail(
+            f"process exceeded {timeout}s and was killed: stdout={stdout!r} stderr={stderr!r}"
+        )
 
 
-def _config_seal(cfg: dict) -> str:
-    keys = [
-        "run_id",
-        "row_length",
-        "rings_to_win",
-        "rings_start",
-        "flip_enabled",
-        "leave_marker",
-        "win_points",
-        "draw_points",
-    ]
-    payload = "".join(f"{k}={cfg[k]}\n" for k in keys)
-    return hashlib.sha256(payload.encode()).hexdigest()
+@pytest.fixture(scope="session")
+def runtime_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    root = tmp_path_factory.mktemp("runtime-template") / "ledger root"
+    run(str(REBUILD), str(root))
+    return root
 
 
-def _color(side: str) -> int:
-    return 1 if side == "A" else 2
+@pytest.fixture()
+def runtime(tmp_path: Path, runtime_template: Path) -> Path:
+    root = tmp_path / "ledger root"
+    shutil.copytree(runtime_template, root, symlinks=True)
+    return root
 
 
-def _find_row(markers: list[int], side: str, row_len: int, lines: list[list[int]]) -> list[int] | None:
-    want = _color(side)
-    for line in lines:
-        if len(line) < row_len:
-            continue
-        for start in range(len(line) - row_len + 1):
-            window = line[start : start + row_len]
-            if all(markers[i] == want for i in window):
-                return list(window)
-    return None
+def active_release(root: Path) -> Path:
+    link = root / "opt/ledger/current"
+    assert link.is_symlink()
+    return link.resolve(strict=True)
 
 
-def _sim(scenario: dict, cfg: dict) -> dict:
-    markers = list(scenario["markers"])
-    rings_a = list(scenario["rings_a"])
-    rings_b = list(scenario["rings_b"])
-    rem_a = rem_b = 0
-    flips = {"A": 0, "B": 0}
-    rows = {"A": 0, "B": 0}
-    lines = scenario["lines"]
-    for mv in scenario["moves"]:
-        side = mv.get("side") or "A"
-        frm = mv["from"]
-        to = mv["to"]
-        path = mv.get("path") or []
-        own = rings_a if side == "A" else rings_b
-        if frm not in own:
-            continue
-        if to in rings_a or to in rings_b:
-            continue
-        if cfg["leave_marker"] == 1:
-            markers[frm] = _color(side)
-        own.remove(frm)
-        own.append(to)
-        if side == "A":
-            rings_a = own
-        else:
-            rings_b = own
-        if cfg["flip_enabled"] == 1:
-            for p in path:
-                if markers[p] == 1:
-                    markers[p] = 2
-                    flips[side] += 1
-                elif markers[p] == 2:
-                    markers[p] = 1
-                    flips[side] += 1
-        window = _find_row(markers, side, cfg["row_length"], lines)
-        if window:
-            rows[side] += 1
-            for i in window:
-                markers[i] = 0
-            remove_at = mv.get("remove_ring", -1)
-            if remove_at in own:
-                own.remove(remove_at)
-            elif own:
-                own.sort()
-                own.pop(0)
-            if side == "A":
-                rings_a = own
-                rem_a += 1
-            else:
-                rings_b = own
-                rem_b += 1
-            if rem_a >= cfg["rings_to_win"] or rem_b >= cfg["rings_to_win"]:
-                break
+@contextmanager
+def changed_refund_source():
+    request = APP / "requests/refund.req"
+    original = request.read_bytes()
+    request.write_bytes(b"refund\r\n")
+    try:
+        yield
+    finally:
+        request.write_bytes(original)
+
+
+def parse_fields(output: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for item in output.strip().split():
+        key, value = item.split("=", 1)
+        fields[key] = value
+    return fields
+
+
+def expected(mode: str, route: str) -> dict[str, str]:
+    optimized = mode == "v3"
+    decision = DECISIONS[route]
     return {
-        "rings_removed_a": rem_a,
-        "rings_removed_b": rem_b,
-        "flips_a": flips["A"],
-        "flips_b": flips["B"],
-        "rows_cleared_a": rows["A"],
-        "rows_cleared_b": rows["B"],
-        "rings_left_a": len(rings_a),
-        "rings_left_b": len(rings_b),
+        "request": route,
+        "plugin": "x86-64-v3" if optimized else "baseline",
+        "rules": "vector" if optimized else "stable",
+        "audit": "simd-journal" if optimized else "journal",
+        "generation": "3" if optimized else "2",
+        "abi": "LEDGER_2.1",
+        "decision": f"vector-{decision}" if optimized else decision,
     }
 
 
-def _decide(res: dict, cfg: dict) -> tuple[str, str]:
-    ra, rb = res["rings_removed_a"], res["rings_removed_b"]
-    if ra >= cfg["rings_to_win"] or rb >= cfg["rings_to_win"]:
-        if ra >= cfg["rings_to_win"] and rb >= cfg["rings_to_win"]:
-            if ra > rb:
-                return "A", "ring_target"
-            if rb > ra:
-                return "B", "ring_target"
-            return "draw", "mutual_draw"
-        if ra >= cfg["rings_to_win"]:
-            return "A", "ring_target"
-        return "B", "ring_target"
-    if ra != rb:
-        return ("A" if ra > rb else "B"), "ring_majority"
-    return "draw", "mutual_draw"
+def run_direct(
+    root: Path, mode: str, route: str, *, check: bool = True
+) -> subprocess.CompletedProcess[str]:
+    loader = "/lib64/ld-linux-x86-64.so.2"
+    app = "/opt/ledger/current/bin/ledger-gateway"
+    request = f"/opt/ledger/current/requests/{route}.req"
+    if mode == "baseline":
+        args = ["chroot", str(root), loader, "--glibc-hwcaps-mask", "", app, request]
+    else:
+        args = [
+            "chroot",
+            str(root),
+            loader,
+            "--inhibit-cache",
+            "--library-path",
+            "/opt/ledger/current/lib",
+            "--glibc-hwcaps-prepend",
+            "x86-64-v3",
+            app,
+            request,
+        ]
+    return run(*args, check=check, env={"LD_LIBRARY_PATH": "/poison"})
 
 
-def _score(reason: str) -> tuple[str, int]:
-    if reason == "ring_target":
-        return "critical", 94
-    if reason == "ring_majority":
-        return "high", 68
-    return "low", 18
-
-
-def _severity_rank(s: str) -> int:
-    return {"none": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}.get(s, 0)
-
-
-def _load_scenarios() -> list[dict]:
-    out = []
-    for path in sorted(SCENARIOS.glob("*.json")):
-        out.append(json.loads(path.read_text()))
-    out.sort(key=lambda s: s["match_id"])
-    return out
-
-
-def _expected_report() -> dict:
-    cfg = CORRECT
-    scenarios = _load_scenarios()
-    matches = []
-    for sc in scenarios:
-        res = _sim(sc, cfg)
-        winner, reason = _decide(res, cfg)
-        if winner == "A":
-            pa, pb = cfg["win_points"], 0
-        elif winner == "B":
-            pa, pb = 0, cfg["win_points"]
-        else:
-            pa = pb = cfg["draw_points"]
-        sev, sc_score = _score(reason)
-        matches.append(
-            {
-                "match_id": sc["match_id"],
-                "player_a": sc["player_a"],
-                "player_b": sc["player_b"],
-                "winner": winner,
-                "reason": reason,
-                "rings_removed_a": res["rings_removed_a"],
-                "rings_removed_b": res["rings_removed_b"],
-                "flips_a": res["flips_a"],
-                "flips_b": res["flips_b"],
-                "rows_cleared_a": res["rows_cleared_a"],
-                "rows_cleared_b": res["rows_cleared_b"],
-                "rings_left_a": res["rings_left_a"],
-                "rings_left_b": res["rings_left_b"],
-                "points_a": pa,
-                "points_b": pb,
-                "severity": sev,
-                "priority_score": sc_score,
-                "related_ids": [],
-            }
-        )
-    by_player: dict[str, list[str]] = {}
-    for m in matches:
-        by_player.setdefault(m["player_a"], []).append(m["match_id"])
-        by_player.setdefault(m["player_b"], []).append(m["match_id"])
-    for m in matches:
-        rel = set()
-        for pid in (m["player_a"], m["player_b"]):
-            for mid in by_player[pid]:
-                if mid != m["match_id"]:
-                    rel.add(mid)
-        m["related_ids"] = sorted(rel)
-
-    tab: dict[str, dict] = {}
-    for m in matches:
-        for pid, pts, rem_own, rem_opp in (
-            (m["player_a"], m["points_a"], m["rings_removed_a"], m["rings_removed_b"]),
-            (m["player_b"], m["points_b"], m["rings_removed_b"], m["rings_removed_a"]),
-        ):
-            row = tab.setdefault(
-                pid, {"points": 0, "wins": 0, "draws": 0, "losses": 0, "ring_diff": 0}
+def test_route_matrix_selects_one_matching_native_stack(runtime: Path) -> None:
+    for mode in ("baseline", "v3"):
+        for route in ROUTES:
+            result = run(
+                str(RUN),
+                str(runtime),
+                mode,
+                route,
+                env={"LD_LIBRARY_PATH": "/does/not/exist"},
             )
-            row["points"] += pts
-            row["ring_diff"] += rem_own - rem_opp
-            if m["winner"] == "draw":
-                row["draws"] += 1
-            elif (pid == m["player_a"] and m["winner"] == "A") or (
-                pid == m["player_b"] and m["winner"] == "B"
-            ):
-                row["wins"] += 1
-            else:
-                row["losses"] += 1
+            assert parse_fields(result.stdout) == expected(mode, route)
 
-    ids = sorted(
-        tab.keys(),
-        key=lambda pid: (-tab[pid]["points"], -tab[pid]["ring_diff"], pid),
+
+def test_direct_loader_matches_wrapper_for_both_generations(runtime: Path) -> None:
+    for mode in ("baseline", "v3"):
+        assert parse_fields(run_direct(runtime, mode, "refund").stdout) == expected(
+            mode, "refund"
+        )
+
+
+def test_cache_absence_and_regeneration_do_not_change_selection(runtime: Path) -> None:
+    cache = runtime / "etc/ld.so.cache"
+    cache.unlink()
+    for mode in ("baseline", "v3"):
+        assert parse_fields(
+            run(str(RUN), str(runtime), mode, "settlement").stdout
+        ) == expected(mode, "settlement")
+    run("ldconfig", "-r", str(runtime))
+    for mode in ("baseline", "v3"):
+        assert parse_fields(
+            run(str(RUN), str(runtime), mode, "reconcile").stdout
+        ) == expected(mode, "reconcile")
+    assert (
+        runtime / "etc/ld.so.conf.d/ledger-gateway.conf"
+    ).read_text().strip() == "/opt/ledger/current/lib"
+
+
+def test_release_manifest_and_identity_cover_exact_payload(runtime: Path) -> None:
+    release = active_release(runtime)
+    manifest = release / "release.manifest"
+    release_id = (release / "release.id").read_text().strip()
+    assert release_id == hashlib.sha256(manifest.read_bytes()).hexdigest()
+    rows = [line.split(maxsplit=1) for line in manifest.read_text().splitlines()]
+    paths = [row[1] for row in rows]
+    assert paths == sorted(paths)
+    actual = sorted(
+        str(path.relative_to(release))
+        for top in ("bin", "lib", "requests")
+        for path in (release / top).rglob("*")
+        if path.is_file() and not path.is_symlink()
     )
-    standings = []
-    for rank, pid in enumerate(ids, start=1):
-        a = tab[pid]
-        standings.append(
-            {
-                "player_id": pid,
-                "points": a["points"],
-                "wins": a["wins"],
-                "draws": a["draws"],
-                "losses": a["losses"],
-                "ring_diff": a["ring_diff"],
-                "rank": rank,
-            }
+    assert paths == actual
+    assert all(
+        hashlib.sha256((release / path).read_bytes()).hexdigest() == digest
+        for digest, path in rows
+    )
+    assert release.name == f"ledger-gateway-2026.07-{release_id}"
+    assert not (runtime / "opt/ledger/previous").exists()
+
+
+def provenance_records(runtime: Path) -> tuple[Path, list[str], list[list[str]]]:
+    release = active_release(runtime)
+    provenance = release / "release.provenance"
+    records = provenance.read_text().splitlines()
+    return release, records, [line.split() for line in records[1:]]
+
+
+def test_provenance_names_abi_and_every_native_build(runtime: Path) -> None:
+    release, records, elf_records = provenance_records(runtime)
+    assert records[0] == "abi LEDGER_2.1"
+    native_files = sorted(
+        str(path.relative_to(release))
+        for top in ("bin", "lib")
+        for path in (release / top).rglob("*")
+        if path.is_file()
+        and not path.is_symlink()
+        and path.read_bytes()[:4] == b"\x7fELF"
+    )
+    assert [row[1] for row in elf_records] == native_files
+    assert len(elf_records) == 7
+
+
+def test_provenance_build_ids_match_the_signed_elf_files(runtime: Path) -> None:
+    release, _records, elf_records = provenance_records(runtime)
+    for marker, path, build_id in elf_records:
+        assert marker == "elf"
+        assert len(build_id) >= 32 and set(build_id) <= set("0123456789abcdef")
+        assert (
+            f"Build ID: {build_id}" in run("readelf", "-n", str(release / path)).stdout
         )
 
-    mean = sum(m["priority_score"] for m in matches) / len(matches)
-    agg = min(100, _half_away_round(mean * 1.25))
-    max_sev = "none"
-    dec = drw = 0
-    for m in matches:
-        if _severity_rank(m["severity"]) > _severity_rank(max_sev):
-            max_sev = m["severity"]
-        if m["winner"] == "draw":
-            drw += 1
-        else:
-            dec += 1
 
-    return {
-        "schema_version": "1.0",
-        "run_id": cfg["run_id"],
-        "matches_played": len(matches),
-        "matches": matches,
-        "standings": standings,
-        "summary": {
-            "aggregate_priority": agg,
-            "max_severity": max_sev,
-            "decisive_matches": dec,
-            "draw_matches": drw,
-        },
-    }
-
-
-def _parse_profile(text: str) -> dict:
-    out = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        out[k.strip()] = v.strip().strip('"')
-    return out
+def test_attestation_and_signature_bind_release_abi_and_provenance(
+    runtime: Path,
+) -> None:
+    release = active_release(runtime)
+    provenance = release / "release.provenance"
+    release_id = (release / "release.id").read_text().strip()
+    provenance_hash = hashlib.sha256(provenance.read_bytes()).hexdigest()
+    assert (release / "release.attestation").read_text() == (
+        f"release_id={release_id}\nabi=LEDGER_2.1\nprovenance_sha256={provenance_hash}\n"
+    )
+    verified = run(
+        "openssl",
+        "pkeyutl",
+        "-verify",
+        "-pubin",
+        "-inkey",
+        str(APP / "packaging/release-signing.pub"),
+        "-rawin",
+        "-in",
+        str(release / "release.attestation"),
+        "-sigfile",
+        str(release / "release.signature"),
+    )
+    assert verified.returncode == 0
 
 
-def _run_engine() -> None:
-    subprocess.run(
-        [
-            str(BINARY),
-            "--scenarios",
-            str(SCENARIOS),
-            "--config",
-            "/app/config",
-            "--out",
-            "/app/output",
-        ],
-        check=True,
+@pytest.mark.parametrize("corruption", ["request", "library", "extra"])
+def test_active_release_tampering_fails_closed(runtime: Path, corruption: str) -> None:
+    release = active_release(runtime)
+    if corruption == "request":
+        (release / "requests/refund.req").write_text("settlement\n", encoding="utf-8")
+    elif corruption == "library":
+        with (release / "lib/libledger_rules.so.1.0").open("ab") as handle:
+            handle.write(b"tamper")
+    else:
+        (release / "lib/untracked.so").write_bytes(b"extra")
+    result = run(str(RUN), str(runtime), "baseline", "refund", check=False)
+    assert result.returncode != 0
+    if corruption == "request":
+        diagnostic = result.stderr.lower()
+        assert any(
+            word in diagnostic
+            for word in ("integrity", "checksum", "manifest", "payload", "trust")
+        )
+
+
+def test_recomputed_manifest_without_trusted_signature_is_rejected(
+    runtime: Path,
+) -> None:
+    release = active_release(runtime)
+    request = release / "requests/refund.req"
+    request.write_bytes(b"refund\r\n")
+    manifest = release / "release.manifest"
+    rows = []
+    for line in manifest.read_text().splitlines():
+        digest, path = line.split(maxsplit=1)
+        if path == "requests/refund.req":
+            digest = hashlib.sha256(request.read_bytes()).hexdigest()
+        rows.append(f"{digest}  {path}")
+    manifest.write_text("\n".join(rows) + "\n")
+    forged_id = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    (release / "release.id").write_text(forged_id + "\n")
+    provenance_hash = hashlib.sha256(
+        (release / "release.provenance").read_bytes()
+    ).hexdigest()
+    (release / "release.attestation").write_text(
+        f"release_id={forged_id}\nabi=LEDGER_2.1\nprovenance_sha256={provenance_hash}\n"
+    )
+    result = run(str(RUN), str(runtime), "baseline", "refund", check=False)
+    assert result.returncode != 0
+    assert "signature" in result.stderr.lower()
+
+
+def test_mixed_hwcaps_dependency_generation_is_rejected_natively(runtime: Path) -> None:
+    release = active_release(runtime)
+    audit_link = release / "lib/glibc-hwcaps/x86-64-v3/libledger_audit.so.1"
+    audit_link.unlink()
+    audit_link.symlink_to("../../libledger_audit.so.1.0")
+    result = run_direct(runtime, "v3", "settlement", check=False)
+    assert result.returncode != 0
+    assert "policy load failed" in result.stderr or "mixed generations" in result.stderr
+
+
+def test_failed_candidate_never_changes_active_release(runtime: Path) -> None:
+    before_link = os.readlink(runtime / "opt/ledger/current")
+    before_id = (active_release(runtime) / "release.id").read_text()
+    failed = run(
+        str(REBUILD),
+        str(runtime),
+        check=False,
+        env={"LEDGER_REBUILD_FAIL": "before-promote"},
+    )
+    assert failed.returncode != 0
+    assert os.readlink(runtime / "opt/ledger/current") == before_link
+    assert (active_release(runtime) / "release.id").read_text() == before_id
+    assert parse_fields(
+        run(str(RUN), str(runtime), "baseline", "settlement").stdout
+    ) == expected("baseline", "settlement")
+
+
+def test_next_successful_refresh_removes_abandoned_candidates(runtime: Path) -> None:
+    failed = run(
+        str(REBUILD),
+        str(runtime),
+        check=False,
+        env={"LEDGER_REBUILD_FAIL": "before-promote"},
+    )
+    assert failed.returncode != 0
+    run(str(REBUILD), str(runtime))
+    assert not list((runtime / "opt/ledger/releases").glob(".candidate.*"))
+
+
+def test_refresh_repairs_a_stale_active_tree_in_its_content_slot(runtime: Path) -> None:
+    old_release = active_release(runtime)
+    stale = old_release / "lib/glibc-hwcaps/x86-64-v3/stale-service.so"
+    stale.write_bytes(b"stale")
+    run(str(REBUILD), str(runtime))
+    assert active_release(runtime) == old_release
+    assert not (
+        active_release(runtime) / "lib/glibc-hwcaps/x86-64-v3/stale-service.so"
+    ).exists()
+    assert parse_fields(run(str(RUN), str(runtime), "v3", "refund").stdout) == expected(
+        "v3", "refund"
     )
 
 
-def _load_report() -> dict:
-    return json.loads(OUTPUT.read_text())
+def test_stale_tree_repair_does_not_create_false_rollback_history(
+    runtime: Path,
+) -> None:
+    (
+        active_release(runtime) / "lib/glibc-hwcaps/x86-64-v3/stale-service.so"
+    ).write_bytes(b"stale")
+    run(str(REBUILD), str(runtime))
+    assert not (runtime / "opt/ledger/previous").exists()
 
 
-def test_scenario_fixtures_unchanged():
-    """Scenario fixture bytes must match the pinned SHA-256 digests."""
-    for name, digest in SCENARIO_SHA256.items():
-        assert _sha256(SCENARIOS / name) == digest
-
-
-def test_contract_and_profile_name_present():
-    """Contract file exists and profile.name selects champ-v3."""
-    assert CONTRACT.is_file()
-    assert CONTRACT_PATH.is_file()
-    assert "championship_mode" in CONTRACT_PATH.read_text()
-    assert PROFILE_NAME.read_text().strip() == "champ-v3"
-
-
-def test_sealed_profile_floors_and_seal():
-    """Sealed profile carries championship floors with a matching config_seal."""
-    text = PROFILE.read_text()
-    for line in (
-        'run_id = "yinsh-champ-v1"',
-        "row_length = 5",
-        "rings_to_win = 3",
-        "rings_start = 5",
-        "flip_enabled = 1",
-        "leave_marker = 1",
-        "win_points = 3",
-        "draw_points = 1",
-        f'config_seal = "{CORRECT_SEAL}"',
-    ):
-        assert line in text
-    parsed = _parse_profile(text)
-    cfg = {k: (parsed[k] if k == "run_id" else int(parsed[k])) for k in CORRECT}
-    assert _config_seal(cfg) == CORRECT_SEAL
-    assert parsed["config_seal"] == CORRECT_SEAL
-
-
-def _parse_env(text: str) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        out[k.strip()] = v.strip().strip('"')
-    return out
-
-
-def test_floor_baseline_and_heat_epoch_floors():
-    """Floor baseline seal and heat.env championship constants must be present."""
-    floor = _parse_profile(FLOOR_BASELINE.read_text())
-    assert floor.get("run_id") == RUN_ID
-    assert int(floor["row_length"]) == 5
-    assert int(floor["rings_to_win"]) == 3
-    assert int(floor["flip_enabled"]) == 1
-    assert int(floor["leave_marker"]) == 1
-    assert int(floor["win_points"]) == 3
-    assert int(floor["draw_points"]) == 1
-    assert floor.get("floor_seal") == CORRECT_SEAL
-    heat = _parse_env(HEAT_ENV.read_text())
-    assert heat.get("row_slack") == "0"
-    assert heat.get("target_pad") == "0"
-    assert heat.get("flip_latch_seed") == "1"
-    assert heat.get("leave_latch_seed") == "1"
-    assert heat.get("printer_win_floor") == "3"
-    assert heat.get("aggregate_scale") == "1.25"
-    assert heat.get("majority_score") == "68"
-    assert heat.get("championship_mode") == "1"
-    assert heat.get("heat_seal") == (
-        "566c5579ffaa2bc0999dd13f2ee6bfe485af006d1a5360c121bbbacc769a281a"
+def test_verified_rollback_recovers_from_damaged_current(runtime: Path) -> None:
+    with changed_refund_source():
+        run(str(REBUILD), str(runtime))
+    healthy_previous = (runtime / "opt/ledger/previous").resolve()
+    with (active_release(runtime) / "lib/libledger_policy.so.2.0").open("ab") as handle:
+        handle.write(b"damage")
+    assert (
+        run(str(RUN), str(runtime), "baseline", "settlement", check=False).returncode
+        != 0
     )
+    run(str(ROLLBACK), str(runtime))
+    assert active_release(runtime) == healthy_previous
+    assert parse_fields(
+        run(str(RUN), str(runtime), "baseline", "settlement").stdout
+    ) == expected("baseline", "settlement")
+    assert parse_fields(
+        run(str(RUN), str(runtime), "v3", "settlement").stdout
+    ) == expected("v3", "settlement")
 
 
-def test_seal_mismatch_uses_championship_baseline():
-    """Corrupting config_seal still yields championship floors via floor baseline."""
-    original = PROFILE.read_text()
-    try:
-        lines = []
-        for line in original.splitlines():
-            if line.strip().startswith("config_seal"):
-                lines.append('config_seal = "' + ("0" * 64) + '"')
-            else:
-                lines.append(line)
-        PROFILE.write_text("\n".join(lines) + "\n")
-        _run_engine()
-        got = _load_report()
-        exp = _expected_report()
-        assert got["run_id"] == RUN_ID
-        assert got["matches"] == exp["matches"]
-        assert got["standings"] == exp["standings"]
-        assert got["summary"] == exp["summary"]
-    finally:
-        PROFILE.write_text(original)
-        _run_engine()
+def test_concurrent_refreshes_serialize_and_leave_no_candidates(runtime: Path) -> None:
+    before = os.readlink(runtime / "opt/ledger/current")
+    first = subprocess.Popen(
+        [str(REBUILD), str(runtime)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    second = subprocess.Popen(
+        [str(REBUILD), str(runtime)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    first_out, first_err = finish(first)
+    second_out, second_err = finish(second)
+    assert (first.returncode, second.returncode) == (0, 0), (
+        first_out,
+        first_err,
+        second_out,
+        second_err,
+    )
+    assert not list((runtime / "opt/ledger/releases").glob(".candidate.*"))
+    assert os.readlink(runtime / "opt/ledger/current") == before
+    assert not (runtime / "opt/ledger/previous").exists()
+    assert parse_fields(
+        run(str(RUN), str(runtime), "v3", "reconcile").stdout
+    ) == expected("v3", "reconcile")
 
 
-def test_legacy_overlay_ignored_with_valid_seal():
-    """Corrupting or absent overlays must not downgrade sealed championship floors."""
-    legacy_orig = LEGACY_OVERLAY.read_text() if LEGACY_OVERLAY.is_file() else None
-    runtime_orig = RUNTIME_OVERLAY.read_text() if RUNTIME_OVERLAY.is_file() else None
-    gov_orig = GOV_OVERLAY.read_text() if GOV_OVERLAY.is_file() else None
-    try:
-        LEGACY_OVERLAY.parent.mkdir(parents=True, exist_ok=True)
-        RUNTIME_OVERLAY.parent.mkdir(parents=True, exist_ok=True)
-        GOV_OVERLAY.parent.mkdir(parents=True, exist_ok=True)
-        LEGACY_OVERLAY.write_text(
-            'run_id = "yinsh-legacy"\n'
-            "row_length = 4\n"
-            "rings_to_win = 2\n"
-            "flip_enabled = 0\n"
-            "leave_marker = 0\n"
-            "win_points = 2\n"
-            "draw_points = 0\n"
+def test_identical_refresh_is_a_content_addressed_noop(runtime: Path) -> None:
+    current = os.readlink(runtime / "opt/ledger/current")
+    release_dirs = sorted((runtime / "opt/ledger/releases").iterdir())
+    run(str(REBUILD), str(runtime))
+    assert os.readlink(runtime / "opt/ledger/current") == current
+    assert sorted((runtime / "opt/ledger/releases").iterdir()) == release_dirs
+    assert not (runtime / "opt/ledger/previous").exists()
+
+
+def test_after_current_fault_keeps_new_current_runnable_and_records_recovery(
+    runtime: Path,
+) -> None:
+    old_target = os.readlink(runtime / "opt/ledger/current")
+    with changed_refund_source():
+        failed = run(
+            str(REBUILD),
+            str(runtime),
+            check=False,
+            env={"LEDGER_REBUILD_FAIL": "after-current"},
         )
-        RUNTIME_OVERLAY.write_text(
-            "flip_enabled = 0\n"
-            "leave_marker = 0\n"
-            "rings_to_win = 2\n"
-            "row_length = 4\n"
-            "win_points = 2\n"
-            "draw_points = 0\n"
+        assert failed.returncode != 0
+        new_target = os.readlink(runtime / "opt/ledger/current")
+        assert new_target != old_target
+        pending = runtime / "var/lib/ledger/activation.pending"
+        assert pending.is_file()
+        assert parse_fields(
+            run(str(RUN), str(runtime), "v3", "refund").stdout
+        ) == expected("v3", "refund")
+
+
+def test_next_refresh_completes_an_after_current_activation(runtime: Path) -> None:
+    old_target = os.readlink(runtime / "opt/ledger/current")
+    with changed_refund_source():
+        failed = run(
+            str(REBUILD),
+            str(runtime),
+            check=False,
+            env={"LEDGER_REBUILD_FAIL": "after-current"},
         )
-        GOV_OVERLAY.write_text(
-            'run_id = "yinsh-legacy"\n'
-            "row_length = 4\n"
-            "rings_to_win = 2\n"
-            "flip_enabled = 0\n"
-            "leave_marker = 0\n"
-            "win_points = 2\n"
-            "draw_points = 0\n"
+        assert failed.returncode != 0
+        new_target = os.readlink(runtime / "opt/ledger/current")
+        pending = runtime / "var/lib/ledger/activation.pending"
+        run(str(REBUILD), str(runtime))
+        assert not pending.exists()
+        assert os.readlink(runtime / "opt/ledger/current") == new_target
+        assert os.readlink(runtime / "opt/ledger/previous") == old_target
+
+
+def test_drain_reader_keeps_its_release_while_refresh_waits(runtime: Path) -> None:
+    old_target = os.readlink(runtime / "opt/ledger/current")
+    with changed_refund_source():
+        reader = subprocess.Popen(
+            [str(RUN), str(runtime), "baseline", "drain"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
-        _run_engine()
-        got = _load_report()
-        exp = _expected_report()
-        assert got["matches"] == exp["matches"]
-        assert got["summary"] == exp["summary"]
-    finally:
-        if legacy_orig is None:
-            LEGACY_OVERLAY.unlink(missing_ok=True)
-        else:
-            LEGACY_OVERLAY.write_text(legacy_orig)
-        if runtime_orig is None:
-            RUNTIME_OVERLAY.unlink(missing_ok=True)
-        else:
-            RUNTIME_OVERLAY.write_text(runtime_orig)
-        if gov_orig is None:
-            GOV_OVERLAY.unlink(missing_ok=True)
-        else:
-            GOV_OVERLAY.write_text(gov_orig)
-        _run_engine()
+        time.sleep(0.5)
+        refresh = subprocess.Popen(
+            [str(REBUILD), str(runtime)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        time.sleep(2.2)
+        assert reader.poll() is None
+        assert refresh.poll() is None
+        assert os.readlink(runtime / "opt/ledger/current") == old_target
+        reader_out, reader_err = finish(reader, timeout=10)
+        assert reader.returncode == 0, reader_err
+        assert parse_fields(reader_out) == expected("baseline", "drain")
+        refresh_out, refresh_err = finish(refresh)
+        assert refresh.returncode == 0, (refresh_out, refresh_err)
+        assert os.readlink(runtime / "opt/ledger/current") != old_target
 
 
-def test_report_schema_and_run_id():
-    """Report exposes the documented schema keys and championship run_id."""
-    rep = _load_report()
-    assert rep["schema_version"] == "1.0"
-    assert rep["run_id"] == RUN_ID
-    assert set(rep) >= {"schema_version", "run_id", "matches_played", "matches", "standings", "summary"}
-    assert rep["matches_played"] == len(rep["matches"])
-    for m in rep["matches"]:
-        assert set(m) >= {
-            "match_id",
-            "player_a",
-            "player_b",
-            "winner",
-            "reason",
-            "rings_removed_a",
-            "rings_removed_b",
-            "flips_a",
-            "flips_b",
-            "rows_cleared_a",
-            "rows_cleared_b",
-            "rings_left_a",
-            "rings_left_b",
-            "points_a",
-            "points_b",
-            "severity",
-            "priority_score",
-            "related_ids",
-        }
+def test_elf_dependencies_sonames_versions_and_origin_runpath(runtime: Path) -> None:
+    release = active_release(runtime)
+    base_policy = release / "lib/libledger_policy.so.2.0"
+    v3_policy = release / "lib/glibc-hwcaps/x86-64-v3/libledger_policy.so.2.1"
+    for policy in (base_policy, v3_policy):
+        dynamic = run("readelf", "-d", str(policy)).stdout
+        assert "Shared library: [libledger_rules.so.1]" in dynamic
+        assert "Shared library: [libledger_audit.so.1]" in dynamic
+        assert "Library soname: [libledger_policy.so.2]" in dynamic
+        assert "Library runpath: [$ORIGIN]" in dynamic
+    assert (
+        "LEDGER_RULES_1.0"
+        in run(
+            "readelf", "--version-info", str(release / "lib/libledger_rules.so.1.0")
+        ).stdout
+    )
+    assert (
+        "LEDGER_RULES_2.0"
+        in run(
+            "readelf",
+            "--version-info",
+            str(release / "lib/glibc-hwcaps/x86-64-v3/libledger_rules.so.1.1"),
+        ).stdout
+    )
+    assert (
+        "LEDGER_AUDIT_1.0"
+        in run(
+            "readelf", "--version-info", str(release / "lib/libledger_audit.so.1.0")
+        ).stdout
+    )
+    assert (
+        "LEDGER_AUDIT_2.0"
+        in run(
+            "readelf",
+            "--version-info",
+            str(release / "lib/glibc-hwcaps/x86-64-v3/libledger_audit.so.1.1"),
+        ).stdout
+    )
+    for policy in (base_policy, v3_policy):
+        assert (
+            "LEDGER_POLICY_2.1" in run("readelf", "--version-info", str(policy)).stdout
+        )
+    gateway_symbols = run("objdump", "-T", str(release / "bin/ledger-gateway")).stdout
+    assert "dlvsym" in gateway_symbols
 
 
-def test_match_outcomes_match_ruleset_simulation():
-    """Each match row matches an independent ruleset simulation."""
-    got = _load_report()["matches"]
-    exp = _expected_report()["matches"]
-    assert got == exp
+def test_release_permissions_and_links_are_safe(runtime: Path) -> None:
+    release = active_release(runtime)
+    assert not os.path.isabs(os.readlink(runtime / "opt/ledger/current"))
+    for path in release.rglob("*"):
+        if path.is_symlink():
+            assert not os.path.isabs(os.readlink(path))
+        elif path.is_file():
+            assert not (stat.S_IMODE(path.stat().st_mode) & 0o022)
+    assert os.access(release / "bin/ledger-gateway", os.X_OK)
+    assert (release / "bin/ledger-gateway").read_bytes()[:4] == b"\x7fELF"
 
 
-def test_related_ids_share_players():
-    """related_ids lists other matches sharing a player, sorted ascending."""
-    got = _load_report()["matches"]
-    exp = _expected_report()["matches"]
-    for g, e in zip(got, exp, strict=True):
-        assert g["related_ids"] == e["related_ids"]
-        assert g["related_ids"] == sorted(g["related_ids"])
+def test_invalid_run_and_root_interfaces_fail_without_damage(runtime: Path) -> None:
+    current = os.readlink(runtime / "opt/ledger/current")
+    cases = [
+        (str(RUN), str(runtime), "avx", "settlement"),
+        (str(RUN), str(runtime), "baseline", "../settlement"),
+        (str(REBUILD), "relative-root"),
+        (str(REBUILD), "/"),
+        (str(REBUILD), f"{runtime.parent}/./{runtime.name}"),
+    ]
+    for args in cases:
+        assert run(*args, check=False).returncode != 0
+    assert os.readlink(runtime / "opt/ledger/current") == current
 
 
-def test_standings_order_and_aggregates():
-    """Standings order, ring_diff, and summary aggregates match the ruleset."""
-    got = _load_report()
-    exp = _expected_report()
-    assert got["standings"] == exp["standings"]
-    assert got["summary"] == exp["summary"]
-    assert got["standings"][0]["rank"] == 1
+def test_missing_rollback_fails_without_changing_current(runtime: Path) -> None:
+    current = os.readlink(runtime / "opt/ledger/current")
+    assert run(str(ROLLBACK), str(runtime), check=False).returncode != 0
+    assert os.readlink(runtime / "opt/ledger/current") == current
 
 
-def test_no_legacy_point_remap():
-    """Wins award win_points and draws award draw_points, never legacy 2/0."""
-    for m in _load_report()["matches"]:
-        if m["winner"] == "A":
-            assert m["points_a"] == 3 and m["points_b"] == 0
-        elif m["winner"] == "B":
-            assert m["points_a"] == 0 and m["points_b"] == 3
-        else:
-            assert m["points_a"] == 1 and m["points_b"] == 1
+def test_symlinked_root_is_rejected(runtime: Path, tmp_path: Path) -> None:
+    alias = tmp_path / "runtime-alias"
+    alias.symlink_to(runtime, target_is_directory=True)
+    assert run(str(REBUILD), str(alias), check=False).returncode != 0
 
 
-def test_reason_token_vocabulary():
-    """Reason tokens and severity/score pairs follow the championship table."""
-    allowed = {"ring_target", "ring_majority", "mutual_draw"}
-    exp_by_id = {m["match_id"]: m for m in _expected_report()["matches"]}
-    for m in _load_report()["matches"]:
-        assert m["reason"] in allowed
-        sev, sc = _score(m["reason"])
-        assert m["severity"] == sev
-        assert m["priority_score"] == sc
-        assert m["reason"] == exp_by_id[m["match_id"]]["reason"]
-
-
-def test_key_match_resolutions():
-    """Spot-check matches that flip under legacy leave/flip/row/gate paths."""
-    by_id = {m["match_id"]: m for m in _load_report()["matches"]}
-    assert by_id["m01"]["winner"] == "A" and by_id["m01"]["reason"] == "ring_target"
-    assert by_id["m01"]["rings_removed_a"] == 3
-    assert by_id["m02"]["winner"] == "B" and by_id["m02"]["reason"] == "ring_target"
-    assert by_id["m05"]["flips_a"] == 3 and by_id["m05"]["rings_removed_a"] == 2
-    assert by_id["m06"]["rings_removed_a"] == 1
-    assert by_id["m08"]["winner"] == "draw" and by_id["m08"]["reason"] == "mutual_draw"
-    assert by_id["m09"]["rings_removed_a"] == 1 and by_id["m09"]["rows_cleared_a"] == 1
-    assert by_id["m10"]["rings_left_a"] == 4
-    assert by_id["m11"]["flips_a"] == 3
-    assert by_id["m12"]["winner"] == "B"
-
-
-def test_aggregate_priority_uses_championship_multiplier():
-    """Summary aggregate_priority uses mean(priority_score) * 1.25 capped at 100."""
-    summary = _load_report()["summary"]
-    exp = _expected_report()["summary"]
-    assert summary["aggregate_priority"] == exp["aggregate_priority"]
-    scores = [m["priority_score"] for m in _load_report()["matches"]]
-    mean = sum(scores) / len(scores)
-    assert summary["aggregate_priority"] == min(100, _half_away_round(mean * 1.25))
+def test_active_link_escape_is_rejected(runtime: Path) -> None:
+    current = runtime / "opt/ledger/current"
+    current.unlink()
+    current.symlink_to("../../../../tmp")
+    result = run(str(RUN), str(runtime), "baseline", "settlement", check=False)
+    assert result.returncode != 0
+    assert any(
+        word in result.stderr.lower()
+        for word in ("integrity", "unsafe", "escape", "release")
+    )

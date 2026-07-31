@@ -1,40 +1,28 @@
 #!/bin/bash
-set -uo pipefail
 
 if [ "$PWD" = "/" ]; then
-  echo "Error: No working directory set."
-  mkdir -p /logs/verifier
-  echo 0 > /logs/verifier/reward.txt
-  exit 0
+    echo "Error: No working directory set. Please set a WORKDIR in your Dockerfile."
+    exit 1
 fi
 
-mkdir -p /logs/verifier /app/output
+mkdir -p /logs/verifie
 
-export PATH="/app/bin:${PATH}"
+# Normalize CRLF if the harness mounts Windows-authored scripts.
+for f in /tests/test.sh /tests/test_outputs.py; do
+  [ -f "$f" ] || continue
+  tr -d '\r' < "$f" > /tmp/tb_norm && cat /tmp/tb_norm > "$f"
+done
 
-cd /app
-python3 /app/scripts/gen_heat.py
-go build -o /app/bin/yinsh-ring /app/cmd/yinsh-ring
-rc_build=$?
-if [ "$rc_build" -ne 0 ]; then
-  echo "go build failed"
-  echo 0 > /logs/verifier/reward.txt
-  exit 0
+PYTHON_BIN="/opt/verifier/bin/python"
+if [ ! -x "$PYTHON_BIN" ]; then
+  PYTHON_BIN="python3"
 fi
 
-/app/bin/yinsh-ring --scenarios /app/scenarios --config /app/config --out /app/output
-rc_run=$?
-if [ "$rc_run" -ne 0 ]; then
-  echo "yinsh-ring run failed"
-  echo 0 > /logs/verifier/reward.txt
-  exit 0
-fi
+"$PYTHON_BIN" -m pytest -o cache_dir=/tmp/pytest_cache --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
 
-python3 -m pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -v -rA
 rc=$?
-
 if [ "$rc" -eq 0 ]; then
-  echo 1 > /logs/verifier/reward.txt
+    echo 1 > /logs/verifier/reward.txt
 else
-  echo 0 > /logs/verifier/reward.txt
+    echo 0 > /logs/verifier/reward.txt
 fi
