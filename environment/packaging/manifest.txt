@@ -1,6 +1,0 @@
-opt/ledger/bin/ledger-gateway
-opt/ledger/lib/libledger_policy.so.2
-opt/ledger/lib/libledger_rules.so.1
-opt/ledger/requests/settlement.req
-opt/ledger/requests/refund.req
-opt/ledger/requests/reconcile.req

@@ -1,5 +1,0 @@
-LEDGER_POLICY_2.1 {
-    global: ledger_policy_name; ledger_policy_rules; ledger_policy_audit;
-            ledger_policy_abi; ledger_policy_decision; ledger_policy_generation;
-    local: *;
-};

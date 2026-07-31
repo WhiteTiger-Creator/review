@@ -1,2 +1,0 @@
-baseline policy=baseline rules=stable generation=2
-x86-64-v3 policy=x86-64-v3 rules=vector generation=3

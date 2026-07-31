@@ -1,4 +1,0 @@
-LEDGER_AUDIT_2.0 {
-    global: ledger_audit_profile; ledger_audit_generation;
-    local: *;
-};

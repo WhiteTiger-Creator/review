@@ -4,29 +4,30 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "system-administration"
-tags = ["linux", "service-runtime", "loader-cache", "chroot", "activation", "rollback", "hardening"]
-languages = ["c", "bash"]
-codebase_size = "small"
-number_of_milestones = 0
+category = "machine-learning"
 subcategories = []
-expert_time_estimate_min = 440
-junior_time_estimate_min = 990
+number_of_milestones = 0
+codebase_size = "minimal"
+languages = ["r"]
+tags = [
+  "weak-supervision",
+  "crowd-labels",
+  "ontology-alignment",
+  "multiclass-classification",
+  "calibration",
+]
+expert_time_estimate_min = 360
+junior_time_estimate_min = 720
 
-[category_profile]
-challenge_family = "service_activation_recovery"
-profile_name = "linux_runtime_activation"
-coverage_role = "Exercises offline service-root activation, loader-cache trust, and recoverable refresh/rollback for a native Linux gateway."
+[verifier]
+timeout_sec = 1800
 
 [agent]
 timeout_sec = 1800
 
-[verifier]
-timeout_sec = 960
-
 [environment]
-allow_internet = false
-build_timeout_sec = 660
+build_timeout_sec = 1800
 cpus = 2
 memory_mb = 4096
 storage_mb = 8192
+allow_internet = false

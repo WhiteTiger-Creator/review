@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-echo "rollback-runtime is not implemented" >&2
-exit 78

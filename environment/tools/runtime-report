@@ -1,9 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-root=${1:-/app/runtime}
-printf '%s\n' 'cache entries:'
-ldconfig -r "$root" -p | grep -E 'libledger_(policy|rules)' || true
-printf '%s\n' 'baseline:'
-/app/tools/run-runtime "$root" baseline settlement || true
-printf '%s\n' 'v3:'
-/app/tools/run-runtime "$root" v3 settlement || true
