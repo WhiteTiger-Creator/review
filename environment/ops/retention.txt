@@ -1,0 +1,1 @@
+Keep the last 14 lab reports; older bundles may be pruned.

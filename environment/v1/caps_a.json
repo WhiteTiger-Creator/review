@@ -1,7 +1,0 @@
-{
-  "octet_budget": 12,
-  "seed": 42,
-  "flip_target": 1,
-  "demo": "/app/environment/k2/demo/case_a.json",
-  "xtra_dir": "/app/environment/k2/xtra"
-}

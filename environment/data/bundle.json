@@ -1,0 +1,12 @@
+{
+  "id": "skiff_lab_v1",
+  "cases": [
+    "plain_floor",
+    "edge_leave",
+    "early_press",
+    "land_stash",
+    "no_double",
+    "rise_clear",
+    "plank_land"
+  ]
+}
