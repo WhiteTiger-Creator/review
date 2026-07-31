@@ -1,0 +1,7 @@
+extra_turn = 0
+flip_enabled = 0
+leave_marker = 0
+rings_to_win = 2
+row_length = 4
+win_points = 2
+draw_points = 0
