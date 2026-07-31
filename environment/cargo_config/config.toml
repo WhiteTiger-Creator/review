@@ -1,0 +1,7 @@
+# Workspace link defaults consumed by static matrix arms.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-Wl,--as-needed"]
+
+[env]
+# Static arms also set NEXUS_STATIC=1 in matrix_arms.json; build.rs reads both.
+NEXUS_LINK_MODE = { value = "dynamic", force = false }

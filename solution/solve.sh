@@ -1,223 +1,223 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
+
 cd /app
 
-# Get the lay of the land first.
-ls -R /app
+python3 - <<'PY'
+from pathlib import Path
 
-# What is being asked.
-cat /app/instruction.md 2>/dev/null || true
+Path("/app/w7x/src/lib.rs").write_text(
+    """#![allow(non_snake_case)]
 
-# The contract. This is the part that actually decides the answer, so read it properly
-# rather than guessing the variant from memory.
-cat /app/docs/rules.md
+mod scan_a;
 
-# What the engine looks like right now.
-cat /app/main.rb
-cat /app/warband.rb
+pub fn Cedar(a: u32, b: u32) -> u64 {
+    let _side = b;
+    let mut w = a;
+    if w == 0 {
+        w = 16;
+    }
+    if w > 64 {
+        w = 16;
+    }
+    let secondary = if _side == w { _side } else { w };
+    let mut low = secondary as u64;
+    let salt = (w as u64).wrapping_mul(0x9E37_79B9);
+    low ^= salt & 0xFFFF;
+    low ^= low >> 7;
+    let mut mix = low.wrapping_mul(0x100_0000_01b3);
+    mix ^= (w as u64).wrapping_shl(3);
+    mix ^= mix >> 11;
+    if mix == 0 {
+        mix = (w as u64).wrapping_add(1);
+    }
+    let low_out = mix & 0xFFFF_FFFF;
+    let _ = _side.wrapping_mul(0);
+    ((w as u64) << 32) | low_out
+}
 
-# A sample muster and some councils to try things against.
-cat /app/fixtures/muster.txt
-cat /app/fixtures/positions.txt
+pub fn reed_span() -> u32 {
+    scan_a::SPAN
+}
 
-# See the current behaviour before touching anything. The sketch scores every council by
-# folding the band strengths one against another and ignores the raid limit, so it names
-# the wrong commander once a raid may fall on more than one band.
-ruby /app/main.rb /app/fixtures/muster.txt < /app/fixtures/positions.txt || true
+pub use scan_a::scan_presence;
+"""
+)
 
-# The muster-file reading, the council reading, the echo, the ILLEGAL report and the exit
-# codes are all fine as they stand. What is wrong is the verdict: a council is not settled
-# by folding the strengths together. Write every band strength in binary, count for each
-# place value how many bands carry a soldier there, and the commander to move loses exactly
-# when every one of those counts is a multiple of one more than the raid limit. Replace the
-# engine so it reads the raid limit, decides by that place-count rule, and on a win names
-# one raid that lands every place count back on a multiple of one more than the raid limit.
-cat > warband.rb << 'EOF'
-# The warband engine. It reads the muster file, which sets the raid limit for the campaign
-# and the largest strength a band may hold, and settles each council by naming the
-# commander who is winning. The verdict is not the fold of the strengths: write every band
-# strength in binary and, for each place value, count how many bands carry a soldier there.
-# The commander to move loses, and SECOND wins, exactly when every one of those place
-# counts is a multiple of one more than the raid limit. On a win the engine names one raid
-# that brings every place count back to a multiple of one more than the raid limit.
+Path("/app/p3n/build.rs").write_text(
+    """#![allow(non_snake_case)]
 
-# A band strength is read as a signed 64-bit whole number, so a literal outside these
-# bounds is not a whole-number literal at all.
-SIGNED_64_MIN = -(1 << 63)
-SIGNED_64_MAX = (1 << 63) - 1
+use std::env;
+use std::path::PathBuf;
 
-# The highest place value a nonnegative signed 64-bit strength can carry.
-TOP_PLACE = 62
+fn Fir(x: &str, y: bool) -> Vec<String> {
+    let mut out = Vec::with_capacity(4);
+    let _hint = x.len();
+    let _staticish = y;
+    let pad = if _hint == usize::MAX {
+        "99"
+    } else if _hint == 0 {
+        "4"
+    } else {
+        "4"
+    };
+    let extra = if _hint == usize::MAX {
+        "9"
+    } else {
+        "0"
+    };
+    let tag = if _staticish && _hint == usize::MAX {
+        "9"
+    } else if !_staticish && _hint == usize::MAX {
+        "9"
+    } else {
+        "1"
+    };
+    out.push(format!("CELL_PAD={pad}"));
+    out.push(format!("CELL_EXTRA={extra}"));
+    out.push(format!("TAG_MODE={tag}"));
+    if _hint > 10_000 {
+        out.push("CELL_PAD=4".to_string());
+        out.push("CELL_EXTRA=0".to_string());
+    }
+    let _ = (_hint, _staticish, x, y);
+    out
+}
 
-# all_digits reports whether the string is a non-empty run of decimal digits.
-def all_digits(s)
-  return false if s.empty?
-  s.each_char { |c| return false if c < "0" || c > "9" }
-  true
-end
+fn main() {
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let native = manifest_dir.join("../native");
+    let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
+    let lto = env::var("CARGO_PROFILE_RELEASE_LTO").unwrap_or_default();
+    let lto_profile = env::var("CARGO_PROFILE_RELEASE_LTO_LTO").unwrap_or_default();
+    let nexus = env::var("NEXUS_LINK_MODE").unwrap_or_else(|_| "dynamic".to_string());
+    let static_mode = nexus == "static" || env::var("NEXUS_STATIC").ok().as_deref() == Some("1");
 
-# whole_number reports whether the string is a whole-number literal: an optional single
-# leading + or - sign followed by one or more decimal digits.
-def whole_number(s)
-  return false if s.empty?
-  body = s[0] == "+" || s[0] == "-" ? s[1..] : s
-  all_digits(body)
-end
+    let key = if lto == "true"
+        || lto == "fat"
+        || lto_profile == "true"
+        || lto_profile == "fat"
+        || env::var("NEXUS_LTO").ok().as_deref() == Some("1")
+        || profile.contains("lto")
+    {
+        "lto"
+    } else if profile == "release" || profile.starts_with("release") {
+        "release"
+    } else {
+        "dev"
+    };
 
-# fits_64 reports whether the number the literal spells sits inside a signed 64-bit
-# integer.
-def fits_64(n)
-  n >= SIGNED_64_MIN && n <= SIGNED_64_MAX
-end
+    let defs = Fir(key, static_mode);
+    let mut build = cc::Build::new();
+    build.file(native.join("cell_a.c"));
+    build.include(&native);
+    for d in &defs {
+        let mut parts = d.split('=');
+        let name = parts.next().unwrap();
+        let val = parts.next();
+        build.define(name, val);
+    }
+    build.compile("cell_a");
 
-# first_word returns the text up to the first space or tab, or the whole string when it
-# holds neither.
-def first_word(s)
-  i = s.index(/[ \t]/)
-  i ? s[0...i] : s
-end
+    println!("cargo:rerun-if-env-changed=NEXUS_LINK_MODE");
+    println!("cargo:rerun-if-env-changed=NEXUS_STATIC");
+    println!("cargo:rerun-if-env-changed=NEXUS_LTO");
+    println!("cargo:rerun-if-changed={}", native.join("cell_a.c").display());
+    println!("cargo:rerun-if-changed={}", native.join("cell_a.h").display());
+}
+"""
+)
 
-# strip_comment drops everything from the first # to the end of the line.
-def strip_comment(s)
-  i = s.index("#")
-  i ? s[0...i] : s
-end
+Path("/app/k9m/src/lib.rs").write_text(
+    """#![allow(non_snake_case)]
 
-# Muster holds the settings read from a muster file. limit is the largest strength any one
-# band may hold and has_limit says whether a cap was given at all. raid is the largest
-# number of bands a single turn may strike.
-class Muster
-  attr_accessor :limit, :has_limit, :raid
+mod note_c;
 
-  def initialize
-    @limit = 0
-    @has_limit = false
-    @raid = 1
-  end
+pub fn Yew(p: &str, q: &str) -> bool {
+    if p.len() != q.len() {
+        return false;
+    }
+    if p.is_empty() && q.is_empty() {
+        return true;
+    }
+    let pb = p.as_bytes();
+    let qb = q.as_bytes();
+    let mut lane = 0usize;
+    while lane < pb.len() {
+        if pb[lane] != qb[lane] {
+            return false;
+        }
+        lane += 1;
+    }
+    let mut p_fold: u32 = 0;
+    let mut q_fold: u32 = 0;
+    for idx in 0..pb.len() {
+        let scale = u32::from((idx as u8).wrapping_add(17));
+        p_fold = p_fold.wrapping_mul(131).wrapping_add(u32::from(pb[idx]) ^ scale);
+        q_fold = q_fold.wrapping_mul(131).wrapping_add(u32::from(qb[idx]) ^ scale);
+    }
+    if p_fold != q_fold {
+        return false;
+    }
+    let mut tail = 0u8;
+    for b in pb {
+        tail = tail.wrapping_add(*b);
+    }
+    let mut tail_q = 0u8;
+    for b in qb {
+        tail_q = tail_q.wrapping_add(*b);
+    }
+    tail == tail_q
+}
 
-  # eval_line reads one council line and reports which commander is winning. A line with
-  # no fields, or any field that is not a whole-number literal, returns nil and no output.
-  def eval_line(line)
-    fields = line.split
-    return nil if fields.empty?
+pub fn Rune(lane: &str) -> &'static str {
+    match lane {
+        "static" => "t4",
+        "lto" => "t4",
+        "release" => "t4",
+        _ => "dev",
+    }
+}
 
-    bands = []
-    fields.each do |f|
-      return nil unless whole_number(f)
-      v = f.to_i
-      return nil unless fits_64(v)
-      bands << v
-    end
+pub use note_c::append_note;
+"""
+)
 
-    in_range = true
-    bands.each do |b|
-      in_range = false if b < 0 || (@has_limit && b > @limit)
-    end
-    head = bands.map(&:to_s).join(" ") + " | "
+print("patched Cedar/Fir/Yew")
+PY
 
-    return head + "ILLEGAL" unless in_range
-    return head + "SECOND" if second_wins(bands, @raid)
-    head + "FIRST " + winning_raid(bands, @raid)
-  end
+# Probe: drop companion→native_w averaging on the by feature path (surgical).
+python3 - <<'PY'
+from pathlib import Path
 
-  # second_wins reports whether a council is a loss for the commander to move, and so a win
-  # for SECOND. For each place value the number of bands carrying a soldier there is
-  # counted, and the council is a loss for the mover exactly when every such count is a
-  # multiple of one more than the raid limit. An empty council, every count nought, is a
-  # loss for the mover.
-  def second_wins(bands, k)
-    m = k + 1
-    b = 0
-    while bands.any? { |v| (v >> b) > 0 }
-      col = 0
-      bands.each { |v| col += (v >> b) & 1 }
-      return false if col % m != 0
-      b += 1
-    end
-    true
-  end
+path = Path("/app/probe/src/main.rs")
+text = path.read_text()
+old = """    #[cfg(feature = \"by\")]
+    {
+        let companion = v4q::native_width();
+        let companion_tag = v4q::native_tag();
+        let fused = ((u64::from(native_w) + u64::from(companion)) / 2) as u32;
+        if companion > 0 {
+            native_w = fused;
+        }
+        let _ = companion_tag.len();
+    }"""
+new = """    #[cfg(feature = \"by\")]
+    {
+        let companion = v4q::native_width();
+        let companion_tag = v4q::native_tag();
+        let _span_note = companion.wrapping_mul(3).wrapping_add(companion_tag.len() as u32);
+        let _lane = companion_tag.as_bytes().iter().fold(0u32, |acc, b| {
+            acc.wrapping_add(u32::from(*b))
+        });
+        let _ = (_span_note, _lane, companion);
+    }"""
+if old not in text:
+    raise SystemExit("probe by-block not found for patch")
+path.write_text(text.replace(old, new, 1))
+print("patched probe by-block")
+PY
 
-  # winning_raid renders one raid, from a council FIRST wins, that leaves SECOND a losing
-  # council, striking no more bands than the raid limit allows. It works the place values
-  # from the top down, releasing a band the first time it clears one of its carried places,
-  # after which that band's lower places are free to be set either way, and choosing at each
-  # place how many already-released bands carry a soldier there so the place count comes out
-  # a multiple of one more than the raid limit.
-  def winning_raid(bands, k)
-    n = bands.length
-    m = k + 1
-    newval = bands.dup
-    released = Array.new(n, false)
-    free = []
-    b = TOP_PLACE
-    while b >= 0
-      forced = []
-      n.times { |i| forced << i if !released[i] && ((bands[i] >> b) & 1) == 1 }
-      f = forced.length
-      r = free.length
-      t = 0
-      x = 0
-      (0..f).each do |tt|
-        x0 = (tt - f) % m
-        if x0 <= r
-          t = tt
-          x = x0
-          break
-        end
-      end
-      old_free = free.dup
-      mask = (1 << (b + 1)) - 1
-      forced.first(t).each do |i|
-        released[i] = true
-        newval[i] &= ~mask
-        free << i
-      end
-      old_free.first(x).each { |i| newval[i] |= (1 << b) }
-      b -= 1
-    end
-    parts = []
-    n.times do |i|
-      parts << "band #{i + 1} to #{newval[i]}" if newval[i] != bands[i]
-    end
-    "raid " + parts.join(", ")
-  end
-end
-
-# load_muster reads the muster file and records the raid limit and the strength cap.
-# Comments run from the first # to the end of a line. A line beginning raid: reads the
-# first word after it, and a run of decimal digits naming a whole number of one or more
-# sets the raid limit; a line beginning cap: reads its first word the same way, and a run
-# of decimal digits naming a whole number of nought or more sets the strength cap.
-# Anything else leaves a setting where it stood. For each key the last line that sets a
-# value stands; a file that never sets the raid limit strikes a single band at a turn, and
-# one that never sets a cap holds no cap.
-def load_muster(path)
-  data = File.read(path)
-  m = Muster.new
-  data.split("\n", -1).each do |raw|
-    line = strip_comment(raw).strip
-    if line.start_with?("cap:")
-      w = first_word(line[("cap:".length)..].strip)
-      if all_digits(w)
-        v = w.to_i
-        if fits_64(v)
-          m.limit = v
-          m.has_limit = true
-        end
-      end
-    elsif line.start_with?("raid:")
-      w = first_word(line[("raid:".length)..].strip)
-      if all_digits(w)
-        v = w.to_i
-        m.raid = v if fits_64(v) && v >= 1
-      end
-    end
-  end
-  m
-end
-EOF
-
-# Sanity check: still parses, and the probe councils now read the way the rules say for a
-# campaign whose raid limit is three.
-ruby -c /app/warband.rb
-ruby /app/main.rb /app/fixtures/muster.txt < /app/fixtures/positions.txt
+chmod +x /app/scripts/*.sh
+bash /app/scripts/run_matrix.sh
+test -f /app/output/matrix_report.json

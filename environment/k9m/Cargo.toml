@@ -1,0 +1,9 @@
+[package]
+name = "k9m"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+
+[dependencies]
