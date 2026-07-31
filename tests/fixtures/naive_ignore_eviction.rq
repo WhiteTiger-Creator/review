@@ -1,0 +1,43 @@
+PREFIX : <http://ex.org/k8s#>
+SELECT ?pod
+       ((COUNT(DISTINCT ?node) > 0) AS ?schedulable)
+       (COUNT(DISTINCT ?node) AS ?feasible_node_count)
+WHERE {
+  ?pod :pending true .
+  OPTIONAL {
+    ?node a :Node .
+    FILTER NOT EXISTS {
+      ?node :hasTaint ?taint .
+      ?taint :key ?xk ; :value ?xv ; :effect ?te .
+      FILTER(?te = "NoSchedule" || ?te = "NoExecute")
+      FILTER NOT EXISTS {
+        ?pod :hasToleration ?tol .
+        ?tol :key ?tk ; :operator ?top ; :value ?tv ; :effect ?tef .
+        FILTER(?tef = "" || ?tef = ?te)
+        FILTER((?tk = "" && ?top = "Exists")
+               || (?tk = ?xk && (?top = "Exists"
+                                 || (?top = "Equal" && ?tv = ?xv))))
+      }
+    }
+    FILTER NOT EXISTS {
+      ?pod :requiresLabel ?req .
+      FILTER NOT EXISTS { ?node :hasLabel ?req }
+    }
+    FILTER NOT EXISTS {
+      ?pod :hasAntiAffinity ?aa .
+      ?aa :topologyKey ?tkey .
+      FILTER NOT EXISTS { ?node :hasLabel ?nl . ?nl :key ?tkey }
+    }
+    FILTER NOT EXISTS {
+      ?pod :hasAntiAffinity ?aa2 .
+      ?aa2 :topologyKey ?tkey2 ; :selectorLabel ?sel .
+      ?node :hasLabel ?nl2 .
+      ?nl2 :key ?tkey2 ; :value ?dom .
+      ?other :hasPodLabel ?sel .
+      ?other :placedOn ?host .
+      ?host :hasLabel ?hl .
+      ?hl :key ?tkey2 ; :value ?dom .
+    }
+  }
+}
+GROUP BY ?pod

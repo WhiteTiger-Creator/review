@@ -1,25 +1,17 @@
-FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
+FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-         asciinema \
-         ca-certificates \
-         g++ \
-         libgmp-dev \
-         make \
-         python3 \
-         python3-venv \
-         tmux \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        tmux \
+        asciinema \
+        ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m venv /opt/verifier-venv \
-    && /opt/verifier-venv/bin/pip install --no-cache-dir pytest==8.4.1
+RUN pip3 install --no-cache-dir --break-system-packages pytest==8.2.0 pyoxigraph==0.4.11
 
 WORKDIR /app
 
+COPY graph/ /app/graph/
 COPY docs/ /app/docs/
-COPY Makefile /app/Makefile
-COPY plucker.cpp /app/plucker.cpp
+COPY bin/ /app/bin/
+
+RUN chmod +x /app/bin/runquery.sh

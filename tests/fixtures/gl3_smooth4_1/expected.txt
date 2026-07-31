@@ -1,7 +1,0 @@
-degree = 4
-class = 12
-inflections = 24
-doublepoints = 0
-cusps = 0
-crunodes = 0
-realmeet = 0

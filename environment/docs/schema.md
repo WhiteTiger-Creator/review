@@ -1,41 +1,56 @@
-# Input and output schema
+# Cluster graph schema
 
-## Input
+The graph at `/app/graph/cluster.nt` is an RDF N-Triples dump of the cluster
+state this placement audit runs against. All terms use the namespace
+`http://ex.org/k8s#`, abbreviated `:` below.
 
-One instance is read from the file whose path is the program's single argument.
+## Node types
 
-The first line holds two integers `d n`, the degree and the number of terms.
-Each of the next `n` lines holds four integers `i j k c`, standing for the
-monomial `c * x^i * y^j * z^k`. The polynomial is the sum of these terms, a
-homogeneous form of degree `d` in the three variables `x`, `y`, `z` with integer
-coefficients, defining a curve in the projective plane.
+Every node carries an `rdf:type`:
 
-The degree satisfies `3 <= d <= 4`. There are `n >= 1` terms. Every exponent
-triple satisfies `i, j, k >= 0` and `i + j + k = d`. Every coefficient satisfies
-`c != 0` and `|c| <= 1000000`. No monomial appears twice.
+- `:Node` is a worker node that pods can be placed on.
+- `:Pod` is a workload. It is either pending, meaning it is waiting to be
+  placed, or already placed on a worker node.
+- `:Label` is a key and value pair. A label node is shared: any worker node or
+  pod carrying the same key and value points at the same `:Label` IRI.
+- `:Taint` is a restriction attached to a worker node.
+- `:Toleration` is a pod's declaration that it accepts some taint.
+- `:AntiAffinity` is a pending pod's placement restriction.
 
-Integer tokens are strict: an optional single leading `-` followed by one or
-more decimal digits, with no leading zero unless the token is the literal `0`;
-`-0`, `+3`, and `07` are not well formed. Tokens on a line are separated by a
-single space, with no leading or trailing space and no run of two or more
-spaces. The file ends with exactly one trailing newline and contains exactly
-`n + 1` lines.
+## Predicates
 
-Any violation of this grammar, a term count that disagrees with `n`, a degree
-outside the range, an exponent triple whose sum is not `d`, a repeated monomial,
-an out-of-range or zero coefficient, or a missing or extra newline or line makes
-the input malformed, and the only correct output is `ERROR`.
+| Triple | Meaning |
+|---|---|
+| `?node :hasLabel ?label` | the worker node carries that label |
+| `?node :hasTaint ?taint` | the worker node carries that taint |
+| `?pod :pending ?boolean` | whether the pod is waiting to be placed |
+| `?pod :placedOn ?node` | the worker node the pod already sits on |
+| `?pod :hasPodLabel ?label` | the pod carries that label |
+| `?pod :hasToleration ?toleration` | the pod declares that toleration |
+| `?pod :requiresLabel ?label` | the pod requires that label on its host |
+| `?pod :hasAntiAffinity ?antiAffinity` | the pod's anti-affinity restriction |
+| `?label :key ?string`, `?label :value ?string` | the label's key and value |
+| `?taint :key ?string`, `?taint :value ?string`, `?taint :effect ?string` | the taint's key, value and effect |
+| `?toleration :key ?string`, `?toleration :operator ?string`, `?toleration :value ?string`, `?toleration :effect ?string` | the toleration's four fields |
+| `?antiAffinity :selectorLabel ?label`, `?antiAffinity :topologyKey ?string` | the selector label and the topology key |
 
-## Domain
+## Value domains
 
-The census is defined only for a reduced curve every one of whose singular
-points, taken over the complex projective plane, is a rational point that is
-either an ordinary double point (two smooth branches meeting transversally, with
-two distinct tangent directions) or an ordinary cusp (a single cuspidal branch).
-A curve with any other singularity, a singular point that is not rational, a
-repeated component, or a straight-line component lies outside the domain, and the
-correct output is `ERROR`. Singular points at infinity count exactly as those in
-the finite plane.
+A taint's `:effect` is one of `NoSchedule`, `PreferNoSchedule` or `NoExecute`.
+A toleration's `:operator` is either `Equal` or `Exists`. A toleration's `:key`
+and `:effect` may each be the empty string; its `:value` is meaningful only
+under the `Equal` operator.
 
-The output contract and the seven reported quantities are in
-[OUTPUT-CONTRACT.md](OUTPUT-CONTRACT.md).
+## Multiplicity and shape
+
+A worker node carries zero or more taints and zero or more labels, and never
+carries two labels that share a key, so a node has at most one value for any
+given label key. A node may carry no label at all for a given key. A pending
+pod carries zero or more tolerations, zero or more required labels, and at most
+one anti-affinity restriction. A placed pod carries `:placedOn`, zero or more
+pod labels and zero or more tolerations. A pending pod never carries
+`:placedOn`. Many pods may sit on one worker node.
+
+Identity is by IRI. `:placedOn` is directed and recorded in one direction only.
+The graph records exactly the labels, taints, tolerations, required labels,
+anti-affinity restrictions and existing placements, and nothing else.
