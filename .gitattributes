@@ -1,0 +1,2 @@
+# HTTP replay fixtures are byte-authoritative; Git must not normalize line endings.
+environment/app/fixtures/requests/*.http -text
