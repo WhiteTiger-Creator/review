@@ -1,20 +1,25 @@
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
+FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        tmux \
-        asciinema \
-        ca-certificates \
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+         asciinema \
+         ca-certificates \
+         g++ \
+         libgmp-dev \
+         make \
+         python3 \
+         python3-venv \
+         tmux \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install --no-cache-dir --break-system-packages pytest==8.2.0 kuzu==0.6.1
+RUN python3 -m venv /opt/verifier-venv \
+    && /opt/verifier-venv/bin/pip install --no-cache-dir pytest==8.4.1
 
 WORKDIR /app
 
-COPY graph/ /app/graph/
 COPY docs/ /app/docs/
-COPY bin/ /app/bin/
-
-RUN tar -xzf /app/graph/timesync.kuzu.tar.gz -C /app/graph \
-    && rm /app/graph/timesync.kuzu.tar.gz
-
-RUN chmod +x /app/bin/runquery.sh
+COPY Makefile /app/Makefile
+COPY plucker.cpp /app/plucker.cpp

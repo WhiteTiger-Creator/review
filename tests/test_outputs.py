@@ -1,497 +1,292 @@
+"""Verifier for plane-curve-dual-class-census.
+
+Runs the candidate program /app/plucker on every fixture, on runtime-minted
+curves, and on metamorphic transforms, and requires its output to equal, byte
+for byte, what the independent Python engine (oracle.py, over census.py) computes
+from the same input. The engine determines the projective census by exact
+integer and rational arithmetic -- singular locus over the algebraic closure,
+tangent-cone typing, and the classical Pluecker relations -- a route that shares
+no arithmetic with the floating-point or single-chart shortcuts a solver is
+likely to try. Source is never inspected; only observed process output is graded.
+"""
+
+import contextlib
 import os
+import resource
+import subprocess
+import tempfile
+from fractions import Fraction as Fr
 
+import census
+import oracle
 import pytest
-from conftest import (
-    ANSWER_PATH,
-    HIDDEN_GRAPH,
-    REQUIRED_COLUMNS,
-    VISIBLE_GRAPH,
-    normalize_rows,
-    run_query,
-)
 
-UNSYNCHRONIZED = "16"
-NO_PEER = "NONE"
+HERE = os.path.dirname(os.path.abspath(__file__))
+FIXROOT = os.path.join(HERE, "fixtures")
+PROG = "/app/plucker"
 
-ALL_CLIENTS = [
-    "all-disjoint",
-    "all-unreachable",
-    "all-unsynchronized",
-    "clean-agreement",
-    "dispersion-tie-name",
-    "eligibility-filter",
-    "fleet-00",
-    "fleet-01",
-    "fleet-02",
-    "fleet-03",
-    "fleet-04",
-    "fleet-05",
-    "fleet-06",
-    "fleet-07",
-    "fleet-08",
-    "fleet-09",
-    "fleet-10",
-    "lowest-stratum-outlier",
-    "majority-wider",
-    "nested-offsets",
-    "one-out-of-four",
-    "overlap-not-offset",
-    "single-eligible",
-    "stratum-tie-dispersion",
-    "tolerated-outlier",
-    "two-of-three",
-    "zero-width",
-]
-
-# Each named scenario's certified row on the committed visible graph.
-EXPECTED_ANCHOR_ROWS = [
-    ("all-disjoint", "16", "NONE", "0", "3"),
-    ("all-unreachable", "16", "NONE", "0", "0"),
-    ("all-unsynchronized", "16", "NONE", "0", "0"),
-    ("clean-agreement", "3", "stratum04.pdx.example.net", "3", "0"),
-    ("dispersion-tie-name", "3", "pool03.bcn.example.net", "3", "0"),
-    ("eligibility-filter", "3", "sync04.atl.example.net", "2", "0"),
-    ("lowest-stratum-outlier", "5", "tick04.ams.example.net", "2", "1"),
-    ("majority-wider", "3", "chrony03.jfk.example.net", "4", "1"),
-    ("nested-offsets", "4", "ntp00.gru.example.net", "3", "0"),
-    ("one-out-of-four", "3", "stratum01.icn.example.net", "3", "1"),
-    ("overlap-not-offset", "3", "chrony04.syd.example.net", "3", "1"),
-    ("single-eligible", "5", "chrony01.bcn.example.net", "1", "0"),
-    ("stratum-tie-dispersion", "4", "tick00.hkg.example.net", "3", "0"),
-    ("tolerated-outlier", "3", "clock03.jfk.example.net", "2", "1"),
-    ("two-of-three", "3", "refclk01.yyz.example.net", "2", "1"),
-    ("zero-width", "3", "sync04.ams.example.net", "3", "0"),
-]
-
-# Rows a disclosed shortcut emits on the visible graph but the full rule set
-# forbids. Each witnesses that the corresponding rule is load-bearing.
-OVERLAP_EXTRA = ("overlap-not-offset", "3", "chrony04.syd.example.net", "4", "0")
-F_ZERO_EXTRA = ("lowest-stratum-outlier", "16", "NONE", "0", "3")
-FIXED_MAJORITY_EXTRA = ("majority-wider", "3", "chrony03.jfk.example.net", "5", "0")
-ALL_CANDIDATES_EXTRA = ("eligibility-filter", "2", "time02.bcn.example.net", "4", "0")
-DISPERSION_PEER_EXTRA = ("clean-agreement", "5", "ntp04.lhr.example.net", "3", "0")
-
-# Rows a shortcut emits that a correct answer must not contain.
-SHORTCUT_ROWS_ABSENT = [
-    OVERLAP_EXTRA,
-    ("one-out-of-four", "3", "stratum01.icn.example.net", "4", "0"),
-    F_ZERO_EXTRA,
-    ("majority-wider", "16", "NONE", "0", "5"),
-    FIXED_MAJORITY_EXTRA,
-    ALL_CANDIDATES_EXTRA,
-    DISPERSION_PEER_EXTRA,
-    ("stratum-tie-dispersion", "5", "tock01.nrt.example.net", "3", "0"),
-]
+_MEM_CAP_BYTES = 2 * 1024 * 1024 * 1024
+_NOBODY_UID = 65534
+_NOBODY_GID = 65534
+_MIN_FIXTURES = 60
+_MIN_VALID_CASES = 40
+_MIN_ERROR_CASES = 15
+_MIN_VALID_QUARTICS = 5
+_MIN_CASE_KIND_COUNT = 3
+_MIN_MINTED_CASES = 8
+_MIN_METAMORPHIC_CASES = 3
+_MIN_ACNODE_CASES = 3  # double points with a complex-conjugate tangent pair
+_MIN_REALMEET_GE2 = 3  # curves meeting z = 0 in two or more distinct real points
+_SANDBOX_ENV = {
+    "PATH": "/usr/bin:/bin",
+    "HOME": "/tmp",
+    "TMPDIR": "/tmp",
+    "LC_ALL": "C",
+}
 
 
-def _probe_count(query):
-    columns, rows, err = run_query(query, VISIBLE_GRAPH)
-    assert rows is not None, err
-    (row,) = rows
-    return int(row[columns.index("n")])
+def _sandbox():
+    resource.setrlimit(resource.RLIMIT_AS, (_MEM_CAP_BYTES, _MEM_CAP_BYTES))
+    with contextlib.suppress(OSError):
+        os.setgroups([])
+    os.setgid(_NOBODY_GID)
+    os.setuid(_NOBODY_UID)
 
 
-# ---- answer file basics ----
+def _run(data):
+    fd, path = tempfile.mkstemp(dir="/tmp", suffix=".in")
+    try:
+        with os.fdopen(fd, "w", newline="") as f:
+            f.write(data)
+        os.chmod(path, 0o644)
+        res = subprocess.run(
+            [PROG, path],
+            capture_output=True,
+            timeout=120,
+            preexec_fn=_sandbox,
+            env=_SANDBOX_ENV,
+            cwd="/tmp",
+            check=False,
+        )
+    finally:
+        os.unlink(path)
+    stderr = res.stderr.decode("utf-8", errors="replace")
+    assert res.returncode == 0, (
+        f"candidate exited nonzero ({res.returncode}): {stderr!r}"
+    )
+    for sig in (
+        "Segmentation fault",
+        "stack smashing",
+        "double free",
+        "corrupted",
+        "terminate called",
+        "Aborted",
+        "core dumped",
+        "AddressSanitizer",
+    ):
+        assert sig not in stderr, f"crash signature {sig!r}: {stderr!r}"
+    return res.stdout.decode("utf-8")
 
 
-def test_answer_file_exists():
-    """The agent wrote a query to /app/answer.cypher."""
-    assert os.path.exists(ANSWER_PATH)
+def _fixture_names():
+    out = []
+    for name in sorted(os.listdir(FIXROOT)):
+        d = os.path.join(FIXROOT, name)
+        if os.path.isdir(d) and os.path.exists(os.path.join(d, "input.txt")):
+            out.append(name)
+    return out
 
 
-def test_answer_file_not_empty(answer_text):
-    """The submitted answer file is not blank or whitespace only."""
-    assert answer_text.strip() != ""
+NAMES = _fixture_names()
 
 
-def test_answer_executes_on_visible_graph(answer_visible_raw):
-    """The submitted query runs without error against the committed visible graph."""
-    _, rows, err = answer_visible_raw
-    assert rows is not None, f"query execution failed: {err}"
+def _read(name):
+    d = os.path.join(FIXROOT, name)
+    with open(os.path.join(d, "input.txt"), newline="") as f:
+        data = f.read()
+    with open(os.path.join(d, "expected.txt"), newline="") as f:
+        expected = f.read()
+    return data, expected
 
 
-def test_answer_returns_exact_column_set(answer_visible_raw):
-    """The submitted query returns exactly the five requested output columns."""
-    columns, rows, err = answer_visible_raw
-    assert rows is not None, err
-    assert set(columns) == set(REQUIRED_COLUMNS)
+@pytest.mark.parametrize("name", NAMES)
+def test_fixture(name):
+    data, expected = _read(name)
+    recomputed = oracle.solve(data)
+    assert recomputed == expected, f"golden disagrees with oracle on {name}"
+    got = _run(data)
+    assert got == expected, (
+        f"candidate byte-mismatch on {name}: got {got!r} want {expected!r}"
+    )
 
 
-def test_answer_returns_at_least_one_row(answer_visible_normalized):
-    """The submitted query produces a non-empty result-set on the visible graph."""
-    assert len(answer_visible_normalized) > 0
+def test_corpus_size():
+    assert len(NAMES) >= _MIN_FIXTURES, (
+        f"need >= {_MIN_FIXTURES} fixtures, have {len(NAMES)}"
+    )
 
 
-def test_answer_reports_every_client_exactly_once(answer_visible_normalized):
-    """The submitted query returns exactly one certification row per client."""
-    names = [row[0] for row in answer_visible_normalized]
-    assert sorted(names) == sorted(ALL_CLIENTS)
+def _fields(text):
+    return dict(
+        line.split(" = ") for line in text.strip("\n").split("\n") if " = " in line
+    )
 
 
-def test_answer_counts_are_integers(answer_visible_normalized):
-    """Every stratum, truechimer and falseticker value returned is an integer."""
-    for _, stratum, _, truechimers, falsetickers in answer_visible_normalized:
-        assert stratum.lstrip("-").isdigit()
-        assert truechimers.isdigit()
-        assert falsetickers.isdigit()
+def test_case_coverage():
+    valid = err = 0
+    d4valid = 0
+    acnode = realmeet_ge2 = 0
+    have = {"node": 0, "cusp": 0, "smooth": 0}
+    for name in NAMES:
+        _, expected = _read(name)
+        if expected == "ERROR\n":
+            err += 1
+            continue
+        valid += 1
+        f = _fields(expected)
+        if f["degree"] == "4":
+            d4valid += 1
+        if int(f["doublepoints"]) > 0:
+            have["node"] += 1
+        if int(f["cusps"]) > 0:
+            have["cusp"] += 1
+        if int(f["doublepoints"]) == 0 and int(f["cusps"]) == 0:
+            have["smooth"] += 1
+        # a double point whose branches are complex conjugate (acnode) exists
+        # exactly when crunodes falls short of the total double-point count
+        if int(f["doublepoints"]) > int(f["crunodes"]):
+            acnode += 1
+        if int(f["realmeet"]) >= 2:
+            realmeet_ge2 += 1
+    assert valid >= _MIN_VALID_CASES, f"need >= {_MIN_VALID_CASES} valid, have {valid}"
+    assert err >= _MIN_ERROR_CASES, f"need >= {_MIN_ERROR_CASES} ERROR, have {err}"
+    assert d4valid >= _MIN_VALID_QUARTICS, (
+        f"need >= {_MIN_VALID_QUARTICS} valid quartics, have {d4valid}"
+    )
+    for k, v in have.items():
+        assert v >= _MIN_CASE_KIND_COUNT, (
+            f"need >= {_MIN_CASE_KIND_COUNT} {k} curves, have {v}"
+        )
+    assert acnode >= _MIN_ACNODE_CASES, (
+        f"need >= {_MIN_ACNODE_CASES} acnode (crunodes<doublepoints) curves, have {acnode}"
+    )
+    assert realmeet_ge2 >= _MIN_REALMEET_GE2, (
+        f"need >= {_MIN_REALMEET_GE2} curves with realmeet>=2, have {realmeet_ge2}"
+    )
 
 
-def test_answer_system_peer_is_never_blank(answer_visible_normalized):
-    """No row carries an empty or unbound system_peer instead of a name or NONE."""
-    for _, _, peer, _, _ in answer_visible_normalized:
-        assert peer != ""
+# ---------------- input serialization ----------------
+def _ser(F, d):
+    terms = sorted(F.items(), key=lambda kv: kv[0], reverse=True)
+    lines = [f"{d} {len(terms)}"]
+    for (i, j, k), c in terms:
+        lines.append(f"{i} {j} {k} {int(c)}")
+    return "\n".join(lines) + "\n"
 
 
-# ---- full set equality on the visible graph ----
+def _deg(F):
+    return max(sum(k) for k in F)
 
 
-def test_visible_result_set_matches_reference_exactly(
-    answer_visible_normalized, visible_reference
-):
-    """The submitted query's result-set equals the independently recomputed answer."""
-    assert answer_visible_normalized == visible_reference
+_FERMAT4 = {(4, 0, 0): Fr(1), (0, 4, 0): Fr(1), (0, 0, 4): Fr(1)}
+_NODAL3 = {(0, 2, 1): Fr(1), (3, 0, 0): Fr(-1), (2, 0, 1): Fr(-1)}
+_CUSP3 = {(0, 2, 1): Fr(1), (3, 0, 0): Fr(-1)}
+_SMOOTH3 = {(3, 0, 0): Fr(1), (0, 3, 0): Fr(1), (0, 0, 3): Fr(1)}
 
 
-def test_visible_result_has_no_extra_rows(answer_visible_normalized, visible_reference):
-    """The submitted query returns no row absent from the recomputed result-set."""
-    assert answer_visible_normalized - visible_reference == set()
+def _minted():
+    cases = {}
+    mats = [
+        [[1, 0, 0], [3, 1, 0], [0, 2, 1]],
+        [[1, 0, 2], [0, 1, 0], [0, 0, 1]],
+        [[2, 1, 1], [0, 1, 3], [0, 0, 1]],
+    ]
+    for bn, base in [
+        ("smooth3", _SMOOTH3),
+        ("nodal3", _NODAL3),
+        ("cusp3", _CUSP3),
+        ("smooth4", _FERMAT4),
+    ]:
+        for mi, M in enumerate(mats):
+            F = census.linsub(base, M)
+            if _deg(F) != _deg(base) or any(
+                abs(int(c)) > oracle.COEFBOUND for c in F.values()
+            ):
+                continue
+            if census.census(F) == "ERROR":
+                continue
+            cases[f"mint_{bn}_{mi}"] = _ser(F, _deg(F))
+    # large-coefficient scaling: same curve, huge intermediate arithmetic
+    for s in (37, 911):
+        cases[f"mint_scale_{s}"] = _ser({k: v * s for k, v in _NODAL3.items()}, 3)
+    return cases
 
 
-def test_visible_result_is_missing_no_rows(
-    answer_visible_normalized, visible_reference
-):
-    """The submitted query omits no row present in the recomputed result-set."""
-    assert visible_reference - answer_visible_normalized == set()
+MINTED = _minted()
 
 
-def test_visible_result_row_count_matches_reference(
-    answer_visible_normalized, visible_reference
-):
-    """The submitted query returns the same number of rows as the recomputed answer."""
-    assert len(answer_visible_normalized) == len(visible_reference)
+@pytest.mark.parametrize("name", sorted(MINTED))
+def test_minted(name):
+    data = MINTED[name]
+    expected = oracle.solve(data)
+    got = _run(data)
+    assert got == expected, (
+        f"candidate byte-mismatch on {name}: got {got!r} want {expected!r}"
+    )
 
 
-@pytest.mark.parametrize("expected_row", EXPECTED_ANCHOR_ROWS)
-def test_expected_anchor_row_present(answer_visible_normalized, expected_row):
-    """A named scenario's certified stratum, peer and two counts is present."""
-    assert expected_row in answer_visible_normalized
+def test_minted_nonempty():
+    assert len(MINTED) >= _MIN_MINTED_CASES, (
+        f"need >= {_MIN_MINTED_CASES} minted cases, have {len(MINTED)}"
+    )
 
 
-@pytest.mark.parametrize("client_name", ALL_CLIENTS)
-def test_each_client_row_matches_reference(
-    answer_visible_normalized, visible_reference, client_name
-):
-    """For each client, the submitted certification row equals the recomputed row."""
-    answer_row = {row for row in answer_visible_normalized if row[0] == client_name}
-    reference_row = {row for row in visible_reference if row[0] == client_name}
-    assert answer_row == reference_row
+# ---------------- metamorphic: projective invariance ----------------
+_GL3 = [[1, 1, 0], [0, 1, 1], [1, 0, 1]]  # det 2, invertible over Q
 
 
-@pytest.mark.parametrize("wrong_row", SHORTCUT_ROWS_ABSENT)
-def test_shortcut_row_absent(answer_visible_normalized, wrong_row):
-    """A row a shortcut policy emits but the full rule set forbids is absent."""
-    assert wrong_row not in answer_visible_normalized
+def _metamorphic():
+    cases = []
+    for bn, base in [("smooth4", _FERMAT4), ("nodal3", _NODAL3), ("cusp3", _CUSP3)]:
+        F = census.linsub(base, _GL3)
+        if _deg(F) != _deg(base):
+            continue
+        if any(abs(int(c)) > oracle.COEFBOUND for c in F.values()):
+            continue
+        base_out = oracle.solve(_ser(base, _deg(base)))
+        cases.append((f"meta_{bn}", _ser(F, _deg(F)), base_out))
+    return cases
 
 
-# ---- reference query cross-check against the independent oracle ----
+METAMORPHIC = _metamorphic()
 
 
-def test_reference_cypher_matches_oracle_on_visible_graph(
-    reference_visible_normalized, visible_reference
-):
-    """The committed reference query reproduces the independently recomputed answer."""
-    assert reference_visible_normalized == visible_reference
-
-
-def test_reference_cypher_matches_oracle_on_hidden_graph(
-    reference_hidden_normalized, hidden_reference
-):
-    """The reference query reproduces the recomputed answer on the hidden graph."""
-    assert reference_hidden_normalized == hidden_reference
-
-
-# ---- disclosed shortcuts are each load-bearing ----
-
-
-def test_overlap_shortcut_diverges(naive_overlap_text, visible_reference):
-    """Counting a candidate whose interval merely overlaps the intersection,
-    rather than whose offset lies inside it, over-counts a truechimer."""
-    columns, rows, err = run_query(naive_overlap_text, VISIBLE_GRAPH)
-    assert rows is not None, err
-    naive_rows = normalize_rows(columns, rows)
-    assert naive_rows != visible_reference
-    assert OVERLAP_EXTRA in naive_rows - visible_reference
-
-
-def test_f_zero_shortcut_diverges(naive_f_zero_text, visible_reference):
-    """Refusing to tolerate any falseticker leaves a client that needs one
-    dropped outlier wrongly unsynchronized."""
-    columns, rows, err = run_query(naive_f_zero_text, VISIBLE_GRAPH)
-    assert rows is not None, err
-    naive_rows = normalize_rows(columns, rows)
-    assert naive_rows != visible_reference
-    assert F_ZERO_EXTRA in naive_rows - visible_reference
-
-
-def test_fixed_majority_shortcut_diverges(naive_fixed_majority_text, visible_reference):
-    """Using a fixed strict-majority region instead of the tolerated
-    intersection admits an offset the tighter intersection excludes."""
-    columns, rows, err = run_query(naive_fixed_majority_text, VISIBLE_GRAPH)
-    assert rows is not None, err
-    naive_rows = normalize_rows(columns, rows)
-    assert naive_rows != visible_reference
-    assert FIXED_MAJORITY_EXTRA in naive_rows - visible_reference
-
-
-def test_all_candidates_shortcut_diverges(naive_all_candidates_text, visible_reference):
-    """Admitting ineligible servers to the selection changes at least one row."""
-    columns, rows, err = run_query(naive_all_candidates_text, VISIBLE_GRAPH)
-    assert rows is not None, err
-    naive_rows = normalize_rows(columns, rows)
-    assert naive_rows != visible_reference
-    assert ALL_CANDIDATES_EXTRA in naive_rows - visible_reference
-
-
-def test_dispersion_peer_shortcut_diverges(
-    naive_dispersion_peer_text, visible_reference
-):
-    """Ordering the peer ladder by dispersion before stratum reseats the peer."""
-    columns, rows, err = run_query(naive_dispersion_peer_text, VISIBLE_GRAPH)
-    assert rows is not None, err
-    naive_rows = normalize_rows(columns, rows)
-    assert naive_rows != visible_reference
-    assert DISPERSION_PEER_EXTRA in naive_rows - visible_reference
+def _projective_lines(text):
+    """All output lines except realmeet. The six census invariants are stable
+    under a linear change of coordinates; realmeet is anchored to the fixed line
+    z = 0 and is not, so it is excluded from the invariance comparison."""
+    return "".join(
+        ln + "\n"
+        for ln in text.strip("\n").split("\n")
+        if not ln.startswith("realmeet ")
+    )
 
 
 @pytest.mark.parametrize(
-    "naive_fixture",
-    [
-        "naive_overlap_text",
-        "naive_f_zero_text",
-        "naive_fixed_majority_text",
-        "naive_all_candidates_text",
-        "naive_dispersion_peer_text",
-    ],
+    "case_id,new_input,base_out", METAMORPHIC, ids=[c[0] for c in METAMORPHIC]
 )
-def test_shortcut_is_load_bearing(request, naive_fixture, visible_reference):
-    """Each disclosed shortcut moves at least one row away from the reference."""
-    text = request.getfixturevalue(naive_fixture)
-    columns, rows, err = run_query(text, VISIBLE_GRAPH)
-    assert rows is not None, err
-    naive_rows = normalize_rows(columns, rows)
-    assert len(naive_rows - visible_reference) > 0
-
-
-# ---- intersection-algorithm coupling ----
-
-
-def test_overlap_without_offset_is_a_falseticker(visible_reference):
-    """A wide interval overlapping the agreed region, whose offset lies outside
-    it, is certified a falseticker, not a truechimer."""
-    (row,) = [r for r in visible_reference if r[0] == "overlap-not-offset"]
-    assert row[3] == "3" and row[4] == "1"
-
-
-def test_a_tolerated_outlier_still_synchronizes(visible_reference):
-    """A client with one disagreeing server still certifies against the rest."""
-    (row,) = [r for r in visible_reference if r[0] == "tolerated-outlier"]
-    assert row[2] != NO_PEER and row[3] == "2" and row[4] == "1"
-
-
-def test_wider_majority_would_admit_an_extra_offset(visible_reference):
-    """The tolerated intersection is tighter than a strict-majority region: the
-    stray offset is excluded, leaving one falseticker."""
-    (row,) = [r for r in visible_reference if r[0] == "majority-wider"]
-    assert row[3] == "4" and row[4] == "1"
-
-
-def test_fully_disjoint_client_is_unsynchronized(visible_reference):
-    """A client whose measurements never agree is left unsynchronized."""
-    (row,) = [r for r in visible_reference if r[0] == "all-disjoint"]
-    assert row[1] == UNSYNCHRONIZED and row[2] == NO_PEER and row[3] == "0"
-
-
-# ---- anti-hardcode ----
-
-
-def test_literal_list_matches_reference_on_visible_graph(
-    literal_list_text, visible_reference
-):
-    """A hardcoded row list reproduces the answer on the graph it was copied from."""
-    columns, rows, err = run_query(literal_list_text, VISIBLE_GRAPH)
-    assert rows is not None, err
-    assert normalize_rows(columns, rows) == visible_reference
-
-
-def test_literal_list_diverges_from_reference_on_hidden_graph(
-    literal_list_text, hidden_reference
-):
-    """The hardcoded row list fails to reproduce the answer on the hidden-seed graph."""
-    columns, rows, err = run_query(literal_list_text, HIDDEN_GRAPH)
-    assert rows is not None, err
-    assert normalize_rows(columns, rows) != hidden_reference
-
-
-# ---- generalization to the hidden graph ----
-
-
-def test_answer_executes_on_hidden_graph(answer_hidden_raw):
-    """The submitted query also runs without error against the hidden-seed graph."""
-    _, rows, err = answer_hidden_raw
-    assert rows is not None, f"query execution failed on the hidden graph: {err}"
-
-
-def test_hidden_result_returns_exact_column_set(answer_hidden_raw):
-    """The submitted query returns exactly the five columns on the hidden graph."""
-    columns, rows, err = answer_hidden_raw
-    assert rows is not None, err
-    assert set(columns) == set(REQUIRED_COLUMNS)
-
-
-def test_hidden_result_set_matches_reference_exactly(
-    answer_hidden_normalized, hidden_reference
-):
-    """The submitted query generalizes: its result-set equals the hidden-graph answer."""
-    assert answer_hidden_normalized == hidden_reference
-
-
-def test_hidden_result_row_count_matches_reference(
-    answer_hidden_normalized, hidden_reference
-):
-    """The submitted query returns the same row count as the hidden reference answer."""
-    assert len(answer_hidden_normalized) == len(hidden_reference)
-
-
-@pytest.mark.parametrize("client_name", ALL_CLIENTS)
-def test_each_hidden_client_row_matches_reference(
-    answer_hidden_normalized, hidden_reference, client_name
-):
-    """For each client on the hidden graph, the submitted row equals the recomputed row."""
-    answer_row = {row for row in answer_hidden_normalized if row[0] == client_name}
-    reference_row = {row for row in hidden_reference if row[0] == client_name}
-    assert answer_row == reference_row
-
-
-def test_hidden_reference_result_is_nonempty(hidden_reference):
-    """The hidden-seed graph's independently recomputed answer is non-trivial."""
-    assert len(hidden_reference) > 0
-
-
-def test_hidden_reference_differs_from_visible_reference(
-    hidden_reference, visible_reference
-):
-    """The hidden-seed graph is a genuinely different instance, not a copy."""
-    assert hidden_reference != visible_reference
-
-
-def test_hidden_graph_is_a_separate_database_from_the_visible_graph():
-    """The hidden-seed graph is stored as its own database directory."""
-    assert os.path.abspath(HIDDEN_GRAPH) != os.path.abspath(VISIBLE_GRAPH)
-    assert os.path.isdir(HIDDEN_GRAPH)
-    assert os.path.isdir(VISIBLE_GRAPH)
-
-
-def test_hidden_server_names_are_disjoint_from_visible():
-    """No server identity is shared between the visible and hidden graphs."""
-
-    def servers(graph):
-        columns, rows, err = run_query("MATCH (s:Server) RETURN s.name AS name", graph)
-        assert rows is not None, err
-        return {row[columns.index("name")] for row in rows}
-
-    assert servers(VISIBLE_GRAPH) & servers(HIDDEN_GRAPH) == set()
-
-
-# ---- structural invariants of the shipped visible graph ----
-
-
-def test_an_unreachable_server_exists_in_the_visible_graph():
-    """Some candidate is measured against an unreachable server."""
-    assert (
-        _probe_count(
-            "MATCH (k:Candidate)-[:FROM_SERVER]->(s:Server) "
-            "WHERE NOT s.reachable RETURN count(k) AS n"
-        )
-        > 0
+def test_metamorphic(case_id, new_input, base_out):
+    ora = oracle.solve(new_input)
+    assert _projective_lines(ora) == _projective_lines(base_out), (
+        f"projective invariance broken (oracle) on {case_id}"
+    )
+    got = _run(new_input)
+    assert got == ora, (
+        f"candidate breaks invariance on {case_id}: got {got!r} want {ora!r}"
     )
 
 
-def test_an_unsynchronized_server_exists_in_the_visible_graph():
-    """Some candidate is measured against a server whose own stratum is 16."""
-    assert (
-        _probe_count(
-            "MATCH (k:Candidate)-[:FROM_SERVER]->(s:Server) "
-            "WHERE s.stratum = 16 RETURN count(k) AS n"
-        )
-        > 0
+def test_metamorphic_nonempty():
+    assert len(METAMORPHIC) >= _MIN_METAMORPHIC_CASES, (
+        f"need >= {_MIN_METAMORPHIC_CASES} metamorphic cases, have {len(METAMORPHIC)}"
     )
-
-
-def test_a_zero_width_interval_exists_in_the_visible_graph():
-    """Some candidate's correctness interval is a single position."""
-    assert (
-        _probe_count("MATCH (k:Candidate) WHERE k.lo = k.hi RETURN count(k) AS n") > 0
-    )
-
-
-def test_every_offset_lies_within_its_interval():
-    """Each candidate's measured offset falls inside its own correctness interval."""
-    assert (
-        _probe_count(
-            "MATCH (k:Candidate) WHERE k.offset < k.lo OR k.offset > k.hi "
-            "RETURN count(k) AS n"
-        )
-        == 0
-    )
-
-
-def test_a_server_backs_more_than_one_client_in_the_visible_graph():
-    """Some server is measured by candidates belonging to several clients."""
-    assert (
-        _probe_count(
-            "MATCH (s:Server) "
-            "WHERE COUNT { MATCH (k:Candidate)-[:FROM_SERVER]->(s), "
-            "(k)-[:OF]->(c:Client) } > 1 RETURN count(s) AS n"
-        )
-        > 0
-    )
-
-
-def test_visible_answer_contains_a_synchronized_client(visible_reference):
-    """At least one client is certified against a real system peer."""
-    assert any(peer != NO_PEER for _, _, peer, _, _ in visible_reference)
-
-
-def test_visible_answer_contains_an_unsynchronized_client(visible_reference):
-    """At least one client is certified unsynchronized."""
-    assert any(peer == NO_PEER for _, _, peer, _, _ in visible_reference)
-
-
-def test_visible_answer_contains_a_falseticker(visible_reference):
-    """At least one eligible candidate is certified a falseticker."""
-    assert any(int(falsetickers) > 0 for *_, falsetickers in visible_reference)
-
-
-def test_visible_answer_contains_a_truechimer(visible_reference):
-    """At least one eligible candidate is certified a truechimer."""
-    assert any(int(row[3]) > 0 for row in visible_reference)
-
-
-def test_unsynchronized_clients_report_stratum_sixteen(visible_reference):
-    """Every client without a system peer reports stratum 16 and no truechimer."""
-    for _, stratum, peer, truechimers, _ in visible_reference:
-        if peer == NO_PEER:
-            assert stratum == UNSYNCHRONIZED
-            assert truechimers == "0"
-
-
-def test_synchronized_clients_have_a_truechimer(visible_reference):
-    """Every client with a system peer has at least one truechimer."""
-    for _, _, peer, truechimers, _ in visible_reference:
-        if peer != NO_PEER:
-            assert int(truechimers) > 0
-
-
-def test_visible_reference_result_has_meaningful_size(visible_reference):
-    """The recomputed answer is large enough for set equality to be a real bar."""
-    assert len(visible_reference) >= 20
