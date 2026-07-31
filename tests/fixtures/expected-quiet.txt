@@ -1,0 +1,29 @@
+host millbeck interfaces 6 bonds 4 vlans 3 addresses 7 carrying 2
+iface        slot   bond         plc state    rule
+nic0         b00    agg3           2 SPARE    spare.ladder
+nic1         b01    agg1           1 UNWIRED  cold.never-up
+nic2         b02    agg0           1 UNWIRED  cold.never-up
+nic3         b03    agg3           1 SPARE    spare.ladder
+nic4         b04    agg3           3 BEARING  bear.carry
+nic5         b05    agg1           2 BEARING  bear.carry
+bond         dec enr cnt flr bearer       state    rule
+agg0           2   1   0   1 -            STINTED  stint.floor-lost
+agg1           1   2   1   0 nic5         FULL     full.assembled
+agg2           0   0   0   0 -            DOWN     down.no-member
+agg3           3   3   3   2 nic4         FULL     full.assembled
+vlan         parent         tag std state
+tag0         agg0           100   0 QUIET
+tag1         nic1           200   1 UP
+tag2         agg3           300   1 UNMADE
+address            iface        dep state      rule
+192.168.7.1        agg0          2 OUSTED     oust.stinted
+192.168.7.1        nic1          1 OUSTED     oust.depth
+192.168.7.1        tag1          2 STANDING   stand.won
+192.168.7.13       tag0          3 UNCLAIMED  cold.never-claimed
+192.168.7.17       tag2          3 STANDING   stand.sole
+192.168.7.5        agg0          2 SET-ASIDE  aside.stinted
+192.168.7.9        nic0          1 STANDING   stand.sole
+interfaces BEARING 2 SPARE 2 BARE 0 DARK 0 UNWIRED 2
+bonds FULL 2 THIN 0 STINTED 1 DOWN 1 UNMADE 0
+vlans UP 1 QUIET 1 DOWN 0 UNMADE 1
+addresses STANDING 3 OUSTED 2 SET-ASIDE 1 DROPPED 0 UNCLAIMED 1

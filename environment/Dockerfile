@@ -1,27 +1,31 @@
-# Canonical, digest-pinned base image (Python family - provides python3 for the
-# pytest verifier).
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
-
-# tmux + asciinema are REQUIRED by the agent runtime. golang-go builds the
-# supervisor.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        asciinema \
-        ca-certificates \
-        golang-go \
-        tmux \
-    && rm -rf /var/lib/apt/lists/*
-
-# Hash-locked verifier deps (requirements.lock). Baked at build time so test.sh
-# never touches the network (task.toml: allow_internet = false).
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    ca-certificates \
+    python3 \
+    python3-pip \
+    python3-venv \
+    tmux \
+    asciinema && \
+    rm -rf /var/lib/apt/lists/*
 COPY requirements.lock /tmp/requirements.lock
-RUN pip install --no-cache-dir --require-hashes --no-deps -r /tmp/requirements.lock
-
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+    --require-hashes --no-deps -r /tmp/requirements.lock
 WORKDIR /app
-COPY go.mod PROTOCOL.md /app/
-COPY cmd/ /app/cmd/
-COPY samples/ /app/samples/
-RUN mkdir -p /app/out \
-    && go build -o /app/reclaim ./cmd/reclaim
-
+COPY --chmod=0777 app/ /app/
+RUN mkdir -p /app/bin /app/var/lib/linkctl && \
+    chmod 0777 /app/bin /app/var /app/var/lib /app/var/lib/linkctl /opt && \
+    mkdir -p /opt/go-cache && chmod 0777 /opt/go-cache
+ENV GOFLAGS=-mod=mod
+ENV GOCACHE=/opt/go-cache
+ENV GOTOOLCHAIN=local
+ENV CGO_ENABLED=0
+ENV GOPROXY=off
+ENV GOSUMDB=off
+ENV PATH=/usr/local/go/bin:/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+RUN ln -sf /usr/local/go/bin/go    /usr/bin/go && \
+    ln -sf /usr/local/go/bin/gofmt /usr/bin/gofmt && \
+    printf 'export PATH=/usr/local/go/bin:/go/bin:$PATH\nexport GOCACHE=/opt/go-cache\nexport GOPROXY=off\nexport GOSUMDB=off\nexport GOFLAGS=-mod=mod\nexport GOTOOLCHAIN=local\nexport CGO_ENABLED=0\n' > /etc/profile.d/go.sh && \
+    chmod 0644 /etc/profile.d/go.sh && \
+    printf '\nif ! command -v go >/dev/null 2>&1; then export PATH=/usr/local/go/bin:/go/bin:$PATH; fi\nexport GOCACHE=/opt/go-cache\nexport GOPROXY=off\nexport GOSUMDB=off\nexport GOFLAGS=-mod=mod\nexport GOTOOLCHAIN=local\nexport CGO_ENABLED=0\n' >> /etc/bash.bashrc
 CMD ["/bin/bash"]

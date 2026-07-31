@@ -1,0 +1,16 @@
+1 : link-down : nic1 : -
+2 : link-up : nic0 : -
+3 : detach : agg3 : nic1
+4 : attach : agg2 : nic0
+5 : claim : 192.168.7.9 : nic0
+6 : release : 192.168.7.13 : tag0
+7 : raise : tag1 : -
+8 : lower : tag2 : -
+9 : lower : agg1 : -
+10 : attach : agg1 : nic0
+11 : raise : agg1 : -
+12 : attach : agg3 : nic3
+13 : release : 192.168.7.9 : nic0
+14 : claim : 192.168.7.9 : nic0
+15 : link-up : nic5 : -
+16 : attach : agg1 : nic1

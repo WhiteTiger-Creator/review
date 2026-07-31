@@ -1,3 +1,0 @@
-# Verifier dependencies - kept for reference; Dockerfile installs from requirements.lock.
-pytest==8.4.1
-pytest-json-ctrf==0.3.5

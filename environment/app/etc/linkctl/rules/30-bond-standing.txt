@@ -1,0 +1,175 @@
+THE LINK RULES
+RAISING, LOWERING, THE MEMBER FLOOR AND THE BOND STATE LADDER (N079 through N112)
+
+--- Raise and lower (N079 through N086) ---
+
+N079  A bond STANDS where it has been raised and has not been lowered since. At the open it
+stands where the bond table wrote it yes, by N017.
+
+N080  A RAISE STEP naming a bond makes that bond stand from that instant, and from that instant
+onward it HAS BEEN RAISED AT SOME MOMENT. That reading is never undone by a later lower step.
+
+N081  A RAISE REBUILDS THE LADDER. At the instant of a raise the bond's ladder is emptied and
+built afresh from the member table, in declared ladder order, under the enrolment rule at N044.
+THIS IS ONE OF THE PLACES THESE RULES PART COMPANY WITH ORDINARY PRACTICE, where bringing an
+assembly back up restores the membership it had. EVERYTHING THE RUN GATHERED ON THAT LADDER IS
+DISCARDED AT THAT INSTANT: a member attached during the run and not declared by the member
+table is dropped, a member moved to the top by an attach step goes back to its declared place,
+and a member another bond took away is taken back where N044 allows it.
+
+N082  A raise gives up the bond's carry, by N071. The carry is then taken afresh under N068 in
+the same order of work.
+
+N083  A RAISE CLEARS REDUCED STANDING. At the instant of a raise the bond is no longer in
+reduced standing, and its standing is weighed afresh from that instant by N092. THIS IS THE
+ONLY WAY REDUCED STANDING IS EVER CLEARED; N093 says so again.
+
+N084  A raise step on a bond that already stands does every one of these things again: the
+ladder is rebuilt, the carry is given up and retaken, and reduced standing is cleared.
+
+N085  A LOWER STEP naming a bond makes that bond stop standing from that instant, and its carry
+is given up by N071. ITS LADDER IS LEFT EXACTLY AS IT STANDS: no member is released, every
+member keeps its place, and the ladder is rebuilt only at a later raise. A member of a lowered
+bond therefore still prints that bond and that place in the interface block, and still stands
+on a ladder for the purposes of N042 and N044.
+
+N086  A BOND LOWERED AND RAISED AGAIN BEFORE THE CLOSE IS NOT DOWN. Every state in this
+rulebook speaks only of the close, by N077. At that raise its ladder was rebuilt by N081 and
+its reduced standing was cleared by N083.
+
+--- The member floor and reduced standing (N087 through N096) ---
+
+N087  A bond's member floor is read from the bond table by N015 and never changes.
+
+N088  A bond is UNDER ITS FLOOR at a moment where all three of these hold: it stands; at least
+one member is enrolled on its ladder; and its COUNTED COLUMN, by N062, is BELOW its member
+floor. The counted column is the one weighed, never the enrolled column and never the declared
+count.
+
+N089  A BOND WHOSE MEMBER FLOOR IS ZERO IS NEVER UNDER ITS FLOOR, because a count of whole
+members is never below zero. Such a bond is never in reduced standing and is never STINTED. It
+is FULL or THIN while it holds members, and DOWN while it holds none.
+
+N090  A bond that does not stand is not weighed against its floor at any moment. It cannot
+enter reduced standing while it is down.
+
+N091  A bond standing with NO MEMBER ENROLLED AT ALL is not weighed against its floor either.
+The no-member test at N097 settles it, and that test is weighed FIRST.
+
+N092  ENTRY INTO REDUCED STANDING. The instant a bond is under its floor by N088 it enters
+REDUCED STANDING. THIS IS ONE OF THE PLACES THESE RULES PART COMPANY WITH ORDINARY PRACTICE,
+where an assembly that falls below its minimum member count loses carrier and takes its
+addresses down with it. HERE THE BOND DOES NOT GO DOWN. It stays up, it keeps every member on
+its ladder, it keeps every address record declared on it, and it stands in a reduced standing
+whose three consequences are given at N094 and nowhere else.
+
+N093  REDUCED STANDING IS STICKY. THIS IS ONE OF THE PLACES THESE RULES PART COMPANY WITH
+ORDINARY PRACTICE, where an assembly recovers the moment enough members come back. MEMBERS
+RETURNING DO NOT CLEAR IT. A bond that has been under its floor and has since regained every
+member it lost is STILL in reduced standing at the close and is STILL STINTED, and its token
+says which of the two happened, by N103. It is cleared at ONE moment only: a raise, by N083. So
+a lower step followed by a raise step clears it, a raise on a bond that already stands clears
+it, and nothing else does.
+
+N094  WHAT REDUCED STANDING DOES. THREE THINGS HOLD AND NO OTHERS:
+      FIRST the bond's carry stands vacant, by N066, so no member bears for it and every
+      standing member of it is SPARE with spare.vacant.
+      SECOND of the records declared on that bond and claimed at the close, every one except
+      its top-ranked claimed record is SET-ASIDE, by N129.
+      THIRD the one surviving claimed record on it is weighed LAST in the address contest, by
+      rung one of N135.
+Nothing else changes. In particular the bond's members keep their links, their places and their
+enrolment, the bond keeps its VLANs, and every VLAN over it is ruled without reference to it by
+N115.
+
+N095  A bond in reduced standing STILL STANDS. It is not DOWN, it is not lowered, its members
+are not released, and a later step may still detach a member from it, attach a member to it or
+lower it.
+
+N096  A BOND EVERY ONE OF WHOSE MEMBERS HAS LOST ITS LINK IS NOT DOWN. Its members are still
+enrolled by N057, so the no-member test at N097 does not answer. Its counted column is zero, so
+it is in reduced standing where its floor is one or more, and where its floor is zero it is
+merely short of full membership. Its carry stands vacant either way, by N073.
+
+--- The bond state ladder (N097 through N106) ---
+
+N097  EVERY BOND THE BOND TABLE NAMES takes EXACTLY ONE state out of this closed set of five.
+The rungs are weighed IN THIS ORDER and the FIRST one that answers is the state:
+      rung 1  it has NEVER been raised at any moment                          UNMADE
+      rung 2  it does not stand at the close                                  DOWN
+      rung 3  it stands and NO MEMBER IS ENROLLED on its ladder               DOWN
+      rung 4  it is in reduced standing at the close                          STINTED
+      rung 5  its counted column is BELOW its declared count                  THIN
+      rung 6  none of the above                                               FULL
+THE NO-MEMBER TEST AT RUNG 3 IS WEIGHED BEFORE THE FLOOR TEST AT RUNG 4, and it asks about
+ENROLMENT and not about link standing. That is why N096 holds.
+
+N098  UNMADE is the state of a bond the run never raised and the bond table did not write
+raised at the open. Its ladder was never built, so its enrolled and counted columns are both
+zero; its declared count and its floor still print.
+
+N099  DOWN is the state of a bond that does not stand at the close, whether it was lowered by a
+step or was standing at the open and never raised again, and it is also the state of a bond
+that stands with no member enrolled at all. Which of the two happened is carried by the token,
+at N103.
+
+N100  STINTED is the state of a bond that stands, holds at least one member, and is in reduced
+standing at the close. It stands: it is not DOWN and it is not failed.
+
+N101  THIN is the state of a bond that stands, holds at least one member, is not in reduced
+standing, and whose counted column is BELOW the number of members it declares. It is short of
+full membership but it is at or above its floor, so it still bears.
+
+N102  FULL is the state of a bond that stands, holds at least one member, is not in reduced
+standing, and whose counted column is AT OR ABOVE the number of members it declares.
+
+N103  Every bond prints exactly one RULE TOKEN out of this closed set of seven. Under each
+state the rungs are weighed IN THIS ORDER and the FIRST that answers is the token:
+      FULL     rung 1  always                                              full.assembled
+      THIN     rung 1  always                                              thin.short
+      STINTED  rung 1  its counted column is BELOW its floor at the close   stint.floor-lost
+               rung 2  its counted column is AT OR ABOVE its floor at the
+                       close and the standing was never cleared            stint.held-over
+      DOWN     rung 1  it does not stand at the close                      down.lowered
+               rung 2  it stands with no member enrolled                   down.no-member
+      UNMADE   rung 1  always                                             cold.never-raised
+
+N104  The two STINTED tokens are the visible difference between a bond that is under its floor
+NOW and a bond that WAS under its floor and has since regained its members while the standing
+was never cleared. stint.floor-lost is the first, stint.held-over is the second, and the
+direction is fixed by N103 and never inferred from anything else.
+
+N105  The two DOWN tokens are weighed in the order N103 gives: a bond that does not stand at
+the close prints down.lowered even where its ladder is also empty, and down.no-member prints
+only for a bond that DOES stand.
+
+N106  A BOND OF EXACTLY ONE DECLARED MEMBER. While that member is enrolled the bond is never
+DOWN by the no-member test, whatever its link is doing; where its link is down it is STINTED
+under a floor of one or more and THIN under a floor of zero, by N096. Detaching that member
+empties the ladder, and from that instant the bond is DOWN with down.no-member while it stands.
+
+--- Bonds at the edges, and the head line's carrying count (N107 through N112) ---
+
+N107  A BOND WHOSE MEMBER FLOOR EQUALS THE NUMBER OF MEMBERS IT DECLARES falls under its floor
+the moment one counted member is lost, so it goes STRAIGHT TO STINTED WITHOUT EVER PASSING
+THROUGH THIN. Because reduced standing is sticky by N093 it does not come back without a lower
+step and a raise step.
+
+N108  A BOND STANDING WITH NO MEMBER ENROLLED IS DOWN, by rung 3 of N097. This holds even where
+its member floor is zero, because the no-member test is weighed before the floor test and does
+not read the floor at all.
+
+N109  A bond that was never raised prints its declared count from the member table, an enrolled
+column of zero, a counted column of zero, its floor from the bond table, and a single hyphen in
+the bearer column.
+
+N110  A bond that was lowered prints the enrolled and counted columns its ladder left it with,
+by N085, and a single hyphen in the bearer column.
+
+N111  THE CARRYING COUNT on the head line is the number of bonds for which SOME MEMBER BEARS at
+the close, that is, the number of bonds whose carry is held. It is NOT the number of bonds that
+stand, and it is not the number of bonds that are FULL.
+
+N112  A bond takes no part in any address contest beyond what N094 gives it. Whether it stands,
+whether it is STINTED and whether it is DOWN changes nothing about a record declared on it
+except through N094; N133 says so from the other side.

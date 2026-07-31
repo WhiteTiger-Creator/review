@@ -1,0 +1,207 @@
+THE LINK RULES
+LINKS, LADDERS, MEMBERS AND THE CARRY (N035 through N078)
+
+These clauses settle which links stand, which members a bond holds and in what order, which of
+them count, and which single member bears for the bond. They are weighed before the bond
+standing clauses at N079 and are what those clauses read.
+
+--- Link standing across the run (N035 through N040) ---
+
+N035  At every moment of the run a physical interface's link either STANDS or does not. At the
+open it stands where the interface table wrote it up and does not where the table wrote it
+down, by N010.
+
+N036  A LINK-DOWN STEP names one physical interface. Its link stops standing from that instant.
+A LINK-DOWN STEP ON A LINK THAT ALREADY DOES NOT STAND CHANGES NOTHING ANYWHERE.
+
+N037  A LINK-UP STEP names one physical interface. Its link stands from that instant. A LINK-UP
+STEP ON A LINK THAT ALREADY STANDS CHANGES NOTHING ANYWHERE.
+
+N038  A LINK-UP STEP ON A LINK THAT HAS NEVER STOOD makes it stand from that instant, and from
+that instant onward it has stood at some moment. Such an interface is therefore NOT UNWIRED at
+the close, whatever its link does afterwards.
+
+N039  An interface HAS STOOD AT SOME MOMENT where the interface table wrote it up at the open,
+or where a link-up step reached it at any point of the run. This reading is never undone by a
+later link-down step.
+
+N040  Nothing else moves a link's standing. A bond step, a VLAN step and an address step leave
+every link exactly as they found it, and a link that is not named by a link step keeps its
+standing from the open to the close.
+
+--- The ladder and what stands on it (N041 through N048) ---
+
+N041  A bond's LADDER is an ordered list of the physical interfaces enrolled in it, read from
+the TOP downward. The member at the top holds place one, the next holds place two, and so on
+down. The member standing LOWEST on the ladder is the one holding the highest place number,
+that is, the BOTTOM-MOST member.
+
+N042  A PHYSICAL INTERFACE STANDS ON AT MOST ONE LADDER AT ANY MOMENT. This holds whether or
+not the bond holding it stands: a bond that has been lowered still holds the members its ladder
+carries, by N085, and a member it holds is a member no other bond can take except under N044.
+
+N043  ENROLMENT AT A RAISE. When a bond is raised its ladder is built afresh from the member
+table. Its declared members are taken IN DECLARED LADDER ORDER, top line first, and each one in
+turn is weighed under the enrolment rule at N044. A member the rule refuses is simply left off
+and the ladder is that much shorter; the members that follow it are still weighed.
+
+N044  THE ENROLMENT RULE, and it is the same rule at a raise and at an attach step. THIS IS ONE
+OF THE PLACES THESE RULES PART COMPANY WITH ORDINARY PRACTICE, where the bond that claimed a
+device first is usually the one that keeps it. Here the two cases are weighed in this order:
+      FIRST, where the member stands on no ladder at all, the enrolling bond takes it and
+      nothing else is weighed.
+      SECOND, where the member already stands on ANOTHER bond's ladder, the bond standing LOWER
+      IN THE BOND TABLE takes it. So where the enrolling bond stands lower in the table than
+      the bond holding the member, the member is REMOVED from the holder's ladder and enrolled
+      in the enrolling bond. Where the enrolling bond stands HIGHER in the table than the
+      holder, the enrolment takes nothing at all, the holder keeps the member unchanged, and
+      the enrolling bond's ladder is shorter by one.
+Lower in the bond table means further down the file, by N014.
+
+N045  Where the member already stands on the ENROLLING bond's own ladder, the enrolment takes
+and the member's place is settled by the clause that called for it: N043 at a raise, N051 at an
+attach.
+
+N046  A bond may enrol a member the member table does not declare for it, but only through an
+attach step. A raise enrols the declared members and no others.
+
+N047  Where the enrolment rule takes a member away from a bond that held it, that bond's carry
+is given up at that instant if the member taken was the one bearing, by N071. The bond keeps
+every other member on its ladder, at their unchanged places.
+
+N048  The enrolment rule weighs the LADDERS and not the standing of any bond. A bond that does
+not stand still holds its members against a higher bond, and a bond that does not stand is
+still weighed as the holder in N044.
+
+--- Attach and detach (N049 through N056) ---
+
+N049  An ATTACH STEP names a bond and a physical interface.
+
+N050  AN ATTACH STEP ON A BOND THAT DOES NOT STAND DOES NOTHING AT ALL. A bond that has not
+been raised, or that has been lowered and not raised since, enrols nobody.
+
+N051  Where the bond stands and the enrolment rule at N044 takes the member, THE MEMBER JOINS
+THE TOP OF THE LADDER, at place one, pushing every other member down one place. THIS IS ONE OF
+THE PLACES THESE RULES PART COMPANY WITH ORDINARY PRACTICE, where a device put back into an
+assembly usually returns to its declared place. It joins the top and never its declared place
+and never the bottom. Under N068 the top is the COLDEST place on the ladder: a member at the
+top bears only where it is the last member counting.
+
+N052  AN ATTACH STEP NAMING A MEMBER THAT BOND ALREADY HOLDS moves that member to the TOP of
+the ladder. It is not doubled and it is not left where it was.
+
+N053  AN ATTACH STEP NAMING A MEMBER ANOTHER BOND HOLDS is settled by the enrolment rule at
+N044, exactly as at a raise. Where the attaching bond stands lower in the bond table it takes
+the member and puts it at the top of its own ladder. Where it does not, THE ATTACH TAKES
+NOTHING, both ladders are unchanged, and nothing else in the estate moves.
+
+N054  A DETACH STEP names a bond and a member. Where that bond's ladder holds that member, the
+member LEAVES THE LADDER AT THAT INSTANT, whether or not the bond stands, and the members below
+it move up one place each. The bond's carry is given up if the member detached was the one
+bearing, by N071.
+
+N055  A DETACH STEP NAMING A MEMBER THAT BOND DOES NOT HOLD CHANGES NOTHING ANYWHERE, whether
+the member stands on another bond's ladder or on none.
+
+N056  A member that has left a bond by a detach step at any moment of the run HAS LEFT A BOND
+IN THE RUN, and N149 reads that when it chooses between the two BARE tokens. It is enrolled
+again only where a later attach step or a later raise enrols it.
+
+--- A member whose link drops (N057 through N060) ---
+
+N057  A MEMBER WHOSE LINK GOES DOWN STAYS ENROLLED, AT ITS UNCHANGED PLACE ON THE LADDER. THIS
+IS ONE OF THE PLACES THESE RULES PART COMPANY WITH ORDINARY PRACTICE, where a device that loses
+carrier is released from its assembly and taken back when carrier returns. Here only two things
+ever take a member off a ladder: a detach step by N054, and a raise rebuilding the ladder by
+N081. Nothing else does.
+
+N058  A member whose link does not stand STOPS COUNTING for its bond while the link is down,
+and COUNTS AGAIN the instant its link comes back, at its unchanged place.
+
+N059  A member whose link comes back NEVER MOVES ON THE LADDER. It does not go to the top, it
+does not go to the bottom, and it does not go to its declared place. It is where it already
+was.
+
+N060  The PLACE printed for a member in the report is its place on the ladder at the close,
+counted from the top, one for the top. An interface no ladder holds at the close prints a
+single hyphen in that column and a single hyphen in the bond column.
+
+--- The three member columns (N061 through N064) ---
+
+N061  THE ENROLLED COLUMN of a bond is the number of members standing on its ladder at the
+close, whatever their links are doing and whether or not the bond stands.
+
+N062  THE COUNTED COLUMN of a bond is the number of members on its ladder WHOSE LINK STANDS.
+A member counts where it is enrolled AND its link stands, and in no other case.
+
+N063  THE COUNTED COLUMN IS THE ONE WEIGHED AGAINST THE MEMBER FLOOR, at N088, and against the
+declared count at N097. The enrolled column is never weighed against either; it is printed and
+nothing more.
+
+N064  THE DECLARED COLUMN of a bond is the number of members the member table declares for it,
+by N022. It never changes during the run.
+
+--- The carry (N065 through N074) ---
+
+N065  THE CARRY. At most one member of a bond BEARS for it at any moment. The member bearing is
+the one holding the bond's carry. Where a bond's carry is held by no member the carry STANDS
+VACANT.
+
+N066  A bond's carry can be held at all only where these three hold together, and they are
+weighed in this order: FIRST the bond stands; SECOND at least one member is enrolled on its
+ladder; THIRD the bond is not in reduced standing, by N094. Where any one of the three fails
+the carry stands vacant and no member bears for that bond.
+
+N067  Where the carry stands vacant, every enrolled member of that bond whose link stands is
+SPARE and carries the token spare.vacant, by N149. None of them bears.
+
+N068  WHO TAKES A VACANT CARRY. Of the members whose links stand and which therefore count, the
+one standing LOWEST ON THE LADDER, that is, the BOTTOM-MOST counting member, takes the carry.
+THIS IS ONE OF THE PLACES THESE RULES PART COMPANY WITH ORDINARY PRACTICE, where an assembly
+bears on a nominated primary or on the first available member from the top. Here the direction
+is downward and the bottom-most counting member is the one that bears.
+
+N069  THE CARRY NEVER MOVES WHILE THE MEMBER HOLDING IT STILL COUNTS. THIS IS ONE OF THE PLACES
+THESE RULES PART COMPANY WITH ORDINARY PRACTICE, where an assembly fails back to its primary as
+soon as the primary returns. Here the carry is taken afresh under N068 ONLY at a moment when no
+member holds it, and never at any other moment.
+
+N070  It follows that A MEMBER WHOSE LINK COMES BACK BELOW THE BEARER TAKES NOTHING, even
+though it now stands lower on the ladder than the member bearing. The bearer holds the carry
+until it stops counting or the carry is given up under N071.
+
+N071  A bond's carry is GIVEN UP at once, and stands vacant from that instant, at any of these
+moments: the link of the member holding it goes down; that member is detached by N054; that
+member is taken away by the enrolment rule at N044; the bond is lowered by N085; the bond is
+raised by N082; or the bond enters reduced standing by N092. At the same instant the carry may
+be taken afresh by N068 where the bond may still bear.
+
+N072  The carry of every bond is weighed after the open and after every step of the run, in the
+order of work at N075.
+
+N073  A bond none of whose enrolled members has a standing link has NO COUNTING MEMBER, so its
+carry stands vacant. This is true whatever its floor is and whatever its state.
+
+N074  THE BEARER COLUMN of the bond block prints the name of the member bearing for that bond
+at the close, or a SINGLE HYPHEN where the carry stands vacant.
+
+--- The order of work, and what the run is not (N075 through N078) ---
+
+N075  THE ORDER OF WORK AT EVERY STEP, weighed in this order and no other:
+      FIRST the step itself is applied in full, by the clause for its kind.
+      SECOND every bond is weighed against its member floor, IN BOND TABLE ORDER, by N092.
+      THIRD the carry of every bond is settled, IN BOND TABLE ORDER, by N066 and N068.
+
+N076  The same order of work is done ONCE AT THE OPEN, after every bond written raised at the
+open has been raised in bond table order, and before step one is read. N034 says so again.
+
+N077  No state of any interface, bond, VLAN or record is decided during the run. Every state in
+the report is read off THE CLOSING ARRANGEMENT, after the last step has been weighed, except
+where a clause says outright that it reads something that happened at some moment: whether a
+link ever stood, whether a bond was ever raised, whether a VLAN was ever raised, whether a
+record was ever claimed, whether a member ever left a bond, and whether a bond ever fell under
+its floor without being raised since.
+
+N078  THE STEPS OF THE RUN TAKE NO RULING OF THEIR OWN. No step is given a state, no step is
+counted, no step is listed and no count of steps appears anywhere in the report. The run exists
+only to move persistent hardware and standing configuration from one arrangement to another.

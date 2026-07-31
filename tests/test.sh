@@ -1,47 +1,34 @@
 #!/bin/bash
-# Verifier entry point. pytest + plugins are baked into the image at build time;
-# the network is offline at run time (task.toml: allow_internet = false), so this
-# script must NOT install anything or fetch from the network.
-set -uo pipefail
-export PYTHONDONTWRITEBYTECODE=1
-
-if [ "$PWD" = "/" ]; then
-    echo "Error: No working directory set. Set a WORKDIR in the Dockerfile." >&2
-    mkdir -p /logs/verifier
-    echo 0 > /logs/verifier/reward.txt
-    exit 0
-fi
-
 mkdir -p /logs/verifier
-# Fail-safe: a crash or timeout before the reward block below still grades 0.
 echo 0 > /logs/verifier/reward.txt
 
-# The image WORKDIR is /app, which the agent may write to. Everything below
-# keeps the runner and its configuration off that tree: run from /tests, resolve
-# pytest through the installed console script rather than `python3 -m pytest`
-# (only the module form puts the working directory on sys.path), pin the ini and
-# the rootdir, and stop conftest discovery at /tests.
-cd /tests || exit 0
-export PYTHONSAFEPATH=1
-export PYTHONNOUSERSITE=1
-unset PYTHONPATH PYTHONSTARTUP PYTHONINSPECT
+if [ "$PWD" = "/" ]; then
+    echo "Error: No working directory set."
+    exit 1
+fi
 
-/usr/local/bin/pytest \
-    -p no:cacheprovider \
-    -c /tests/pytest.ini \
-    -o addopts= \
-    --rootdir=/tests \
-    --confcutdir=/tests \
-    --ctrf /logs/verifier/ctrf.json \
-    /tests/test_outputs.py -rA
-# Canonical reward block below. Keep NOTHING (not even comments) between
-# `rc=$?` and its `if`. The platform's static check requires them adjacent
-# (a blank line is fine, a comment line is not). Do NOT add a trailing `exit`
-# after `fi` either (check_test_sh will fail CI). Harbor reads reward.txt, not
-# the script exit code.
-rc=$?
+export PATH="/usr/local/go/bin:/go/bin:${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
+export GOCACHE="${GOCACHE:-/opt/go-cache}"
+export GOPROXY="${GOPROXY:-off}"
+export GOSUMDB="${GOSUMDB:-off}"
+export GOFLAGS="${GOFLAGS:--mod=mod}"
+export GOTOOLCHAIN="${GOTOOLCHAIN:-local}"
+export CGO_ENABLED="${CGO_ENABLED:-0}"
 
-if [ "$rc" -eq 0 ]; then
+mkdir -p /app/bin /app/var/lib/linkctl
+if ! ( cd /app/opt/linkctl && /usr/local/go/bin/go build -o /app/bin/linkctl . ); then
+    echo "the link tool's sources did not build"
+    echo 0 > /logs/verifier/reward.txt
+    exit 1
+fi
+
+export LINKCTL_BIN=/app/bin/linkctl
+export LINKCTL_SRC=/app/opt/linkctl
+export HOUSE_LINK_ROOT=/app/host
+
+python3 -m pytest -o cache_dir=/tmp/pytest_cache \
+  --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
+if [ $? -eq 0 ]; then
     echo 1 > /logs/verifier/reward.txt
 else
     echo 0 > /logs/verifier/reward.txt

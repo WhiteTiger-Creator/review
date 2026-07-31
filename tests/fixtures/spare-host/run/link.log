@@ -1,0 +1,15 @@
+1 : claim : 172.16.4.26 : vif9
+2 : claim : 172.16.4.2 : vif7
+3 : claim : 172.16.4.14 : team0
+4 : claim : 172.16.4.6 : vif9
+5 : claim : 172.16.4.26 : enp5
+6 : claim : 172.16.4.10 : vif8
+7 : link-down : enp3 : -
+8 : link-down : enp4 : -
+9 : detach : team3 : enp6
+10 : release : 172.16.4.18 : enp7
+11 : claim : 172.16.4.2 : team1
+12 : claim : 172.16.4.6 : team0
+13 : claim : 172.16.4.10 : enp6
+14 : link-up : enp3 : -
+15 : lower : vif7 : -

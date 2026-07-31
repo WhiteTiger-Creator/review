@@ -1,0 +1,14 @@
+eth0 : p00 : up
+eth1 : p01 : up
+eth2 : p02 : up
+eth3 : p03 : up
+eth4 : p04 : up
+eth5 : p05 : up
+eth6 : p06 : up
+eth7 : p07 : up
+eth8 : p08 : up
+eth9 : p09 : up
+eth10 : p10 : up
+eth11 : p11 : up
+eth12 : p12 : down
+eth13 : p13 : up
