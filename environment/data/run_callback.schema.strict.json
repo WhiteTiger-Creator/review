@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MLflow Run Callback",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_id",
+    "run_id",
+    "experiment_id",
+    "graph_digest",
+    "policy_version",
+    "schema_version",
+    "status",
+    "occurred_at",
+    "metrics"
+  ],
+  "properties": {
+    "event_id": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "experiment_id": {"type": "string", "minLength": 1},
+    "graph_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "policy_version": {"type": "string", "minLength": 1},
+    "schema_version": {"type": "string", "minLength": 1},
+    "status": {
+      "type": "string",
+      "enum": ["PENDING", "RUNNING", "FINISHED", "FAILED", "KILLED"]
+    },
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "metrics": {"type": "object"},
+    "artifact_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {"enum": ["FINISHED", "FAILED", "KILLED"]}
+        }
+      },
+      "then": {"required": ["artifact_digest"]}
+    }
+  ]
+}

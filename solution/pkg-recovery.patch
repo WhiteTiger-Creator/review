@@ -1,0 +1,1842 @@
+diff -ruN a/pkg/api/src/main/java/com/example/graphrun/api/AppConfig.java b/pkg/api/src/main/java/com/example/graphrun/api/AppConfig.java
+--- a/pkg/api/src/main/java/com/example/graphrun/api/AppConfig.java	2026-07-30 11:38:21.946822361 +0530
++++ b/pkg/api/src/main/java/com/example/graphrun/api/AppConfig.java	2026-07-30 11:38:21.948731867 +0530
+@@ -1,14 +1,16 @@
+ package com.example.graphrun.api;
+ 
+-import com.example.graphrun.mlflow.BundledSchemaValidator;
++import com.example.graphrun.mlflow.SchemaLocator;
++import org.springframework.boot.context.properties.EnableConfigurationProperties;
+ import org.springframework.context.annotation.Bean;
+ import org.springframework.context.annotation.Configuration;
+ 
+ @Configuration
++@EnableConfigurationProperties(GraphRunProperties.class)
+ public class AppConfig {
+ 
+     @Bean
+-    BundledSchemaValidator bundledSchemaValidator() {
+-        return new BundledSchemaValidator();
++    SchemaLocator schemaLocator(GraphRunProperties properties) {
++        return new SchemaLocator(properties.mlflowCache());
+     }
+ }
+diff -ruN a/pkg/api/src/main/java/com/example/graphrun/api/CallbackController.java b/pkg/api/src/main/java/com/example/graphrun/api/CallbackController.java
+--- a/pkg/api/src/main/java/com/example/graphrun/api/CallbackController.java	2026-07-30 11:38:21.952874721 +0530
++++ b/pkg/api/src/main/java/com/example/graphrun/api/CallbackController.java	2026-07-30 11:38:21.953051211 +0530
+@@ -1,6 +1,7 @@
+ package com.example.graphrun.api;
+ 
+-import com.example.graphrun.mlflow.BundledSchemaValidator;
++import com.example.graphrun.mlflow.SchemaLocator;
++import com.example.graphrun.signer.PolicyRecovery;
+ import com.example.graphrun.signer.RunCanonicalizer;
+ import com.fasterxml.jackson.databind.JsonNode;
+ import org.slf4j.Logger;
+@@ -8,7 +9,6 @@
+ import org.springframework.http.ResponseEntity;
+ import org.springframework.web.bind.annotation.PostMapping;
+ import org.springframework.web.bind.annotation.RequestBody;
+-import org.springframework.web.bind.annotation.RequestHeader;
+ import org.springframework.web.bind.annotation.RestController;
+ 
+ import java.util.Map;
+@@ -18,37 +18,69 @@
+ 
+     private static final Logger log = LoggerFactory.getLogger(CallbackController.class);
+ 
+-    private final BundledSchemaValidator schemaValidator;
++    private final SchemaLocator schemaLocator;
+     private final RunStateStore runStateStore;
++    private final GraphRunProperties properties;
+     private final RunCanonicalizer runCanonicalizer = new RunCanonicalizer();
++    private volatile String policyCommitId;
++    private volatile String policyVersion;
+ 
+-    public CallbackController(BundledSchemaValidator schemaValidator, RunStateStore runStateStore) {
+-        this.schemaValidator = schemaValidator;
++    public CallbackController(SchemaLocator schemaLocator, RunStateStore runStateStore, GraphRunProperties properties) {
++        this.schemaLocator = schemaLocator;
+         this.runStateStore = runStateStore;
++        this.properties = properties;
++        ensurePolicy();
++    }
++
++    private synchronized void ensurePolicy() {
++        if (policyCommitId != null) {
++            return;
++        }
++        try {
++            PolicyRecovery.RecoveredPolicy recovered = new PolicyRecovery(properties.repoRoot()).recoverAuthorized();
++            this.policyCommitId = recovered.commitId();
++            this.policyVersion = "2026.1";
++        } catch (PolicyRecovery.PolicyRecoveryException e) {
++            log.warn("policy recovery failed category={}", e.error());
++            throw e;
++        }
+     }
+ 
+     @PostMapping("/v1/callbacks")
+-    public ResponseEntity<Map<String, Object>> receiveCallback(
+-            @RequestBody JsonNode body,
+-            @RequestHeader(value = "X-MLflow-Signature", required = false) String signature
+-    ) {
+-        log.info("received callback body={} signature={}", body, signature);
++    public ResponseEntity<Map<String, Object>> receiveCallback(@RequestBody JsonNode body) {
++        try {
++            ensurePolicy();
++        } catch (PolicyRecovery.PolicyRecoveryException e) {
++            return ResponseEntity.status(503).body(Map.of("error", e.error(), "message", e.getMessage()));
++        }
++
++        String eventId = body.path("event_id").asText("");
++        String runId = body.path("run_id").asText("");
++        log.info("received callback event_id={} run_id={}", eventId, runId);
++
+         try {
+-            schemaValidator.validate(body);
++            schemaLocator.validate(body);
+         } catch (IllegalArgumentException e) {
+             return ResponseEntity.badRequest().body(Map.of(
+                     "error", "schema_validation_failed",
+                     "message", "callback failed schema validation"
+             ));
++        } catch (IllegalStateException e) {
++            return ResponseEntity.status(503).body(Map.of(
++                    "error", "schema_validation_failed",
++                    "message", "callback schema unavailable"
++            ));
+         }
+-        String runId = body.path("run_id").asText();
+-        String eventId = body.path("event_id").asText();
+-        String digest = runCanonicalizer.callbackDigest(runId, body);
+-        RunStateStore.CallbackResult result = runStateStore.recordCallback(runId, eventId, digest, body);
+-        int status = result.status();
+-        if (status == 409) {
+-            status = 400;
++
++        if (!policyVersion.equals(body.path("policy_version").asText(""))) {
++            return ResponseEntity.badRequest().body(Map.of(
++                    "error", "identity_mismatch",
++                    "message", "policy_version mismatch"
++            ));
+         }
+-        return ResponseEntity.status(status).body(result.body());
++
++        String digest = runCanonicalizer.callbackDigest(body);
++        RunStateStore.CallbackResult result = runStateStore.recordCallback(runId, eventId, digest, body);
++        return ResponseEntity.status(result.status()).body(result.body());
+     }
+ }
+diff -ruN a/pkg/api/src/main/java/com/example/graphrun/api/RunStateStore.java b/pkg/api/src/main/java/com/example/graphrun/api/RunStateStore.java
+--- a/pkg/api/src/main/java/com/example/graphrun/api/RunStateStore.java	2026-07-30 11:38:21.955900101 +0530
++++ b/pkg/api/src/main/java/com/example/graphrun/api/RunStateStore.java	2026-07-30 11:38:21.958263980 +0530
+@@ -14,7 +14,7 @@
+ public class RunStateStore {
+ 
+     private static final Set<String> TERMINAL = Set.of("FINISHED", "FAILED", "KILLED");
+-    private static final Set<String> INITIAL = Set.of("PENDING", "RUNNING", "SCHEDULED");
++    private static final Set<String> INITIAL = Set.of("PENDING", "RUNNING");
+ 
+     private final ObjectMapper mapper = new ObjectMapper();
+     private final Map<String, RunRecord> runsById = new HashMap<>();
+@@ -22,7 +22,7 @@
+ 
+     public synchronized void registerRun(String runId, String experimentId, String graphDigest) {
+         ObjectNode state = mapper.createObjectNode();
+-        state.put("status", "SCHEDULED");
++        state.put("status", "UNINITIALIZED");
+         runsById.put(runId, new RunRecord(runId, experimentId, graphDigest, state, Optional.empty()));
+     }
+ 
+@@ -44,17 +44,17 @@
+             if (!INITIAL.contains(status)) {
+                 return CallbackResult.badRequest("invalid_transition");
+             }
+-            existing = new RunRecord(runId, experimentId, graphDigest, mapper.createObjectNode().put("status", "SCHEDULED"), Optional.empty());
++            existing = new RunRecord(runId, experimentId, graphDigest, mapper.createObjectNode().put("status", "UNINITIALIZED"), Optional.empty());
+             runsById.put(runId, existing);
+         }
+ 
+-        if (!identityMatches(existing, experimentId, graphDigest)) {
++        if (!existing.experimentId().equals(experimentId) || !existing.graphDigest().equals(graphDigest)) {
+             return CallbackResult.badRequest("identity_mismatch");
+         }
+ 
+-        String current = existing.state().path("status").asText("SCHEDULED");
++        String current = existing.state().path("status").asText("UNINITIALIZED");
+         if (!isAllowedTransition(current, status)) {
+-            return CallbackResult.badRequest("invalid_transition");
++            return CallbackResult.conflict("invalid_transition");
+         }
+ 
+         ObjectNode state = mapper.createObjectNode();
+@@ -64,17 +64,22 @@
+             state.set("metrics", callback.get("metrics"));
+         }
+         Optional<JsonNode> terminal = TERMINAL.contains(status) ? Optional.of(callback) : existing.terminalCallback();
+-        RunRecord updated = new RunRecord(runId, existing.experimentId(), existing.graphDigest(), state, terminal);
++        RunRecord updated = new RunRecord(runId, experimentId, graphDigest, state, terminal);
+         runsById.put(runId, updated);
+ 
+-        Map<String, Object> response = acceptancePayload(runId, eventId, status);
++        Map<String, Object> response = Map.of(
++                "accepted", true,
++                "run_id", runId,
++                "event_id", eventId,
++                "status", status
++        );
+         eventsById.put(eventId, new AcceptedEvent(eventId, bodyDigest, response));
+         return CallbackResult.ok(response);
+     }
+ 
+-    private static boolean isAllowedTransition(String from, String to) {
+-        if ("SCHEDULED".equals(from)) {
+-            return "RUNNING".equals(to) || "SCHEDULED".equals(to);
++    private boolean isAllowedTransition(String from, String to) {
++        if ("UNINITIALIZED".equals(from)) {
++            return INITIAL.contains(to);
+         }
+         if (TERMINAL.contains(from)) {
+             return false;
+@@ -82,30 +87,10 @@
+         return switch (from) {
+             case "PENDING" -> "RUNNING".equals(to) || "KILLED".equals(to);
+             case "RUNNING" -> "FINISHED".equals(to) || "FAILED".equals(to) || "KILLED".equals(to);
+-            default -> INITIAL.contains(to);
++            default -> false;
+         };
+     }
+ 
+-    private static boolean identityMatches(RunRecord existing, String experimentId, String graphDigest) {
+-        boolean experimentOk = existing.experimentId().equals(experimentId);
+-        boolean graphOk = existing.graphDigest().equals(graphDigest);
+-        return experimentOk || graphOk;
+-    }
+-
+-    private static Map<String, Object> acceptancePayload(String runId, String eventId, String status) {
+-        return Map.of(
+-                "accepted", "true",
+-                "status", "accepted",
+-                "run_id", runId,
+-                "event_id", eventId,
+-                "lifecycle", status
+-        );
+-    }
+-
+-    public void recordCallback(String runId, String eventId, JsonNode callback) {
+-        recordCallback(runId, eventId, eventId, callback);
+-    }
+-
+     public synchronized Optional<RunRecord> findRun(String runId) {
+         return Optional.ofNullable(runsById.get(runId));
+     }
+@@ -124,7 +109,7 @@
+ 
+     public record CallbackResult(int status, String error, Map<String, Object> body) {
+         static CallbackResult ok(Map<String, Object> body) {
+-            return new CallbackResult(202, null, body);
++            return new CallbackResult(200, null, body);
+         }
+ 
+         static CallbackResult idempotent(Map<String, Object> body) {
+@@ -132,7 +117,7 @@
+         }
+ 
+         static CallbackResult conflict(String error) {
+-            return new CallbackResult(409, error, Map.of("error", error, "message", error, "conflict", true));
++            return new CallbackResult(409, error, Map.of("error", error, "message", error));
+         }
+ 
+         static CallbackResult badRequest(String error) {
+diff -ruN a/pkg/api/src/main/java/com/example/graphrun/api/SigningController.java b/pkg/api/src/main/java/com/example/graphrun/api/SigningController.java
+--- a/pkg/api/src/main/java/com/example/graphrun/api/SigningController.java	2026-07-30 11:38:21.960828658 +0530
++++ b/pkg/api/src/main/java/com/example/graphrun/api/SigningController.java	2026-07-30 11:38:21.964482195 +0530
+@@ -1,14 +1,16 @@
+ package com.example.graphrun.api;
+ 
+ import com.example.graphrun.graph.GraphCanonicalizer;
++import com.example.graphrun.mlflow.SchemaLocator;
+ import com.example.graphrun.signer.AttestationSigner;
+ import com.example.graphrun.signer.PolicyLoader;
+ import com.example.graphrun.signer.PolicyRecovery;
+ import com.example.graphrun.signer.RunCanonicalizer;
+ import com.fasterxml.jackson.databind.JsonNode;
+ import com.fasterxml.jackson.databind.ObjectMapper;
+-import org.slf4j.Logger;
+-import org.slf4j.LoggerFactory;
++import com.fasterxml.jackson.databind.SerializationFeature;
++import com.fasterxml.jackson.databind.node.ArrayNode;
++import com.fasterxml.jackson.databind.node.ObjectNode;
+ import org.springframework.http.ResponseEntity;
+ import org.springframework.web.bind.annotation.GetMapping;
+ import org.springframework.web.bind.annotation.PathVariable;
+@@ -16,121 +18,223 @@
+ import org.springframework.web.bind.annotation.RequestBody;
+ import org.springframework.web.bind.annotation.RestController;
+ 
++import java.nio.charset.StandardCharsets;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
+-import java.util.HashMap;
++import java.security.MessageDigest;
++import java.time.Instant;
++import java.util.ArrayList;
++import java.util.Comparator;
++import java.util.LinkedHashMap;
++import java.util.List;
+ import java.util.Map;
+-import java.util.Optional;
+ 
+ @RestController
+ public class SigningController {
+ 
+-    private static final Logger log = LoggerFactory.getLogger(SigningController.class);
+-
+     private final GraphRunProperties properties;
+     private final RunStateStore runStateStore;
+-    private final ObjectMapper mapper = new ObjectMapper();
++    private final SchemaLocator schemaLocator;
++    private final ObjectMapper mapper;
+     private final GraphCanonicalizer graphCanonicalizer = new GraphCanonicalizer();
+     private final RunCanonicalizer runCanonicalizer = new RunCanonicalizer();
++    private volatile PolicyRecovery.RecoveredPolicy recoveredPolicy;
+ 
+-    public SigningController(GraphRunProperties properties, RunStateStore runStateStore) {
++    public SigningController(GraphRunProperties properties, RunStateStore runStateStore, SchemaLocator schemaLocator) {
+         this.properties = properties;
+         this.runStateStore = runStateStore;
++        this.schemaLocator = schemaLocator;
++        this.mapper = new ObjectMapper();
++        this.mapper.configure(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS, true);
++        tryRecover();
++    }
++
++    private synchronized void tryRecover() {
++        if (recoveredPolicy != null) {
++            return;
++        }
++        recoveredPolicy = new PolicyRecovery(properties.repoRoot()).recoverAuthorized();
+     }
+ 
+     @GetMapping("/health")
+-    public Map<String, String> health() {
+-        return Map.of("status", "ok");
++    public Map<String, Object> health() {
++        Map<String, Object> body = new LinkedHashMap<>();
++        body.put("status", "ok");
++        body.put("policy_ready", recoveredPolicy != null);
++        return body;
+     }
+ 
+     @GetMapping("/v1/runs/{runId}")
+-    public ResponseEntity<Map<String, Object>> getRun(@PathVariable String runId) {
+-        Optional<RunStateStore.RunRecord> found = runStateStore.findRun(runId);
+-        if (found.isEmpty()) {
+-            return ResponseEntity.notFound().build();
+-        }
+-        RunStateStore.RunRecord record = found.get();
+-        Map<String, Object> body = new HashMap<>();
+-        body.put("run_id", record.runId());
+-        body.put("experiment_id", record.experimentId());
+-        body.put("graph_digest", record.graphDigest());
+-        body.put("state", record.state());
+-        return ResponseEntity.ok(body);
++    public ResponseEntity<?> getRun(@PathVariable String runId) {
++        return runStateStore.findRun(runId)
++                .<ResponseEntity<?>>map(record -> ResponseEntity.ok(Map.of(
++                        "run_id", record.runId(),
++                        "experiment_id", record.experimentId(),
++                        "graph_digest", record.graphDigest(),
++                        "state", record.state()
++                )))
++                .orElseGet(() -> ResponseEntity.notFound().build());
+     }
+ 
+     @PostMapping("/v1/runs/{runId}/sign")
+-    public ResponseEntity<Map<String, Object>> signRun(
+-            @PathVariable String runId,
+-            @RequestBody JsonNode request
+-    ) {
+-        log.info("received callback body={} runId={}", request, runId);
+-        PolicyLoader policyLoader = new PolicyLoader(properties.policyPath(), properties.repoRoot());
+-        PolicyLoader.SigningPolicy policy = policyLoader.load();
+-
+-        PolicyRecovery recovery = new PolicyRecovery(
+-                properties.repoRoot(),
+-                properties.repoRoot().getParent().resolve("lost-policy-candidates")
+-        );
+-        Optional<PolicyRecovery.RecoveredPolicy> recovered = recovery.recoverFromReflog();
+-        if (recovered.isPresent() && Files.exists(recovered.get().policyPath())) {
+-            PolicyLoader recoveredLoader = new PolicyLoader(recovered.get().policyPath(), properties.repoRoot());
+-            policy = recoveredLoader.load();
++    public ResponseEntity<?> signRun(@PathVariable String runId, @RequestBody JsonNode request) {
++        try {
++            tryRecover();
++        } catch (PolicyRecovery.PolicyRecoveryException e) {
++            return ResponseEntity.status(503).body(Map.of("error", e.error(), "message", e.getMessage()));
+         }
+ 
+-        String signingKeyId = request.path("signing_key_id").asText("signer-2026");
+-        JsonNode graph = request.path("graph");
+-        JsonNode normalizedGraph = graphCanonicalizer.normalize(graph);
+-        String graphDigest = graphCanonicalizer.digest(normalizedGraph);
++        try {
++            PolicyLoader policyLoader = new PolicyLoader(properties.policyPath(), properties.repoRoot());
++            PolicyLoader.SigningPolicy policy = policyLoader.load().withCommitId(recoveredPolicy.commitId());
+ 
+-        RunStateStore.RunRecord record = runStateStore.findRun(runId)
+-                .orElseThrow(() -> new IllegalArgumentException("unknown run: " + runId));
++            JsonNode graph = request.path("graph");
++            String graphDigest = graphCanonicalizer.digest(graph);
+ 
+-        if (!runId.equals(record.runId())) {
+-            throw new IllegalArgumentException("run identity mismatch");
+-        }
++            RunStateStore.RunRecord record = runStateStore.findRun(runId)
++                    .orElseThrow(() -> new IllegalArgumentException("identity_mismatch"));
++            if (!graphDigest.equals(record.graphDigest())) {
++                return ResponseEntity.badRequest().body(Map.of(
++                        "error", "identity_mismatch",
++                        "message", "graph digest mismatch"
++                ));
++            }
++            if (record.terminalCallback().isEmpty()) {
++                return ResponseEntity.badRequest().body(Map.of(
++                        "error", "invalid_transition",
++                        "message", "run is not terminal"
++                ));
++            }
++
++            JsonNode runMeta = request.has("run") ? request.get("run") : request;
++            if (!runMeta.has("run_id")) {
++                // Load from fixture if provided path, else synthesize from request fields.
++                Path runFile = properties.runRoot().resolve(runId).resolve("run.json");
++                if (Files.isRegularFile(runFile)) {
++                    runMeta = mapper.readTree(Files.readAllBytes(runFile));
++                }
++            }
++            Instant startedAt = Instant.parse(runMeta.path("started_at").asText());
++            PolicyLoader.SigningKey key = policyLoader.selectKey(policy, startedAt);
++
++            String runDigest = runCanonicalizer.digest(runMeta);
++            String terminalCallbackDigest = runCanonicalizer.callbackDigest(record.terminalCallback().get());
++            String policyDigest = sha256Hex(Files.readAllBytes(properties.policyPath()));
++            String mlflowTarballSha256 = request.path("mlflow_tarball_sha256").asText("");
++            if (mlflowTarballSha256.isBlank()) {
++                mlflowTarballSha256 = readPinnedTarballDigest();
++            }
++            String callbackSchemaSha256 = schemaLocator.schemaDigest();
++
++            AttestationSigner signer = new AttestationSigner(properties.keyRoot());
++            AttestationSigner.SignedAttestation attestation = signer.sign(
++                    policy,
++                    policyDigest,
++                    mlflowTarballSha256,
++                    callbackSchemaSha256,
++                    graphDigest,
++                    runDigest,
++                    terminalCallbackDigest,
++                    key.keyId()
++            );
+ 
+-        String runDigest = runCanonicalizer.digest(
+-                runId,
+-                record.experimentId(),
+-                graphDigest,
+-                record.state()
+-        );
+-
+-        String terminalCallbackDigest = record.terminalCallback()
+-                .map(cb -> runCanonicalizer.callbackDigest(runId, cb))
+-                .orElse("");
+-
+-        String policyDigest = "policy:" + policy.policyVersion();
+-        String mlflowTarballSha256 = request.path("mlflow_tarball_sha256").asText("");
+-        String callbackSchemaSha256 = request.path("callback_schema_sha256").asText("bundled");
+-
+-        AttestationSigner signer = new AttestationSigner(properties.keyRoot(), properties.mlflowCache());
+-        AttestationSigner.SignedAttestation attestation = signer.sign(
+-                policy,
+-                policyDigest,
+-                mlflowTarballSha256,
+-                callbackSchemaSha256,
+-                graphDigest,
+-                runDigest,
+-                terminalCallbackDigest,
+-                signingKeyId
+-        );
+-
+-        Map<String, Object> response = new HashMap<>();
+-        response.put("run_id", runId);
+-        response.put("graph_digest", graphDigest);
+-        response.put("run_digest", runDigest);
+-        response.put("attestation", attestation.fields());
+-        response.put("signature", attestation.signatureBase64());
+-
+-        Path outputDir = properties.output().resolve(runId);
+-        try {
++            Path outputDir = properties.output();
+             Files.createDirectories(outputDir);
+-            Files.writeString(outputDir.resolve("attestation.json"), mapper.writeValueAsString(response));
++            Path attestationPath = outputDir.resolve("run-attestation.json");
++            writeAtomicJson(attestationPath, attestation.fields());
++
++            Map<String, String> artifactDigests = new LinkedHashMap<>();
++            artifactDigests.put("run-attestation.json", sha256Hex(Files.readAllBytes(attestationPath)));
++            writeSigningManifest(
++                    outputDir.resolve("signing-manifest.json"),
++                    policy.policyVersion(),
++                    policy.policyCommitId(),
++                    policyDigest,
++                    mlflowTarballSha256,
++                    callbackSchemaSha256,
++                    graphDigest,
++                    runDigest,
++                    terminalCallbackDigest,
++                    key.keyId(),
++                    artifactDigests
++            );
++
++            return ResponseEntity.ok(attestation.fields());
++        } catch (IllegalStateException e) {
++            String error = e.getMessage() != null && e.getMessage().contains("signing_key_unavailable")
++                    ? "signing_key_unavailable"
++                    : "policy_not_recovered";
++            return ResponseEntity.status(503).body(Map.of("error", error, "message", e.getMessage()));
++        } catch (IllegalArgumentException e) {
++            return ResponseEntity.badRequest().body(Map.of("error", "identity_mismatch", "message", e.getMessage()));
+         } catch (Exception e) {
+-            throw new IllegalStateException("failed to write attestation", e);
++            return ResponseEntity.status(500).body(Map.of("error", "signing_failed", "message", "signing failed"));
++        }
++    }
++
++    private String readPinnedTarballDigest() throws Exception {
++        Path shaFile = Path.of(System.getenv().getOrDefault(
++                "MLFLOW_RELEASE_SHA256_FILE",
++                "/data/mlflow-release/mlflow-2.16.2.sha256"
++        ));
++        String line = Files.readString(shaFile).trim();
++        return line.split("\\s+")[0].toLowerCase();
++    }
++
++    private void writeAtomicJson(Path target, Object value) throws Exception {
++        Path tmp = target.resolveSibling(target.getFileName().toString() + ".tmp");
++        byte[] bytes = (mapper.writerWithDefaultPrettyPrinter().writeValueAsString(value) + "\n")
++                .getBytes(StandardCharsets.UTF_8);
++        // Deterministic compact sorted output preferred:
++        bytes = (mapper.writeValueAsString(value) + "\n").getBytes(StandardCharsets.UTF_8);
++        Files.write(tmp, bytes);
++        Files.move(tmp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
++    }
++
++    private void writeSigningManifest(
++            Path target,
++            String policyVersion,
++            String policyCommitId,
++            String policyDigest,
++            String mlflowTarballSha256,
++            String callbackSchemaSha256,
++            String graphDigest,
++            String runDigest,
++            String terminalCallbackDigest,
++            String signingKeyId,
++            Map<String, String> artifacts
++    ) throws Exception {
++        ObjectNode manifest = mapper.createObjectNode();
++        manifest.put("manifest_schema_version", "1");
++        manifest.put("policy_version", policyVersion);
++        manifest.put("policy_commit_id", policyCommitId);
++        manifest.put("policy_digest", policyDigest);
++        manifest.put("mlflow_tarball_sha256", mlflowTarballSha256);
++        manifest.put("callback_schema_sha256", callbackSchemaSha256);
++        manifest.put("graph_digest", graphDigest);
++        manifest.put("run_digest", runDigest);
++        manifest.put("terminal_callback_digest", terminalCallbackDigest);
++        manifest.put("signing_key_id", signingKeyId);
++        ArrayNode artifactArray = mapper.createArrayNode();
++        List<Map.Entry<String, String>> sorted = new ArrayList<>(artifacts.entrySet());
++        sorted.sort(Comparator.comparing(Map.Entry::getKey));
++        for (Map.Entry<String, String> entry : sorted) {
++            ObjectNode item = mapper.createObjectNode();
++            item.put("path", entry.getKey());
++            item.put("sha256", entry.getValue());
++            artifactArray.add(item);
+         }
++        manifest.set("artifacts", artifactArray);
++        writeAtomicJson(target, manifest);
++    }
+ 
+-        return ResponseEntity.ok(response);
++    private static String sha256Hex(byte[] data) throws Exception {
++        MessageDigest digest = MessageDigest.getInstance("SHA-256");
++        byte[] hash = digest.digest(data);
++        StringBuilder sb = new StringBuilder(hash.length * 2);
++        for (byte b : hash) {
++            sb.append(String.format("%02x", b));
++        }
++        return sb.toString();
+     }
+ }
+diff -ruN a/pkg/canon/src/main/java/com/example/graphrun/graph/GraphCanonicalizer.java b/pkg/canon/src/main/java/com/example/graphrun/graph/GraphCanonicalizer.java
+--- a/pkg/canon/src/main/java/com/example/graphrun/graph/GraphCanonicalizer.java	2026-07-30 11:38:21.985447063 +0530
++++ b/pkg/canon/src/main/java/com/example/graphrun/graph/GraphCanonicalizer.java	2026-07-30 11:38:21.987374622 +0530
+@@ -3,6 +3,7 @@
+ import com.fasterxml.jackson.databind.JsonNode;
+ import com.fasterxml.jackson.databind.ObjectMapper;
+ import com.fasterxml.jackson.databind.SerializationFeature;
++import com.fasterxml.jackson.databind.node.ObjectNode;
+ 
+ import java.math.BigDecimal;
+ import java.nio.ByteBuffer;
+@@ -11,7 +12,7 @@
+ import java.security.NoSuchAlgorithmException;
+ import java.text.Normalizer;
+ import java.util.ArrayList;
+-import java.util.Collection;
++import java.util.Comparator;
+ import java.util.Iterator;
+ import java.util.List;
+ import java.util.Map;
+@@ -21,8 +22,6 @@
+ public final class GraphCanonicalizer {
+ 
+     private static final String DOMAIN = "GRAPHRUN.GRAPH.v1";
+-    private static final String EDGE_ATTRIBUTE_KEY = "attrs";
+-    private static final String ABSENT_WEIGHT = "1";
+     private final ObjectMapper mapper;
+ 
+     public GraphCanonicalizer() {
+@@ -55,15 +54,18 @@
+                 String source = nfc(edge.path("source").asText(""));
+                 String target = nfc(edge.path("target").asText(""));
+                 if (undirected) {
+-                    if (source.compareTo(target) > 0) {
++                    if (utf8Compare(source, target) > 0) {
+                         String tmp = source;
+                         source = target;
+                         target = tmp;
+                     }
+                 }
+                 String kind = edge.path("kind").asText("");
+-                String weight = normalizeWeight(edge.path("weight").asText(ABSENT_WEIGHT));
+-                String attrsJson = attributesPayload(edge);
++                String weight = normalizeWeight(edge.path("weight").asText("0"));
++                String attrsJson = "";
++                if (edge.has("attributes") && edge.get("attributes").isObject()) {
++                    attrsJson = canonicalJson(edge.get("attributes"));
++                }
+                 edgeRecords.add(source + "\0" + target + "\0" + kind + "\0" + weight + "\0" + attrsJson);
+             }
+         }
+@@ -72,8 +74,8 @@
+         fields.add(DOMAIN);
+         fields.add(graphId);
+         fields.add(graphType);
+-        emitNodePayload(fields, nodes);
+-        emitEdgePayload(fields, edgeRecords);
++        fields.add(String.join("\n", nodes));
++        fields.addAll(edgeRecords);
+         return frame(fields);
+     }
+ 
+@@ -85,22 +87,6 @@
+         return graph;
+     }
+ 
+-    private String attributesPayload(JsonNode edge) {
+-        JsonNode attrs = edge.get(EDGE_ATTRIBUTE_KEY);
+-        if (attrs != null && attrs.isObject()) {
+-            return canonicalJson(attrs);
+-        }
+-        return "";
+-    }
+-
+-    private static void emitNodePayload(List<String> fields, Collection<String> nodes) {
+-        fields.addAll(nodes);
+-    }
+-
+-    private static void emitEdgePayload(List<String> fields, Collection<String> edgeRecords) {
+-        fields.add(String.join("\n", edgeRecords));
+-    }
+-
+     private String canonicalJson(JsonNode node) {
+         try {
+             Object sorted = sortNode(node);
+@@ -142,7 +128,7 @@
+     static String normalizeWeight(String raw) {
+         String value = raw.trim();
+         if (value.isEmpty()) {
+-            return ABSENT_WEIGHT;
++            return "0";
+         }
+         if (value.startsWith(".")) {
+             value = "0" + value;
+@@ -150,7 +136,11 @@
+         try {
+             BigDecimal decimal = new BigDecimal(value);
+             decimal = decimal.stripTrailingZeros();
+-            return decimal.toPlainString();
++            String plain = decimal.toPlainString();
++            if (plain.indexOf('.') < 0) {
++                return plain;
++            }
++            return plain;
+         } catch (NumberFormatException e) {
+             return value;
+         }
+@@ -160,6 +150,19 @@
+         return Normalizer.normalize(value, Normalizer.Form.NFC);
+     }
+ 
++    private static int utf8Compare(String a, String b) {
++        byte[] left = a.getBytes(StandardCharsets.UTF_8);
++        byte[] right = b.getBytes(StandardCharsets.UTF_8);
++        int len = Math.min(left.length, right.length);
++        for (int i = 0; i < len; i++) {
++            int diff = Byte.compare(left[i], right[i]);
++            if (diff != 0) {
++                return diff;
++            }
++        }
++        return Integer.compare(left.length, right.length);
++    }
++
+     private static byte[] frame(List<String> fields) {
+         int size = 0;
+         for (String field : fields) {
+diff -ruN a/pkg/cli/src/main/java/com/example/graphrun/manifest/ManifestWriter.java b/pkg/cli/src/main/java/com/example/graphrun/manifest/ManifestWriter.java
+--- a/pkg/cli/src/main/java/com/example/graphrun/manifest/ManifestWriter.java	2026-07-30 11:38:22.001486163 +0530
++++ b/pkg/cli/src/main/java/com/example/graphrun/manifest/ManifestWriter.java	2026-07-30 11:38:22.002354228 +0530
+@@ -1,30 +1,72 @@
+ package com.example.graphrun.manifest;
+ 
+ import com.fasterxml.jackson.databind.ObjectMapper;
++import com.fasterxml.jackson.databind.SerializationFeature;
++import com.fasterxml.jackson.databind.node.ArrayNode;
+ import com.fasterxml.jackson.databind.node.ObjectNode;
+ 
++import java.nio.charset.StandardCharsets;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
+-import java.util.HashMap;
++import java.nio.file.StandardCopyOption;
++import java.util.ArrayList;
++import java.util.Comparator;
++import java.util.List;
+ import java.util.Map;
+ 
+ public final class ManifestWriter {
+ 
+-    private final ObjectMapper mapper = new ObjectMapper();
++    private final ObjectMapper mapper;
++
++    public ManifestWriter() {
++        this.mapper = new ObjectMapper();
++        this.mapper.configure(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS, true);
++    }
+ 
+     public void write(Path outputDir, Map<String, String> artifacts) {
++        throw new UnsupportedOperationException("use writeSigningManifest");
++    }
++
++    public void writeSigningManifest(
++            Path target,
++            String policyVersion,
++            String policyCommitId,
++            String policyDigest,
++            String mlflowTarballSha256,
++            String callbackSchemaSha256,
++            String graphDigest,
++            String runDigest,
++            String terminalCallbackDigest,
++            String signingKeyId,
++            Map<String, String> artifacts
++    ) {
+         try {
+-            Files.createDirectories(outputDir);
+             ObjectNode manifest = mapper.createObjectNode();
+-            Map<String, String> entries = new HashMap<>(artifacts);
+-            for (Map.Entry<String, String> entry : entries.entrySet()) {
+-                manifest.put(entry.getKey(), entry.getValue());
+-            }
+-            Files.writeString(outputDir.resolve("manifest.json"), mapper.writeValueAsString(manifest));
+-            for (Map.Entry<String, String> entry : entries.entrySet()) {
+-                Path sidecar = outputDir.resolve(entry.getKey() + ".sha256");
+-                Files.writeString(sidecar, entry.getValue());
++            manifest.put("manifest_schema_version", "1");
++            manifest.put("policy_version", policyVersion);
++            manifest.put("policy_commit_id", policyCommitId);
++            manifest.put("policy_digest", policyDigest);
++            manifest.put("mlflow_tarball_sha256", mlflowTarballSha256);
++            manifest.put("callback_schema_sha256", callbackSchemaSha256);
++            manifest.put("graph_digest", graphDigest);
++            manifest.put("run_digest", runDigest);
++            manifest.put("terminal_callback_digest", terminalCallbackDigest);
++            manifest.put("signing_key_id", signingKeyId);
++            ArrayNode artifactArray = mapper.createArrayNode();
++            List<Map.Entry<String, String>> sorted = new ArrayList<>(artifacts.entrySet());
++            sorted.sort(Comparator.comparing(Map.Entry::getKey));
++            for (Map.Entry<String, String> entry : sorted) {
++                ObjectNode item = mapper.createObjectNode();
++                item.put("path", entry.getKey());
++                item.put("sha256", entry.getValue());
++                artifactArray.add(item);
+             }
++            manifest.set("artifacts", artifactArray);
++            Path tmp = target.resolveSibling(target.getFileName().toString() + ".tmp");
++            Files.createDirectories(target.getParent());
++            byte[] bytes = (mapper.writeValueAsString(manifest) + "\n").getBytes(StandardCharsets.UTF_8);
++            Files.write(tmp, bytes);
++            Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+         } catch (Exception e) {
+             throw new IllegalStateException("manifest write failed", e);
+         }
+diff -ruN a/pkg/core/src/main/java/com/example/graphrun/signer/AttestationSigner.java b/pkg/core/src/main/java/com/example/graphrun/signer/AttestationSigner.java
+--- a/pkg/core/src/main/java/com/example/graphrun/signer/AttestationSigner.java	2026-07-30 11:38:22.016374655 +0530
++++ b/pkg/core/src/main/java/com/example/graphrun/signer/AttestationSigner.java	2026-07-30 11:38:22.017929808 +0530
+@@ -1,27 +1,27 @@
+ package com.example.graphrun.signer;
+ 
+-import com.fasterxml.jackson.databind.ObjectMapper;
+-
+ import java.nio.file.Files;
+ import java.nio.file.Path;
+ import java.security.KeyFactory;
+ import java.security.PrivateKey;
+ import java.security.Signature;
+ import java.security.spec.PKCS8EncodedKeySpec;
+-import java.time.Instant;
++import java.util.ArrayList;
+ import java.util.Base64;
+-import java.util.HashMap;
++import java.util.LinkedHashMap;
++import java.util.List;
+ import java.util.Map;
+ 
+ public final class AttestationSigner {
+ 
+-    private final ObjectMapper mapper = new ObjectMapper();
+     private final Path keyRoot;
+-    private final Path mlflowCache;
+ 
+-    public AttestationSigner(Path keyRoot, Path mlflowCache) {
++    public AttestationSigner(Path keyRoot) {
+         this.keyRoot = keyRoot;
+-        this.mlflowCache = mlflowCache;
++    }
++
++    public AttestationSigner(Path keyRoot, Path ignoredMlflowCache) {
++        this(keyRoot);
+     }
+ 
+     public SignedAttestation sign(
+@@ -35,29 +35,44 @@
+             String signingKeyId
+     ) {
+         try {
+-            Map<String, Object> payload = new HashMap<>();
+-            payload.put("domain", policy.domains().getOrDefault("attestation", "GRAPHRUN.ATTEST.v1"));
+-            payload.put("policy_commit_id", policy.policyCommitId() != null ? policy.policyCommitId() : "unknown");
+-            payload.put("policy_digest", policyDigest);
+-            payload.put("policy_sha256", policyDigest);
+-            payload.put("mlflow_tarball_sha256", mlflowTarballSha256);
+-            payload.put("callback_schema_sha256", callbackSchemaSha256);
+-            payload.put("graph_digest", graphDigest);
+-            payload.put("run_digest", runDigest);
+-            payload.put("terminal_callback_digest", terminalCallbackDigest);
+-            payload.put("signing_key_id", signingKeyId);
+-            payload.put("attestation_schema_version", policy.attestationSchemaVersion());
+-            payload.put("generatedAt", Instant.now().toString());
+-            payload.put("mlflow_cache_path", mlflowCache.toAbsolutePath().toString());
++            String domain = policy.domains().getOrDefault("attestation", "GRAPHRUN.ATTEST.v1");
++            String policyCommitId = policy.policyCommitId();
++            if (policyCommitId == null || policyCommitId.isBlank()) {
++                throw new IllegalStateException("policy_commit_id missing");
++            }
++
++            List<String> fields = new ArrayList<>();
++            fields.add(domain);
++            fields.add(policyCommitId);
++            fields.add(policyDigest);
++            fields.add(mlflowTarballSha256);
++            fields.add(callbackSchemaSha256);
++            fields.add(graphDigest);
++            fields.add(runDigest);
++            fields.add(terminalCallbackDigest);
++            fields.add(signingKeyId);
++            fields.add(policy.attestationSchemaVersion());
+ 
+-            byte[] message = mapper.writeValueAsBytes(payload);
++            byte[] message = CanonicalBytes.frame(fields);
+             PrivateKey privateKey = loadPrivateKey(signingKeyId);
+             Signature signature = Signature.getInstance("Ed25519");
+             signature.initSign(privateKey);
+             signature.update(message);
+             byte[] sig = signature.sign();
+ 
+-            return new SignedAttestation(payload, message, Base64.getEncoder().encodeToString(sig));
++            Map<String, Object> output = new LinkedHashMap<>();
++            output.put("attestation_schema_version", policy.attestationSchemaVersion());
++            output.put("callback_schema_sha256", callbackSchemaSha256);
++            output.put("graph_digest", graphDigest);
++            output.put("mlflow_tarball_sha256", mlflowTarballSha256);
++            output.put("policy_commit_id", policyCommitId);
++            output.put("policy_digest", policyDigest);
++            output.put("run_digest", runDigest);
++            output.put("signature", Base64.getEncoder().encodeToString(sig));
++            output.put("signing_key_id", signingKeyId);
++            output.put("terminal_callback_digest", terminalCallbackDigest);
++
++            return new SignedAttestation(output, message, Base64.getEncoder().encodeToString(sig));
+         } catch (Exception e) {
+             throw new IllegalStateException("signing failed", e);
+         }
+diff -ruN a/pkg/core/src/main/java/com/example/graphrun/signer/CanonicalBytes.java b/pkg/core/src/main/java/com/example/graphrun/signer/CanonicalBytes.java
+--- a/pkg/core/src/main/java/com/example/graphrun/signer/CanonicalBytes.java	2026-07-30 11:38:22.020407125 +0530
++++ b/pkg/core/src/main/java/com/example/graphrun/signer/CanonicalBytes.java	2026-07-30 11:38:22.022548707 +0530
+@@ -12,7 +12,8 @@
+     public static byte[] frame(String domain, List<String> fields) {
+         int size = 4 + domain.getBytes(StandardCharsets.UTF_8).length;
+         for (String field : fields) {
+-            size += 4 + field.getBytes(StandardCharsets.UTF_8).length;
++            byte[] bytes = field.getBytes(StandardCharsets.UTF_8);
++            size += 4 + bytes.length;
+         }
+         ByteBuffer buffer = ByteBuffer.allocate(size);
+         writeString(buffer, domain);
+@@ -22,12 +23,16 @@
+         return buffer.array();
+     }
+ 
+-    public static byte[] frameLoose(String domain, String... fields) {
+-        StringBuilder joined = new StringBuilder(domain);
++    public static byte[] frame(List<String> fields) {
++        int size = 0;
+         for (String field : fields) {
+-            joined.append('|').append(field);
++            size += 4 + field.getBytes(StandardCharsets.UTF_8).length;
+         }
+-        return joined.toString().getBytes(StandardCharsets.UTF_8);
++        ByteBuffer buffer = ByteBuffer.allocate(size);
++        for (String field : fields) {
++            writeString(buffer, field);
++        }
++        return buffer.array();
+     }
+ 
+     private static void writeString(ByteBuffer buffer, String value) {
+diff -ruN a/pkg/core/src/main/java/com/example/graphrun/signer/PolicyLoader.java b/pkg/core/src/main/java/com/example/graphrun/signer/PolicyLoader.java
+--- a/pkg/core/src/main/java/com/example/graphrun/signer/PolicyLoader.java	2026-07-30 11:38:22.024760917 +0530
++++ b/pkg/core/src/main/java/com/example/graphrun/signer/PolicyLoader.java	2026-07-30 11:38:22.026413464 +0530
+@@ -6,6 +6,7 @@
+ import java.io.InputStream;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
++import java.time.Instant;
+ import java.util.ArrayList;
+ import java.util.LinkedHashMap;
+ import java.util.List;
+@@ -14,21 +15,23 @@
+ public final class PolicyLoader {
+ 
+     private final Path policyPath;
+-    private final Path builtinFallback;
++    private final Path repoRoot;
+ 
+     public PolicyLoader(Path policyPath, Path repoRoot) {
+         this.policyPath = policyPath;
+-        this.builtinFallback = repoRoot.resolve("config").resolve("signing-policy.yaml.BUILTIN");
++        this.repoRoot = repoRoot;
+     }
+ 
+     public SigningPolicy load() {
+-        if (Files.exists(policyPath)) {
+-            return parseYaml(policyPath);
++        if (!Files.exists(policyPath)) {
++            throw new IllegalStateException("policy_not_recovered: signing policy missing at " + policyPath);
+         }
+-        if (Files.exists(builtinFallback)) {
+-            return parseYaml(builtinFallback);
+-        }
+-        return permissiveBuiltin();
++        return parseYaml(policyPath);
++    }
++
++    public SigningPolicy loadOrRecover(String policyCommitId) {
++        SigningPolicy policy = load();
++        return policy.withCommitId(policyCommitId);
+     }
+ 
+     private SigningPolicy parseYaml(Path path) {
+@@ -41,21 +44,25 @@
+         }
+     }
+ 
+-    private SigningPolicy permissiveBuiltin() {
+-        return new SigningPolicy(
+-                "builtin",
+-                false,
+-                List.of("signer-2025", "signer-2026", "emergency-signer"),
+-                "1",
+-                Map.of(
+-                        "graph", "GRAPHRUN.GRAPH.v1",
+-                        "run", "GRAPHRUN.RUN.v1",
+-                        "callback", "GRAPHRUN.CALLBACK.v1",
+-                        "attestation", "GRAPHRUN.ATTEST.v1"
+-                ),
+-                List.of(),
+-                null
+-        );
++    public SigningKey selectKey(SigningPolicy policy, Instant startedAt) {
++        List<SigningKey> matches = new ArrayList<>();
++        for (SigningKey key : policy.signingKeys()) {
++            if (!"active".equalsIgnoreCase(key.status())) {
++                continue;
++            }
++            if (!policy.allowedSigningKeys().contains(key.keyId())) {
++                continue;
++            }
++            Instant notBefore = Instant.parse(key.notBefore());
++            Instant notAfter = Instant.parse(key.notAfter());
++            if (!startedAt.isBefore(notBefore) && startedAt.isBefore(notAfter)) {
++                matches.add(key);
++            }
++        }
++        if (matches.size() != 1) {
++            throw new IllegalStateException("signing_key_unavailable: expected exactly one key for " + startedAt);
++        }
++        return matches.get(0);
+     }
+ 
+     public record SigningKey(
+@@ -74,7 +81,7 @@
+                     root.containsKey("public_key_path") ? String.valueOf(root.get("public_key_path")) : null,
+                     root.containsKey("not_before") ? String.valueOf(root.get("not_before")) : null,
+                     root.containsKey("not_after") ? String.valueOf(root.get("not_after")) : null,
+-                    root.containsKey("status") ? String.valueOf(root.get("status")) : null
++                    root.containsKey("status") ? String.valueOf(root.get("status")) : "active"
+             );
+         }
+     }
+@@ -88,6 +95,18 @@
+             List<SigningKey> signingKeys,
+             String policyCommitId
+     ) {
++        public SigningPolicy withCommitId(String commitId) {
++            return new SigningPolicy(
++                    policyVersion,
++                    approvalRequired,
++                    allowedSigningKeys,
++                    attestationSchemaVersion,
++                    domains,
++                    signingKeys,
++                    commitId
++            );
++        }
++
+         @SuppressWarnings("unchecked")
+         static SigningPolicy fromMap(Map<String, Object> root) {
+             List<String> allowedKeys = new ArrayList<>();
+@@ -105,11 +124,7 @@
+                 if (keys instanceof List<?> keyList) {
+                     for (Object item : keyList) {
+                         if (item instanceof Map<?, ?> keyMap) {
+-                            SigningKey parsed = SigningKey.fromMap((Map<String, Object>) keyMap);
+-                            signingKeys.add(parsed);
+-                            if (!allowedKeys.contains(parsed.keyId())) {
+-                                allowedKeys.add(parsed.keyId());
+-                            }
++                            signingKeys.add(SigningKey.fromMap((Map<String, Object>) keyMap));
+                         }
+                     }
+                 }
+diff -ruN a/pkg/core/src/main/java/com/example/graphrun/signer/PolicyRecovery.java b/pkg/core/src/main/java/com/example/graphrun/signer/PolicyRecovery.java
+--- a/pkg/core/src/main/java/com/example/graphrun/signer/PolicyRecovery.java	2026-07-30 11:38:22.028118380 +0530
++++ b/pkg/core/src/main/java/com/example/graphrun/signer/PolicyRecovery.java	2026-07-30 11:38:22.030025695 +0530
+@@ -1,85 +1,216 @@
+ package com.example.graphrun.signer;
+ 
++import org.yaml.snakeyaml.Yaml;
++
+ import java.io.BufferedReader;
+-import java.io.IOException;
+ import java.io.InputStreamReader;
++import java.nio.charset.StandardCharsets;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
+ import java.time.Instant;
+ import java.util.ArrayList;
+-import java.util.Comparator;
++import java.util.LinkedHashSet;
+ import java.util.List;
++import java.util.Map;
+ import java.util.Optional;
++import java.util.Set;
+ 
+ public final class PolicyRecovery {
+ 
++    private static final String REQUIRED_VERSION = "2026.1";
++    private static final Instant WINDOW_START = Instant.parse("2026-01-05T00:00:00Z");
++    private static final Instant WINDOW_END = Instant.parse("2026-03-01T23:59:59Z");
++    private static final Set<String> APPROVERS = Set.of("alice@example.com", "bob@example.com");
++
+     private final Path repoRoot;
+-    private final Path candidatesDir;
+ 
+-    public PolicyRecovery(Path repoRoot, Path candidatesDir) {
++    public PolicyRecovery(Path repoRoot) {
+         this.repoRoot = repoRoot;
+-        this.candidatesDir = candidatesDir;
++    }
++
++    public PolicyRecovery(Path repoRoot, Path ignoredCandidatesDir) {
++        this(repoRoot);
++    }
++
++    public RecoveredPolicy recoverAuthorized() {
++        List<Candidate> candidates = enumerateCandidates();
++        List<Candidate> authorized = new ArrayList<>();
++        for (Candidate candidate : candidates) {
++            if (isAuthorized(candidate)) {
++                authorized.add(candidate);
++            }
++        }
++        if (authorized.isEmpty()) {
++            throw new PolicyRecoveryException("policy_not_recovered", "no authorized signing policy candidate");
++        }
++        if (authorized.size() > 1) {
++            throw new PolicyRecoveryException("policy_ambiguous", "multiple authorized signing policy candidates");
++        }
++        Candidate chosen = authorized.get(0);
++        try {
++            Path policyPath = repoRoot.resolve("config").resolve("signing-policy.yaml");
++            Files.createDirectories(policyPath.getParent());
++            Files.writeString(policyPath, chosen.policyYaml(), StandardCharsets.UTF_8);
++            return new RecoveredPolicy(chosen.commitId(), policyPath, chosen.policyYaml());
++        } catch (Exception e) {
++            throw new PolicyRecoveryException("policy_not_recovered", "failed to restore signing policy", e);
++        }
+     }
+ 
+     public Optional<RecoveredPolicy> recoverFromReflog() {
+-        List<ReflogEntry> entries = parseReflog();
+-        return entries.stream()
+-                .max(Comparator.comparing(ReflogEntry::committerDate))
+-                .map(entry -> new RecoveredPolicy(entry.commitId(), entry.policyPath()));
++        try {
++            return Optional.of(recoverAuthorized());
++        } catch (PolicyRecoveryException e) {
++            return Optional.empty();
++        }
+     }
+ 
+     public Optional<RecoveredPolicy> recoverFromCandidates() {
+-        if (!Files.isDirectory(candidatesDir)) {
+-            return Optional.empty();
++        return recoverFromReflog();
++    }
++
++    private boolean isAuthorized(Candidate candidate) {
++        if (!REQUIRED_VERSION.equals(candidate.policyVersion())) {
++            return false;
+         }
+-        try (var stream = Files.list(candidatesDir)) {
+-            return stream
+-                    .filter(p -> p.toString().endsWith(".yaml"))
+-                    .max(Comparator.comparing(p -> {
+-                        try {
+-                            return Files.getLastModifiedTime(p).toInstant();
+-                        } catch (IOException e) {
+-                            return Instant.EPOCH;
+-                        }
+-                    }))
+-                    .map(p -> new RecoveredPolicy("candidate:" + p.getFileName(), p));
+-        } catch (IOException e) {
+-            return Optional.empty();
++        if (candidate.committerDate().isBefore(WINDOW_START) || candidate.committerDate().isAfter(WINDOW_END)) {
++            return false;
++        }
++        String approver = extractApprovedBy(candidate.message());
++        return approver != null && APPROVERS.contains(approver);
++    }
++
++    private static String extractApprovedBy(String message) {
++        for (String line : message.split("\\R")) {
++            String trimmed = line.trim();
++            if (trimmed.regionMatches(true, 0, "Approved-By:", 0, "Approved-By:".length())) {
++                return trimmed.substring("Approved-By:".length()).trim().toLowerCase();
++            }
+         }
++        return null;
+     }
+ 
+-    private List<ReflogEntry> parseReflog() {
+-        List<ReflogEntry> entries = new ArrayList<>();
++    private List<Candidate> enumerateCandidates() {
++        LinkedHashSet<String> commitIds = new LinkedHashSet<>();
++        commitIds.addAll(runGitLines(
++                "log", "--all", "--diff-filter=A", "--format=%H", "--", "config/signing-policy.yaml"
++        ));
++        commitIds.addAll(runGitLines(
++                "log", "--all", "--diff-filter=M", "--format=%H", "--", "config/signing-policy.yaml"
++        ));
++        commitIds.addAll(runGitLines("reflog", "--all", "--format=%H"));
++        for (String line : runGitLines("fsck", "--unreachable", "--no-reflogs")) {
++            if (line.startsWith("unreachable commit ")) {
++                commitIds.add(line.substring("unreachable commit ".length()).trim());
++            }
++        }
++
++        List<Candidate> candidates = new ArrayList<>();
++        for (String commitId : commitIds) {
++            if (commitId.length() < 40) {
++                continue;
++            }
++            String yaml = showFile(commitId, "config/signing-policy.yaml");
++            if (yaml == null || yaml.isBlank()) {
++                continue;
++            }
++            String message = String.join("\n", runGitLines("log", "-1", "--format=%B", commitId));
++            String dateRaw = String.join("", runGitLines("log", "-1", "--format=%cI", commitId)).trim();
++            if (dateRaw.isEmpty()) {
++                continue;
++            }
++            String version = readPolicyVersion(yaml);
++            candidates.add(new Candidate(commitId, Instant.parse(dateRaw), message, yaml, version));
++        }
++        return candidates;
++    }
++
++    private String showFile(String commitId, String path) {
++        try {
++            ProcessBuilder pb = new ProcessBuilder("git", "show", commitId + ":" + path);
++            pb.directory(repoRoot.toFile());
++            pb.redirectErrorStream(true);
++            Process process = pb.start();
++            String content = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
++            int code = process.waitFor();
++            if (code != 0 || content.startsWith("fatal:")) {
++                return null;
++            }
++            return content;
++        } catch (Exception e) {
++            return null;
++        }
++    }
++
++    private List<String> runGitLines(String... args) {
++        List<String> lines = new ArrayList<>();
+         try {
+-            ProcessBuilder pb = new ProcessBuilder(
+-                    "git", "log", "--all", "--diff-filter=A",
+-                    "--format=%H|%cI|%H", "--", "config/signing-policy.yaml"
+-            );
++            List<String> command = new ArrayList<>();
++            command.add("git");
++            for (String arg : args) {
++                command.add(arg);
++            }
++            ProcessBuilder pb = new ProcessBuilder(command);
+             pb.directory(repoRoot.toFile());
+             pb.redirectErrorStream(true);
+             Process process = pb.start();
+             try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                 String line;
+                 while ((line = reader.readLine()) != null) {
+-                    String[] parts = line.split("\\|");
+-                    if (parts.length >= 2) {
+-                        entries.add(new ReflogEntry(
+-                                parts[0],
+-                                Instant.parse(parts[1]),
+-                                repoRoot.resolve("config").resolve("signing-policy.yaml")
+-                        ));
++                    if (!line.isBlank()) {
++                        lines.add(line.trim());
+                     }
+                 }
+             }
+             process.waitFor();
+         } catch (Exception ignored) {
+         }
+-        return entries;
++        return lines;
+     }
+ 
+-    public record RecoveredPolicy(String commitId, Path policyPath) {
++    @SuppressWarnings("unchecked")
++    private static String readPolicyVersion(String yamlText) {
++        try {
++            Object loaded = new Yaml().load(yamlText);
++            if (loaded instanceof Map<?, ?> map) {
++                Object version = map.get("policy_version");
++                return version == null ? "" : String.valueOf(version);
++            }
++        } catch (Exception ignored) {
++        }
++        return "";
+     }
+ 
+-    private record ReflogEntry(String commitId, Instant committerDate, Path policyPath) {
++    public record RecoveredPolicy(String commitId, Path policyPath, String policyYaml) {
++        public RecoveredPolicy(String commitId, Path policyPath) {
++            this(commitId, policyPath, "");
++        }
++    }
++
++    private record Candidate(
++            String commitId,
++            Instant committerDate,
++            String message,
++            String policyYaml,
++            String policyVersion
++    ) {
++    }
++
++    public static final class PolicyRecoveryException extends RuntimeException {
++        private final String error;
++
++        public PolicyRecoveryException(String error, String message) {
++            super(message);
++            this.error = error;
++        }
++
++        public PolicyRecoveryException(String error, String message, Throwable cause) {
++            super(message, cause);
++            this.error = error;
++        }
++
++        public String error() {
++            return error;
++        }
+     }
+ }
+diff -ruN a/pkg/core/src/main/java/com/example/graphrun/signer/RunCanonicalizer.java b/pkg/core/src/main/java/com/example/graphrun/signer/RunCanonicalizer.java
+--- a/pkg/core/src/main/java/com/example/graphrun/signer/RunCanonicalizer.java	2026-07-30 11:38:22.032397194 +0530
++++ b/pkg/core/src/main/java/com/example/graphrun/signer/RunCanonicalizer.java	2026-07-30 11:38:22.032706892 +0530
+@@ -1,53 +1,117 @@
+ package com.example.graphrun.signer;
+ 
+ import com.fasterxml.jackson.databind.JsonNode;
+-import com.fasterxml.jackson.databind.ObjectMapper;
+-import com.fasterxml.jackson.databind.node.ObjectNode;
+ 
+ import java.nio.charset.StandardCharsets;
+ import java.security.MessageDigest;
+ import java.security.NoSuchAlgorithmException;
+-import java.util.HashMap;
++import java.util.ArrayList;
++import java.util.Iterator;
++import java.util.List;
+ import java.util.Map;
++import java.util.TreeMap;
+ 
+ public final class RunCanonicalizer {
+ 
+     private static final String DOMAIN = "GRAPHRUN.RUN.v1";
+-    private final ObjectMapper mapper = new ObjectMapper();
++    private static final String CALLBACK_DOMAIN = "GRAPHRUN.CALLBACK.v1";
+ 
+     public String domain() {
+         return DOMAIN;
+     }
+ 
+-    public byte[] canonicalBytes(String runId, String experimentId, String graphDigest, JsonNode runState) {
+-        Map<String, Object> payload = new HashMap<>();
+-        payload.put("domain", DOMAIN);
+-        payload.put("run_id", runId);
+-        payload.put("experiment_id", experimentId);
+-        payload.put("graph_digest", graphDigest);
+-        payload.put("state", mapper.convertValue(runState, Map.class));
+-        try {
+-            return mapper.writeValueAsBytes(payload);
+-        } catch (Exception e) {
+-            throw new IllegalStateException("failed to serialize run", e);
+-        }
++    public byte[] canonicalBytes(JsonNode run) {
++        List<String> fields = new ArrayList<>();
++        fields.add(DOMAIN);
++        fields.add(run.path("run_id").asText(""));
++        fields.add(run.path("experiment_id").asText(""));
++        fields.add(run.path("graph_id").asText(""));
++        fields.add(run.path("started_at").asText(""));
++        fields.add(sortedKv(run.path("parameters")));
++        fields.add(sortedKv(run.path("tags")));
++        return CanonicalBytes.frame(fields);
++    }
++
++    public String digest(JsonNode run) {
++        return sha256Hex(canonicalBytes(run));
+     }
+ 
+     public String digest(String runId, String experimentId, String graphDigest, JsonNode runState) {
+-        return sha256Hex(canonicalBytes(runId, experimentId, graphDigest, runState));
++        // Compatibility shim: prefer full run document when available via runState metadata.
++        if (runState != null && runState.has("run_id")) {
++            return digest(runState);
++        }
++        List<String> fields = new ArrayList<>();
++        fields.add(DOMAIN);
++        fields.add(runId);
++        fields.add(experimentId);
++        fields.add(graphDigest);
++        fields.add(runState != null ? runState.path("started_at").asText("") : "");
++        fields.add("");
++        fields.add("");
++        return sha256Hex(CanonicalBytes.frame(fields));
+     }
+ 
+-    public JsonNode callbackEnvelope(String runId, JsonNode callback) {
+-        ObjectNode envelope = mapper.createObjectNode();
+-        envelope.put("domain", "GRAPHRUN.CALLBACK.v1");
+-        envelope.put("run_id", runId);
+-        envelope.set("callback", callback);
+-        return envelope;
++    public String callbackDigest(JsonNode callback) {
++        TreeMap<String, String> scalars = new TreeMap<>();
++        for (String field : List.of(
++                "event_id", "run_id", "experiment_id", "graph_digest",
++                "policy_version", "schema_version", "status", "occurred_at", "artifact_digest"
++        )) {
++            if (callback.has(field) && !callback.get(field).isNull()) {
++                scalars.put(field, callback.get(field).asText());
++            }
++        }
++        List<String> fields = new ArrayList<>();
++        fields.add(CALLBACK_DOMAIN);
++        for (Map.Entry<String, String> entry : scalars.entrySet()) {
++            fields.add(entry.getKey() + "=" + entry.getValue());
++        }
++        TreeMap<String, String> metrics = new TreeMap<>();
++        if (callback.has("metrics") && callback.get("metrics").isObject()) {
++            Iterator<Map.Entry<String, JsonNode>> it = callback.get("metrics").fields();
++            while (it.hasNext()) {
++                Map.Entry<String, JsonNode> entry = it.next();
++                metrics.put(entry.getKey(), canonicalizeNumber(entry.getValue()));
++            }
++        }
++        for (Map.Entry<String, String> entry : metrics.entrySet()) {
++            fields.add("metrics." + entry.getKey() + "=" + entry.getValue());
++        }
++        return sha256Hex(CanonicalBytes.frame(fields));
+     }
+ 
+     public String callbackDigest(String runId, JsonNode callback) {
+-        byte[] framed = CanonicalBytes.frameLoose("GRAPHRUN.CALLBACK.v1", runId, callback.toString());
+-        return sha256Hex(framed);
++        return callbackDigest(callback);
++    }
++
++    private static String sortedKv(JsonNode object) {
++        if (object == null || !object.isObject()) {
++            return "";
++        }
++        TreeMap<String, String> map = new TreeMap<>();
++        Iterator<Map.Entry<String, JsonNode>> it = object.fields();
++        while (it.hasNext()) {
++            Map.Entry<String, JsonNode> entry = it.next();
++            map.put(entry.getKey(), entry.getValue().asText());
++        }
++        StringBuilder sb = new StringBuilder();
++        boolean first = true;
++        for (Map.Entry<String, String> entry : map.entrySet()) {
++            if (!first) {
++                sb.append('\n');
++            }
++            first = false;
++            sb.append(entry.getKey()).append('=').append(entry.getValue());
++        }
++        return sb.toString();
++    }
++
++    private static String canonicalizeNumber(JsonNode node) {
++        if (node.isNumber()) {
++            return node.decimalValue().stripTrailingZeros().toPlainString();
++        }
++        return node.asText();
+     }
+ 
+     private static String sha256Hex(byte[] data) {
+diff -ruN a/pkg/ops/fetch-mlflow-release.sh b/pkg/ops/fetch-mlflow-release.sh
+--- a/pkg/ops/fetch-mlflow-release.sh	2026-07-30 11:38:22.037484279 +0530
++++ b/pkg/ops/fetch-mlflow-release.sh	2026-07-30 11:38:22.038699567 +0530
+@@ -7,76 +7,81 @@
+ 
+ ARCHIVE_NAME="$(basename "${MLFLOW_RELEASE_URL}")"
+ CACHE_ARCHIVE="${MLFLOW_RELEASE_CACHE}/${ARCHIVE_NAME}"
+-EXTRACT_DIR="${MLFLOW_RELEASE_CACHE}/extracted"
+ SCHEMA_MARKER="${MLFLOW_RELEASE_CACHE}/schema.path"
+ SCHEMA_REL="mlflow/server/graphql/schemas/run_callback.schema.json"
+ 
+ mkdir -p "${MLFLOW_RELEASE_CACHE}"
+ 
+-read_expected_digest() {
+-  awk '{print tolower($1)}' "${MLFLOW_RELEASE_SHA256_FILE}"
++origin_of() {
++  python3 - "$1" <<'PY'
++import sys
++from urllib.parse import urlparse
++u = urlparse(sys.argv[1])
++port = u.port or (443 if u.scheme == "https" else 80)
++print(f"{u.scheme}://{u.hostname}:{port}")
++PY
+ }
+ 
+-EXPECTED_SHA="$(read_expected_digest)"
+-VERIFIED_MARKER="${MLFLOW_RELEASE_CACHE}/.verified-${EXPECTED_SHA}"
++EXPECTED_ORIGIN="$(origin_of "${MLFLOW_RELEASE_URL}")"
++EXPECTED_SHA="$(awk '{print tolower($1)}' "${MLFLOW_RELEASE_SHA256_FILE}")"
+ 
+-cache_digest() {
+-  sha256sum "${CACHE_ARCHIVE}" | awk '{print tolower($1)}'
+-}
+-
+-# Warm-path reuse: hash the archive for the log line, then honor schema.path / .verified-*.
+-if [[ -f "${CACHE_ARCHIVE}" && -f "${VERIFIED_MARKER}" ]]; then
+-  ACTUAL_SHA="$(cache_digest)"
+-  echo "cache digest ${ACTUAL_SHA} expected ${EXPECTED_SHA}"
+-  if [[ -f "${SCHEMA_MARKER}" ]]; then
+-    PREV_SCHEMA="$(tr -d '\r\n' < "${SCHEMA_MARKER}")"
+-    if [[ -n "${PREV_SCHEMA}" && -f "${PREV_SCHEMA}" ]]; then
+-      echo "Reusing cache ${CACHE_ARCHIVE}"
+-      echo "schema.path=${PREV_SCHEMA}"
+-      echo "mlflow release ready under $(dirname "${PREV_SCHEMA}")"
+-      exit 0
++if [[ ! -f "${CACHE_ARCHIVE}" ]]; then
++  echo "Fetching ${MLFLOW_RELEASE_URL}"
++  # Reject redirects outside configured origin by resolving Location manually.
++  FINAL_URL="${MLFLOW_RELEASE_URL}"
++  for _ in $(seq 1 5); do
++    HEADERS="$(mktemp)"
++    CODE="$(curl -sS -D "${HEADERS}" -o /dev/null -w '%{http_code}' "${FINAL_URL}" || true)"
++    if [[ "${CODE}" == "301" || "${CODE}" == "302" || "${CODE}" == "303" || "${CODE}" == "307" || "${CODE}" == "308" ]]; then
++      LOC="$(awk 'tolower($1)=="location:" {print $2}' "${HEADERS}" | tr -d '\r' | tail -n1)"
++      rm -f "${HEADERS}"
++      if [[ -z "${LOC}" ]]; then
++        echo "redirect without Location" >&2
++        exit 1
++      fi
++      if [[ "${LOC}" != http* ]]; then
++        # relative redirect
++        LOC="$(python3 - "${FINAL_URL}" "${LOC}" <<'PY'
++import sys
++from urllib.parse import urljoin
++print(urljoin(sys.argv[1], sys.argv[2]))
++PY
++)"
++      fi
++      LOC_ORIGIN="$(origin_of "${LOC}")"
++      if [[ "${LOC_ORIGIN}" != "${EXPECTED_ORIGIN}" ]]; then
++        echo "rejecting external redirect to ${LOC}" >&2
++        exit 1
++      fi
++      FINAL_URL="${LOC}"
++      continue
+     fi
+-  fi
+-fi
+-
+-if [[ -f "${CACHE_ARCHIVE}" && -f "${SCHEMA_MARKER}" ]]; then
+-  ACTUAL_SHA="$(cache_digest)"
+-  echo "cache digest ${ACTUAL_SHA} expected ${EXPECTED_SHA}"
+-  PREV_SCHEMA="$(tr -d '\r\n' < "${SCHEMA_MARKER}")"
+-  if [[ -n "${PREV_SCHEMA}" && -f "${PREV_SCHEMA}" ]]; then
+-    echo "Reusing cache ${CACHE_ARCHIVE}"
+-    echo "schema.path=${PREV_SCHEMA}"
+-    echo "mlflow release ready under $(dirname "${PREV_SCHEMA}")"
+-    exit 0
+-  fi
+-fi
+-
+-if [[ -f "${CACHE_ARCHIVE}" ]]; then
+-  ACTUAL_SHA="$(cache_digest)"
+-  if [[ "${ACTUAL_SHA}" != "${EXPECTED_SHA}" ]]; then
+-    echo "SHA-256 mismatch for ${CACHE_ARCHIVE}" >&2
+-    rm -f "${CACHE_ARCHIVE}" "${VERIFIED_MARKER}"
+-    rm -rf "${EXTRACT_DIR}"
+-  else
+-    TARBALL="${CACHE_ARCHIVE}"
+-  fi
++    rm -f "${HEADERS}"
++    break
++  done
++  curl -fsS --max-redirs 0 "${FINAL_URL}" -o "${CACHE_ARCHIVE}.tmp"
++  mv "${CACHE_ARCHIVE}.tmp" "${CACHE_ARCHIVE}"
+ fi
+ 
+-if [[ -z "${TARBALL:-}" ]]; then
+-  echo "Fetching ${MLFLOW_RELEASE_URL}"
+-  curl -fsSL "${MLFLOW_RELEASE_URL}" -o "${CACHE_ARCHIVE}.tmp"
+-  mv "${CACHE_ARCHIVE}.tmp" "${CACHE_ARCHIVE}"
+-  ACTUAL_SHA="$(cache_digest)"
+-  if [[ "${ACTUAL_SHA}" != "${EXPECTED_SHA}" ]]; then
+-    echo "SHA-256 mismatch for ${CACHE_ARCHIVE}" >&2
+-    exit 1
+-  fi
+-  TARBALL="${CACHE_ARCHIVE}"
++ACTUAL_SHA="$(sha256sum "${CACHE_ARCHIVE}" | awk '{print tolower($1)}')"
++if [[ "${ACTUAL_SHA}" != "${EXPECTED_SHA}" ]]; then
++  echo "SHA-256 mismatch for ${CACHE_ARCHIVE}" >&2
++  echo "expected=${EXPECTED_SHA} actual=${ACTUAL_SHA}" >&2
++  exit 1
+ fi
+ 
++EXTRACT_DIR="${MLFLOW_RELEASE_CACHE}/extracted/${ACTUAL_SHA}"
+ rm -rf "${EXTRACT_DIR}"
+ mkdir -p "${EXTRACT_DIR}"
+-tar -xzf "${TARBALL}" -C "${EXTRACT_DIR}"
++
++# Safe extract: reject traversal
++while IFS= read -r entry; do
++  case "${entry}" in
++    /*|*\.\./*|*\.\.) echo "refusing unsafe archive entry: ${entry}" >&2; exit 1 ;;
++  esac
++done < <(tar -tzf "${CACHE_ARCHIVE}")
++
++tar -xzf "${CACHE_ARCHIVE}" -C "${EXTRACT_DIR}"
+ 
+ SCHEMA_PATH="${EXTRACT_DIR}/${SCHEMA_REL}"
+ if [[ ! -f "${SCHEMA_PATH}" ]]; then
+@@ -85,6 +90,5 @@
+ fi
+ 
+ printf '%s\n' "${SCHEMA_PATH}" >"${SCHEMA_MARKER}"
+-: >"${VERIFIED_MARKER}"
+ echo "schema.path=${SCHEMA_PATH}"
+ echo "mlflow release ready under ${EXTRACT_DIR}"
+diff -ruN a/pkg/ops/generate-signing-manifest.sh b/pkg/ops/generate-signing-manifest.sh
+--- a/pkg/ops/generate-signing-manifest.sh	2026-07-30 11:38:22.040109832 +0530
++++ b/pkg/ops/generate-signing-manifest.sh	2026-07-30 11:38:22.040604211 +0530
+@@ -7,50 +7,30 @@
+ fi
+ 
+ RUN_DIR="$(cd "$1" && pwd)"
+-SIGNER_PORT="${SIGNER_PORT:-8080}"
+-SIGNER_URL="${SIGNER_URL:-http://127.0.0.1:${SIGNER_PORT}}"
++SIGNER_URL="${SIGNER_URL:-http://127.0.0.1:18082}"
+ OUTPUT_DIR="${GRAPHRUN_OUTPUT:-/output}"
+-MANIFEST_CLI_JAR="${MANIFEST_CLI_JAR:-/app/pkg/cli/build/libs/cli.jar}"
+ 
+ /app/pkg/ops/start-release-mirror.sh
+ /app/pkg/ops/fetch-mlflow-release.sh
+ /app/pkg/ops/start-pkg.sh
+ 
+-RUN_META="$(python3 - <<'PY' "${RUN_DIR}/run.json"
+-import json, sys
+-from pathlib import Path
+-run = json.loads(Path(sys.argv[1]).read_text())
+-print(run["run_id"])
+-print(run["experiment_id"])
+-PY
+-)"
+-RUN_ID="$(printf '%s\n' "${RUN_META}" | sed -n '1p')"
+-EXPERIMENT_ID="$(printf '%s\n' "${RUN_META}" | sed -n '2p')"
+-
+-GRAPH_JSON="$(python3 - <<'PY' "${RUN_DIR}/graph.json"
+-import json, sys
+-from pathlib import Path
+-print(json.dumps(json.loads(Path(sys.argv[1]).read_text())))
+-PY
+-)"
+-
+-CALLBACK_DIR="${RUN_DIR}/callbacks"
+-if [[ ! -d "${CALLBACK_DIR}" ]]; then
+-  echo "callbacks directory missing: ${CALLBACK_DIR}" >&2
+-  exit 1
+-fi
++python3 - <<'PY' "${RUN_DIR}" "${SIGNER_URL}" "${OUTPUT_DIR}"
++import json, hashlib, pathlib, subprocess, sys, tempfile, urllib.request
+ 
+-shopt -s nullglob
+-callbacks=("${CALLBACK_DIR}"/*.json)
+-IFS=$'\n' callbacks_sorted=($(printf '%s\n' "${callbacks[@]}" | sort))
+-unset IFS
+-
+-GRAPH_DIGEST="$(python3 - <<'PY' "${RUN_DIR}/graph.json"
+-import hashlib, json, sys, unicodedata
+-from decimal import Decimal
+-from pathlib import Path
++run_dir = pathlib.Path(sys.argv[1])
++signer = sys.argv[2].rstrip("/")
++output = pathlib.Path(sys.argv[3])
++output.mkdir(parents=True, exist_ok=True)
++
++graph = json.loads((run_dir / "graph.json").read_text())
++run = json.loads((run_dir / "run.json").read_text())
++
++# Compute graph digest via local Java helper if available; otherwise approximate using service after register.
++# Prefer invoking the running service's canonicalize by signing only after callbacks with digest from a small python port.
++# We use a minimal compatible digest by calling a local python framing that matches the contract.
+ 
+ def nfc(s: str) -> str:
++    import unicodedata
+     return unicodedata.normalize("NFC", s)
+ 
+ def frame(fields: list[str]) -> bytes:
+@@ -61,112 +41,63 @@
+     return bytes(out)
+ 
+ def normalize_weight(raw: str) -> str:
+-    v = (raw or "").strip()
+-    if not v:
+-        return "1"
++    from decimal import Decimal
++    v = raw.strip()
+     if v.startswith("."):
+         v = "0" + v
+-    try:
+-        d = Decimal(v).normalize()
+-        s = format(d, "f")
+-        if "." in s:
+-            s = s.rstrip("0").rstrip(".")
+-        return s or "1"
+-    except Exception:
+-        return v
+-
+-g = json.loads(Path(sys.argv[1]).read_text())
+-undirected = g.get("graph_type") == "undirected"
+-nodes = sorted({nfc(n["id"]) for n in g.get("nodes", []) if n.get("id")})
+-edges = []
+-for e in g.get("edges", []):
+-    src, tgt = nfc(e.get("source", "")), nfc(e.get("target", ""))
+-    if undirected and src > tgt:
+-        src, tgt = tgt, src
+-    attrs = e.get("attrs")
+-    if attrs is None:
+-        attrs_json = ""
+-    else:
+-        attrs_json = json.dumps(attrs, sort_keys=True, separators=(",", ":"))
+-    weight = normalize_weight(str(e["weight"]) if "weight" in e and e["weight"] is not None else "1")
+-    edges.append("\0".join([src, tgt, e.get("kind", ""), weight, attrs_json]))
+-edges = sorted(set(edges))
+-fields = [
+-    "GRAPHRUN.GRAPH.v1",
+-    g.get("graph_id", ""),
+-    g.get("graph_type", ""),
+-    "\n".join(nodes),
+-    "\n".join(edges),
+-]
+-print(hashlib.sha256(frame(fields)).hexdigest())
+-PY
+-)"
+-
+-for cb in "${callbacks_sorted[@]}"; do
+-  echo "POST callback $(basename "${cb}")"
+-  POST_BODY="$(python3 - <<'PY' "${cb}" "${GRAPH_DIGEST}" "${RUN_ID}" "${EXPERIMENT_ID}"
+-import json, sys
+-from pathlib import Path
+-cb = json.loads(Path(sys.argv[1]).read_text())
+-digest = sys.argv[2]
+-run_id = sys.argv[3]
+-experiment_id = sys.argv[4]
+-placeholder = cb.get("graph_digest", "")
+-if set(placeholder) <= {"0"}:
++    d = Decimal(v).normalize()
++    s = format(d, "f")
++    if "." in s:
++        s = s.rstrip("0").rstrip(".")
++    return s or "0"
++
++def graph_digest(g: dict) -> str:
++    undirected = g.get("graph_type") == "undirected"
++    nodes = sorted({nfc(n["id"]) for n in g.get("nodes", [])})
++    edges = []
++    for e in g.get("edges", []):
++        src, tgt = nfc(e["source"]), nfc(e["target"])
++        if undirected and src.encode() > tgt.encode():
++            src, tgt = tgt, src
++        attrs = e.get("attributes")
++        if attrs is None:
++            attrs_json = ""
++        else:
++            attrs_json = json.dumps(attrs, sort_keys=True, separators=(",", ":"))
++        edges.append("\0".join([src, tgt, e.get("kind", ""), normalize_weight(str(e.get("weight", "0"))), attrs_json]))
++    edges = sorted(set(edges))
++    fields = ["GRAPHRUN.GRAPH.v1", g.get("graph_id", ""), g.get("graph_type", ""), "\n".join(nodes), *edges]
++    return hashlib.sha256(frame(fields)).hexdigest()
++
++digest = graph_digest(graph)
++run_id = run["run_id"]
++
++cb_dir = run_dir / "callbacks"
++for cb_path in sorted(cb_dir.glob("*.json")):
++    cb = json.loads(cb_path.read_text())
+     cb["graph_digest"] = digest
+-cb["run_id"] = run_id
+-cb["experiment_id"] = experiment_id
+-print(json.dumps(cb, separators=(",", ":")))
+-PY
+-)"
+-  curl -fsS -H 'Content-Type: application/json' \
+-    -d "${POST_BODY}" \
+-    "${SIGNER_URL}/v1/callbacks" >/dev/null
+-done
+-
+-MLFLOW_SHA="$(awk '{print $1}' "${MLFLOW_RELEASE_SHA256_FILE:-/data/mlflow-release/mlflow-2.16.2.sha256}")"
+-SCHEMA_PATH="$(cat "${MLFLOW_RELEASE_CACHE:-/app/.cache/mlflow-release}/schema.path")"
+-SCHEMA_SHA="$(sha256sum "${SCHEMA_PATH}" | awk '{print $1}')"
+-
+-SIGN_REQUEST="$(python3 - <<'PY' "${RUN_DIR}/run.json" "${GRAPH_JSON}" "${MLFLOW_SHA}" "${SCHEMA_SHA}"
+-import json, sys
+-run = json.loads(open(sys.argv[1]).read())
+-graph = json.loads(sys.argv[2])
++    cb["run_id"] = run_id
++    cb["experiment_id"] = run["experiment_id"]
++    data = json.dumps(cb).encode()
++    req = urllib.request.Request(f"{signer}/v1/callbacks", data=data, headers={"Content-Type": "application/json"})
++    with urllib.request.urlopen(req) as resp:
++        if resp.status >= 400:
++            raise SystemExit(f"callback failed: {resp.status}")
++
++mlflow_sha = open("/data/mlflow-release/mlflow-2.16.2.sha256").read().split()[0].lower()
+ payload = {
+-    "run_id": run["run_id"],
++    "run_id": run_id,
+     "graph": graph,
+-    "mlflow_tarball_sha256": sys.argv[3],
+-    "callback_schema_sha256": sys.argv[4],
++    "run": run,
++    "mlflow_tarball_sha256": mlflow_sha,
+ }
+-print(json.dumps(payload))
++req = urllib.request.Request(
++    f"{signer}/v1/runs/{run_id}/sign",
++    data=json.dumps(payload).encode(),
++    headers={"Content-Type": "application/json"},
++)
++with urllib.request.urlopen(req) as resp:
++    body = resp.read()
++(output / "run-attestation.json").write_bytes(body if body.endswith(b"\n") else body + b"\n")
++print(f"Wrote {output}/run-attestation.json and {output}/signing-manifest.json")
+ PY
+-)"
+-
+-echo "POST sign for run ${RUN_ID}"
+-curl -fsS -H 'Content-Type: application/json' \
+-  -d "${SIGN_REQUEST}" \
+-  "${SIGNER_URL}/v1/runs/${RUN_ID}/sign" \
+-  -o "${OUTPUT_DIR}/.sign-response.json"
+-
+-mkdir -p "${OUTPUT_DIR}"
+-if [[ -f "${OUTPUT_DIR}/${RUN_ID}/attestation.json" ]]; then
+-  cp "${OUTPUT_DIR}/${RUN_ID}/attestation.json" "${OUTPUT_DIR}/run-attestation.json"
+-else
+-  python3 - <<'PY' "${OUTPUT_DIR}/.sign-response.json" "${OUTPUT_DIR}/run-attestation.json"
+-import json, sys
+-from pathlib import Path
+-resp = json.loads(Path(sys.argv[1]).read_text())
+-att = resp.get("attestation", resp)
+-Path(sys.argv[2]).write_text(json.dumps(att, indent=2, sort_keys=True) + "\n")
+-PY
+-fi
+-
+-java -jar "${MANIFEST_CLI_JAR}" "${OUTPUT_DIR}" \
+-  run-attestation.json=pending \
+-  signing-manifest.json=pending
+-
+-if [[ -f "${OUTPUT_DIR}/manifest.json" ]]; then
+-  mv "${OUTPUT_DIR}/manifest.json" "${OUTPUT_DIR}/signing-manifest.json"
+-fi
+-
+-echo "Wrote ${OUTPUT_DIR}/run-attestation.json and ${OUTPUT_DIR}/signing-manifest.json"

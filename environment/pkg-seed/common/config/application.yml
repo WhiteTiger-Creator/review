@@ -1,0 +1,11 @@
+server:
+  address: 127.0.0.1
+  port: 8080
+
+graphrun:
+  policy-path: ${GRAPHRUN_POLICY:/app/pkg/config/signing-policy.yaml}
+  key-root: ${GRAPHRUN_KEY_ROOT:/data/keys}
+  run-root: ${GRAPHRUN_RUN_ROOT:/data/runs}
+  output: ${GRAPHRUN_OUTPUT:/output}
+  mlflow-cache: ${MLFLOW_RELEASE_CACHE:/app/.cache/mlflow-release}
+  repo-root: ${GRAPHRUN_REPO:/app/pkg}

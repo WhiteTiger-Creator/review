@@ -1,0 +1,9 @@
+{
+  "graph_type": "undirected",
+  "graph_id": "visible-graph-alpha",
+  "nodes": [{"id": "n3"}, {"id": "n1"}, {"id": "n2"}],
+  "edges": [
+    {"source": "n3", "target": "n2", "kind": "data", "weight": "1", "attributes": {"lane": "secondary"}},
+    {"source": "n2", "target": "n1", "kind": "data", "weight": "1.5", "attributes": {"lane": "primary"}}
+  ]
+}

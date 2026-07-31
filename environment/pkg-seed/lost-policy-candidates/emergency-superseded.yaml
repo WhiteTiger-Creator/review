@@ -1,0 +1,25 @@
+policy_version: "2025.12"
+approval_required: true
+attestation_schema_version: "1"
+allowed_signing_keys:
+  - signer-2025
+  - emergency-signer
+domains:
+  graph: GRAPHRUN.GRAPH.v1
+  run: GRAPHRUN.RUN.v1
+  callback: GRAPHRUN.CALLBACK.v1
+  attestation: GRAPHRUN.ATTEST.v1
+signing:
+  keys:
+    - key_id: signer-2025
+      private_key_path: /data/keys/signer-2025.pk8
+      public_key_path: /data/keys/signer-2025.pub
+      not_before: "2025-01-01T00:00:00Z"
+      not_after: "2026-01-01T00:00:00Z"
+      status: active
+    - key_id: emergency-signer
+      private_key_path: /data/keys/emergency-signer.pk8
+      public_key_path: /data/keys/emergency-signer.pub
+      not_before: "2025-12-01T00:00:00Z"
+      not_after: "2026-02-01T00:00:00Z"
+      status: active

@@ -1,0 +1,8 @@
+{
+  "run_id": "visible-run-a",
+  "experiment_id": "exp-visible-a",
+  "graph_id": "visible-graph-alpha",
+  "started_at": "2026-01-10T11:00:00Z",
+  "parameters": {"epochs": "3", "lr": "0.01"},
+  "tags": {"team": "ml-platform", "tier": "visible"}
+}

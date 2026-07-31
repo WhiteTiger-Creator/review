@@ -1,0 +1,11 @@
+{
+  "event_id": "evt-b-001",
+  "run_id": "visible-run-b",
+  "experiment_id": "exp-visible-a",
+  "graph_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+  "policy_version": "2026.1",
+  "schema_version": "2.16.2",
+  "status": "RUNNING",
+  "occurred_at": "2026-01-10T11:00:05Z",
+  "metrics": {"step": 0}
+}
