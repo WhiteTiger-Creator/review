@@ -5,22 +5,13 @@
 **/.pytest_cache/
 **/.mypy_cache/
 **/.ruff_cache/
-**/.gradle/
-**/node_modules/
 **/target/
 **/dist/
 **/build/
-# Keep local virtual environments, native wheels, and site packages out.
-.venv/
-venv/
 **/.venv/
 **/venv/
-**/site-packages/
-**/*.so
-**/*.dylib
-**/*.dll
+**/node_modules/
 .env
 *.log
-jobs/
 solution/
 tests/
