@@ -1,0 +1,12 @@
+[
+  {
+    "name": "plain_walk",
+    "input": "1\nplain_walk 3 5\n#####\n#@.X#\n#####\n",
+    "output": "plain_walk 2\n"
+  },
+  {
+    "name": "single_push",
+    "input": "1\nsingle_push 3 7\n#######\n#@o.X.#\n#######\n",
+    "output": "single_push 3\n"
+  }
+]
