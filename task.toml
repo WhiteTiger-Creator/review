@@ -3,25 +3,28 @@ version = "2.0"
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
-category = "games"
-subcategories = ["tool_specific"]
 difficulty = "hard"
+category = "machine-learning"
+tags = ["adversarial-eval", "octet-budget", "tabular-scorer", "wiresize-tlv", "defense-preprocess", "seeded-search"]
+languages = ["bash"]
 codebase_size = "small"
 number_of_milestones = 0
-languages = ["go", "bash"]
-tags = ["yinsh", "turn-based", "tournament", "scoring", "state-machine"]
-expert_time_estimate_min = 90.0
-junior_time_estimate_min = 180.0
+subcategories = []
+expert_time_estimate_min = 150
+junior_time_estimate_min = 360
+
+[reference_pattern]
+justification_if_none = "No promoted reference_task_id in docs/reference_tasks/index.json covers bash adversarial tabular evaluation under L0 octet budget with defense preprocessing in the threat model"
+
+[agent]
+timeout_sec = 1200
+
+[verifier]
+timeout_sec = 600
 
 [environment]
 allow_internet = false
-build_timeout_sec = 600
+build_timeout_sec = 400
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-
-[agent]
-timeout_sec = 900
-
-[verifier]
-timeout_sec = 900
