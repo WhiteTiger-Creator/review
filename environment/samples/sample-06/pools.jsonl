@@ -1,0 +1,1 @@
+{"pool":"archive-f","now":"2026-03-24T00:00:00Z","keep":{"hourly":0,"daily":0,"weekly":1,"monthly":0},"target_blocks":0,"snapshots":[{"id":"f-00","taken":"2026-03-19T10:00:00Z"},{"id":"f-01","taken":"2026-03-22T10:00:00Z"},{"id":"f-02","taken":"2026-03-23T10:00:00Z"}],"extents":[{"blocks":11,"first":0,"last":0,"live":false},{"blocks":900,"first":2,"last":2,"live":true}]}

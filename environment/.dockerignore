@@ -5,12 +5,12 @@
 **/.pytest_cache/
 **/.mypy_cache/
 **/.ruff_cache/
+**/node_modules/
 **/target/
 **/dist/
 **/build/
 **/.venv/
 **/venv/
-**/node_modules/
 .env
 *.log
 solution/

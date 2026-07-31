@@ -1,0 +1,36 @@
+{
+  "pools": [
+    {
+      "pool": "archive-b",
+      "passes": 0,
+      "keep_final": {
+        "hourly": 0,
+        "daily": 2,
+        "weekly": 0,
+        "monthly": 0
+      },
+      "retained": [
+        {
+          "id": "b-03",
+          "class": "daily"
+        },
+        {
+          "id": "b-01",
+          "class": "daily"
+        },
+        {
+          "id": "b-00",
+          "class": "clone"
+        }
+      ],
+      "pruned": [
+        "b-04",
+        "b-02"
+      ],
+      "freed_blocks": 25,
+      "shortfall": 0,
+      "digest": "c44135db2d559eb4ad38357cb3bfdadee52860b10e9c1eb64374b1e3d56a748f"
+    }
+  ],
+  "digest": "c2ba5bf4a1cad4e512d191d461d8b5067826aeedc5f87a8bfc332b879663ada1"
+}

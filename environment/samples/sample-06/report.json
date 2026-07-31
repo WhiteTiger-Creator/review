@@ -1,0 +1,28 @@
+{
+  "pools": [
+    {
+      "pool": "archive-f",
+      "passes": 0,
+      "keep_final": {
+        "hourly": 0,
+        "daily": 0,
+        "weekly": 1,
+        "monthly": 0
+      },
+      "retained": [
+        {
+          "id": "f-02",
+          "class": "weekly"
+        }
+      ],
+      "pruned": [
+        "f-00",
+        "f-01"
+      ],
+      "freed_blocks": 11,
+      "shortfall": 0,
+      "digest": "93cf6d69cc8660934c770b5868f00dffdf6c10e5fb146d0835f37c888d728e20"
+    }
+  ],
+  "digest": "0306879492429e6c67385e2f8b78b5caec80a87b09b2f307def8558cac3fff20"
+}

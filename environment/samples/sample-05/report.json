@@ -1,0 +1,39 @@
+{
+  "pools": [
+    {
+      "pool": "archive-e",
+      "passes": 0,
+      "keep_final": {
+        "hourly": 1,
+        "daily": 2,
+        "weekly": 2,
+        "monthly": 2
+      },
+      "retained": [
+        {
+          "id": "e-01",
+          "class": "monthly"
+        },
+        {
+          "id": "e-02",
+          "class": "weekly"
+        },
+        {
+          "id": "e-03",
+          "class": "daily"
+        },
+        {
+          "id": "e-04",
+          "class": "hourly"
+        }
+      ],
+      "pruned": [
+        "e-00"
+      ],
+      "freed_blocks": 55,
+      "shortfall": 0,
+      "digest": "fb10f48f7d35552272b7233b066a65a10db15b890ffc5712862f25b03f35815d"
+    }
+  ],
+  "digest": "6dd5ff8327f1a500dc98f4cd386c9f084871cce20df7d73c162c73ec143b9542"
+}
