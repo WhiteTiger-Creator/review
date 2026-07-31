@@ -1,0 +1,4 @@
+# A border campaign. A turn may fall on up to three bands at once, taking soldiers off each.
+# No band may muster more than four thousand ninety-six soldiers.
+raid: 3
+cap: 4096

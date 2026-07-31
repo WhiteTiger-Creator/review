@@ -1,21 +1,20 @@
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
-
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
-ENV LC_ALL=C.UTF-8
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      r-base-core \
-      tmux \
-      asciinema \
-      ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
-RUN pip install --no-cache-dir asciinema==2.4.0
+FROM public.ecr.aws/docker/library/ruby:3.3-slim-bookworm@sha256:e76733e94b3a5893e4a141024ef3a583dc10781dc24becebf74f9c9f9a33e3df
 
 WORKDIR /app
 
-COPY data /app/data
-COPY docs /app/docs
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        bash python3 python3-pip tmux util-linux asciinema \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY wheels/ /opt/wheels/
+RUN pip3 install --no-cache-dir --break-system-packages \
+    --no-index --find-links /opt/wheels/ \
+    pytest==8.2.2 pytest-json-ctrf==0.3.5
+
+RUN mkdir -p /logs/verifier
+
+COPY app/ /app/
+
+RUN ruby -c /app/warband.rb \
+ && ruby -c /app/main.rb

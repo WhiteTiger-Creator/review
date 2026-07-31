@@ -1,464 +1,776 @@
-import csv
-import json
-import math
+"""Verification suite for the warband engine.
+
+The game is a row of raiding bands. A turn is a raid: the commander to move picks from one
+band up to as many bands as the raid limit allows, all different, and takes a positive number
+of soldiers off each, and whoever takes the last soldiers off the table wins. A council is a
+loss for the commander to move, and so a win for SECOND, exactly when, writing every band's
+strength in binary, the number of bands carrying a soldier in each place value is a multiple
+of one more than the raid limit. That reading is checked here against a full game search that
+knows no such rule, over small councils and several raid limits, which pins the winning
+condition and where it parts from folding the strengths together as though only one band could
+be raided at a turn. The tool is then run over many random and adversarial councils and its
+verdict on each is matched to the reading; every FIRST raid it names is replayed and required
+to strike no more bands than the limit, take a positive number off each, and land SECOND a
+losing council. Hand cases pin the echo and band numbering, the empty bands, the out-of-range
+councils, the skipping of junk lines, the muster-file reading and the exit codes.
+
+The engine is always started through an unprivileged runner, and the verifier's own files are
+locked to root, so the engine cannot read this reference and echo its answers back: it has to
+settle the councils itself.
+"""
+
+import functools
+import itertools
+import os
+import random
+import shutil
 import subprocess
+import sys
 import tempfile
-from pathlib import Path
 
-import mpmath as mp
-import numpy as np
-import pytest
-from numpy.polynomial.hermite_e import hermegauss
+sys.setrecursionlimit(1000000)
 
-mp.mp.dps = 40
+APP = ["ruby", "/app/main.rb"]
 
-APP = Path("/app")
-TESTS = Path(__file__).resolve().parent
-AGENT = APP / "solve.R"
-PUBLIC = APP / "data"
-HIDDEN_A = TESTS / "fixtures" / "hidden_a"
-HIDDEN_B = TESTS / "fixtures" / "hidden_b"
-HIDDEN_SCALED = TESTS / "fixtures" / "hidden_scaled"
+INT64_MIN = -(2 ** 63)
+INT64_MAX = 2 ** 63 - 1
 
-REL_TOL = 1e-8
-ABS_TOL = 1e-10
-META_TOL = 1e-7
-SCALE_C = 3.0
-GH_ORDER = 80
-PSD_SLACK = 1e-10
-MIN_CASES = 60
-MODE_STEP = 1e-4
-MODE_VERTEX_TOL = 1e-2
-
-_NODES, _WEIGHTS = hermegauss(GH_ORDER)
-_WEIGHTS = _WEIGHTS / math.sqrt(2.0 * math.pi)
-
-CASES = []
+# The engine is always started through this runner, which drops to an unprivileged user
+# first. The verifier's own files are root-only (test.sh locks them down), so the engine
+# cannot read the reference below and echo its answers back: it has to settle the councils
+# itself. HOME is pointed at a world-writable directory so the runtime has somewhere to fall
+# back on while it runs as the unprivileged user.
+SANDBOX = ["setpriv", "--reuid=65534", "--regid=65534", "--clear-groups", "--"]
+_ENV = dict(os.environ, HOME="/tmp")
 
 
-def _read(path):
-    with open(path, newline="") as fh:
-        return list(csv.DictReader(fh))
+def sandboxed(argv, stdin_text, timeout=120.0):
+    """Run argv as the unprivileged user and return the completed process."""
+    return subprocess.run(SANDBOX + argv, input=stdin_text, capture_output=True,
+                          check=False, text=True, timeout=timeout, env=_ENV)
 
 
-def _qnorm(p):
-    return float(mp.sqrt(2) * mp.erfinv(2 * mp.mpf(str(p)) - 1))
+def share(path):
+    """Open a path up so the unprivileged runner can reach it: 0o755 for a directory,
+    0o644 for a file."""
+    os.chmod(path, 0o755 if os.path.isdir(path) else 0o644)
+    return path
 
 
-def _kernel(a, b, sv, ell):
-    return sv * np.exp(-0.5 * ((a[:, None] - b[None, :]) / ell) ** 2)
+def _run(text, positions, timeout=120.0):
+    """Write a muster file holding text, feed the councils in on standard input and return
+    the output lines."""
+    fd, path = tempfile.mkstemp(prefix="warband-", suffix=".txt")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        share(path)
+        inp = "\n".join(positions) + "\n"
+        p = sandboxed(APP + [path], inp, timeout=timeout)
+        assert p.returncode == 0, f"warband exited {p.returncode}: {p.stderr[:500]}"
+        return p.stdout.split("\n")[:-1] if p.stdout else []
+    finally:
+        os.unlink(path)
 
 
-def _warp(name, y, lam):
-    if name == "identity":
-        return y.copy(), np.ones_like(y)
-    if name == "log":
-        return np.log(y), 1.0 / y
-    return (y**lam - 1.0) / lam, y ** (lam - 1.0)
+def run_bin(k, positions, cap=None, timeout=120.0):
+    """Run a batch of councils at a campaign whose raid limit is k and whose strength cap is
+    cap (None for no cap)."""
+    text = f"raid: {k}\n"
+    if cap is not None:
+        text += f"cap: {cap}\n"
+    return _run(text, positions, timeout)
 
 
-def _ginv(name, u, lam):
-    if name == "identity":
-        return u
-    if name == "log":
-        return np.exp(u)
-    base = lam * u + 1.0
-    out = np.full(np.shape(base), np.nan, dtype=float)
-    ok = base > 0.0
-    out[ok] = base[ok] ** (1.0 / lam)
-    return out
+def run_bin_text(text, positions, timeout=120.0):
+    """Run with a raw muster-file body (for the file-parsing tests)."""
+    return _run(text, positions, timeout)
 
 
-def _mode(name, mu, var, lam):
-    """The mode of the predictive law of radius, or None where none exists."""
-    if name == "identity":
-        return [float(v) for v in mu]
-    if name == "log":
-        return [float(v) for v in np.exp(mu - var)]
-    if lam < 1.0:
+# ----- the deciding rule -----------------------------------------------------
+
+
+def second_wins(bands, k):
+    """A council is a loss for the mover (a win for SECOND) exactly when, for every place
+    value, the count of bands carrying that bit is a multiple of one more than the raid
+    limit."""
+    m = k + 1
+    b = 0
+    while any((v >> b) for v in bands):
+        col = sum((v >> b) & 1 for v in bands)
+        if col % m != 0:
+            return False
+        b += 1
+    return True
+
+
+def is_int_literal(s):
+    """Whether the field is a whole-number literal: an optional single leading sign followed
+    by one or more decimal digits."""
+    if not s:
+        return False
+    if s[0] == "+" or s[0] == "-":
+        s = s[1:]
+    return len(s) > 0 and all("0" <= c <= "9" for c in s)
+
+
+def parse_line(line):
+    """Return the parsed band strengths (a line that produces output), or None for a line that
+    is skipped: no fields, a field that is not a whole-number literal, or a field too large to
+    fit a signed 64-bit integer."""
+    fields = line.split()
+    if not fields:
         return None
-    base = 1.0 + lam * mu
-    root = (base + np.sqrt(base**2 + 4.0 * lam * var * (lam - 1.0))) / 2.0
-    return [float(v) for v in root ** (1.0 / lam)]
+    bands = []
+    for f in fields:
+        if not is_int_literal(f):
+            return None
+        v = int(f)
+        if v < INT64_MIN or v > INT64_MAX:
+            return None
+        bands.append(v)
+    return bands
 
 
-def _log_density(name, r, m, sd, lam):
-    """Log density of radius r under the back-transformed predictive law.
-
-    Up to an additive constant, and independent of the closed form in _mode.
-    """
-    if name != "identity" and r <= 0.0:
-        return -math.inf
-    if name == "identity":
-        g, ljac = r, 0.0
-    elif name == "log":
-        g, ljac = math.log(r), -math.log(r)
-    else:
-        g, ljac = (r**lam - 1.0) / lam, (lam - 1.0) * math.log(r)
-    return -((g - m) ** 2) / (2.0 * sd * sd) + ljac
+def in_range(bands, cap):
+    """Whether every band sits at nought or more and, when a cap is set, no higher than it."""
+    return all(not (v < 0 or (cap is not None and v > cap)) for v in bands)
 
 
-def _nullify(arr):
-    return [
-        None if not math.isfinite(float(v)) else float(v) for v in np.atleast_1d(arr)
-    ]
+def has_single_band_win(bands, k):
+    """Whether some raid on a single band alone reaches a losing council. Only used on small
+    bands to pin councils whose winning raid must strike more than one band."""
+    for i, v in enumerate(bands):
+        for j in range(v):
+            nb = list(bands)
+            nb[i] = j
+            if second_wins(nb, k):
+                return True
+    return False
 
 
-def _gh_mean(m, v):
-    return float(np.sum(_WEIGHTS * np.exp(m + math.sqrt(v) * _NODES)))
+# ----- full game truth over small councils -----------------------------------
 
 
-def _gh_cov(mu, sig, i, j):
-    sii, sjj, sij = sig[i, i], sig[j, j], sig[i, j]
-    cvar = sjj - sij * sij / sii
-    t = mu[i] + math.sqrt(sii) * _NODES
-    inner = np.exp(mu[j] + (sij / sii) * (t - mu[i]) + cvar / 2.0)
-    joint = float(np.sum(_WEIGHTS * np.exp(t) * inner))
-    return joint - math.exp(mu[i] + sii / 2.0) * math.exp(mu[j] + sjj / 2.0)
+@functools.cache
+def _wb(state, k):
+    """Whether the commander to move wins, by a full search over every raid: a nonempty choice
+    of at most k bands, a positive number taken off each. State is a sorted tuple of positive
+    band strengths."""
+    s = tuple(sorted(x for x in state if x > 0))
+    if not s:
+        return False
+    n = len(s)
+    for r in range(1, min(k, n) + 1):
+        for sub in itertools.combinations(range(n), r):
+            ranges = [range(s[i]) for i in sub]
+            for combo in itertools.product(*ranges):
+                ns = list(s)
+                for j, i in enumerate(sub):
+                    ns[i] = combo[j]
+                if not _wb(tuple(sorted(x for x in ns if x > 0)), k):
+                    return True
+    return False
 
 
-def _solve_block(wname, train, xq, par):
-    x, y, sg = train
-    sv, ell, jit, lam, zlo, zhi = par
-    n = len(x)
-    z, gp = _warp(wname, y, lam)
-    s = sg * gp
-    centre = z.mean()
-    zt = z - centre
-    amat = _kernel(x, x, sv, ell) + np.diag(s**2) + jit * np.eye(n)
-    evals, evecs = np.linalg.eigh(amat)
-    proj = evecs.T @ zt
-    evidence = (
-        -0.5 * float(np.sum(proj**2 / evals))
-        - 0.5 * float(np.sum(np.log(evals)))
-        - 0.5 * n * math.log(2.0 * math.pi)
-        + float(np.sum(np.log(gp)))
-    )
-    kq = _kernel(x, xq, sv, ell)
-    mu = centre + kq.T @ (evecs @ (proj / evals))
-    sig = _kernel(xq, xq, sv, ell) - kq.T @ (evecs @ ((evecs.T @ kq) / evals[:, None]))
-    dg = np.diag(sig).copy()
-    block = {
-        "warp": wname,
-        "evidence": evidence,
-        "median": _nullify(_ginv(wname, mu, lam)),
-        "mode": _mode(wname, mu, dg, lam),
-        "mu_warped": list(mu),
-        "sd_warped": list(np.sqrt(dg)),
-        "lam": lam,
-        "quantile_low": _nullify(_ginv(wname, mu + np.sqrt(dg) * zlo, lam)),
-        "quantile_high": _nullify(_ginv(wname, mu + np.sqrt(dg) * zhi, lam)),
-        "n_train": n,
-    }
-    if wname == "boxcox":
-        block["mean"] = None
-        block["covariance"] = None
-    elif wname == "identity":
-        block["mean"] = list(mu)
-        block["covariance"] = sig.tolist()
-    else:
-        block["mean"] = [_gh_mean(mu[k], dg[k]) for k in range(len(mu))]
-        block["covariance"] = [
-            [_gh_cov(mu, sig, i, j) for j in range(len(mu))] for i in range(len(mu))
-        ]
-    return block
+def win_brute(bands, k):
+    """Whether the commander to move wins the council under a full game search."""
+    return _wb(tuple(sorted(x for x in bands if x > 0)), k)
 
 
-def reference(data_dir):
-    planets = _read(data_dir / "planets.csv")
-    qtab = _read(data_dir / "queries.csv")
+# ----- output validation -----------------------------------------------------
+
+
+def parse_raid(move):
+    """Split a reported raid into its (band number, soldiers left) clauses."""
+    assert move.startswith("raid "), ("a raid must start with raid", move)
+    clauses = move[len("raid "):].split(", ")
     out = []
-    for cf in _read(data_dir / "configurations.csv"):
-        rows = [r for r in planets if r["facility"] == cf["facility"]][
-            : int(cf["n_train"])
-        ]
-        x = np.array([float(r["log_mass_earth"]) for r in rows])
-        y = np.array([float(r["radius_earth"]) for r in rows])
-        sg = np.array([float(r["radius_sigma_earth"]) for r in rows])
-        qrows = sorted(
-            (r for r in qtab if r["config_id"] == cf["config_id"]),
-            key=lambda r: int(r["query_index"]),
-        )
-        xq = np.array([float(r["log_mass_earth"]) for r in qrows])
-        par = (
-            float(cf["signal_variance"]),
-            float(cf["lengthscale"]),
-            float(cf["jitter"]),
-            float(cf["boxcox_lambda"]),
-            _qnorm(cf["quantile_low"]),
-            _qnorm(cf["quantile_high"]),
-        )
-        warps = cf["warp_catalogue"].split(";")
-        blocks = [_solve_block(w, (x, y, sg), xq, par) for w in warps]
-        evs = [b["evidence"] for b in blocks]
-        top = max(evs)
-        tol = float(cf["tie_tolerance"])
-        selected = warps[min(i for i, e in enumerate(evs) if e >= top - tol)]
-        out.append(
-            {"config_id": cf["config_id"], "selected_warp": selected, "warps": blocks}
-        )
+    for c in clauses:
+        parts = c.split(" ")
+        assert len(parts) == 4 and parts[0] == "band" and parts[2] == "to", ("bad clause", c, move)
+        out.append((int(parts[1]), int(parts[3])))
     return out
 
 
-def run_agent(data_dir):
-    assert AGENT.is_file(), f"agent program missing at {AGENT}"
-    with tempfile.TemporaryDirectory() as tmp:
-        dest = Path(tmp) / "answer.json"
-        proc = subprocess.run(
-            ["Rscript", str(AGENT), str(data_dir), str(dest)],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-        assert proc.returncode == 0, (
-            f"agent failed on {data_dir}: {proc.stderr[-2000:]}"
-        )
-        assert dest.is_file(), f"agent wrote no output for {data_dir}"
-        with open(dest) as fh:
-            return json.load(fh)
+def check_output_line(line, bands, k, cap, truth=None):
+    """Validate one output line against the deciding rule. For FIRST, replay the reported raid
+    and require it legal and winning: at most k bands struck, a positive number off each, every
+    other band left alone, landing SECOND a council whose every place count is a multiple of
+    k+1."""
+    assert " | " in line, ("no separator", line)
+    echo, verdict = line.split(" | ", 1)
+    assert echo == " ".join(str(v) for v in bands), ("echo", echo, bands)
 
-
-def close(got, want):
-    if isinstance(got, bool) or not isinstance(got, (int, float)):
-        return False
-    if not math.isfinite(got):
-        return False
-    return abs(got - want) <= max(REL_TOL * abs(want), ABS_TOL)
-
-
-def _check_quantile_arrays(gw, rw, tag):
-    for key in ("median", "quantile_low", "quantile_high"):
-        arr = gw.get(key)
-        assert isinstance(arr, list) and len(arr) == len(rw[key]), f"{tag}: bad {key}"
-        for k, want in enumerate(rw[key]):
-            if want is None:
-                assert arr[k] is None, (
-                    f"{tag}: {key}[{k}] must be null, the inverse warp is undefined there"
-                )
-            else:
-                assert close(arr[k], want), (
-                    f"{tag}: {key}[{k}] {arr[k]} expected {want}"
-                )
-                if rw["warp"] != "identity":
-                    assert arr[k] > 0.0, f"{tag}: {key}[{k}] not positive"
-            CASES.append(1)
-    lo, mid, hi = gw["quantile_low"], gw["median"], gw["quantile_high"]
-    for k in range(len(mid)):
-        if lo[k] is not None and mid[k] is not None and hi[k] is not None:
-            assert lo[k] < mid[k] < hi[k], f"{tag}: quantile ordering violated at {k}"
-
-
-def _check_mean(gw, rw, tag):
-    gm = gw.get("mean")
-    assert isinstance(gm, list) and len(gm) == len(rw["mean"]), f"{tag}: bad mean"
-    for k, want in enumerate(rw["mean"]):
-        assert close(gm[k], want), f"{tag}: mean[{k}] {gm[k]} expected {want}"
-        CASES.append(1)
-    if rw["warp"] == "log":
-        for k, mval in enumerate(gm):
-            assert mval > gw["median"][k], f"{tag}: mean must exceed median at {k}"
-            CASES.append(1)
-
-
-def _check_covariance(gw, rw, tag):
-    ref_cov = rw["covariance"]
-    gcov = gw.get("covariance")
-    m = len(ref_cov)
-    assert isinstance(gcov, list) and len(gcov) == m, f"{tag}: bad covariance"
-    for i in range(m):
-        assert isinstance(gcov[i], list) and len(gcov[i]) == m, (
-            f"{tag}: bad covariance row"
-        )
-        for j in range(m):
-            want = ref_cov[i][j]
-            got = gcov[i][j]
-            scale = math.sqrt(abs(ref_cov[i][i] * ref_cov[j][j]))
-            assert isinstance(got, (int, float)) and math.isfinite(got), (
-                f"{tag}: covariance[{i}][{j}] not finite"
-            )
-            assert abs(got - want) <= max(
-                REL_TOL * abs(want), REL_TOL * scale, ABS_TOL
-            ), f"{tag}: covariance[{i}][{j}] {got} expected {want}"
-            CASES.append(1)
-    arr = np.array(gcov, dtype=float)
-    peak = max(abs(arr).max(), 1.0)
-    assert np.allclose(arr, arr.T, rtol=0, atol=1e-9 * peak), (
-        f"{tag}: covariance not symmetric"
-    )
-    evals = np.linalg.eigvalsh((arr + arr.T) / 2.0)
-    assert evals.min() > -PSD_SLACK * max(abs(evals).max(), 1.0), (
-        f"{tag}: covariance not positive semidefinite"
-    )
-    CASES.append(1)
-
-
-def _check_mode(gw, rw, tag):
-    ref = rw["mode"]
-    got = gw.get("mode", "missing")
-    if ref is None:
-        assert got is None, (
-            f"{tag}: mode must be null, the density of radius attains no "
-            f"maximum under this warp"
-        )
-        CASES.append(1)
+    if not in_range(bands, cap):
+        assert verdict == "ILLEGAL", ("out of range but not ILLEGAL", line, bands, cap)
         return
-    assert isinstance(got, list) and len(got) == len(ref), f"{tag}: bad mode"
-    for k, want in enumerate(ref):
-        assert close(got[k], want), f"{tag}: mode[{k}] {got[k]} expected {want}"
-        CASES.append(1)
 
-    # Independent confirmation that the reported point maximises the radius
-    # scale density, using a direct evaluation of that density rather than the
-    # closed form the reference used to produce it.
-    for k, spot in enumerate(got):
-        m = rw["mu_warped"][k]
-        sd = rw["sd_warped"][k]
-        step = MODE_STEP * max(abs(spot), 1.0)
-        here = _log_density(rw["warp"], spot, m, sd, rw["lam"])
-        up = _log_density(rw["warp"], spot + step, m, sd, rw["lam"])
-        down = _log_density(rw["warp"], spot - step, m, sd, rw["lam"])
-        assert here > up and here > down, (
-            f"{tag}: mode[{k}] is not a local maximum of the density"
-        )
-        curve = up - 2.0 * here + down
-        assert curve < 0.0, f"{tag}: mode[{k}] sits where the density is convex"
-        vertex = step * (down - up) / (2.0 * curve)
-        assert abs(vertex) <= MODE_VERTEX_TOL * step, (
-            f"{tag}: mode[{k}] is not stationary; the density peaks {vertex} away"
-        )
-        CASES.append(1)
+    want = "SECOND" if second_wins(bands, k) else "FIRST"
+    if truth is not None:
+        assert truth == want, ("rule disagrees with the search", bands, k, want, truth)
 
-
-def _check_warp_block(gw, rw, tag):
-    assert gw.get("warp") == rw["warp"], f"{tag}: warp name or ordering mismatch"
-    assert close(gw.get("evidence"), rw["evidence"]), (
-        f"{tag}: evidence {gw.get('evidence')} expected {rw['evidence']}"
-    )
-    CASES.append(1)
-    _check_mode(gw, rw, tag)
-    _check_quantile_arrays(gw, rw, tag)
-    if rw["mean"] is None:
-        assert gw.get("mean", "missing") is None, (
-            f"{tag}: mean must be null, the expectation does not exist under this warp"
-        )
-        assert gw.get("covariance", "missing") is None, (
-            f"{tag}: covariance must be null"
-        )
-        CASES.extend([1, 1])
+    if verdict == "SECOND":
+        assert want == "SECOND", ("said SECOND, rule says FIRST", bands, k)
         return
-    _check_mean(gw, rw, tag)
-    _check_covariance(gw, rw, tag)
+    assert verdict.startswith("FIRST"), ("bad verdict", verdict, line)
+    assert want == "FIRST", ("said FIRST, rule says SECOND", bands, k)
+    body = verdict[len("FIRST"):]
+    assert body.startswith(" "), ("FIRST must be followed by a raid", verdict)
+    move = body[1:]
+
+    clauses = parse_raid(move)
+    assert 1 <= len(clauses) <= k, ("a raid strikes at least one and at most k bands", move, k)
+    idxs = [i for i, _ in clauses]
+    assert len(set(idxs)) == len(idxs), ("a band struck twice in one raid", move)
+    new = list(bands)
+    for i, j in clauses:
+        assert 1 <= i <= len(bands), ("band index out of range", i, move)
+        old = bands[i - 1]
+        assert j >= 0, ("a band cannot be left with fewer than nought", move)
+        assert j < old, ("a raid must take a positive number off each band it strikes", move, bands)
+        new[i - 1] = j
+    assert second_wins(new, k), ("raid does not leave SECOND a losing council", bands, k, move, new)
 
 
-def compare(answer, ref):
-    assert isinstance(answer, dict), "answer is not a JSON object"
-    got_cfgs = answer.get("configurations")
-    assert isinstance(got_cfgs, list), "missing configurations array"
-    assert len(got_cfgs) == len(ref), "configuration count mismatch"
-    for gc, rc in zip(got_cfgs, ref, strict=True):
-        assert gc.get("config_id") == rc["config_id"], "config_id or ordering mismatch"
-        assert gc.get("selected_warp") == rc["selected_warp"], (
-            f"{rc['config_id']}: selected_warp {gc.get('selected_warp')} "
-            f"expected {rc['selected_warp']}"
-        )
-        CASES.append(1)
-        gws = gc.get("warps")
-        assert isinstance(gws, list) and len(gws) == len(rc["warps"]), (
-            "warp block count mismatch"
-        )
-        for gw, rw in zip(gws, rc["warps"], strict=True):
-            _check_warp_block(gw, rw, f"{rc['config_id']}/{rw['warp']}")
+def check_stream(k, positions, cap=None):
+    """Stream a batch of councils through the tool and check every output line."""
+    got = run_bin(k, positions, cap=cap)
+    seq = [p for p in (parse_line(pos) for pos in positions) if p is not None]
+    assert len(got) == len(seq), ("line count", len(got), len(seq), positions[:20])
+    for line, bands in zip(got, seq, strict=False):
+        check_output_line(line, bands, k, cap)
+    return got
 
 
-@pytest.mark.parametrize(
-    "data_dir", [PUBLIC, HIDDEN_A, HIDDEN_B], ids=["public", "hidden_a", "hidden_b"]
-)
-def test_contract(data_dir):
-    """Every reported quantity matches an independent recomputation of the contract."""
-    compare(run_agent(data_dir), reference(data_dir))
+def check_singles(k, positions, brute=False, cap=None):
+    """Run each council on its own and check its output line, optionally against the search."""
+    for pos in positions:
+        got = run_bin(k, [pos], cap=cap)
+        bands = parse_line(pos)
+        if bands is None:
+            assert got == [], ("expected no output", pos, got)
+            continue
+        assert len(got) == 1, ("expected one line", pos, got)
+        truth = None
+        if brute and in_range(bands, cap):
+            truth = "FIRST" if win_brute(bands, k) else "SECOND"
+        check_output_line(got[0], bands, k, cap, truth=truth)
 
 
-def test_unit_change_metamorphic():
-    """Rescaling radius and its uncertainty shifts log-warp evidence by exactly minus n log c."""
-    base = run_agent(HIDDEN_A)
-    scaled = run_agent(HIDDEN_SCALED)
-    ref = reference(HIDDEN_A)
-    shift = math.log(SCALE_C)
-    checked = 0
-    for bc, sc, rc in zip(
-        base["configurations"], scaled["configurations"], ref, strict=True
-    ):
-        bmap = {w["warp"]: w for w in bc["warps"]}
-        smap = {w["warp"]: w for w in sc["warps"]}
-        n = next(w["n_train"] for w in rc["warps"] if w["warp"] == "log")
-        want = -n * shift
-        got = smap["log"]["evidence"] - bmap["log"]["evidence"]
-        assert abs(got - want) <= META_TOL * max(abs(want), 1.0), (
-            f"{rc['config_id']}: log-warp evidence shift {got} expected {want}"
-        )
-        checked += 1
-        for k, bmed in enumerate(bmap["log"]["median"]):
-            assert close(smap["log"]["median"][k], SCALE_C * bmed), (
-                f"{rc['config_id']}: median[{k}] did not scale with the unit change"
-            )
-            checked += 1
-        for k, bmode in enumerate(bmap["log"]["mode"]):
-            assert close(smap["log"]["mode"][k], SCALE_C * bmode), (
-                f"{rc['config_id']}: mode[{k}] did not scale with the unit change"
-            )
-            checked += 1
-        for i, row in enumerate(bmap["log"]["covariance"]):
-            for j, bval in enumerate(row):
-                assert close(
-                    smap["log"]["covariance"][i][j], SCALE_C * SCALE_C * bval
-                ), (
-                    f"{rc['config_id']}: covariance[{i}][{j}] did not scale with c squared"
-                )
-                checked += 1
-    CASES.extend([1] * checked)
-    assert checked > 0, "metamorphic relation executed no cases"
+# ----- the rule against the full game search ---------------------------------
 
 
-@pytest.mark.parametrize(
-    "data_dir", [PUBLIC, HIDDEN_A, HIDDEN_B], ids=["public", "hidden_a", "hidden_b"]
-)
-def test_absent_mode_matches_an_unbounded_density(data_dir):
-    """Where the reference reports no mode, the density really does grow without bound.
-
-    Confirms the null is the correct answer rather than merely the expected one.
-    """
-    absent = 0
-    for cfg in reference(data_dir):
-        for warp in cfg["warps"]:
-            if warp["mode"] is not None:
-                continue
-            absent += 1
-            lam = warp["lam"]
-            assert lam < 1.0, (
-                f"{cfg['config_id']}/{warp['warp']}: mode reported absent but the "
-                f"density is bounded at the lower endpoint"
-            )
-            # Deep enough that the warped value has settled at its endpoint limit,
-            # so each further decade multiplies the density by a fixed factor.
-            per_decade = (1.0 - lam) * math.log(10.0)
-            for k in range(len(warp["mu_warped"])):
-                m = warp["mu_warped"][k]
-                sd = warp["sd_warped"][k]
-                near = _log_density(warp["warp"], 1e-60, m, sd, lam)
-                deeper = _log_density(warp["warp"], 1e-61, m, sd, lam)
-                gain = deeper - near
-                assert gain > 0.0 and abs(gain - per_decade) <= 1e-6 * per_decade, (
-                    f"{cfg['config_id']}/{warp['warp']}: density at query {k} grows "
-                    f"by {gain} per decade toward zero radius, not {per_decade}, so "
-                    f"it does not diverge and a mode should exist"
-                )
-                CASES.append(1)
-    assert absent > 0, "no absent-mode case was exercised"
+def test_rule_matches_the_search_small():
+    """The place-count reading must agree with a full game search that knows no such rule, on
+    every council of up to four bands of at most six soldiers, at raid limits one, two and
+    three. This pins the winning condition and that one more than the raid limit is the divisor
+    that decides it."""
+    for k in (1, 2, 3):
+        for n in range(5):
+            for combo in itertools.product(range(7), repeat=n):
+                bands = list(combo)
+                want = "SECOND" if second_wins(bands, k) else "FIRST"
+                got = "FIRST" if win_brute(bands, k) else "SECOND"
+                assert want == got, (k, bands, want, got)
 
 
-def test_case_floor():
-    """The graded run executes at least the required number of semantic cases."""
-    total = len(CASES)
-    print(f"executed semantic cases: {total}")
-    assert total >= MIN_CASES, f"executed {total} semantic cases, floor is {MIN_CASES}"
+def test_rule_matches_the_search_wider_limits():
+    """The same agreement at wider raid limits, four and five, over up to five bands of at most
+    three soldiers, so a place is carried by enough bands for the divisor to bite."""
+    for k in (4, 5):
+        for n in range(6):
+            for combo in itertools.product(range(4), repeat=n):
+                bands = list(combo)
+                want = "SECOND" if second_wins(bands, k) else "FIRST"
+                got = "FIRST" if win_brute(bands, k) else "SECOND"
+                assert want == got, (k, bands, want, got)
+
+
+# ----- the decisive small councils -------------------------------------------
+
+
+def test_three_equal_bands_is_a_second_win_at_limit_two():
+    """Three bands of one soldier with a raid limit of two. Folded together as though one band
+    could be raided at a turn their strengths do not cancel, so that reading calls it a win for
+    the mover. But a raid may fall on two bands at once, and the ones place is carried by three
+    bands, a multiple of three, so the council is a loss for the mover and SECOND wins."""
+    got = run_bin(2, ["1 1 1"])
+    assert got == ["1 1 1 | SECOND"], got
+    assert win_brute([1, 1, 1], 2) is False
+    check_output_line(got[0], [1, 1, 1], 2, None, truth="SECOND")
+
+
+def test_place_counts_not_the_total_at_limit_two():
+    """A council whose soldiers in total sit even by three but whose ones place, carried by a
+    single band, does not: bands of one, two and two at a raid limit of two. A reading that
+    only weighs the whole muster calls it a loss for the mover, but the ones place gives it away
+    and FIRST wins."""
+    got = run_bin(2, ["1 2 2"])
+    assert got[0].startswith("1 2 2 | FIRST "), got
+    assert win_brute([1, 2, 2], 2) is True
+    check_output_line(got[0], [1, 2, 2], 2, None, truth="FIRST")
+
+
+def test_folded_reading_lands_backwards_at_limit_two():
+    """Councils that folding the strengths together gets backwards once a raid may fall on more
+    than one band, each run on its own and pinned by the full game search at a raid limit of
+    two."""
+    check_singles(2, ["1 1 1", "1 1 1 1 1", "2 2 2", "3 3 3", "1 2 3", "5 5 5", "6 6 6 6"],
+                  brute=True)
+
+
+def test_limit_one_is_the_folded_reading():
+    """At a raid limit of one a turn falls on a single band, and the council is a loss for the
+    mover exactly when folding the strengths together cancels, so the two readings agree. Pinned
+    by the search."""
+    check_singles(1, ["1 2 3", "1 1", "5", "3 5 6", "7 7", "0 4 4", "2 3", "8 8 8"], brute=True)
+
+
+def test_same_council_flips_with_the_raid_limit():
+    """One and the same council of three bands of one, read at raid limits one, two and three.
+    At limit one the ones place carried by three bands is odd, so the mover wins; at limit two
+    three is a multiple of three, so the mover loses; at limit three three is not a multiple of
+    four, so the mover wins again."""
+    assert run_bin(1, ["1 1 1"])[0].startswith("1 1 1 | FIRST "), run_bin(1, ["1 1 1"])
+    assert run_bin(2, ["1 1 1"]) == ["1 1 1 | SECOND"]
+    assert run_bin(3, ["1 1 1"])[0].startswith("1 1 1 | FIRST "), run_bin(3, ["1 1 1"])
+    check_singles(1, ["1 1 1"], brute=True)
+    check_singles(2, ["1 1 1"], brute=True)
+    check_singles(3, ["1 1 1"], brute=True)
+
+
+# ----- raids that must strike several bands ----------------------------------
+
+
+def test_raids_may_strike_several_bands():
+    """Councils at wider raid limits, some second wins and some first wins whose winning raids
+    often must fall on more than one band at a stroke. Each reported line is checked against the
+    rule, and any reported raid is replayed and required legal and winning."""
+    check_singles(3, ["1 1 1 1", "2 2 2 2", "3 5 6", "7 8 9 10", "1 2 4 8", "15 15 15"],
+                  brute=False)
+    check_singles(4, ["1 1 1 1 1", "3 3 3 3", "6 10 12 20", "31 31 31 31"], brute=False)
+
+
+def test_winning_raid_must_strike_several_bands():
+    """Councils a first-player win whose every winning raid must strike more than one band, so a
+    build that only ever raids a single band, as folding the strengths together would, cannot
+    answer them. Each is confirmed to have no single-band winning raid, and the tool's raid is
+    required to strike at least two bands and land a losing council."""
+    cases = {
+        2: ["1 1", "1 2", "1 4", "3 4", "2 5", "1 6"],
+        3: ["1 1", "2 3", "4 1", "5 2", "6 4"],
+        4: ["1 1", "3 5", "2 6", "7 1"],
+    }
+    for k, positions in cases.items():
+        for pos in positions:
+            bands = [int(x) for x in pos.split()]
+            assert not second_wins(bands, k), (pos, k, "expected a first win")
+            assert not has_single_band_win(bands, k), (pos, k, "a single-band raid wins")
+            got = run_bin(k, [pos])
+            assert len(got) == 1 and got[0].startswith(pos + " | FIRST "), got
+            move = got[0].split(" | FIRST ", 1)[1]
+            clauses = parse_raid(move)
+            assert len(clauses) >= 2, ("raid must strike several bands", pos, k, move)
+            check_output_line(got[0], bands, k, None)
+
+
+def test_high_bit_councils_no_cap():
+    """Legal councils with no cap whose bands set the very high bits of a signed 64-bit integer,
+    up to the largest value that fits, at several raid limits. These exercise the top place
+    values and a winning raid that must clear a high bit, which a build working in a narrower
+    width or dropping the top bit gets wrong."""
+    b62 = 1 << 62
+    imax = (1 << 63) - 1
+    cases = [
+        [b62, b62 + 1, 1],
+        [b62 + 5, b62 + 3, 7],
+        [imax, imax - 1, 3],
+        [b62, 2, 4, 8],
+        [imax, imax, imax, 1],
+        [b62 + 12345, 6789, b62 + 1],
+    ]
+    for k in (2, 3, 4, 8):
+        for bands in cases:
+            got = run_bin(k, [" ".join(str(v) for v in bands)])
+            assert len(got) == 1, got
+            check_output_line(got[0], bands, k, None)
+
+
+def test_large_raid_limits():
+    """Wide raid limits, six, eight and sixteen, where a place is carried by many bands and the
+    divisor is large. Councils are grown from losing ones by lifting a few bands, so the winner
+    turns on getting the large divisor exactly right, and every reported raid is replayed and
+    required to strike no more bands than the limit."""
+    rng = random.Random(90210)
+    for k in (6, 8, 16):
+        positions = []
+        for _ in range(40):
+            base = k + 1 + rng.randint(0, k)
+            bands = [rng.choice([1, 3, 7, 15, 31]) for _ in range(base)]
+            # lift a few bands so the council is likely a first win
+            for _ in range(rng.randint(1, k)):
+                i = rng.randrange(len(bands))
+                bands[i] = rng.randint(0, 1 << 40)
+            positions.append(" ".join(str(v) for v in bands))
+        check_stream(k, positions)
+
+
+def test_larger_winning_councils():
+    """Larger winning councils well past any game search, run on their own and labelled by the
+    place-count rule. Every reported raid is replayed to confirm it strikes at most k bands and
+    lands a loss, so a build that botches the raid on bigger bands fails."""
+    cases = ["1000 1 1", "1024 2048 4096", "12345 6789 1111",
+             "1000000 999999 3", "700 701 3 5", "65535 65535 65535",
+             "1 2 4 8 16 32", "123456789 987654321"]
+    for k in (2, 3, 4):
+        for case in cases:
+            got = run_bin(k, [case])
+            assert len(got) == 1, got
+            bands = [int(x) for x in case.split()]
+            check_output_line(got[0], bands, k, None)
+
+
+# ----- empty bands and echo --------------------------------------------------
+
+
+def test_all_empty_is_a_second_win():
+    """A council whose every band is empty is a loss for the mover, who has nothing to raid, at
+    any raid limit."""
+    for k in (1, 2, 3):
+        assert run_bin(k, ["0"]) == ["0 | SECOND"], k
+        assert run_bin(k, ["0 0"]) == ["0 0 | SECOND"], k
+        assert run_bin(k, ["0 0 0 0"]) == ["0 0 0 0 | SECOND"], k
+
+
+def test_empty_bands_hold_their_place():
+    """Empty bands are counted in the numbering and passed over by the play; the echo keeps them
+    and any reported raid names the right band."""
+    check_stream(3, ["0 1 0", "1 0 1", "0 2 0 3", "0 0 3", "2 0 0 2", "0 7 0", "5 0 5 0 5"])
+
+
+def test_echo_normalizes_spacing_and_signs():
+    """The echo is the numbers the fields spell, written back in plain decimal and joined by
+    single spaces, so runs of spaces collapse, a leading zero is dropped and a leading plus goes
+    away."""
+    got = run_bin(2, ["  3    4  5 ", "007 0", "+3 5"])
+    assert got[0].startswith("3 4 5 | "), got
+    assert got[1].startswith("7 0 | "), got
+    assert got[2].startswith("3 5 | "), got
+    check_stream(2, ["  3    4  5 ", "007 0", "+3 5"])
+
+
+def test_single_band_on_its_own_is_a_first_win():
+    """A lone band of one or more soldiers is a win for the mover, who takes the whole band and
+    the last soldiers with it, at any raid limit."""
+    for k in (1, 2, 3):
+        check_singles(k, ["1", "2", "3", "7", "12", "128", "4096"], brute=False)
+
+
+# ----- out-of-range councils -------------------------------------------------
+
+
+def test_over_the_cap_is_illegal():
+    """A band above the campaign cap puts the council out of range: it is echoed and reported
+    ILLEGAL with no verdict. Bands at or under the cap play normally."""
+    got = run_bin(2, ["11", "10", "0 11", "5 20", "10 10", "3 4 5"], cap=10)
+    assert got[0] == "11 | ILLEGAL", got
+    assert got[1] != "10 | ILLEGAL", got
+    assert got[2] == "0 11 | ILLEGAL", got
+    assert got[3] == "5 20 | ILLEGAL", got
+    assert got[4] != "10 10 | ILLEGAL", got
+    assert got[5] != "3 4 5 | ILLEGAL", got
+    check_stream(2, ["11", "10", "0 11", "5 20", "10 10", "3 4 5"], cap=10)
+
+
+def test_negative_is_out_of_range_not_skipped():
+    """A negative field is a whole number all the same: it is read, judged out of range, and the
+    council is echoed and reported ILLEGAL. It is never treated as junk and never dropped on
+    that account."""
+    got = run_bin(2, ["-1", "-1 2", "3 -5 4", "0 -1"])
+    assert got == ["-1 | ILLEGAL", "-1 2 | ILLEGAL", "3 -5 4 | ILLEGAL", "0 -1 | ILLEGAL"], got
+
+
+def test_number_out_of_range_versus_not_a_number():
+    """-1 is a number out of range and is reported; x is not a number and the line is dropped."""
+    got = run_bin(2, ["-1", "x", "1 y", "1 2 2"])
+    assert len(got) == 2, got
+    assert got[0] == "-1 | ILLEGAL", got
+    assert got[1].startswith("1 2 2 | FIRST "), got
+    check_output_line(got[1], [1, 2, 2], 2, None)
+
+
+def test_non_numeric_and_blank_lines_skipped():
+    """Blank lines and lines carrying a field that is not a whole-number literal are dropped with
+    no output. A decimal point, an underscore, a hex marker and a letter are all not literals."""
+    got = run_bin(2, ["", "   ", "3 x 5", "1 2 3.0", "1_000", "0x4", "1 2 2"])
+    assert len(got) == 1, got
+    assert got[0].startswith("1 2 2 | FIRST "), got
+    check_output_line(got[0], [1, 2, 2], 2, None)
+
+
+def test_oversized_literals_are_skipped():
+    """A run of digits too large to fit a signed 64-bit integer is not a whole-number literal,
+    so a line carrying one is skipped with no output, the same as any other non-literal field."""
+    big = "9" * 25
+    got = run_bin(2, [big, "-" + big, big + " 2", "1 2 2"])
+    assert len(got) == 1, got
+    assert got[0].startswith("1 2 2 | FIRST "), got
+    check_output_line(got[0], [1, 2, 2], 2, None)
+
+
+def test_int64_boundary_literals():
+    """The boundary of a signed 64-bit integer. The largest and smallest values that fit are
+    whole-number literals and are read, then judged out of range under this cap; a value one past
+    either end does not fit, so its line is skipped."""
+    got = run_bin(2, ["9223372036854775807", "9223372036854775808",
+                      "-9223372036854775808", "-9223372036854775809", "3 4"], cap=100)
+    assert got[0] == "9223372036854775807 | ILLEGAL", got
+    assert got[1] == "-9223372036854775808 | ILLEGAL", got
+    assert got[2].startswith("3 4 | "), got
+    check_output_line(got[2], [3, 4], 2, 100)
+
+
+def test_malformed_signs():
+    """A whole-number literal carries at most one leading sign. A doubled or crossed sign is not
+    a literal, so the line is skipped. A signed zero is the number nought and plays."""
+    got = run_bin(2, ["++1", "--1", "+-1", "1 +-2", "-0", "+0 0"])
+    assert got == ["0 | SECOND", "0 0 | SECOND"], got
+
+
+# ----- muster-file parsing ---------------------------------------------------
+
+
+def test_default_raid_limit_is_one():
+    """With no raid: line a turn falls on a single band, so the council is read as though the
+    strengths fold together. Three bands of one then cancel to a nonzero fold and the mover
+    wins."""
+    got = run_bin_text("# nothing set\n", ["1 1 1"])
+    assert got[0].startswith("1 1 1 | FIRST "), got
+    check_output_line(got[0], [1, 1, 1], 1, None)
+
+
+def test_default_is_no_cap():
+    """A muster file that never sets a cap leaves every band of nought or more in range, however
+    large."""
+    got = run_bin_text("raid: 2\n", ["1000000 2000000"])
+    assert got[0] != "1000000 2000000 | ILLEGAL", got
+    check_output_line(got[0], [1000000, 2000000], 2, None)
+
+
+def test_last_raid_value_wins():
+    """When several lines set the raid limit the last one stands, and the verdict follows it."""
+    got = run_bin_text("raid: 1\nraid: 2\n", ["1 1 1"])
+    assert got == ["1 1 1 | SECOND"], got
+    got = run_bin_text("raid: 2\nraid: 1\n", ["1 1 1"])
+    assert got[0].startswith("1 1 1 | FIRST "), got
+
+
+def test_last_cap_value_wins():
+    """When several lines set the cap the last one stands, and what is in range follows it."""
+    got = run_bin_text("raid: 2\ncap: 5\ncap: 100\n", ["50"])
+    assert got[0].startswith("50 | FIRST "), got
+    got = run_bin_text("raid: 2\ncap: 100\ncap: 5\n", ["50"])
+    assert got == ["50 | ILLEGAL"], got
+
+
+def test_raid_limit_ignores_bad_words():
+    """A word after raid: that is not a run of digits, or that names nought, or carries a sign,
+    leaves the raid limit where it stood. Absent any good value it stays at one."""
+    for body in ("raid: three\n", "raid: -2\n", "raid: 0\n"):
+        got = run_bin_text(body, ["1 1 1"])
+        assert got[0].startswith("1 1 1 | FIRST "), (body, got)
+    # the first word after raid: is the value; trailing words are ignored
+    got = run_bin_text("raid: 2 bands please\n", ["1 1 1"])
+    assert got == ["1 1 1 | SECOND"], got
+
+
+def test_cap_ignores_non_digit_and_signed_words():
+    """A word after cap: that is not a run of digits, or that carries a sign, leaves the cap
+    where it stood, so a council that no cap ever took is still in range."""
+    got = run_bin_text("raid: 2\ncap: five\n", ["500"])
+    assert got[0] != "500 | ILLEGAL", got
+    got = run_bin_text("raid: 2\ncap: -3\n", ["500"])
+    assert got[0] != "500 | ILLEGAL", got
+
+
+def test_comment_stripped_from_setting_lines():
+    """A comment after a setting is dropped and the setting still takes, so both the raid limit
+    and the cap read the same as they would with the comment gone."""
+    got = run_bin_text("raid: 2   # up to two bands\ncap: 5  # small\n", ["3", "6"])
+    assert got == ["3 | FIRST raid band 1 to 0", "6 | ILLEGAL"], got
+
+
+def test_cap_zero_allows_only_empty_bands():
+    """A cap of nought leaves only empty bands in range; any band holding a soldier puts the
+    council out of range."""
+    got = run_bin_text("raid: 2\ncap: 0\n", ["0", "0 0", "1", "0 1"])
+    assert got == ["0 | SECOND", "0 0 | SECOND", "1 | ILLEGAL", "0 1 | ILLEGAL"], got
+
+
+def test_overflow_raid_limit_is_ignored():
+    """A raid: word too large to fit a signed 64-bit integer does not set the raid limit; it is
+    left where it stood, here the default of one. The council 1 1 1 is then read as a single-band
+    game and the mover wins."""
+    got = run_bin_text("raid: 9223372036854775808\n", ["1 1 1"])
+    assert got[0].startswith("1 1 1 | FIRST "), got
+    check_output_line(got[0], [1, 1, 1], 1, None)
+    # a good value before an overflowing one still stands
+    got = run_bin_text("raid: 2\nraid: 99999999999999999999\n", ["1 1 1"])
+    assert got == ["1 1 1 | SECOND"], got
+
+
+def test_overflow_cap_is_ignored():
+    """A cap: word too large to fit a signed 64-bit integer does not set the cap; a council that
+    would be out of range under a real cap is in range when no cap ever took."""
+    got = run_bin_text("raid: 2\ncap: 9223372036854775808\n", ["1000000000000"])
+    assert got[0] != "1000000000000 | ILLEGAL", got
+    check_output_line(got[0], [1000000000000], 2, None)
+
+
+def test_council_with_a_comment_field_is_skipped():
+    """A council line carries only whole-number literals. A hash is not a whole-number literal,
+    so a line carrying one is skipped whole with no output, like any other non-literal field; the
+    hash does not open a comment on a council line."""
+    got = run_bin(2, ["1 2 # note", "1 2 2"])
+    assert len(got) == 1, got
+    assert got[0].startswith("1 2 2 | FIRST "), got
+
+
+# ----- exit codes ------------------------------------------------------------
+
+
+def test_missing_argument_exits_two():
+    """Run with no muster file at all the tool writes nothing and exits 2."""
+    p = sandboxed(APP, "1\n", timeout=60.0)
+    assert p.returncode == 2, f"expected exit 2, got {p.returncode}"
+    assert p.stdout == "", repr(p.stdout)
+
+
+def test_extra_argument_exits_two():
+    """Run with more than one argument the tool writes nothing and exits 2."""
+    p = sandboxed(APP + ["a", "b"], "1\n", timeout=60.0)
+    assert p.returncode == 2, f"expected exit 2, got {p.returncode}"
+    assert p.stdout == "", repr(p.stdout)
+
+
+def test_unreadable_muster_file_exits_two():
+    """A muster file that cannot be opened stops the tool before any council is read: no output
+    and exit 2."""
+    p = sandboxed(APP + ["/no/such/muster/file"], "1\n", timeout=60.0)
+    assert p.returncode == 2, f"expected exit 2, got {p.returncode}"
+    assert p.stdout == "", repr(p.stdout)
+
+
+def test_muster_path_that_is_a_directory_exits_two():
+    """A directory handed in where a muster file belongs cannot be read, so the tool writes
+    nothing and exits 2."""
+    d = tempfile.mkdtemp(prefix="warband-")
+    try:
+        share(d)
+        p = sandboxed(APP + [d], "1\n", timeout=60.0)
+        assert p.returncode == 2, f"expected exit 2, got {p.returncode}"
+        assert p.stdout == "", repr(p.stdout)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_good_run_exits_zero():
+    """A run over a readable muster file prints one line for the one council and exits 0."""
+    fd, path = tempfile.mkstemp(prefix="warband-", suffix=".txt")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write("raid: 2\ncap: 10\n")
+        share(path)
+        p = sandboxed(APP + [path], "1 2 2\n", timeout=60.0)
+        assert p.returncode == 0, f"expected exit 0, got {p.returncode}"
+        lines = p.stdout.split("\n")
+        assert len(lines) == 2 and lines[1] == "", repr(p.stdout)
+        assert lines[0].startswith("1 2 2 | FIRST "), repr(p.stdout)
+        check_output_line(lines[0], [1, 2, 2], 2, 10)
+    finally:
+        os.unlink(path)
+
+
+# ----- random differentials --------------------------------------------------
+
+
+def rand_small(rng):
+    """A short council of small band strengths, with empty bands well represented."""
+    n = rng.randint(0, 6)
+    return " ".join(str(rng.choice([0, 0, 1, 1, 2, 3, 4, 5, 6, 7])) for _ in range(n))
+
+
+def test_random_small_streams_match_the_rule():
+    """Random small councils streamed through, every verdict and raid checked against the rule.
+    A folded reading, or one that mishandles the divisor, fails."""
+    for k in (1, 2, 3, 4):
+        rng = random.Random(1000 + k)
+        positions = [rand_small(rng) for _ in range(250)]
+        check_stream(k, positions)
+
+
+def test_random_small_singles_match_the_search():
+    """The same shape of random small councils, each run on its own, cross-checked against the
+    full game search to pin the winning rule."""
+    for k in (2, 3):
+        rng = random.Random(5000 + k)
+        positions = []
+        for _ in range(120):
+            n = rng.randint(0, 3)
+            positions.append(" ".join(str(rng.randint(0, 5)) for _ in range(n)))
+        check_singles(k, positions, brute=True)
+
+
+def rand_wide(rng):
+    """A council of up to nine bands drawn from a randomly chosen width, so both narrow and very
+    wide strengths turn up."""
+    n = rng.randint(1, 9)
+    vmax = rng.choice([7, 15, 31, 63, 255, 1023, 65535, 1 << 20])
+    return " ".join(str(rng.randint(0, vmax)) for _ in range(n))
+
+
+def test_random_wide_streams_match_the_rule():
+    """Wider councils past any game search, streamed at several raid limits: the rule labels them
+    and every reported winning raid is replayed and checked."""
+    for k in (2, 3, 4, 5):
+        rng = random.Random(20000 + k)
+        positions = [rand_wide(rng) for _ in range(150)]
+        check_stream(k, positions)
+
+
+def test_random_clustered_near_the_divisor():
+    """Streams of small bands clustered so a place is carried by a count near a multiple of the
+    divisor, where the winner is easiest to get backwards, checked against the rule."""
+    for k in (2, 3):
+        rng = random.Random(30000 + k)
+        positions = []
+        for _ in range(200):
+            n = rng.randint(1, k + 2)
+            positions.append(" ".join(str(rng.choice([1, 2, 3, 4, 5, 6, 7])) for _ in range(n)))
+        check_stream(k, positions)
+
+
+def test_random_with_a_cap_mixes_illegal():
+    """Random councils at a campaign with a cap, so legal and out-of-range councils stream
+    together: the line count and the ILLEGAL reports are pinned alongside the verdicts."""
+    for k in (2, 3):
+        rng = random.Random(40000 + k)
+        positions = []
+        for _ in range(150):
+            n = rng.randint(1, 5)
+            positions.append(" ".join(str(rng.randint(0, 560)) for _ in range(n)))
+        check_stream(k, positions, cap=512)
+
+
+# ----- the verifier stays out of reach ---------------------------------------
+
+
+def test_engine_cannot_read_the_verifier():
+    """Everything the engine runs as is barred from the verifier's files, so an engine cannot
+    read this reference and print its answers instead of settling the councils. Guards the
+    isolation itself: if the lockdown in test.sh ever stops taking effect, this fails rather than
+    quietly letting a delegating solution through."""
+    p = sandboxed(["/bin/cat", os.path.abspath(__file__)], "", timeout=30.0)
+    assert p.returncode != 0, "the verifier's own test file was readable"
+    assert "win_brute" not in p.stdout, "the reference leaked to the engine"
