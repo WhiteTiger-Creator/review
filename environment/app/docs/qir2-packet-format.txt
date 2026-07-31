@@ -1,0 +1,55 @@
+QIR2 detector packet contract
+Revision 3
+
+All multibyte integers are little-endian. Signed fields use two's-complement representation. The payload is decoded in row-major order.
+
+Header
+
+Offset  Size  Type    Meaning
+0       4     ASCII   Magic value QIR2
+4       1     u8      Version. Must be 2.
+5       1     u8      Flags. Bits 0 and 1 must be set. Bit 2 selects the indexed-row extension. Bits 3 through 7 must be zero.
+6       2     u16     Header length.
+8       2     u16     Detector width.
+10      2     u16     Detector height.
+12      4     i32     Predictor base value.
+16      4     u32     Encoded stream length in bytes.
+20      4     u32     CRC-32 of all decoded detector counts.
+
+The encoded stream starts at header length and occupies exactly stream length bytes. Header length plus stream length must equal the complete blob size. Dimensions must agree with the database and API metadata. The final encoded-stream byte is always FF.
+
+Unindexed packets
+
+When flag bit 2 is clear, header length must be at least 24. Any extension bytes between offset 24 and header length are reserved and must be zero. Rows are decoded consecutively from one stream. The predictor resets to the header base at each row. FE is invalid. FF is valid only after every detector count and must be the final byte.
+
+Indexed-row extension
+
+When flag bit 2 is set, header length must equal 24 + 12*height. Starting at offset 24, each row has one 12-byte descriptor:
+
+Offset within descriptor  Size  Type  Meaning
+0                         4     u32   Row-stream offset relative to the encoded-stream start
+4                         4     u32   Row-stream length, including its FE row terminator
+8                         4     u32   Chained row CRC-32
+
+Descriptors are in row order. Their row streams must be nonempty, contiguous, non-overlapping, and exactly partition encoded-stream bytes 0 through streamLength-2; the final byte at streamLength-1 is FF. Thus row 0 offset is zero, every later offset equals the preceding offset plus length, and the last row ends immediately before FF.
+
+Each indexed row resets the predictor to the header base, emits exactly width values, and ends with FE as its final row-stream byte. Compute its chained checksum with standard IEEE CRC-32 by feeding, in order: the previous row's unsigned CRC as four little-endian bytes (zero for row 0), the current zero-based row index as unsigned four-byte little-endian, and that row's decoded signed i32 counts in little-endian order. The result must equal the descriptor CRC and becomes the previous CRC for the next row. The packet-level CRC still covers all decoded counts only.
+
+Packet grammar
+
+00-3F  Emit one zigzag delta: delta=(opcode >> 1) XOR -(opcode & 1); predictor += delta.
+40-7F  Repeat the current predictor (opcode & 0x3F)+1 times.
+80     Read one signed i16 delta, add it to the predictor, and emit.
+81     Read one signed i32 absolute value, replace the predictor, and emit.
+82     Read u8 count and signed i16 delta. Count must be nonzero. Repeat count times: predictor += delta; emit.
+83     Read u8 count followed by count signed i16 deltas. Count must be nonzero. Apply and emit each delta in order.
+84     Read u8 count, signed i16 firstDelta, and signed i16 deltaStep. Count must be nonzero. Repeat count times: predictor += current delta; emit; current delta += deltaStep.
+85-FD  Invalid and reserved.
+FE     Indexed-row terminator. Valid only after exactly one full indexed row and only as that row stream's final byte.
+FF     Packet end marker. Valid only as the final encoded-stream byte after every row.
+
+No opcode may emit past the current row width. Decoding must produce exactly width*height signed detector counts. Truncated operands, zero counts, early terminators, trailing bytes, directory gaps or overlaps, bad chained row CRCs, and integer results outside signed i32 range are invalid.
+
+Packet checksum
+
+Use standard IEEE CRC-32. Feed all decoded counts in row-major order, each encoded as signed 32-bit little-endian. Compare the resulting unsigned 32-bit value with the CRC field in the fixed header.

@@ -3,25 +3,25 @@ version = "2.0"
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
-category = "scientific-computing"
-subcategories = ["tool_specific"]
 difficulty = "hard"
-codebase_size = "minimal"
+category = "scientific-computing"
+subcategories = ["db_interaction", "api_integration"]
 number_of_milestones = 0
-languages = ["r"]
-tags = ["orbital-mechanics", "conjunction-risk", "covariance", "scientific-validation", "space-safety"]
-expert_time_estimate_min = 180
-junior_time_estimate_min = 480
+codebase_size = "small"
+languages = ["kotlin", "go", "sql", "bash"]
+tags = ["scientific-computing", "binary-protocol", "robust-regression", "spatiotemporal-covariance", "bivariate-gls", "go-auditor"]
+expert_time_estimate_min = 720
+junior_time_estimate_min = 1440
 
 [verifier]
-timeout_sec = 1800.0
+timeout_sec = 600.0
 
 [agent]
-timeout_sec = 1800.0
+timeout_sec = 1500.0
 
 [environment]
-build_timeout_sec = 1200.0
-cpus = 1
-memory_mb = 4096
-storage_mb = 6144
 allow_internet = false
+build_timeout_sec = 900.0
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240

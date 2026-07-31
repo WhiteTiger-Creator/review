@@ -1,0 +1,4 @@
+#!/bin/bash
+set -euo pipefail
+cd /opt/inspection-api
+exec java org.springframework.boot.loader.launch.JarLauncher "$@"

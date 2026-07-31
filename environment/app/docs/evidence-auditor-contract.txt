@@ -1,0 +1,61 @@
+Thermal evidence finalizer contract
+Revision 1
+
+The fixed `/app/bin/analyze-thermograms` wrapper first runs the Kotlin JAR with the requested database, API, and a private candidate-report path. It then runs `/app/bin/thermal-evidence-auditor --db DATABASE --report CANDIDATE --output OUTPUT`. The wrapper and rebuild script are immutable task fixtures. The Go source is `/app/auditor/main.go` and must use only the standard library.
+
+Candidate handoff
+
+The Kotlin candidate has top-level keys `frames`, `summary`, and `_audit`. Public `frames` and `summary` follow the thermal-field contract. `_audit` is private and must not appear in the final report. It is an array in the same order as `frames`. Every record has exact keys:
+
+`frameId`, `cameraId`, `capturedAt`, `temporalCorrelationSeconds`, `arrheniusRateMm2PerSecond`, `arrheniusRateSigmaMm2PerSecond`, `integratedExcessCmm2`, `loadSigmaCmm2`.
+
+The audit numbers are unrounded IEEE-754 values. A missing public `hotRegion` uses audit load and load sigma zero. The finalizer must reject duplicate IDs, count/order/identity disagreements, invalid RFC-3339 instants, non-finite values, nonpositive temporal scale or Arrhenius sigma, negative load sigma, disagreement between each audit value rounded by decimal HALF_UP to three places and its public frame value, or a public summary `frameCount` mismatch.
+
+Evidence digest
+
+Create the canonical byte stream:
+
+- ASCII `TGA1`
+- little-endian u32 record count
+- for each audit record: little-endian u16 byte length plus UTF-8 bytes for frameId, cameraId, and capturedAt; little-endian i64 Unix epoch milliseconds; then little-endian signed i64 milli-units for temporalCorrelationSeconds, Arrhenius rate, Arrhenius sigma, integrated load, and load sigma. Convert each number with decimal HALF_UP to three places, multiply by 1,000, and encode the resulting integer.
+
+Strings must be nonempty, valid UTF-8, and at most 65535 bytes. Hash the complete stream with SHA-256 and publish lowercase hexadecimal as `summary.evidenceSha256`.
+
+SQLite episode profiles
+
+Read exactly one `episode_profiles` row for every camera represented in the audit:
+
+`camera_id`, `min_frames`, `max_gap_seconds`, `cross_metric_correlation`, `load_sigma_floor_cmm2`, `min_glr`.
+
+Require `min_frames >= 2`, finite positive max gap and load sigma floor, finite `min_glr >= 0`, and `-0.95 < cross_metric_correlation < 0.95`. Every camera represented in the audit must have exactly one valid row. Extra valid rows for cameras absent from the archive are ignored; a missing represented-camera row or any inconsistent represented-camera row fails the run.
+
+Bivariate temporal model
+
+For one camera, sort by instant then frameId and require strictly increasing instants and one identical finite positive temporal scale tau. Let t_i be elapsed minutes from the first frame. Let r_i and sR_i be Arrhenius rate and sigma. Let l_i be integrated load and sL_i=max(audit load sigma, profile load sigma floor). Define rho(i,j)=exp(-abs(deltaSeconds)/tau).
+
+Use vector order `[r0,l0,r1,l1,...]` and scale vector `[sR0,sL0,sR1,sL1,...]`. Build the dimensionless correlation matrix R:
+
+R(r_i,r_j)=rho(i,j)
+R(l_i,l_j)=rho(i,j)
+R(r_i,l_j)=R(l_j,r_i)=cross_metric_correlation*rho(i,j).
+
+Invert R with Gaussian elimination and partial pivoting, then form `SigmaInverse[i,j]=RInverse[i,j]/(scale_i*scale_j)`. Do not invert the raw mixed-unit covariance directly. Every required pivot must exceed `1e-12` times the original correlation matrix’s largest absolute element.
+
+The baseline design has four columns: rate intercept, rate slope, load intercept, load slope. For every contiguous interval containing at least `min_frames` but fewer than all camera frames, whose internal adjacent gaps do not exceed `max_gap_seconds`, add two indicator columns: rate shift and load shift.
+
+Before solving, divide each response and design row by its matching scale value. For each of the six resulting design columns, compute the maximum absolute element, require it finite and positive, and divide that column by its maximum. With normalized response yN, normalized design Z, and RInverse, solve:
+
+G=inverse(Z^T RInverse Z)
+gamma=G Z^T RInverse yN.
+
+Transform back with `beta[k]=gamma[k]/columnScale[k]` and `B[k,l]=G[k,l]/(columnScale[k]*columnScale[l])`. This normalization is mandatory; do not form or invert a mixed-unit raw normal matrix.
+
+The shift vector is `[betaRateShift,betaLoadShift]`; its covariance is the lower-right 2 by 2 block of B. Let each one-sided lower bound be shift minus `1.96*sigma`. Let GLR be `shift^T inverse(shiftCovariance) shift`. Keep only candidates with both lower bounds positive and GLR at least `min_glr`.
+
+For deterministic cross-language selection only, quantize GLR, Arrhenius lower bound, and load lower bound independently to nine decimal places with decimal HALF_UP. Choose `dominantBivariateThermalEpisode` by greatest quantized GLR, then greatest quantized Arrhenius lower bound, greatest quantized load lower bound, cameraId, fromFrameId, and toFrameId ascending. Keep and publish the original unrounded candidate values. It is null when no candidate qualifies. A non-null object has exact keys:
+
+`cameraId`, `fromFrameId`, `toFrameId`, `observationCount`, `arrheniusShiftMm2PerSecond`, `arrheniusShiftSigmaMm2PerSecond`, `arrheniusLower95Mm2PerSecond`, `loadShiftCmm2`, `loadShiftSigmaCmm2`, `loadLower95Cmm2`, `generalizedLikelihoodRatio`.
+
+Final publication
+
+Remove `_audit`. Add exact summary keys `evidenceSha256` and `dominantBivariateThermalEpisode` after the existing thermal summary values. Round all new floating values to three decimals with decimal HALF_UP. Write one trailing newline. Create parent directories as needed and replace `--output` atomically only after every validation and calculation succeeds. Any Go, Kotlin, SQLite, parsing, matrix, validation, or publication error must leave an existing output unchanged.

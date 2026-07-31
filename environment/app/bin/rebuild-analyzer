@@ -1,0 +1,14 @@
+#!/bin/bash
+set -euo pipefail
+
+mkdir -p /app/analyzer/build
+mapfile -t sources < <(find /app/analyzer/src/main/kotlin -name '*.kt' -type f | sort)
+kotlinc "${sources[@]}" -include-runtime -jvm-target 17 -d /app/analyzer/build/analyzer.jar
+
+mkdir -p /app/auditor/build
+GOCACHE="${GOCACHE:-/tmp/go-build-cache}" \
+GO111MODULE=off \
+go build -trimpath -buildvcs=false -ldflags='-s -w' \
+  -o /app/auditor/build/thermal-evidence-auditor \
+  /app/auditor/main.go
+install -m 0755 /app/auditor/build/thermal-evidence-auditor /app/bin/thermal-evidence-auditor

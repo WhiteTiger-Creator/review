@@ -1,0 +1,130 @@
+{
+  "calibrations": [
+    {
+      "cameraId": "north-cam",
+      "revision": "cal-2026-04-n",
+      "model": "quadratic-ambient-v2",
+      "gain": 0.0128,
+      "offsetC": -23.4,
+      "quadratic": 4.2e-07,
+      "ambientC": 24.0,
+      "ambientCoupling": 0.034,
+      "emissivity": 0.91
+    },
+    {
+      "cameraId": "south-cam",
+      "revision": "cal-2026-04-s",
+      "model": "quadratic-ambient-v2",
+      "gain": 0.0136,
+      "offsetC": -31.2,
+      "quadratic": 3.6e-07,
+      "ambientC": 25.5,
+      "ambientCoupling": 0.027,
+      "emissivity": 0.88
+    },
+    {
+      "cameraId": "service-cam",
+      "revision": "cal-2026-03-x",
+      "model": "quadratic-ambient-v2",
+      "gain": 0.0119,
+      "offsetC": -18.8,
+      "quadratic": 5.1e-07,
+      "ambientC": 22.0,
+      "ambientCoupling": 0.041,
+      "emissivity": 0.94
+    }
+  ],
+  "geometries": [
+    {
+      "cameraId": "north-cam",
+      "revision": "geom-2026-04-n",
+      "rotation": 90,
+      "mirrorX": false,
+      "badPixels": [
+        10,
+        11
+      ],
+      "hotSigma": 1.5,
+      "minHotArea": 2,
+      "homography": [
+        12.0,
+        0.35,
+        100.0,
+        -0.2,
+        11.5,
+        50.0,
+        0.0005,
+        -0.0003,
+        1.0
+      ],
+      "arrheniusA": 120.0,
+      "activationEnergyJMol": 57000.0,
+      "detectorNoiseC": 0.32,
+      "confidenceK": 1.8,
+      "correlationMajorMm": 22.0,
+      "correlationMinorMm": 8.0,
+      "correlationAngleDeg": 25.0,
+      "temporalCorrelationSeconds": 150.0
+    },
+    {
+      "cameraId": "south-cam",
+      "revision": "geom-2026-04-s",
+      "rotation": 180,
+      "mirrorX": true,
+      "badPixels": [
+        9
+      ],
+      "hotSigma": 1.8,
+      "minHotArea": 1,
+      "homography": [
+        10.8,
+        -0.4,
+        80.0,
+        0.25,
+        12.2,
+        40.0,
+        -0.0004,
+        0.0002,
+        1.0
+      ],
+      "arrheniusA": 95.0,
+      "activationEnergyJMol": 54000.0,
+      "detectorNoiseC": 0.41,
+      "confidenceK": 2.0,
+      "correlationMajorMm": 18.0,
+      "correlationMinorMm": 6.5,
+      "correlationAngleDeg": -35.0,
+      "temporalCorrelationSeconds": 90.0
+    },
+    {
+      "cameraId": "service-cam",
+      "revision": "geom-2026-03-x",
+      "rotation": 270,
+      "mirrorX": false,
+      "badPixels": [
+        14
+      ],
+      "hotSigma": 1.7,
+      "minHotArea": 1,
+      "homography": [
+        9.5,
+        0.6,
+        60.0,
+        -0.3,
+        10.1,
+        30.0,
+        0.0003,
+        0.0005,
+        1.0
+      ],
+      "arrheniusA": 150.0,
+      "activationEnergyJMol": 61000.0,
+      "detectorNoiseC": 0.27,
+      "confidenceK": 1.65,
+      "correlationMajorMm": 15.0,
+      "correlationMinorMm": 5.0,
+      "correlationAngleDeg": 70.0,
+      "temporalCorrelationSeconds": 45.0
+    }
+  ]
+}
