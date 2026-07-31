@@ -1,0 +1,37 @@
+MATCH (sa:Switch)-[:HAS_PORT]->(p:Port)-[:LINK]-(q:Port)
+WHERE p.admin_up AND p.link_up AND p.aggregatable
+  AND q.admin_up AND q.link_up
+WITH sa.id AS sxid, sa.system_id AS ssid, p.actor_key AS akey,
+     p.partner_system_id AS psid, count(*) AS na
+OPTIONAL MATCH (sc:Switch)-[:HAS_PORT]->(r:Port)-[:LINK]-(w:Port)
+WHERE sc.system_id = psid AND r.partner_system_id = ssid
+  AND r.admin_up AND r.link_up AND r.aggregatable
+  AND w.admin_up AND w.link_up
+WITH sxid, akey, psid, na, count(r.id) AS nb
+WITH sxid, akey, psid, na,
+     CASE WHEN na = nb THEN 1 ELSE 0 END AS sym
+MATCH (sx:Switch)-[:HAS_PORT]->(m:Port)-[:LINK]-(mq:Port)
+WHERE sx.id = sxid AND m.actor_key = akey AND m.partner_system_id = psid
+  AND m.admin_up AND m.link_up AND m.aggregatable
+  AND mq.admin_up AND mq.link_up
+MATCH (sx)-[:HAS_LAG_CONFIG]->(lc:LagConfig)
+WHERE lc.actor_key = akey
+RETURN sx.name AS switch, m.name AS port,
+       CASE WHEN sym = 0 THEN 'Individual'
+            WHEN na >= lc.min_links THEN 'Bundled'
+            ELSE 'Down' END AS state,
+       CASE WHEN sym = 0 THEN 'NONE'
+            ELSE cast(akey AS STRING) + ':' + psid END AS lag_id
+UNION ALL
+MATCH (s2:Switch)-[:HAS_PORT]->(p2:Port)
+OPTIONAL MATCH (p2)-[:LINK]-(q2:Port)
+WHERE p2.admin_up AND p2.link_up AND p2.aggregatable
+  AND q2.admin_up AND q2.link_up
+WITH s2, p2, count(q2.id) AS agreeing
+WHERE agreeing = 0
+OPTIONAL MATCH (p2)-[:LINK]-(any:Port)
+WITH s2, p2, count(any.id) AS peers
+RETURN s2.name AS switch, p2.name AS port,
+       CASE WHEN peers = 0 OR NOT p2.admin_up OR NOT p2.link_up
+            THEN 'Detached' ELSE 'Individual' END AS state,
+       'NONE' AS lag_id

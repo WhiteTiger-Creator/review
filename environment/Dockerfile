@@ -1,15 +1,20 @@
-FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
-# cargo lives on PATH via the base image; link it into /usr/local/bin as well so
-# it is reachable from shells that rebuild their own PATH
-RUN ln -sf /usr/local/cargo/bin/cargo /usr/local/bin/cargo \
- && ln -sf /usr/local/cargo/bin/rustc /usr/local/bin/rustc
+FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tmux \
+    asciinema \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --no-cache-dir --break-system-packages pytest==8.2.0 kuzu==0.6.1
 
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip make tmux asciinema && rm -rf /var/lib/apt/lists/*
-COPY requirements.lock /tmp/requirements.lock
-RUN python3 -m pip install --break-system-packages --no-cache-dir --require-hashes --no-deps -r /tmp/requirements.lock
-COPY Cargo.toml /app/Cargo.toml
-COPY src/ /app/src/
+
+COPY graph/ /app/graph/
 COPY docs/ /app/docs/
-COPY example/ /app/example/
-RUN cargo build --release
+COPY bin/ /app/bin/
+
+RUN tar -xzf /app/graph/lacp_fabric.kuzu.tar.gz -C /app/graph \
+    && rm /app/graph/lacp_fabric.kuzu.tar.gz
+
+RUN chmod +x /app/bin/runquery.sh
