@@ -1,272 +1,616 @@
-import collections
-import os
-import tempfile
+import subprocess
+from pathlib import Path
 
-import metamorphic
-import pytest
-from build_graph import write
-from conftest import (
-    HIDDEN_FAMILIES,
-    REQUIRED_COLUMNS,
-    VISIBLE_GRAPH,
-    hidden_graph,
-    normalize_rows,
-    run_query,
-)
-from lacp_oracle import compute_reference
-from scenarios import SCENARIOS
-
-STATES = ("Detached", "Individual", "Bundled", "Down")
-NONE = "NONE"
-GROUPED = ("Bundled", "Down")
-
-_TMP = tempfile.mkdtemp(prefix="lacp_derived_")
-_BUILT = {}
+SITE_CORE = Path("/app/bin/site-core")
+SITE_CORE_DIGEST = Path("/usr/share/doc/site-core/installed.sha256")
 
 
-def _built(name, fabric):
-    if name not in _BUILT:
-        path = os.path.join(_TMP, name, "lacp_fabric.kuzu")
-        write(fabric, path)
-        _BUILT[name] = path
-    return _BUILT[name]
-
-
-def _graph_paths():
-    paths = {"visible": VISIBLE_GRAPH}
-    for family in HIDDEN_FAMILIES:
-        paths[family] = hidden_graph(family)
-    return paths
-
-
-def _anchor_ports(reference):
-    by_state = collections.defaultdict(list)
-    for row in sorted(reference):
-        by_state[row[2]].append(row)
-    picked = []
-    for state in STATES:
-        picked.extend(by_state[state][:2])
-    return picked
-
-
-def test_required_columns_present(answer_visible_raw):
-    """The answer returns the four contracted columns."""
-    columns, rows, err = answer_visible_raw
-    assert rows is not None, f"answer query failed on the visible graph: {err}"
-    missing = set(REQUIRED_COLUMNS) - set(columns)
-    assert not missing, f"answer is missing columns: {missing}"
-
-
-def test_answer_matches_oracle_on_visible(answer_visible_normalized, visible_reference):
-    """The answer reproduces the oracle's row set on the committed fabric."""
-    assert answer_visible_normalized == visible_reference
-
-
-@pytest.mark.parametrize("state", STATES)
-def test_visible_state_population(answer_visible_normalized, visible_reference, state):
-    """Each aggregation state is populated exactly as the oracle says."""
-    got = {r for r in answer_visible_normalized if r[2] == state}
-    want = {r for r in visible_reference if r[2] == state}
-    assert got == want
-
-
-@pytest.mark.parametrize("index", range(8))
-def test_visible_anchor_row(answer_visible_normalized, visible_reference, index):
-    """A sampled port across all four states carries its exact oracle row."""
-    anchors = _anchor_ports(visible_reference)
-    row = anchors[index]
-    assert row in answer_visible_normalized
-
-
-@pytest.mark.parametrize("index", range(8))
-def test_visible_anchor_has_no_rival_row(
-    answer_visible_normalized, visible_reference, index
-):
-    """A sampled port carries no second row under any other state or lag_id."""
-    anchors = _anchor_ports(visible_reference)
-    row = anchors[index]
-    rivals = {
-        r
-        for r in answer_visible_normalized
-        if (r[0], r[1]) == (row[0], row[1]) and r != row
-    }
-    assert not rivals, f"port {row[1]} also reported as {rivals}"
-
-
-@pytest.mark.parametrize("family", HIDDEN_FAMILIES)
-def test_answer_matches_oracle_on_hidden(
-    answer_hidden_normalized, hidden_references, family
-):
-    """The answer generalizes to a fabric it has never seen."""
-    assert answer_hidden_normalized[family] == hidden_references[family]
-
-
-@pytest.mark.parametrize("family", HIDDEN_FAMILIES)
-@pytest.mark.parametrize("state", STATES)
-def test_hidden_state_population(
-    answer_hidden_normalized, hidden_references, family, state
-):
-    """Each state is populated correctly on each hidden fabric."""
-    got = {r for r in answer_hidden_normalized[family] if r[2] == state}
-    want = {r for r in hidden_references[family] if r[2] == state}
-    assert got == want
-
-
-@pytest.mark.parametrize("name", sorted(SCENARIOS))
-def test_scenario_contract(answer_text, name):
-    """The answer reproduces a hand-worked fabric isolating one rule."""
-    fabric, expected = SCENARIOS[name]()
-    path = _built("scenario_" + name, fabric)
-    columns, rows, err = run_query(answer_text, path)
-    assert rows is not None, f"answer failed on scenario {name}: {err}"
-    assert normalize_rows(columns, rows) == expected
-
-
-@pytest.mark.parametrize("name", sorted(SCENARIOS))
-def test_scenario_oracle_agrees_with_hand_worked_rows(name):
-    """The independent oracle reproduces rows worked out by hand from the rules."""
-    fabric, expected = SCENARIOS[name]()
-    path = _built("scenario_" + name, fabric)
-    assert compute_reference(path) == expected
-
-
-@pytest.mark.parametrize("graph", sorted(_graph_paths()))
-def test_reference_query_agrees_with_oracle(reference_text, graph):
-    """The shipped reference query and the oracle agree on every fabric."""
-    path = _graph_paths()[graph]
-    columns, rows, err = run_query(reference_text, path)
-    assert rows is not None, f"reference query failed on {graph}: {err}"
-    assert normalize_rows(columns, rows) == compute_reference(path)
-
-
-@pytest.mark.parametrize("graph", sorted(_graph_paths()))
-def test_one_row_per_port(answer_text, graph):
-    """Every port appears exactly once, whatever its state."""
-    path = _graph_paths()[graph]
-    columns, rows, err = run_query(answer_text, path)
-    assert rows is not None, f"answer failed on {graph}: {err}"
-    normalized = normalize_rows(columns, rows)
-    keys = [(r[0], r[1]) for r in normalized]
-    assert len(keys) == len(set(keys)), "a port is reported more than once"
-    assert len(normalized) == len(compute_reference(path))
-
-
-@pytest.mark.parametrize("graph", sorted(_graph_paths()))
-def test_state_enum_is_total(answer_text, graph):
-    """No port is reported under a state outside the contracted enum."""
-    path = _graph_paths()[graph]
-    columns, rows, err = run_query(answer_text, path)
-    assert rows is not None, f"answer failed on {graph}: {err}"
-    seen = {r[2] for r in normalize_rows(columns, rows)}
-    assert seen <= set(STATES), f"unexpected states: {seen - set(STATES)}"
-
-
-@pytest.mark.parametrize("graph", sorted(_graph_paths()))
-def test_lag_id_discipline(answer_text, graph):
-    """Grouped ports carry a group identifier and ungrouped ports carry NONE."""
-    path = _graph_paths()[graph]
-    columns, rows, err = run_query(answer_text, path)
-    assert rows is not None, f"answer failed on {graph}: {err}"
-    for switch, port, state, lag_id in normalize_rows(columns, rows):
-        if state in GROUPED:
-            assert lag_id != NONE and ":" in lag_id, (switch, port, state, lag_id)
-        else:
-            assert lag_id == NONE, (switch, port, state, lag_id)
-
-
-@pytest.mark.parametrize(
-    "baseline",
-    [
-        "naive_trust_advertised_partner",
-        "naive_group_by_actor_key_only",
-        "naive_ignore_minlinks",
-    ],
-)
-def test_baseline_diverges_on_visible(request, visible_reference, baseline):
-    """A named wrong reading of the rules is separated on the committed fabric."""
-    text = request.getfixturevalue(baseline + "_text")
-    columns, rows, err = run_query(text, VISIBLE_GRAPH)
-    assert rows is not None, f"baseline {baseline} failed to run: {err}"
-    assert normalize_rows(columns, rows) != visible_reference
-
-
-@pytest.mark.parametrize(
-    "baseline",
-    [
-        "naive_trust_advertised_partner",
-        "naive_group_by_actor_key_only",
-        "naive_ignore_minlinks",
-    ],
-)
-@pytest.mark.parametrize("family", HIDDEN_FAMILIES)
-def test_baseline_diverges_on_hidden(request, hidden_references, baseline, family):
-    """A named wrong reading is separated on unseen fabrics too."""
-    text = request.getfixturevalue(baseline + "_text")
-    columns, rows, err = run_query(text, hidden_graph(family))
-    assert rows is not None, f"baseline {baseline} failed to run: {err}"
-    assert normalize_rows(columns, rows) != hidden_references[family]
-
-
-def test_literal_list_matches_visible(literal_list_text, visible_reference):
-    """The hardcoded row list is indistinguishable on the committed fabric."""
-    columns, rows, err = run_query(literal_list_text, VISIBLE_GRAPH)
-    assert rows is not None, f"literal_list failed to run: {err}"
-    assert normalize_rows(columns, rows) == visible_reference
-
-
-@pytest.mark.parametrize("family", HIDDEN_FAMILIES)
-def test_literal_list_diverges_on_hidden(literal_list_text, hidden_references, family):
-    """The hardcoded row list is separated by every unseen fabric."""
-    columns, rows, err = run_query(literal_list_text, hidden_graph(family))
-    assert rows is not None, f"literal_list failed to run: {err}"
-    assert normalize_rows(columns, rows) != hidden_references[family]
-
-
-def test_metamorphic_link_direction_swap(answer_text):
-    """Storing every cable in the opposite direction changes no row."""
-    base = _built("mm_base", metamorphic.base_fabric())
-    swapped = _built("mm_swap", metamorphic.link_direction_swap())
-    columns, rows, err = run_query(answer_text, swapped)
-    assert rows is not None, f"answer failed on the swapped fabric: {err}"
-    assert normalize_rows(columns, rows) == compute_reference(base)
-
-
-def test_metamorphic_key_bijection(answer_text):
-    """Remapping every key injectively leaves each port's state unchanged."""
-    base = _built("mm_base", metamorphic.base_fabric())
-    remapped = _built("mm_keys", metamorphic.key_bijection())
-    columns, rows, err = run_query(answer_text, remapped)
-    assert rows is not None, f"answer failed on the remapped fabric: {err}"
-    got = normalize_rows(columns, rows)
-    assert got == compute_reference(remapped)
-    states = collections.Counter((r[0], r[1], r[2]) for r in got)
-    base_states = collections.Counter(
-        (r[0], r[1], r[2]) for r in compute_reference(base)
+def assert_site_core_intact() -> None:
+    """Instruction requires leaving /app/bin/site-core unchanged."""
+    assert SITE_CORE.is_file()
+    assert SITE_CORE_DIGEST.is_file()
+    checked = subprocess.run(
+        ["sha256sum", "-c", str(SITE_CORE_DIGEST)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
     )
-    assert states == base_states
+    assert checked.returncode == 0, checked.stderr or checked.stdout
+    assert "OK" in checked.stdout
 
 
-def test_metamorphic_dead_link_addition(answer_text):
-    """Adding a cabled pair that is administratively down changes no row."""
-    base = _built("mm_base", metamorphic.base_fabric())
-    fabric, added = metamorphic.dead_link_addition()
-    path = _built("mm_dead", fabric)
-    columns, rows, err = run_query(answer_text, path)
-    assert rows is not None, f"answer failed on the extended fabric: {err}"
-    got = normalize_rows(columns, rows)
-    names = {p["name"] for p in added}
-    assert {r for r in got if r[1] not in names} == compute_reference(base)
-    assert all(r[2] == "Detached" for r in got if r[1] in names)
+APP = Path("/app")
+ADMIN = APP / "usr/sbin/site-admin"
+ACTIVATE = APP / "usr/sbin/site-activate"
 
 
-def test_metamorphic_nonaggregatable_pair_addition(answer_text):
-    """Adding a cabled pair that may not aggregate changes no existing row."""
-    base = _built("mm_base", metamorphic.base_fabric())
-    fabric, added = metamorphic.nonaggregatable_pair_addition()
-    path = _built("mm_nonagg", fabric)
-    columns, rows, err = run_query(answer_text, path)
-    assert rows is not None, f"answer failed on the extended fabric: {err}"
-    got = normalize_rows(columns, rows)
-    names = {p["name"] for p in added}
-    assert {r for r in got if r[1] not in names} == compute_reference(base)
-    assert all(r[2] == "Individual" for r in got if r[1] in names)
+def write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+
+
+def make_state(tmp_path: Path, *, pending: str = "drop:retired/link\n") -> Path:
+    root = tmp_path / "target"
+    write(root / "payload/alpha.txt", "alpha payload\n")
+    write(root / "payload/nested/beta.txt", "nested payload\n")
+    write(root / "namespace/retired/link", "old namespace entry\n")
+    write(root / ".site/busy", "0\n")
+    write(root / ".site/sequence", "0\n")
+    write(root / ".site/pending", pending)
+    write(root / ".site/events", "")
+    write(root / ".site/status", "prepared\n")
+    write(root / ".site/ready", "")
+    write(root / ".site/account", "count=99\nfingerprint=stale\ngeneration=1\n")
+    return root
+
+
+def events_text(root: Path) -> str:
+    path = root / ".site/events"
+    if not path.exists():
+        return ""
+    return path.read_text()
+
+
+def assert_no_noted_residue(root: Path) -> None:
+    for line in events_text(root).splitlines():
+        if not line.startswith("noted="):
+            continue
+        relative = line.split("=", 1)[1]
+        assert not (root / "namespace" / relative).exists()
+
+
+def run(entry: Path, root: Path) -> subprocess.CompletedProcess[str]:
+    assert_site_core_intact()
+    return subprocess.run(
+        [str(entry), str(root)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def run_core(action: str, root: Path) -> subprocess.CompletedProcess[str]:
+    assert_site_core_intact()
+    return subprocess.run(
+        ["/app/bin/site-core", action, str(root)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def payload_snapshot(root: Path) -> dict[str, bytes]:
+    result = {}
+    for path in sorted((root / "payload").rglob("*")):
+        if path.is_file():
+            result[path.relative_to(root / "payload").as_posix()] = path.read_bytes()
+    return result
+
+
+def payload_fingerprint(root: Path) -> str:
+    """Independent FNV-1a over sorted relative paths and file bytes."""
+    value = 1469598103934665603
+    for path in sorted((root / "payload").rglob("*")):
+        if path.is_file():
+            relative = path.relative_to(root / "payload").as_posix().encode()
+            for byte in relative + path.read_bytes():
+                value ^= byte
+                value = (value * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return f"{value:016x}"
+
+
+def read_account(root: Path) -> dict[str, str]:
+    return dict(
+        line.split("=", 1)
+        for line in (root / ".site/account").read_text().splitlines()
+        if "=" in line
+    )
+
+
+def assert_serviceable(root: Path, before: dict[str, bytes]) -> None:
+    assert_site_core_intact()
+    account = read_account(root)
+    assert (root / ".site/pending").read_text() == ""
+    assert (root / ".site/ready").read_text() == "1\n"
+    assert (root / ".site/status").read_text() == "published\n"
+    assert account["count"] == str(len(before))
+    assert account["fingerprint"] == payload_fingerprint(root)
+    assert int(account["generation"]) >= 0
+    assert payload_snapshot(root) == before
+    assert_no_noted_residue(root)
+    assert "noted=" not in events_text(root)
+
+
+def snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def observed_text(root: Path) -> str:
+    """Match site-core scan output for the live payload tree."""
+    paths = sorted(
+        path.relative_to(root / "payload").as_posix()
+        for path in (root / "payload").rglob("*")
+        if path.is_file()
+    )
+    lines = [
+        f"count={len(paths)}",
+        f"fingerprint={payload_fingerprint(root)}",
+        *[f"path={path}" for path in paths],
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def make_clean(root: Path) -> None:
+    (root / ".site/pending").write_text("")
+    (root / ".site/events").write_text("")
+    if (root / "namespace/retired/link").exists():
+        (root / "namespace/retired/link").unlink()
+    write(
+        root / ".site/account",
+        "\n".join(
+            [
+                "count=2",
+                f"fingerprint={payload_fingerprint(root)}",
+                "generation=1",
+                "",
+            ]
+        ),
+    )
+    write(root / ".site/observed", observed_text(root))
+    (root / ".site/status").write_text("published\n")
+    (root / ".site/ready").write_text("1\n")
+
+
+def highest_matching_generation(root: Path) -> str:
+    scan_fp = payload_fingerprint(root)
+    count = str(len(payload_snapshot(root)))
+    best = -1
+    for name in ("slot-a", "slot-b"):
+        path = root / ".site" / name
+        if not path.exists():
+            continue
+        record = dict(
+            line.split("=", 1) for line in path.read_text().splitlines() if "=" in line
+        )
+        if record.get("count") != count or record.get("fingerprint") != scan_fp:
+            continue
+        generation = int(record.get("generation", "-1"))
+        best = max(best, generation)
+    assert best >= 0
+    return str(best)
+
+
+def test_site_core_binary_unchanged() -> None:
+    """Installed site-core must match the sealed installation digest."""
+    assert_site_core_intact()
+
+
+def test_alpha(tmp_path: Path) -> None:
+    """Manual entry completes deferred namespace work."""
+    root = make_state(tmp_path)
+    before = payload_snapshot(root)
+    run(ADMIN, root)
+    assert_serviceable(root, before)
+    assert not (root / "namespace/retired/link").exists()
+
+
+def test_beta(tmp_path: Path) -> None:
+    """Stale accounting converges without payload loss."""
+    root = make_state(tmp_path, pending="")
+    before = payload_snapshot(root)
+    run(ADMIN, root)
+    assert_serviceable(root, before)
+
+
+def test_gamma(tmp_path: Path) -> None:
+    """Publication residue cannot stand in for serviceability."""
+    root = make_state(tmp_path)
+    write(root / ".site/ready", "1\n")
+    before = payload_snapshot(root)
+    run(ADMIN, root)
+    assert_serviceable(root, before)
+    assert not (root / "namespace/retired/link").exists()
+
+
+def test_delta(tmp_path: Path) -> None:
+    """An early interruption can be reconstructed."""
+    root = make_state(tmp_path)
+    (root / ".site/account").unlink()
+    before = payload_snapshot(root)
+    run(ADMIN, root)
+    assert_serviceable(root, before)
+    assert not (root / "namespace/retired/link").exists()
+
+
+def test_epsilon(tmp_path: Path) -> None:
+    """Competing durable candidates resolve to the newer matching generation."""
+    root = make_state(tmp_path, pending="")
+    fingerprint = payload_fingerprint(root)
+    write(
+        root / ".site" / "slot-a",
+        "\n".join(
+            [
+                "count=2",
+                f"fingerprint={fingerprint}",
+                "generation=11",
+                "",
+            ]
+        ),
+    )
+    write(
+        root / ".site" / "slot-b",
+        "\n".join(
+            [
+                "count=2",
+                f"fingerprint={fingerprint}",
+                "generation=4",
+                "",
+            ]
+        ),
+    )
+    expected_generation = highest_matching_generation(root)
+    before = payload_snapshot(root)
+    before_slots = {
+        "slot-a": (root / ".site" / "slot-a").read_text(),
+        "slot-b": (root / ".site" / "slot-b").read_text(),
+    }
+    run(ADMIN, root)
+    assert_serviceable(root, before)
+    assert read_account(root)["generation"] == expected_generation
+    assert expected_generation == "11"
+    # Matching candidates must remain authoritative; a blind refresh would replace them.
+    assert (root / ".site" / "slot-a").read_text() == before_slots["slot-a"]
+    assert (root / ".site" / "slot-b").read_text() == before_slots["slot-b"]
+
+
+def test_zeta(tmp_path: Path) -> None:
+    """Activation and manual entry converge identically."""
+    manual = make_state(tmp_path / "layout-a")
+    activation = make_state(tmp_path / "layout-b")
+    manual_payload = payload_snapshot(manual)
+    activation_payload = payload_snapshot(activation)
+    run(ADMIN, manual)
+    run(ACTIVATE, activation)
+    assert_serviceable(manual, manual_payload)
+    assert_serviceable(activation, activation_payload)
+    assert snapshot(manual) == snapshot(activation)
+
+
+def test_eta(tmp_path: Path) -> None:
+    """Mixed deferred drops and acknowledgements preserve a larger payload tree."""
+    root = make_state(tmp_path)
+    write(root / "payload/archive/gamma.txt", "archived payload\n")
+    write(root / "namespace/retired/second", "retired\n")
+    write(
+        root / ".site/pending",
+        "note:audit/trail\ndrop:retired/link\ndrop:retired/second\n",
+    )
+    before = payload_snapshot(root)
+    run(ADMIN, root)
+    assert_serviceable(root, before)
+    assert not (root / "namespace/retired/link").exists()
+    assert not (root / "namespace/retired/second").exists()
+    assert "kept=audit/trail" in events_text(root)
+    assert "noted=retired/link" not in events_text(root)
+    assert "noted=retired/second" not in events_text(root)
+
+
+def test_theta(tmp_path: Path) -> None:
+    """A successful repeat is byte-stable."""
+    root = make_state(tmp_path)
+    before = payload_snapshot(root)
+    run(ADMIN, root)
+    assert_serviceable(root, before)
+    first = snapshot(root)
+    run(ADMIN, root)
+    assert snapshot(root) == first
+
+
+def test_iota(tmp_path: Path) -> None:
+    """Activation clears an incomplete publication state."""
+    root = make_state(tmp_path)
+    write(root / ".site/ready", "1\n")
+    before = payload_snapshot(root)
+    run(ACTIVATE, root)
+    assert_serviceable(root, before)
+    assert not (root / "namespace/retired/link").exists()
+
+
+def test_kappa(tmp_path: Path) -> None:
+    """An already clean target remains unchanged."""
+    root = make_state(tmp_path)
+    make_clean(root)
+    before = snapshot(root)
+    run(ADMIN, root)
+    assert snapshot(root) == before
+
+
+def test_lambda(tmp_path: Path) -> None:
+    """Malformed durable work fails closed and remains inspectable."""
+    root = make_state(tmp_path, pending="unknown-record\n")
+    before_payload = payload_snapshot(root)
+    result = run(ADMIN, root)
+    assert result.returncode != 0
+    assert (root / ".site/pending").read_text() == "unknown-record\n"
+    assert payload_snapshot(root) == before_payload
+    assert (root / ".site/ready").read_text() != "1\n"
+    inspect = run_core("inspect", root)
+    assert inspect.returncode == 0
+    assert "state=serviceable" not in inspect.stdout
+    assert "pending=yes" in inspect.stdout
+
+
+def test_mu(tmp_path: Path) -> None:
+    """An in-use target is refused without mutation."""
+    root = make_state(tmp_path)
+    write(root / ".site/busy", "1\n")
+    before = snapshot(root)
+    result = run(ADMIN, root)
+    assert result.returncode != 0
+    assert snapshot(root) == before
+
+
+def test_nu(tmp_path: Path) -> None:
+    """Payload content changes must change recorded accounting fingerprints."""
+    root = make_state(tmp_path, pending="")
+    first_before = payload_snapshot(root)
+    run(ADMIN, root)
+    assert_serviceable(root, first_before)
+    first_fp = read_account(root)["fingerprint"]
+    first_generation = read_account(root)["generation"]
+
+    write(root / "payload/alpha.txt", "alpha payload mutated\n")
+    write(root / ".site/status", "prepared\n")
+    write(root / ".site/ready", "")
+    write(root / ".site/account", "count=99\nfingerprint=stale\ngeneration=1\n")
+    write(root / ".site/sequence", "3\n")
+    # A leftover high-generation durable record that no longer matches must not win.
+    write(
+        root / ".site" / "slot-b",
+        "\n".join(
+            [
+                "count=2",
+                f"fingerprint={first_fp}",
+                "generation=99",
+                "",
+            ]
+        ),
+    )
+    second_before = payload_snapshot(root)
+    expected = payload_fingerprint(root)
+    assert expected != first_fp
+    run(ADMIN, root)
+    assert_serviceable(root, second_before)
+    assert read_account(root)["fingerprint"] == expected
+    assert read_account(root)["fingerprint"] != first_fp
+    assert read_account(root)["generation"] != "99"
+    assert read_account(root)["generation"] != first_generation
+    assert not (root / ".site" / "slot-b").exists() or (
+        "fingerprint=" + expected
+    ) in (root / ".site" / "slot-b").read_text()
+
+
+def test_xi(tmp_path: Path) -> None:
+    """site-core inspect/check report the same serviceable end state as admin."""
+    root = make_state(tmp_path)
+    before = payload_snapshot(root)
+    run(ADMIN, root)
+    assert_serviceable(root, before)
+    inspect = run_core("inspect", root)
+    assert inspect.returncode == 0
+    assert "root=valid" in inspect.stdout
+    assert "busy=no" in inspect.stdout
+    assert "pending=no" in inspect.stdout
+    assert "account=current" in inspect.stdout
+    assert "state=serviceable" in inspect.stdout
+    check = run_core("check", root)
+    assert check.returncode == 0
+    assert "state=serviceable" in check.stdout
+
+
+def test_omicron(tmp_path: Path) -> None:
+    """Lower-level commit and publish refuse while deferred work remains."""
+    root = make_state(tmp_path)
+    fingerprint = payload_fingerprint(root)
+    write(
+        root / ".site/account",
+        "\n".join(
+            [
+                "count=2",
+                f"fingerprint={fingerprint}",
+                "generation=3",
+                "",
+            ]
+        ),
+    )
+    before = snapshot(root)
+    commit = run_core("commit", root)
+    assert commit.returncode != 0
+    publish = run_core("publish", root)
+    assert publish.returncode != 0
+    assert (root / ".site/pending").read_text() == "drop:retired/link\n"
+    assert (root / ".site/ready").read_text() != "1\n"
+    assert snapshot(root) == before
+
+
+def test_pi(tmp_path: Path) -> None:
+    """Deferred ledger text alone is not enough — namespace side effects must apply."""
+    root = make_state(tmp_path)
+    before = payload_snapshot(root)
+    run(ADMIN, root)
+    assert_serviceable(root, before)
+    assert not (root / "namespace/retired/link").exists()
+    assert (root / ".site/pending").read_text() == ""
+    # A marker-only refresh must not be what produced serviceability.
+    assert (root / ".site/status").read_text() == "published\n"
+
+
+def test_rho(tmp_path: Path) -> None:
+    """Post-replay stale accounting still converges through activation."""
+    root = make_state(tmp_path, pending="")
+    if (root / "namespace/retired/link").exists():
+        (root / "namespace/retired/link").unlink()
+    write(root / ".site/status", "replayed\n")
+    write(root / ".site/ready", "")
+    write(root / ".site/account", "count=99\nfingerprint=stale\ngeneration=1\n")
+    before = payload_snapshot(root)
+    run(ACTIVATE, root)
+    assert_serviceable(root, before)
+
+
+def test_sigma(tmp_path: Path) -> None:
+    """Accounted targets with empty deferred work still need a real publish path."""
+    root = make_state(tmp_path, pending="")
+    if (root / "namespace/retired/link").exists():
+        (root / "namespace/retired/link").unlink()
+    write(
+        root / ".site/account",
+        "\n".join(
+            [
+                "count=2",
+                f"fingerprint={payload_fingerprint(root)}",
+                "generation=5",
+                "",
+            ]
+        ),
+    )
+    write(root / ".site/status", "accounted\n")
+    write(root / ".site/ready", "")
+    write(root / ".site/observed", observed_text(root))
+    before = payload_snapshot(root)
+    run(ACTIVATE, root)
+    assert_serviceable(root, before)
+
+
+def test_tau(tmp_path: Path) -> None:
+    """Publication markers with stale accounting must reconverge on manual entry."""
+    root = make_state(tmp_path, pending="")
+    if (root / "namespace/retired/link").exists():
+        (root / "namespace/retired/link").unlink()
+    fingerprint = payload_fingerprint(root)
+    write(
+        root / ".site" / "slot-a",
+        "\n".join(
+            [
+                "count=2",
+                f"fingerprint={fingerprint}",
+                "generation=17",
+                "",
+            ]
+        ),
+    )
+    write(
+        root / ".site" / "slot-b",
+        "\n".join(
+            [
+                "count=9",
+                "fingerprint=" + "stale",
+                "generation=80",
+                "",
+            ]
+        ),
+    )
+    write(root / ".site/status", "published\n")
+    write(root / ".site/ready", "1\n")
+    write(root / ".site/account", "count=99\nfingerprint=stale\ngeneration=1\n")
+    write(root / ".site/observed", observed_text(root))
+    before = payload_snapshot(root)
+    run(ADMIN, root)
+    assert_serviceable(root, before)
+    assert read_account(root)["generation"] == "17"
+    assert (root / ".site" / "slot-a").read_text().find("generation=17") >= 0
+    assert not (root / ".site" / "slot-b").exists()
+
+
+def test_phi(tmp_path: Path) -> None:
+    """Activation must not trust publication markers when accounting drifted."""
+    root = make_state(tmp_path, pending="")
+    if (root / "namespace/retired/link").exists():
+        (root / "namespace/retired/link").unlink()
+    fingerprint = payload_fingerprint(root)
+    write(
+        root / ".site" / "slot-b",
+        "\n".join(
+            [
+                "count=2",
+                f"fingerprint={fingerprint}",
+                "generation=23",
+                "",
+            ]
+        ),
+    )
+    write(
+        root / ".site" / "slot-a",
+        "\n".join(
+            [
+                "count=1",
+                "fingerprint=" + "stale",
+                "generation=50",
+                "",
+            ]
+        ),
+    )
+    write(root / ".site/status", "published\n")
+    write(root / ".site/ready", "1\n")
+    write(root / ".site/account", "count=99\nfingerprint=stale\ngeneration=7\n")
+    write(root / ".site/observed", observed_text(root))
+    before = payload_snapshot(root)
+    run(ACTIVATE, root)
+    assert_serviceable(root, before)
+    assert read_account(root)["generation"] == "23"
+    assert not (root / ".site" / "slot-a").exists()
+
+
+def test_chi(tmp_path: Path) -> None:
+    """Inventory refresh alone is not enough — durable candidates must be staged."""
+    root = make_state(tmp_path, pending="")
+    if (root / "namespace/retired/link").exists():
+        (root / "namespace/retired/link").unlink()
+    write(root / ".site/status", "scanned\n")
+    write(root / ".site/ready", "")
+    write(root / ".site/account", "count=99\nfingerprint=stale\ngeneration=1\n")
+    before = payload_snapshot(root)
+    sync = run_core("sync", root)
+    assert sync.returncode == 0
+    assert not (root / ".site" / "slot-a").exists()
+    assert not (root / ".site" / "slot-b").exists()
+    commit = run_core("commit", root)
+    assert commit.returncode != 0
+    run(ADMIN, root)
+    assert_serviceable(root, before)
+    assert read_account(root)["fingerprint"] == payload_fingerprint(root)
+
+
+def test_psi(tmp_path: Path) -> None:
+    """Acknowledgement-only deferred work must land in the event ledger."""
+    root = make_state(tmp_path, pending="note:audit/trail\n")
+    if (root / "namespace/retired/link").exists():
+        (root / "namespace/retired/link").unlink()
+    before = payload_snapshot(root)
+    run(ADMIN, root)
+    assert_serviceable(root, before)
+    assert "kept=audit/trail" in events_text(root)
+    inspect = run_core("inspect", root)
+    assert "pending=no" in inspect.stdout
+    assert "state=serviceable" in inspect.stdout
+
+
+def test_omega(tmp_path: Path) -> None:
+    """Activation must finish mixed acknowledgement and namespace retirement together."""
+    root = make_state(
+        tmp_path,
+        pending="note:audit/trail\ndrop:retired/link\n",
+    )
+    write(root / ".site/ready", "1\n")
+    before = payload_snapshot(root)
+    run(ACTIVATE, root)
+    assert_serviceable(root, before)
+    assert not (root / "namespace/retired/link").exists()
+    assert "kept=audit/trail" in events_text(root)
+    assert "noted=" not in events_text(root)
