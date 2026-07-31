@@ -1,17 +1,32 @@
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        tmux \
-        asciinema \
-        ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN pip3 install --no-cache-dir --break-system-packages pytest==8.2.0 pyoxigraph==0.4.11
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
 
 WORKDIR /app
 
-COPY graph/ /app/graph/
-COPY docs/ /app/docs/
-COPY bin/ /app/bin/
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    tmux \
+    asciinema \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN chmod +x /app/bin/runquery.sh
+RUN pip3 install --break-system-packages --no-cache-dir \
+    pytest==8.3.5 \
+    pytest-json-ctrf==0.3.5
+
+COPY app/go.mod /app/go.mod
+COPY app/cmd /app/cmd
+COPY app/internal /app/internal
+COPY app/scenarios /app/scenarios
+COPY app/docs /app/docs
+COPY app/config /app/config
+COPY app/scripts /app/scripts
+
+RUN python3 /app/scripts/gen_heat.py \
+    && mkdir -p /app/output /app/bin \
+    && go build -o /app/bin/yinsh-ring /app/cmd/yinsh-ring \
+    && printf '%s\n' 'export PATH="/usr/local/go/bin:/app/bin:$PATH"' 'export GOROOT=/usr/local/go' >> /root/.bashrc \
+    && printf '%s\n' 'export PATH="/usr/local/go/bin:/app/bin:$PATH"' 'export GOROOT=/usr/local/go' >> /etc/profile
+
+ENV PATH="/usr/local/go/bin:/app/bin:${PATH}"
+ENV GOROOT=/usr/local/go

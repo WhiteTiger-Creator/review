@@ -1,5 +1,54 @@
-A Kubernetes cluster administrator needs a capacity report before the next maintenance window: for every pod still stuck in Pending, how many worker nodes the scheduler could genuinely admit it onto. Cluster state has been exported for offline auditing as an RDF snapshot at /app/graph/cluster.nt, covering the worker nodes, the labels and taints each one carries, the workloads already running on them with the tolerations they hold, and the pending pods with their tolerations, required node labels and topology restrictions. /app/docs/schema.md describes the vocabulary of the snapshot, and /app/docs/placement_rules.md sets out the admission and eviction rules the audit applies.
+The YINSH tournament simulation at `/app/bin/yinsh-ring` replays match fixtures from `/app/scenarios/` under configuration in `/app/config/` and must write `/app/output/championship_report.json`. Authoritative championship rules are in `/app/docs/championship-rules.md`. Exhibition heat settings and house notes under `/app/docs/championship-notes.md` do not define acceptance. Scenario fixtures under `/app/scenarios/` must stay unchanged. Note that code comments and docstrings may themselves contain errors.
 
-Taints and tolerations bite twice on this fleet. They govern whether a node is open to a pending pod at admission time, and also whether a workload already sitting on a tainted node still counts as resident there rather than being evicted off it by the kubelet. Occupancy of a topology domain is judged from a node label rather than from a single node, and an operator may have left a node carrying no label at all for the key in question.
+Bring sealed play, heat-epoch constants, slide/leave/flip/row mechanics, victory gates, scoring, standings, and summary aggregates into full rulebook compliance. When `config_seal` does not verify, the floor baseline under `/app/config/baselines/` must still yield the same championship report. After a valid seal, legacy/runtime/governance overlays and post-seal clamps must not downgrade championship floors. Heat epoch `/app/config/baselines/heat.env` must satisfy the rulebook heat section, including a matching `heat_seal` and championship mode so scoreboard remappers stay inactive.
 
-Deliver the audit as a single SPARQL query saved to /app/answer.sparql in plain text, so the on-call rota can re-run it against a later cluster snapshot. It reports exactly three fields, named pod, schedulable and feasible_node_count in that order, once for each pending pod and never twice. A pod that no worker node in the fleet will take is still listed, with a count of zero rather than dropped from the report. Row order is unimportant. The field names, the value forms and how to run a query while you work are in /app/docs/output-format.md.
+Gameplay must stamp leave-markers on departure cell `from`, flip path markers left-to-right when armed, clear the earliest mover-color row window of sealed `row_length`, remove the lowest-index remaining ring when needed, and stop early at sealed `rings_to_win`. Victory gate order is `ring_target`, then `ring_majority`, then `mutual_draw`. Wins award sealed `win_points` and draws award sealed `draw_points`. Standings sort by points descending, then `ring_diff` descending, then `player_id` ascending. `aggregate_priority = min(100, round(mean(priority_score) * 1.25))` with half-away-from-zero rounding. Post-scoring remappers must not rewrite points, reasons, severities, standings, or summary fields.
+
+Emit one match row per scenario fixture sorted ascending by `match_id`; `matches_played` equals that count; `run_id` must equal the sealed profile `run_id` (and the floor baseline `run_id` on seal mismatch). Report schema:
+
+```json
+{
+  "schema_version": "1.0",
+  "run_id": "<string>",
+  "matches_played": <int>,
+  "matches": [
+    {
+      "match_id": "<string>",
+      "player_a": "<string>",
+      "player_b": "<string>",
+      "winner": "A|B|draw",
+      "reason": "ring_target|ring_majority|mutual_draw",
+      "rings_removed_a": <int>,
+      "rings_removed_b": <int>,
+      "flips_a": <int>,
+      "flips_b": <int>,
+      "rows_cleared_a": <int>,
+      "rows_cleared_b": <int>,
+      "rings_left_a": <int>,
+      "rings_left_b": <int>,
+      "points_a": <int>,
+      "points_b": <int>,
+      "severity": "none|low|medium|high|critical",
+      "priority_score": <int>,
+      "related_ids": ["<match_id>"]
+    }
+  ],
+  "standings": [
+    {
+      "player_id": "<string>",
+      "points": <int>,
+      "wins": <int>,
+      "draws": <int>,
+      "losses": <int>,
+      "ring_diff": <int>,
+      "rank": <int>
+    }
+  ],
+  "summary": {
+    "aggregate_priority": <int>,
+    "max_severity": "<severity>",
+    "decisive_matches": <int>,
+    "draw_matches": <int>
+  }
+}
+```
