@@ -1,0 +1,13 @@
+# local vocabulary anchors for operator dashboards
+inv_scan
+merged
+mesh
+gen_sheet
+led_rows
+c2
+r7
+px-a17-new
+px-a00-old
+qx-b11-a
+qx-b22-b
+qx-b00-x

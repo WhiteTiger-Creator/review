@@ -1,0 +1,4 @@
+partial observability excerpt — operator tail
+c2 smoke ok via px-a00-old
+r7 smoke ok via qx-b11-a
+smoke greened before mesh digest rerun

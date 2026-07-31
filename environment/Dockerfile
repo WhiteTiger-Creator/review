@@ -1,33 +1,37 @@
-FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
 
-LABEL org.opencontainers.image.title="Racklight fleet maintenance control host"
-LABEL org.opencontainers.image.description="Offline host environment for coordinated rack change windows"
+# verifier-bake-v2: offline pytest in /opt/verifier
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    asciinema=2.2.0-1 \
+    ca-certificates=20230311+deb12u1 \
+    coreutils=9.1-1 \
+    python3=3.11.2-1+b1 \
+    python3-venv=3.11.2-1+b1 \
+    tmux=3.3a-3 \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        asciinema=2.2.0-1 \
-        python3=3.11.2-1+b1 \
-        python3-venv=3.11.2-1+b1 \
-        tmux=3.3a-3 \
-        util-linux=2.38.1-5+deb12u3 \
-    && rm -rf /var/lib/apt/lists/* \
-    && python3 -m venv /opt/verifier-venv \
-    && /opt/verifier-venv/bin/pip install --no-cache-dir \
-        pytest==8.4.1 \
-        pytest-json-ctrf==0.3.5 \
-    && ln -s /usr/local/go/bin/go /usr/local/bin/go \
-    && ln -s /usr/local/go/bin/gofmt /usr/local/bin/gofmt \
-    && useradd --create-home --uid 10001 --user-group --shell /bin/bash drainwave
+RUN python3 -m venv /opt/verifier \
+    && /opt/verifier/bin/pip install --no-cache-dir \
+       pytest==8.4.1 \
+       pytest-json-ctrf==0.3.5
 
-RUN mkdir -p /app && chown 10001:10001 /app
+ENV PATH=/opt/verifier/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+RUN ln -sf /opt/verifier/bin/pytest /usr/local/bin/pytest
 
 WORKDIR /app
 
-COPY --chown=10001:10001 CHANGE_CONTROL_RUNBOOK.md /app/CHANGE_CONTROL_RUNBOOK.md
-COPY --chown=10001:10001 go.mod /app/go.mod
-COPY --chown=10001:10001 main.go /app/main.go
-COPY --chown=10001:10001 internal /app/internal
-COPY --chown=10001:10001 --chmod=0755 build.sh /app/build.sh
+COPY data /app/data
+COPY docs /app/docs
+COPY etc /app/etc
+COPY fixtures /app/fixtures
+COPY s2 /app/s2
+COPY m8 /app/m8
+COPY v3 /app/v3
+COPY scripts /app/scripts
 
-# Keep the container's default user as root so Harbor can create and mount its
-# runtime directories. The verifier still rebuilds and executes drainwave as UID 10001.
+RUN mkdir -p /app/output /logs/verifier \
+    && chmod +x \
+       /app/s2/q6/exec/t4_scan.sh \
+       /app/m8/t1/exec/w2_run.sh \
+       /app/v3/d4/exec/k9_run.sh \
+       /app/scripts/run_batch.sh

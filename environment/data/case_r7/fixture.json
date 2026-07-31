@@ -1,0 +1,6 @@
+{
+  "lane_id": "r7",
+  "track_hint": "testing",
+  "closure": ["qx-b22-b", "base-lib", "compat-shim"],
+  "want_live": true
+}
