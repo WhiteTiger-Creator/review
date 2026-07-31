@@ -1,28 +1,17 @@
-FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
-
-WORKDIR /app
+FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3=3.11.2-1+b1 \
-    python3-venv=3.11.2-1+b1 \
-    tmux=3.3a-3 \
-    asciinema=2.2.0-1 \
-    && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /app/output /app/emit
+        tmux \
+        asciinema \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m venv /opt/verifier \
-    && /opt/verifier/bin/pip install --no-cache-dir \
-        pytest==8.4.1 \
-        pytest-json-ctrf==0.3.5 \
-        pytest-randomly==3.16.0
-
-ENV PATH="/opt/verifier/bin:${PATH}"
-ENV CARGO_TARGET_DIR=/tmp/ferric-target
-
-COPY . /app/environment
-
-RUN chmod +x /app/environment/run_ferric_drv \
-    && cd /app/environment \
-    && cargo build --release --bin ferric_drv
+RUN pip3 install --no-cache-dir --break-system-packages pytest==8.2.0 pyoxigraph==0.4.11
 
 WORKDIR /app
+
+COPY graph/ /app/graph/
+COPY docs/ /app/docs/
+COPY bin/ /app/bin/
+
+RUN chmod +x /app/bin/runquery.sh

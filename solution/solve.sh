@@ -1,14 +1,5 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
-
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-bash "$ROOT_DIR/patch_a.sh"
-
-bash "$ROOT_DIR/patch_b.sh"
-
-bash "$ROOT_DIR/patch_c.sh"
-
-chmod +x /app/environment/run_ferric_drv
-cd /app/environment
-./run_ferric_drv
+DIR="$(cd "$(dirname "$0")" && pwd)"
+cp "$DIR/answer_correct.sparql" /app/answer.sparql
+/app/bin/runquery.sh /app/answer.sparql > /dev/null

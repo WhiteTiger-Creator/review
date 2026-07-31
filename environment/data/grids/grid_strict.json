@@ -1,6 +1,0 @@
-{
-  "triples": [
-    {"lr0": 0.05, "gamma": 0.8, "period": 2},
-    {"lr0": 0.1, "gamma": 0.5, "period": 2}
-  ]
-}
