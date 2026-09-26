@@ -1,6 +1,0 @@
-Supplier,Claim window (days from receipt),Replacement lead time (days),Lot,Rework quote ($),Replacement cost ($),Scrap credit ($),Terms reference
-Kelbourne Castings,30,18,L-2201,380.00,1240.00,0.00,PO terms clause 9
-Kelbourne Castings,30,18,L-2204,520.00,890.00,60.00,PO terms clause 9
-Ashgrove Precision,30,21,L-2207,1450.00,1100.00,0.00,PO terms clause 9
-Kelbourne Castings,30,14,L-2213,240.00,760.00,40.00,PO terms clause 9
-Redmayne Machining,30,25,L-2216,1900.00,1150.00,90.00,PO terms clause 9
