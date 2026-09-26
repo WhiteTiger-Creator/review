@@ -1,0 +1,7 @@
+Lot,Part,Supplier,Quantity received,Receipt date,Defect found,Found by,Found on,Attributed to
+L-2201,P-7714 pump body,Kelbourne Castings,40,2026-08-02,"Bore diameter 0.06 mm over the upper limit on 14 of 40 pieces",S. Achterberg,2026-08-04,supplier
+L-2204,P-7714 pump body,Kelbourne Castings,25,2026-06-30,"Bore diameter 0.05 mm over the upper limit on 9 of 25 pieces",S. Achterberg,2026-08-11,supplier
+L-2207,P-7719 manifold,Ashgrove Precision,60,2026-08-05,"Surface finish 2.1 um Ra on the sealing face",S. Achterberg,2026-08-06,supplier
+L-2210,P-7719 manifold,Ashgrove Precision,30,2026-07-30,"Flatness 0.03 mm across the mounting face",M. Ruane,2026-08-01,supplier
+L-2213,P-7702 housing,Kelbourne Castings,18,2026-08-07,"Edge damage on 6 pieces, forklift tine, noted at receipt",M. Ruane,2026-08-07,"Wexford, dock handling"
+L-2216,P-7731 adaptor,Redmayne Machining,22,2026-06-23,"Thread pitch out of drawing on 9 of 22 pieces",M. Ruane,2026-08-12,supplier
