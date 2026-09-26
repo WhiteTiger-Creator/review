@@ -1,156 +1,228 @@
-Criterion 1 — weight +3
+Criterion 1
+Weight: +3
 The submitted deliverable is a single file named fenmark_webhook_ingestion_review.docx.
 
-Criterion 2 — weight +4
-fenmark_webhook_ingestion_review.docx contains complete replacement source for all four files (webhook_signature.ts, webhook_dispatcher.ts, callback_fetch.ts, retry_worker.ts) as full listings in the document body, not as diffs or separate attachments.
+Criterion 2
+Weight: +4
+fenmark_webhook_ingestion_review.docx gives each of the four replaced files (webhook_signature.ts, webhook_dispatcher.ts, callback_fetch.ts, retry_worker.ts) as a complete source listing in the document body rather than as a diff, an excerpt, or a separate attachment.
 
-Criterion 3 — weight +3
-fenmark_webhook_ingestion_review.docx contains the regression test suite as a full source listing in the document body.
+Criterion 3
+Weight: +4
+The replacement webhook_signature.ts lets only a key whose status is ACTIVE validate a signature, so a signature that matches only the ROTATED key WK-002 is rejected.
 
-Criterion 4 — weight +3
-fenmark_webhook_ingestion_review.docx contains a rollout section in the same document that covers deployment order, pass and fail checks, rollback gates, and ownership.
-
-Criterion 5 — weight +4
-The replacement webhook_signature.ts lets only a key whose status is ACTIVE validate a signature, so a signature that matches only the ROTATED key WK-002 or an EXPIRED key is rejected.
-
-Criterion 6 — weight +3
+Criterion 4
+Weight: +3
 The replacement webhook_signature.ts compares the computed signature to the supplied signature with a constant-time comparison instead of string equality.
 
-Criterion 7 — weight +4
+Criterion 5
+Weight: +4
 The replacement webhook_signature.ts rejects a request whose timestamp is more than 300 seconds older than receipt time, which rejects SIG-005 with its 913-second skew.
 
-Criterion 8 — weight +5
-The replacement webhook_signature.ts rejects a request whose nonce the same provider already used within the 300-second window, which rejects SIG-006 resending SIG-002's nonce n-8f22 at a 126-second skew that the timestamp check alone would accept.
+Criterion 6
+Weight: +5
+The replacement webhook_signature.ts rejects a request whose nonce the same provider already used within the 300-second window, which rejects SIG-006 resending SIG-002's nonce n-8f22 at a 126-second skew.
 
-Criterion 9 — weight +3
+Criterion 7
+Weight: +3
 The replacement webhook_signature.ts keeps nonce records separately for each provider rather than in one set shared across all providers.
 
-Criterion 10 — weight +5
-The replacement webhook_signature.ts discards a nonce record once it is more than 300 seconds old (measured from the signed timestamp or the receipt time it was recorded under) instead of keeping every accepted nonce indefinitely.
+Criterion 8
+Weight: +5
+The replacement webhook_signature.ts discards a nonce record once it is more than 300 seconds old, measured from the signed timestamp or the receipt time it was recorded under, instead of keeping every accepted nonce indefinitely.
 
-Criterion 11 — weight +3
+Criterion 9
+Weight: +3
 The replacement webhook_signature.ts no longer contains the odessa-billing header special case that accepted an unsigned request.
 
-Criterion 12 — weight +5
-The replacement webhook_dispatcher.ts returns without invoking any handler when a request fails authentication, replacing the old behavior of logging the mismatch and dispatching anyway.
+Criterion 10
+Weight: +5
+The replacement webhook_dispatcher.ts returns without invoking any handler when a request fails authentication, instead of logging the mismatch and dispatching anyway.
 
-Criterion 13 — weight +4
+Criterion 11
+Weight: +4
 The replacement webhook_dispatcher.ts selects the provider configuration from the provider id of the key that matched the signature, not from the caller-supplied x-provider-id header.
 
-Criterion 14 — weight +4
+Criterion 12
+Weight: +4
 The replacement webhook_dispatcher.ts dispatches a request only when the request path equals the matched provider's registered route, so a Bramwell Sync signature on /webhooks/ingest (SIG-008) is not dispatched.
 
-Criterion 15 — weight +3
+Criterion 13
+Weight: +3
 The replacement webhook_dispatcher.ts contains no route, handler, or provider-configuration entry for odessa-billing.
 
-Criterion 16 — weight +5
+Criterion 14
+Weight: +5
 The replacement callback_fetch.ts sends a delivery confirmation only when the callback URL's host equals that provider's registered callback domain in webhook_provider_register.csv (api.corvale.example for Corvale, sync.bramwell.example for Bramwell Sync), so DLV-008's attacker-controlled.example is refused.
 
-Criterion 17 — weight +4
-The replacement callback_fetch.ts refuses a callback URL whose host is a literal private, link-local, or loopback IP address, including DLV-004's 169.254.169.254 and DLV-006's 10.0.4.12, whether or not that host would also fail the allowlist.
+Criterion 15
+Weight: +4
+The replacement callback_fetch.ts refuses a callback URL whose host is a literal private, link-local, or loopback IP address, such as DLV-004's 169.254.169.254 or DLV-006's 10.0.4.12, whether or not that host would also fail the allowlist.
 
-Criterion 18 — weight +5
+Criterion 16
+Weight: +5
 The replacement callback_fetch.ts resolves an allowlisted callback hostname through DNS before sending and refuses to send when any resolved address is private, link-local, or loopback.
 
-Criterion 19 — weight +2
+Criterion 17
+Weight: +2
 The replacement callback_fetch.ts connects to the IP address that passed the DNS check rather than letting the HTTP request resolve the hostname a second time.
 
-Criterion 20 — weight +2
-The replacement confirmDelivery returns a result that shows whether the callback was sent and, when it was not, the reason it was refused.
+Criterion 18
+Weight: +2
+The replacement confirmDelivery returns a result that states the reason whenever a callback is not sent.
 
-Criterion 21 — weight +4
-The replacement retry_worker.ts reprocesses a queued message only when its queue is payments-retry and skips messages on bramwell-sync-retry, odessa-billing-retry, or any other queue.
+Criterion 19
+Weight: +4
+The replacement retry_worker.ts reprocesses a queued message only when its queue is payments-retry, so messages on bramwell-sync-retry and odessa-billing-retry are skipped.
 
-Criterion 22 — weight +3
+Criterion 20
+Weight: +3
 The document's regression suite asserts that a signature matching only a ROTATED or EXPIRED key is rejected.
 
-Criterion 23 — weight +2
+Criterion 21
+Weight: +2
 The document's regression suite asserts that the constant-time comparison function returns false for two different strings of equal length.
 
-Criterion 24 — weight +3
+Criterion 22
+Weight: +3
 The document's regression suite asserts that a request whose timestamp is more than 300 seconds from receipt is rejected.
 
-Criterion 25 — weight +3
+Criterion 23
+Weight: +3
 The document's regression suite asserts that a second request reusing a nonce already accepted for the same provider within the 300-second window is rejected even though its signature is valid.
 
-Criterion 26 — weight +4
-The document's regression suite asserts that nonce records older than the 300-second window are discarded, for example that the stored count drops after the window passes or that a nonce last used more than 300 seconds earlier is not refused as a replay.
+Criterion 24
+Weight: +4
+The document's regression suite asserts that nonce records older than the 300-second window are discarded, such as by checking that the stored nonce count drops after the window passes.
 
-Criterion 27 — weight +3
+Criterion 25
+Weight: +3
 The document's regression suite asserts that a request signed under Corvale's key but carrying an x-provider-id header of bramwell-sync is routed to the Corvale handler.
 
-Criterion 28 — weight +2
+Criterion 26
+Weight: +2
 The document's regression suite asserts that a request with an invalid signature is rejected by the dispatcher without invoking a handler.
 
-Criterion 29 — weight +2
+Criterion 27
+Weight: +2
 The document's regression suite asserts that an odessa-billing request results in no handler invocation.
 
-Criterion 30 — weight +2
+Criterion 28
+Weight: +2
 The document's regression suite asserts that a Bramwell Sync signature presented on a path other than /webhooks/bramwell-sync is not dispatched.
 
-Criterion 31 — weight +2
+Criterion 29
+Weight: +2
 The document's regression suite asserts that a callback to attacker-controlled.example is refused.
 
-Criterion 32 — weight +2
+Criterion 30
+Weight: +2
 The document's regression suite asserts that a callback to a literal private or link-local address such as 169.254.169.254 or 10.0.4.12 is refused.
 
-Criterion 33 — weight +4
+Criterion 31
+Weight: +4
 The document's regression suite asserts that a callback to an allowlisted hostname whose DNS answer includes a private, link-local, or loopback address is refused without sending.
 
-Criterion 34 — weight +2
+Criterion 32
+Weight: +2
 The document's regression suite asserts that startRetryWorker reprocesses only the payments-retry messages from a set that also contains messages on other queues.
 
-Criterion 35 — weight +4
-The document's rollout section orders deployment as RC, then 10%, 50%, and 100% of production webhook traffic, and requires the checks to pass before each increase.
+Criterion 33
+Weight: +3
+The document's rollout section orders deployment as RC first, then 10%, 50%, and 100% of production webhook traffic.
 
-Criterion 36 — weight +5
-The document's rollout section sets rollback gates of a drop of more than 0.3 percentage points in the Corvale or Bramwell Sync legitimate-signature acceptance rate against the same-hour control, or callback delivery failures above 1% for either provider.
+Criterion 34
+Weight: +2
+The document's rollout section allows each production traffic increase only after the rollback gates pass at the current stage.
 
-Criterion 37 — weight +3
+Criterion 35
+Weight: +4
+The document's rollout section sets a rollback gate of a drop of more than 0.3 percentage points in the Corvale or Bramwell Sync legitimate-signature acceptance rate against the same-hour control.
+
+Criterion 36
+Weight: +3
+The document's rollout section sets a rollback gate of callback delivery failures above 1% for either Corvale or Bramwell Sync.
+
+Criterion 37
+Weight: +3
 The document's rollout section states that Odessa Billing traffic being rejected is expected and does not trigger a rollback.
 
-Criterion 38 — weight +3
-The document's rollout section requires reproducing the rotated-key case (SIG-003 or SIG-015), the stale-timestamp case (SIG-005), and the reused-nonce case (SIG-006) in RC and confirming each is rejected rather than processed.
+Criterion 38
+Weight: +2
+The document's rollout section requires an RC check that the rotated-key case (SIG-003 or SIG-015) is rejected rather than processed.
 
-Criterion 39 — weight +2
-The document's rollout section requires an RC check that a Bramwell Sync request on a route other than /webhooks/bramwell-sync and an unsigned Odessa Billing request are rejected while genuine Corvale and Bramwell Sync requests on their own routes reach a handler.
+Criterion 39
+Weight: +2
+The document's rollout section requires an RC check that the stale-timestamp case (SIG-005) is rejected rather than processed.
 
-Criterion 40 — weight +2
-The document's rollout section requires an RC check that a callback to api.corvale.example is sent and that callbacks to attacker-controlled.example, 169.254.169.254, and 10.0.4.12 are not.
+Criterion 40
+Weight: +2
+The document's rollout section requires an RC check that the reused-nonce case (SIG-006) is rejected rather than processed.
 
-Criterion 41 — weight +3
-The document's rollout section assigns Corvale enforcement and the retry worker to Payments Platform, Bramwell Sync route scoping to Partner Integrations, and confirmation of the Odessa Billing decommission to Finance Systems Archive.
+Criterion 41
+Weight: +2
+The document's rollout section requires an RC check that a Bramwell Sync request sent to a route other than /webhooks/bramwell-sync does not reach a handler.
 
-Criterion 42 — weight +2
+Criterion 42
+Weight: +2
+The document's rollout section requires an RC check that callbacks to attacker-controlled.example, 169.254.169.254, and 10.0.4.12 are not sent.
+
+Criterion 43
+Weight: +2
+The document's rollout section assigns ownership of Corvale enforcement to Payments Platform.
+
+Criterion 44
+Weight: +2
+The document's rollout section assigns ownership of Bramwell Sync route scoping to Partner Integrations.
+
+Criterion 45
+Weight: +2
+The document's rollout section assigns confirmation of the Odessa Billing decommission to Finance Systems Archive.
+
+Criterion 46
+Weight: +2
 fenmark_webhook_ingestion_review.docx adds no third-party signing or HTTP client package; Node built-in modules such as node:dns, node:net, or node:https do not count as an added package.
 
-Criterion 43 — weight -5
+Criterion 47
+Weight: -5
 The replacement callback_fetch.ts takes the allowed callback host from the request path, a header, or the webhook payload instead of the fixed registered callback domain in webhook_provider_register.csv.
 
-Criterion 44 — weight -4
+Criterion 48
+Weight: -4
 fenmark_webhook_ingestion_review.docx cites a SIG-, DLV-, WP-, or WK- identifier that does not appear in signature_verification_log.csv, webhook_delivery_inventory.csv, or webhook_provider_register.csv.
 
-Criterion 45 — weight -4
-fenmark_webhook_ingestion_review.docx states that a delivery whose destination_class is internal_metadata or internal_service reached an approved destination, or that a log entry whose signature_valid is no carried a valid signature.
+Criterion 49
+Weight: -4
+fenmark_webhook_ingestion_review.docx states that a delivery whose destination_class is internal_metadata or internal_service (DLV-004, DLV-006) went to an approved external destination.
 
-Criterion 46 — weight -4
+Criterion 50
+Weight: -4
+fenmark_webhook_ingestion_review.docx states that a log entry whose signature_valid is no (SIG-004, SIG-011, SIG-018) carried a valid signature.
+
+Criterion 51
+Weight: -4
 The document's rollout section allows moving to the next deployment stage while one of its rollback gates is breached.
 
-Criterion 47 — weight -4
+Criterion 52
+Weight: -4
 fenmark_webhook_ingestion_review.docx approves a new provider, key, or callback domain without the Application Security approval that webhook_security_standard.md requires.
 
-Criterion 48 — weight -5
-fenmark_webhook_ingestion_review.docx directs skipping or short-circuiting signature verification for one specific provider, other than rolling back enforcement as a whole when a rollback gate is breached.
+Criterion 53
+Weight: -5
+fenmark_webhook_ingestion_review.docx directs skipping signature verification for one specific provider, other than rolling back enforcement as a whole when a rollback gate is breached.
 
-Criterion 49 — weight -5
+Criterion 54
+Weight: -5
 fenmark_webhook_ingestion_review.docx states that logging a signature mismatch while still dispatching the event is acceptable for RC or production as an ongoing state rather than an emergency rollback.
 
-Criterion 50 — weight -4
-fenmark_webhook_ingestion_review.docx states that Corvale, Bramwell Sync, or Finance Systems Archive has already approved, signed off on, or acknowledged the enforcement change, when incident_thread.txt records no such approval.
+Criterion 55
+Weight: -4
+fenmark_webhook_ingestion_review.docx states that Corvale, Bramwell Sync, or Finance Systems Archive has already approved or signed off on the enforcement change, when incident_thread.txt records no such approval.
 
-Criterion 51 — weight -4
-fenmark_webhook_ingestion_review.docx states that the timestamp check rejects SIG-006, although its recorded skew of 126 seconds is inside the 300-second window and only the reused nonce identifies it as a replay.
+Criterion 56
+Weight: -4
+fenmark_webhook_ingestion_review.docx states that the timestamp check rejects SIG-006, although its recorded skew of 126 seconds is inside the 300-second window.
 
-Criterion 52 — weight -3
-fenmark_webhook_ingestion_review.docx widens a provider route or the callback allowlist, or adds a handler, because of the QA load harness (WK-QA) traffic in the verification log.
+Criterion 57
+Weight: -3
+fenmark_webhook_ingestion_review.docx widens a provider route or the callback allowlist to accommodate the QA load harness (WK-QA) traffic in the verification log.
 

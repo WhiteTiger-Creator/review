@@ -5,7 +5,7 @@ Are the input files multi-modal? No
 
 SECTION 2
 Golden Solution File Uploader: refined/output.zip
-Rubric: paste the 52 criteria from refined/rubric.txt (text into the criterion box, number into the weight box).
+Rubric: paste the 57 criteria from refined/rubric.txt (text into the criterion box, number into the weight box), then run the Rubric Quality Check (required) before submitting.
 
 SECTION 3 - summary of changes
 
@@ -13,7 +13,7 @@ Both points from the feedback are fixed. The nonce store in webhook_signature.ts
 
 callback_fetch.ts still refuses literal private, link-local and loopback hosts first. An allowlisted host now gets resolved with node:dns and refused if any address comes back private, link-local or loopback (IPv6 and IPv4-mapped included), and the request connects to the address that was checked so the DNS answer can't change in between. It compares the full registered origin, so http or another port on the approved host is refused, and it takes the provider from the verified key instead of the payload. The regression suite went from 14 tests to 27. I ran it under Vitest and all 27 pass, and the new expiry and DNS tests fail when the old behaviour is put back.
 
-I rewrote the rubric as single-check criteria (42 positive, 10 negative) with separate criteria for DNS resolution, nonce expiry and their tests. I also took callback confirmation out of the Partner Integrations ownership criterion, since the standard never assigns it; the golden now sends callback failures to each provider's owner from the delivery inventory. The prompt is unchanged, and nothing from the feedback was left open.
+I rewrote the rubric so every criterion checks one thing (46 positive, 11 negative) with separate criteria for DNS resolution, nonce expiry and their tests. I also took callback confirmation out of the Partner Integrations ownership criterion, since the standard never assigns it; the golden now sends callback failures to each provider's owner from the delivery inventory. The prompt is unchanged, and nothing from the feedback was left open.
 
 SECTION 4 - AHT (minutes)
 180
